@@ -330,6 +330,48 @@ ALM sit outside the 1318.
   `quartus_sh --qinstall` is not an alternative: it takes `-qda` and rejects
   `.qdz` as a different format.
 
+## Is 80 MHz actually required?
+
+No. The real requirement is throughput, and it is now measured rather than
+assumed.
+
+Running the real Virtua Racing microcode, the core retires **20,342
+instructions in 200,000 cycles — 9.83 cycles per instruction**. The TGP must
+retire ~5.3 M instructions/sec (16 MHz part, `execute_clocks_to_cycles` =
+clocks/3), so the clock it actually needs is:
+
+    5.3 M x 9.83 = 52.1 MHz
+
+At 72.17 MHz that is **1.38x headroom**. The 80 MHz figure in the gate table
+predates any measurement; nothing depends on it.
+
+**But the margin is far thinner than this document assumed.** The Timing
+section above says "a multi-cycle FSM at 50 MHz has enormous headroom", which
+was written against MAME's ~3 clocks per instruction. The actual FSM takes
+9.83, so a 50 MHz clock would leave essentially none.
+
+That makes the retiming load-bearing rather than cosmetic:
+
+| | Fmax | cycles/instr | needed | headroom |
+|---|---|---|---|---|
+| before retiming | 51.47 | 7.71 | 40.8 MHz | 1.26x |
+| after retiming | 72.17 | 9.83 | 52.1 MHz | 1.38x |
+
+Note the retime *spent* some of what it earned: deepening the ALU from latency
+2 to 5 raised cycles per instruction from 7.71 to 9.83 and so raised the clock
+requirement from 40.8 to 52.1 MHz. The net gain is real but smaller than the
+40% Fmax improvement suggests — and at the original 51.47 MHz against today's
+9.83 cycles the core would have run at **0.99x**, i.e. marginally too slow.
+
+Against D4's own reversal condition — "above 6K ALM or below 60 MHz Fmax" —
+2554 ALM and 72.17 MHz clear both. Three instances land at 7662 ALM, 3 DSP and
+9 M10K against a 15K ALM / 8 DSP budget.
+
+The remaining work to reach 80 is the core FSM's source-capture mux
+(`state.S_DST` to `src_val`). Worth doing if the margin is wanted; not required
+for the design to meet its timing.
+
+## Resource gate
 ## Resource gate
 
 | Metric | Pass | Investigate | Fail |
