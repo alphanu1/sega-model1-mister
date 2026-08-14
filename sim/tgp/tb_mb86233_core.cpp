@@ -476,10 +476,18 @@ int main(int argc, char** argv) {
         // the model and manufacture a divergence on every trial.
         // Capture the DUT's data-memory writes for this instruction.
         uint32_t dut_wa = 0xffffffff, dut_wd = 0; int dut_nw = 0;
+        uint32_t dut_ra = 0xffffffff, dut_rd = 0; bool dut_rd_pend = false;
         {
           int seen = 0; long budget = 4000; uint32_t last = 0xffffffff;
+          uint32_t last_r = 0xffffffff;
           while (seen < 1 && budget-- > 0) {
             step_cycle();
+            if (dut->dbg_mem_re && dut->dbg_mem_addr != last_r) {
+              dut_ra = dut->dbg_mem_addr; last_r = dut->dbg_mem_addr;
+            }
+            // rdata is registered, so sample it the cycle AFTER the request.
+            if (dut_ra != 0xffffffff && dut_rd_pend) { dut_rd = dut->dbg_mem_rdata; dut_rd_pend = false; }
+            if (dut->dbg_mem_re) dut_rd_pend = true;
             if (dut->dbg_mem_we) {
               // The FSM holds the write across two states; count distinct
               // addresses, not cycles.
@@ -491,11 +499,27 @@ int main(int argc, char** argv) {
           step_cycle();
           if (seen != 1) break;
         }
-        ref.writes.clear();
+        ref.writes.clear(); ref.reads.clear();
         ref.step();
         compared++;
 
         // Compare the write STREAM, not the resulting arrays.
+        uint32_t ref_ra = ref.reads.empty() ? 0xffffffff : ref.reads.back().addr;
+        uint32_t ref_rd = ref.reads.empty() ? 0 : ref.reads.back().data;
+        if (ref_ra != 0xffffffff && dut_rd != ref_rd) {
+          if (diverged < 3)
+            printf("  MEMDATA trial=%d instr=%d pc=%04x op=%08x addr=%05x  dut=%08x | ref=%08x\n",
+                   trial, n, ref.ppc, ref.prog[ref.ppc & 0x7ff], ref_ra, dut_rd, ref_rd);
+          diverged++;
+          break;
+        }
+        if (dut_ra != ref_ra) {
+          if (diverged < 3)
+            printf("  MEMREAD trial=%d instr=%d pc=%04x op=%08x  dut addr=%05x | ref addr=%05x\n",
+                   trial, n, ref.ppc, ref.prog[ref.ppc & 0x7ff], dut_ra, ref_ra);
+          diverged++;
+          break;
+        }
         uint32_t ref_wa = ref.writes.empty() ? 0xffffffff : ref.writes.back().addr;
         uint32_t ref_wd = ref.writes.empty() ? 0 : ref.writes.back().data;
         if (dut_wa != ref_wa || (ref_wa != 0xffffffff && dut_wd != ref_wd)) {

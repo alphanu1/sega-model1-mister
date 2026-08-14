@@ -91,6 +91,8 @@ module mb86233_core (
   output logic [16:0] dbg_mem_addr,
   output logic [31:0] dbg_mem_wdata,
   output logic        dbg_mem_we,
+  output logic        dbg_mem_re,
+  output logic [31:0] dbg_mem_rdata,
   output logic [7:0]  dbg_c0,
   output logic [7:0]  dbg_c1,
   output logic [7:0]  dbg_rep
@@ -348,6 +350,8 @@ module mb86233_core (
   assign dbg_mem_addr  = mem_addr;
   assign dbg_mem_wdata = mem_wdata;
   assign dbg_mem_we    = mem_req & mem_we;
+  assign dbg_mem_re    = mem_req & ~mem_we;
+  assign dbg_mem_rdata = mem_rdata;
   assign dbg_c0 = seq_c0; assign dbg_c1 = seq_c1; assign dbg_rep = seq_rep;
 
   assign retire    = (state == S_RETIRE);

@@ -77,6 +77,7 @@ struct Cpu {
   // diffing silently misses it and makes the DUT look like it wrote alone.
   struct Wr { uint32_t addr, data; };
   std::vector<Wr> writes;
+  std::vector<Wr> reads;      // same treatment for loads
 
   Cpu() : prog(2048,0), ram0(256,0), ram1(512,0) {
     st = F_ZRC|F_ZRD|F_ZX0|F_ZX1|F_ZX2|F_ZC0|F_ZC1;
@@ -165,6 +166,11 @@ struct Cpu {
 
   // -------------------------------------------------------- data memory
   uint32_t data_read(uint32_t ea) {
+    uint32_t v = data_read_raw(ea);
+    reads.push_back({ea, v});
+    return v;
+  }
+  uint32_t data_read_raw(uint32_t ea) {
     if (ea <= 0x0ff) return ram0[ea];
     if (ea == 0x100) return fifo_read ? fifo_read() : 0;
     if (ea >= 0x200 && ea <= 0x3ff) return ram1[ea - 0x200];

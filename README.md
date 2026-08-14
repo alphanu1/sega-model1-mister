@@ -60,25 +60,33 @@ NetMerc.
 
 ### Open divergence — `make test` is red
 
-Lockstep diverges inside the `ld/mov` transfer forms. What is established:
+Lockstep diverges inside the `ld/mov` transfer forms. Narrowed to:
 
-| Generated forms | Result |
+```
+MEMDATA trial=35 instr=8 pc=0011 op=1c1da06a addr=0006a
+        dut=26000000 | ref=00000000
+```
+
+A `mov mem, reg` (form 7/3) reads `data[0x6a]`. The **address is right**, the
+per-instruction **write streams match**, and the **read addresses match** — but
+the DUT's RAM holds `0x26000000` there where the model holds 0.
+
+| Evidence | Conclusion |
 |---|---|
-| `7/6` reg→reg alone | 8000 comparisons, clean |
-| `7/3` mem→reg alone | 8000 comparisons, clean |
-| `7/0` reg→mem alone | 8000 comparisons, clean |
-| **`7/0` + `7/3` together** | **diverges at 2532** |
+| `7/6`, `7/3`, `7/0` each alone clean | no form individually wrong |
+| `7/0` + `7/3` together diverge | an interaction |
+| directed store/load passes | basic path correct |
+| write streams identical | store side exonerated |
+| read addresses identical | addressing exonerated |
+| **read data differs** | **a write reached RAM outside the sampled window** |
 
-A directed store/load round trip — `A = 0x123456`, store to `data[0x20]`,
-clear `A`, load it back — **passes**. So the basic path is correct and the
-fault needs a particular sequence, most likely one involving the address or
-the ordering between a store and a later load.
+So something writes `0x6a` that the per-instruction comparison does not see.
+The likely candidates are a write asserted in a state the comparison window
+misses, or `mem_we` glitching outside `S_DST`/`S_DST_W`. Next step is to log
+*every* cycle where `dbg_mem_we` is high across a whole trial, rather than
+per instruction, and find which cycle writes `0x26000000`.
 
-Reproduce with `make test_core`; the generator is seeded at 20260814, so it is
-deterministic. Narrowing further wants a memory-content comparison: the core
-does not expose its RAM, and a write-detector that diffs the model's array
-cannot see a store of a value already present, which made the first attempt
-at this misleading.
+Reproduce with `make test_core`; seeded at 20260814, deterministic.
 
 Left red deliberately. A green suite over a known transfer bug would be worse.
 
