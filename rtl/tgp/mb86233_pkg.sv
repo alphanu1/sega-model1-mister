@@ -212,6 +212,15 @@ package mb86233_pkg;
     get_mant = v[31] ? (v | 32'h7f800000) : (v & 32'h807fffff);
   endfunction
 
+  // ------------------------------------------------- transfer endpoint kinds
+  //
+  // Where one side of a ld/mov transfer lives. A register endpoint is signalled
+  // separately rather than encoded here, because it has no effective address.
+  localparam logic [1:0] EP_NONE = 2'd0;
+  localparam logic [1:0] EP_DATA = 2'd1;   // internal RAM / FIFO space
+  localparam logic [1:0] EP_IO   = 2'd2;   // copro_io_map: sincos, atan, ...
+  localparam logic [1:0] EP_PROG = 2'd3;   // microcode ROM, readable as data
+
   // ------------------------------------------------------------ memory map
 
   localparam logic [15:0] RAM0_BASE   = 16'h0000;  // bank 0: 0x000-0x0ff

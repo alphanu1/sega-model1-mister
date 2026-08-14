@@ -181,6 +181,7 @@ rtl/tgp/mb86233_seq.sv      sequencer, PC stack, branch/call/return
 rtl/tgp/mb86233_regs.sv     register file, 0x00-0x3f space
 rtl/tgp/mb86233_mem.sv      data-space RAM banks and decode
 rtl/tgp/mb86233_dec.sv      instruction decoder
+rtl/tgp/mb86233_xfer.sv     ld/mov source and destination routing
 rtl/tgp/mb86233_core.sv     top level
 sim/tgp/tb_mb86233.cpp      Verilator harness
 sim/tgp/oracle/             MAME lockstep bridge
@@ -215,6 +216,7 @@ onwards) and 24.1std Lite.
 | `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 | 0 |
 | `mb86233_mem` | 123 | — | n/a | — | 0 | **3** |
 | `mb86233_dec` | 121 | — | comb | — | 0 | 0 |
+| `mb86233_xfer` | 28 | — | comb | — | 0 | 0 |
 
 **The two toolchains agree.** Every module is within 2 ALM and a few percent of
 Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
