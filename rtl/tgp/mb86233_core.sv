@@ -283,12 +283,12 @@ module mb86233_core (
 
   mb86233_alu u_alu (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(alu_in_valid), .op(d_alu),
+    .in_valid(alu_in_valid), .op(alu_op_r),
     .reg_a(reg_a), .reg_b(reg_b), .reg_d(reg_d), .reg_p(reg_p),
     .sft(sft), .m(reg_m), .st_in(st),
     .xfer_d_valid(xfer_d_valid), .xfer_d_data(xfer_d_data),
     // lab and ld/mov reach alu_post_2; the 0x0f group does not.
-    .fp_post_en(d_lab | d_ldmov),
+    .fp_post_en(fp_post_r),
     .out_valid(alu_out_valid),
     .d_out(alu_d_val), .d_we(alu_d_we),
     .p_out(alu_p_val), .p_we(alu_p_we),
@@ -316,6 +316,22 @@ module mb86233_core (
   // (cfxd) in bits 25:21 — write D and destroy the value it just loaded.
   logic alu_active;
   assign alu_active = d_lab | d_ldmov | d_repgrp;
+
+  // RETIMING: the ALU op reaches the FP operand mux through a REGISTER, not
+  // straight out of the decoder.
+  //
+  // The critical path was ir -> u_dec -> ALU operand mux -> fp_add stage 1:
+  // the instruction register feeding combinational decode, which selects
+  // fp_add's operands, which then drive a 27-bit align shifter and a subtract
+  // before the first flop. Quartus named it as
+  //   From ir[28]  To mb86233_alu|fp_add|s1_exact_cancel
+  // and it held the core to 51.47 MHz against an 80 MHz gate.
+  //
+  // Latching the decoded op in S_DECODE cuts the path in two without changing
+  // behaviour: the FSM already spends a whole state there, so the register is
+  // free in cycles as well as in area.
+  logic [4:0] alu_op_r;
+  logic       fp_post_r;
 
   // The ALU is fixed-latency-2 and free-running: holding in_valid across the
   // whole wait state launches a fresh operation every cycle, and their
@@ -369,12 +385,16 @@ module mb86233_core (
       src_val      <= 32'd0;
       lab_a_val    <= 32'd0;
       alu_launched <= 1'b0;
+      alu_op_r     <= 5'd0;
+      fp_post_r    <= 1'b0;
     end else begin
       unique case (state)
         S_FETCH:   state <= S_FETCH_W;
         S_FETCH_W: begin ir <= prog_rdata; state <= S_DECODE; end
 
         S_DECODE: begin
+          alu_op_r  <= d_alu;
+          fp_post_r <= d_lab | d_ldmov;
           if (d_lab || d_ldmov) state <= S_SRC;
           else                  state <= S_ALU;
         end
