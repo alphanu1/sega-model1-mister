@@ -381,6 +381,21 @@ int main(int argc, char** argv) {
   checks++;
   if (saw_unimpl) { printf("  FAIL unimplemented asserted on decoded stream\n"); fails++; }
 
+  // ------------------------------------------------- store/load round trip
+  //
+  // Minimal repro for the lockstep divergence: forms 0 and 3 each pass alone
+  // but fail together, which points at a store and a later load of the same
+  // address disagreeing.
+  printf("test: store to RAM then load it back\n");
+  for (auto& w : prog) w = enc_nop();
+  prog[0] = enc_ldi(0x10, 0x123456);          // A = 0x123456
+  prog[1] = enc_ldmov7(0, 0x20, 0x10);        // data[0x20] <- A
+  prog[2] = enc_ldi(0x10, 0x000000);          // A = 0
+  prog[3] = enc_ldmov7(3, 0x20, 0x10);        // A <- data[0x20]
+  reset();
+  if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
+  ck("store/load round trip", dut->dbg_a, 0x00123456);
+
   // ------------------------------------------------------------ LOCKSTEP
   //
   // The reference model steps beside the DUT and every architecturally visible

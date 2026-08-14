@@ -60,95 +60,27 @@ NetMerc.
 
 ### Open divergence — `make test` is red
 
-Lockstep diverges on a `mov mem, reg` transfer:
+Lockstep diverges inside the `ld/mov` transfer forms. What is established:
 
-```
-FAIL lockstep trial=35 instr=8 A got=26000000 exp=00000000
-     pc=0011 opcode=1c1da06a top=07
-     alu=00 sub_op=7 r2=0d0 (form 7/3, reg 0x10) r1=06a (direct, offset 0x6a)
-```
+| Generated forms | Result |
+|---|---|
+| `7/6` reg→reg alone | 8000 comparisons, clean |
+| `7/3` mem→reg alone | 8000 comparisons, clean |
+| `7/0` reg→mem alone | 8000 comparisons, clean |
+| **`7/0` + `7/3` together** | **diverges at 2532** |
 
-The DUT reads `0x26000000` from `data[0x6a]` where the model reads 0, so an
-earlier store went to a different address in one of them. Reproduce with
-`make test_core`; the generator is seeded at 20260814 so it is deterministic.
+A directed store/load round trip — `A = 0x123456`, store to `data[0x20]`,
+clear `A`, load it back — **passes**. So the basic path is correct and the
+fault needs a particular sequence, most likely one involving the address or
+the ordering between a store and a later load.
 
-This is left red deliberately. The suite reporting green while the core has a
-known transfer bug would be worse than a failing build. Fetch/decode for the six instruction
-  types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
-  needs.
-- `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.
-  **282,606 fuzz cases, zero mismatches.** Not yet wired into the ALU: it has a
-  busy handshake where the ALU is uniform-latency-2, so `fdvd` (0x10) still
-  decodes without writing D. See the note below.
+Reproduce with `make test_core`; the generator is seeded at 20260814, so it is
+deterministic. Narrowing further wants a memory-content comparison: the core
+does not expose its RAM, and a write-detector that diffs the model's array
+cannot see a store of a value already present, which made the first attempt
+at this misleading.
 
-**Real device numbers on 5CSEBA6U23I7, 50 MHz constraint, both toolchains:**
-
-| Module | ALM 17.0 | ALM 24.1 | Fmax 17.0 | Fmax 24.1 | DSP |
-|---|---|---|---|---|---|
-| `fp_mul` | 144 | 144 | 116.85 | 114.31 | **1** |
-| `fp_add` | 411 | 410 | 76.35 | 77.42 | 0 |
-| `fp_div` | 263 | 263 | 113.96 | 106.30 | 0 |
-| `mb86233_alu` | 1318 | 1319 | 91.99 | 94.64 | **1** |
-| `mb86233_agu` | 176 | 176 | comb | comb | 0 |
-| `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 |
-| `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 |
-| `mb86233_mem` | 123 | — | n/a | — | 0, 3 M10K |
-| `mb86233_dec` | 121 | — | comb | — | 0 |
-| `mb86233_xfer` | 28 | — | comb | — | 0 |
-| **`mb86233_core`** | **2153** | — | **51.65** | — | **1 DSP, 3 M10K** |
-
-The assembled core passes ALM, DSP and M10K with margin but **misses the Fmax
-gate**: 51.65 MHz against a > 80 MHz threshold. It still meets the flat 50 MHz
-constraint and the part runs at 16 MHz, so this is not functional — but it is a
-gate miss and is recorded as one. No individual block is close to it (the ALU is
-96 MHz); the path is created by assembly. See `docs/m0-mb86233-spike.md`.
-
-The two toolchains agree within 2 ALM and a few percent of Fmax, so the earlier
-"measured on 24.1, not the 17.0.x MiSTer uses" caveat is resolved.
-
-A TGP instance from what exists today is **2575 ALM, 1 DSP, 0 M10K at 92 MHz**
-(the ALU already contains one `fp_mul` and one `fp_add`). Every gate threshold
-passes — ALM 2575 vs <4K, DSP 1 vs 1-2, Fmax 92 vs >80 — and the 24x24
-significand multiply does infer a DSP block, which is the assumption D4 rests on.
-Three instances extrapolate to ~7.7K ALM and 3 DSP against a 15K/8 budget.
-
-Not the gate closed: there is no top level, so the program store and both RAM
-banks are absent and M10K reads 0; `fp_div` is verified but not yet wired into
-the ALU. Details in `docs/m0-mb86233-spike.md`.
-
-Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`) is still used
-for tracking relative change between edits:
-
-| Module | LUT6 | FF |
-|---|---|---|
-| `fp_mul` | 1312 | 99 |
-| `fp_add` | 690 | 80 |
-| `mb86233_alu` | 2974 | 381 |
-| `mb86233_agu` | 220 | 0 |
-| `mb86233_seq` | 163 | 106 |
-| `mb86233_regs` | 646 | 781 |
-
-`mb86233_alu` includes one `fp_mul` and one `fp_add`, so it is the whole FP datapath
-plus the integer side, not an increment on the two above. `mb86233_agu` is purely
-combinational — no flops — because MAME's `ea_pre_*`/`ea_post_*` are functions of the
-instruction field with no state of their own.
-
-Read that as roughly 1600-2300 ALM and one DSP block per TGP instance for everything
-built so far. Three physical instances still looks affordable, which is what decision
-D4 rests on. Everything M0 specifies is now measured except `fp_div` and the top
-level that ties these four together — and only Quartus settles the gate.
-
-### Open design question — fdvd integration
-
-`fp_div` is verified standalone but not instantiated in `mb86233_alu`, because
-the two disagree about time. `fp_mul` and `fp_add` are fixed-latency-2 and the
-ALU is built around that uniformity — every non-FP result is pushed through two
-stages purely to line up. A radix-2 divider is 29 cycles, and pipelining it to
-latency 2 would cost far more than one opcode is worth.
-
-So the ALU needs a `busy`/stall path for this one op. That is a real interface
-change and it belongs with the top level, which has to handle stalls anyway for
-external memory. Deferred deliberately rather than bolted on.
+Left red deliberately. A green suite over a known transfer bug would be worse.
 
 ### Correction, 2026-08-14
 
