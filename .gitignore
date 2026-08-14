@@ -65,6 +65,33 @@ qdb/
 /tools/**/__pycache__/
 *.pyc
 
+# Quartus installer: BOTH the downloaded archive and the unpacked tree. Several
+# GB each, and Altera-licensed — redistributing it is not permitted, so neither
+# may ever be committed.
+#
+# This is not hypothetical. A `git add -A` run while a 1.9 GB partial download
+# sat in tools/ committed 1.39 GB of it, taking .git from ~1 MB to 3.6 GB. It
+# was caught before pushing, but only just. Prefer `git add <path>` over -A in
+# this repo.
+#
+# No trailing slash on the directory rule: a directory-only pattern cannot match
+# a path that does not exist yet, and install-quartus17.sh checks the path is
+# ignored BEFORE creating it — with a slash that guard fires on every clean run.
+/tools/quartus-unpack
+
+# The archive itself, however it is named, plus in-progress browser downloads.
+# Chrome writes "Unconfirmed NNNNN.crdownload" with a space in the name, which
+# no *.tar pattern would ever catch.
+/tools/*.tar
+/tools/*.tar.*
+/tools/Quartus*
+/tools/QuartusLiteSetup*
+/tools/*.qdz
+*.crdownload
+*.part
+*.download
+*.partial
+
 # --------------------------------------------------------------------- roms
 # Never commit ROM images or anything derived from them.
 *.zip

@@ -11,7 +11,12 @@
 # core build ever behaves oddly, the point release is a variable worth
 # eliminating — it is not one for the M0 spike, which uses no IP at all.
 #
-#   tools/install-quartus17.sh <installer> [installdir]
+#   tools/install-quartus17.sh <installer> [installdir] [--keep]
+#
+# The archive is unpacked into tools/quartus-unpack/ and the installer is run
+# from there, then the unpacked tree is deleted unless --keep is given. That
+# path is gitignored and the script refuses to run if it is not: the payload is
+# Altera-licensed and several GB, and must never be committed.
 #
 # <installer> is either:
 #   Quartus-lite-17.0.0.595-linux.tar        combined archive, all devices
@@ -37,6 +42,24 @@ set -euo pipefail
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Where the archive is unpacked before the installer runs. Under tools/, which
+# is a TRACKED directory — .gitignore excludes this path, and it must stay
+# excluded: the Quartus payload is Altera-licensed and redistributing it is not
+# permitted. Same class of rule as third_party/geometrizer.
+EXTRACT="$ROOT/tools/quartus-unpack"
+
+KEEP=0
+ARGS=()
+for a in "$@"; do
+  case "$a" in
+    --keep) KEEP=1 ;;          # leave the unpacked tree in place afterwards
+    *) ARGS+=("$a") ;;
+  esac
+done
+set -- "${ARGS[@]:-}"
 
 SRC="${1:-}"
 DEST="${2:-$HOME/intelFPGA_lite/17.0}"
@@ -77,16 +100,28 @@ RUN=""
 CLEAN=""
 case "$SRC" in
   *.tar)
-    # Extract beside the archive, NOT in /tmp. /tmp is commonly a tmpfs — 15.6G
-    # of RAM on this machine — and these archives run to several GB, so mktemp -d
-    # would spend that much RAM and can fail outright on a smaller box.
-    TMP="$SRCDIR/.quartus-extract-$$"; CLEAN="$TMP"
-    need_kb=$(( $(stat -c %s "$SRC") / 1024 * 2 ))   # archive plus extracted
-    free_kb=$(df -Pk "$SRCDIR" | awk 'NR==2{print $4}')
+    # Unpack into tools/quartus-unpack, never /tmp: /tmp is commonly a tmpfs
+    # (15.6G of RAM on this machine) and these archives run to several GB, so
+    # extracting there spends that much RAM and fails outright on a smaller box.
+    TMP="$EXTRACT"
+    [ "$KEEP" = 1 ] || CLEAN="$TMP"
+    need_kb=$(( $(stat -c %s "$SRC") / 1024 ))       # extracted tree only
+    free_kb=$(df -Pk "$ROOT" | awk 'NR==2{print $4}')
     say "== extracting archive"
     echo "  into $TMP"
     printf '  need ~%s MB, free %s MB\n' "$((need_kb/1024))" "$((free_kb/1024))"
-    [ "$free_kb" -gt "$need_kb" ] || die "not enough space in $SRCDIR"
+    [ "$free_kb" -gt "$need_kb" ] || die "not enough space on the filesystem holding $ROOT"
+
+    # Refuse to run if the unpack path is not ignored. An accidental `git add -A`
+    # would otherwise stage several GB of Altera-licensed installer.
+    if command -v git >/dev/null && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+      if ! git -C "$ROOT" check-ignore -q "$TMP" 2>/dev/null; then
+        die "$TMP is not gitignored — refusing to unpack an Altera-licensed installer into a tracked tree"
+      fi
+      echo "  gitignored: yes"
+    fi
+
+    rm -rf "$TMP"
     mkdir -p "$TMP"
     tar -xf "$SRC" -C "$TMP"
     # Parenthesised: without the group, -maxdepth applies per-branch and the
@@ -117,7 +152,13 @@ mkdir -p "$DEST"
 # next to re-downloading several GB. Trim afterwards if it matters.
 "$RUN" --mode unattended --installdir "$DEST" --accept_eula 1 2>&1 | tail -20 || true
 
-[ -n "$CLEAN" ] && rm -rf "$CLEAN"
+if [ -n "$CLEAN" ]; then
+  say "== cleaning up"
+  echo "  removing $CLEAN"
+  rm -rf "$CLEAN"
+elif [ "$KEEP" = 1 ] && [ -d "$EXTRACT" ]; then
+  warn "  keeping $EXTRACT (--keep); it is gitignored but uses several GB"
+fi
 
 say "== verify"
 if [ -x "$DEST/quartus/bin/quartus_map" ]; then
