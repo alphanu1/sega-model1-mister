@@ -149,7 +149,19 @@ make quartus MOD=fp_add    # map + fit + sta, then report
 make quartus_report MOD=fp_add
 ```
 
-Needs Quartus Prime Lite 17.0.x on PATH. Reports ALMs, DSP blocks, memory bits and Fmax
+Quartus is auto-detected from `~/intelFPGA_lite/*/quartus/bin` — no PATH export
+needed. `make quartus_list` shows what was found and which was picked; newest
+wins by default, and `QUARTUS=17.0` selects a specific one. Every report prints
+the version that produced it.
+
+**Which Quartus.** The spike has no `sys/` and no IP, so any version supporting
+Cyclone V gives valid numbers; it was first run on 24.1std. A real core build
+from M1 onwards needs **17.0.x**, because MiSTer's `sys/` ships pre-generated
+PLL IP for Quartus 13.1 and 17.0 only (`sys/pll_q13.qip`, `sys/pll_q17.qip`) and
+a newer Quartus forces an IP upgrade that regenerates the video PLLs. Install it
+alongside with `tools/install-quartus17.sh <installer>`; versions coexist in
+separate trees. The installer must be downloaded by hand — Altera's CDN returns
+403 to unauthenticated requests. Reports ALMs, DSP blocks, memory bits and Fmax
 against the gate table in `docs/m0-mb86233-spike.md`. Timing constraint is a flat 50 MHz
 in `quartus/spike.sdc` with I/O paths cut.
 

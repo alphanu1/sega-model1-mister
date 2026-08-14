@@ -22,6 +22,14 @@ sta="$D/$M.sta.rpt"
 
 echo "== $M"
 
+# Always print the toolchain. With more than one Quartus installed, a table of
+# ALM/Fmax numbers with no version attached is worse than no table: the M0 gate
+# is measured on whatever happened to be on PATH, and 17.0.x and 24.1 do not
+# fit identically.
+ver=$(grep -m1 -i '^Quartus Prime Version' "$D/$M.fit.summary" 2>/dev/null \
+      | sed 's/.*: *//')
+printf '  %-24s %s\n' "Quartus" "${ver:-unknown}"
+
 # The fit report repeats each metric across several tables with different
 # spacing and different denominators, so a plain grep prints each one two or
 # three times in inconsistent formats. Take the first occurrence of each.

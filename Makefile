@@ -21,7 +21,7 @@ SRCS_mb86233_alu := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
 SRCS_mb86233_agu := $(RTL)/mb86233_agu.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq area quartus quartus_report clean distclean
+.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -91,15 +91,44 @@ area:
 MOD ?= fp_add
 QDIR := quartus/build/$(MOD)
 
+# Toolchain selection. MiSTer's sys/ ships PLL IP pre-generated for Quartus
+# 13.1 and 17.0 only (third_party/template/sys/pll_q13.qip, pll_q17.qip), so a
+# real core build needs 17.0.x. The M0 spike has no sys/ and no IP, so any
+# version that supports Cyclone V gives valid numbers — but the two must never
+# be confused, which is why the version is recorded with every report.
+#
+#   make quartus MOD=fp_add              newest install found
+#   make quartus MOD=fp_add QUARTUS=17.0 pick a specific one
+#
+# Auto-detects ~/intelFPGA*/<ver>/quartus/bin so the flow works without
+# exporting PATH by hand.
+QUARTUS ?=
+QUARTUS_ROOTS := $(wildcard $(HOME)/intelFPGA_lite/*/quartus/bin $(HOME)/intelFPGA/*/quartus/bin /opt/intelFPGA_lite/*/quartus/bin /opt/intelFPGA/*/quartus/bin)
+ifeq ($(QUARTUS),)
+  QUARTUS_BIN := $(lastword $(sort $(QUARTUS_ROOTS)))
+else
+  QUARTUS_BIN := $(firstword $(foreach d,$(QUARTUS_ROOTS),$(if $(findstring /$(QUARTUS)/,$(d)),$(d))))
+endif
+
+.PHONY: quartus_list
+quartus_list:
+	@echo "Quartus installs found:"; \
+	 for d in $(QUARTUS_ROOTS); do \
+	   v=$$(echo $$d | sed 's|.*/intelFPGA[^/]*/||; s|/quartus/bin||'); \
+	   printf "  %-10s %s\n" "$$v" "$$d"; done; \
+	 echo "selected: $(QUARTUS_BIN)"
+
 quartus:
-	@command -v quartus_map >/dev/null || { echo "quartus_map not on PATH"; exit 1; }
+	@test -n "$(QUARTUS_BIN)" || { echo "no Quartus install found. Looked in ~/intelFPGA_lite/*/quartus/bin and /opt. Use QUARTUS=<ver> or add to PATH; 'make quartus_list' shows what was found."; exit 1; }
+	@test -x "$(QUARTUS_BIN)/quartus_map" || { echo "$(QUARTUS_BIN)/quartus_map not executable"; exit 1; }
+	@echo "using $(QUARTUS_BIN)"
 	@mkdir -p $(QDIR)
 	@srcs=""; for f in $(SRCS_$(MOD)); do \
 	  srcs="$$srcs\nset_global_assignment -name SYSTEMVERILOG_FILE ../../../$$f"; done; \
 	  sed -e 's/@MODULE@/$(MOD)/g' -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
 	@cp quartus/spike.sdc $(QDIR)/spike.sdc
 	@echo "PROJECT_REVISION = \"$(MOD)\"" > $(QDIR)/$(MOD).qpf
-	cd $(QDIR) && quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)
+	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c 'quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)'
 	@$(MAKE) --no-print-directory quartus_report MOD=$(MOD)
 
 quartus_report:
