@@ -15,7 +15,7 @@ NetMerc.
 
 | Milestone | State |
 |---|---|
-| M0 — MB86233 spike | in progress: FP datapath, ALU and AGU verified; sequencer not started |
+| M0 — MB86233 spike | in progress: FP datapath, ALU, AGU and sequencer verified; top level not started |
 | M1 — V60, bus, 2D, boot | not started |
 | M2 — geometry pipeline | not started |
 | M3 — rasterizer and video | not started |
@@ -32,7 +32,10 @@ NetMerc.
 - `mb86233_agu` — `ea_pre`/`ea_post` for both banks, all four mode-3 sub-forms, the
   `+0x200` adder and both of its wrap behaviours. **3,000,000 fuzz cases, zero
   mismatches, every addressing mode covered.**
-- Sequencer, top level — not started.
+- `mb86233_seq` — PC, the 4-deep hardware PC stack, all ten decoded branch
+  conditions and six subtypes, loop counters and the repeat register.
+  **3,000,000 lockstep cases, zero mismatches.**
+- Top level — not started.
 - `fp_div` — not started, so `fdvd` (0x10) decodes but never writes D.
 
 Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`, **not** Quartus
@@ -44,6 +47,7 @@ ALMs; the 24x24 significand multiply will move into a DSP block under Quartus):
 | `fp_add` | 690 | 80 |
 | `mb86233_alu` | 2974 | 381 |
 | `mb86233_agu` | 220 | 0 |
+| `mb86233_seq` | 163 | 106 |
 
 `mb86233_alu` includes one `fp_mul` and one `fp_add`, so it is the whole FP datapath
 plus the integer side, not an increment on the two above. `mb86233_agu` is purely
@@ -52,7 +56,8 @@ instruction field with no state of their own.
 
 Read that as roughly 1600-2300 ALM and one DSP block per TGP instance for everything
 built so far. Three physical instances still looks affordable, which is what decision
-D4 rests on — but the sequencer is not in that number yet, and only Quartus settles it.
+D4 rests on. Everything M0 specifies is now measured except `fp_div` and the top
+level that ties these four together — and only Quartus settles the gate.
 
 ### Correction, 2026-08-14
 

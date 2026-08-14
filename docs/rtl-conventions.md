@@ -118,7 +118,20 @@ Shape, per the existing two:
    them before going random.
 3. Track in-flight operands through a pipeline array indexed by latency. **Get this depth
    right first.** The initial `fp_mul` run showed 1.87 M failures that were entirely a
-   testbench off-by-one, and it looks exactly like a broken DUT.
+   testbench off-by-one, and it looks exactly like a broken DUT. `mb86233_alu` then
+   repeated the same mistake at depth 2 instead of 1, for a 100% failure rate.
+
+   Stateful blocks get a lockstep model instead: hold the same architectural state in
+   C, step both on one instruction stream, compare every visible register each retire,
+   and resynchronise on divergence so one bug does not cascade. `mb86233_seq` is the
+   pattern. A per-operation harness cannot catch a fault that needs a specific
+   *sequence* of branches to appear.
+
+7. **Mutation-test any harness that passes first try.** Three of the five blocks here
+   passed on the first run, which is exactly when a harness that silently checks
+   nothing looks identical to a correct one. Break the DUT deliberately and confirm the
+   failure count is large. Check the mutation actually applied — an edit that does not
+   match reports a clean pass and reads as proof when it is the opposite.
 4. Compare on `out_valid`. Print the first 20 mismatches with raw hex *and* decoded
    values.
 5. Print a one-line summary: `checked= skipped= fails=`.
@@ -146,6 +159,7 @@ Known baseline, yosys 0.66 generic 6-LUT mapping, `synth -lut 6 -flatten`:
 | `fp_add` | 690 | 80 | |
 | `mb86233_alu` | 2974 | 381 | includes one `fp_mul` + one `fp_add` |
 | `mb86233_agu` | 220 | 0 | purely combinational |
+| `mb86233_seq` | 163 | 106 | PC, 4-deep stack, counters |
 
 Record the yosys version with the numbers. The first two were previously logged as
 1362/747 under an older yosys; the flop counts were identical and only the LUT
