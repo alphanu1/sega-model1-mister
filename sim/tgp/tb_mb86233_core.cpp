@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <vector>
+#include <cstdlib>
 
 static Vmb86233_core* dut;
 static std::vector<uint32_t> prog(2048, 0);
@@ -169,6 +170,60 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 200; i++) { step_cycle(); if (dut->unimplemented) saw_unimpl = true; }
   checks++;
   if (saw_unimpl) { printf("  FAIL unimplemented asserted on decoded stream\n"); fails++; }
+
+  // ------------------------------------------------- real microcode smoke test
+  //
+  // Optional: point MB86233_TGP_ROM at a copro program ROM (0x2000 bytes, the
+  // 315-5573 image for Virtua Racing) and the real instruction stream is run
+  // through the decoder. This is NOT exit criterion 2 — nothing is compared
+  // against MAME — but it answers a question no synthetic stream can: does real
+  // microcode ever decode to something this core does not implement?
+  //
+  // The ROM is loaded at runtime from a path and never vendored, per hard
+  // rule 2. Absent, the test is skipped rather than failed.
+  const char* rom = getenv("MB86233_TGP_ROM");
+  if (rom) {
+    FILE* f = fopen(rom, "rb");
+    if (!f) {
+      printf("test: microcode — cannot open %s, skipped\n", rom);
+    } else {
+      std::vector<uint8_t> raw(0x2000, 0);
+      size_t got = fread(raw.data(), 1, raw.size(), f);
+      fclose(f);
+      printf("test: real microcode from %s (%zu bytes)\n", rom, got);
+
+      // 32-bit words, little-endian, into the 0x000-0x7ff program space.
+      for (size_t i = 0; i < prog.size(); i++) {
+        size_t b = i * 4;
+        prog[i] = (b + 3 < got)
+                ? ((uint32_t)raw[b]) | ((uint32_t)raw[b+1] << 8)
+                | ((uint32_t)raw[b+2] << 16) | ((uint32_t)raw[b+3] << 24)
+                : 0;
+      }
+
+      reset();
+      long unimpl_cycles = 0, retired = 0;
+      std::vector<uint8_t> seen_pc(2048, 0);
+      for (long i = 0; i < 200000; i++) {
+        step_cycle();
+        if (dut->retire) { retired++; seen_pc[dut->retire_pc & 0x7ff] = 1; }
+        if (dut->unimplemented) unimpl_cycles++;
+      }
+      long covered = 0;
+      for (auto v : seen_pc) covered += v;
+      printf("  retired=%ld  distinct PCs=%ld  unimplemented cycles=%ld\n",
+             retired, covered, unimpl_cycles);
+      checks++;
+      if (retired == 0) {
+        printf("  FAIL real microcode retired no instructions\n");
+        fails++;
+      }
+      // unimplemented is reported, not failed: fdvd, stm and clr0 are known
+      // gaps and real microcode is expected to use them.
+    }
+  } else {
+    printf("test: microcode — MB86233_TGP_ROM unset, skipped\n");
+  }
 
   printf("mb86233_core: checks=%ld fails=%ld (directed; lockstep still owed)\n",
          checks, fails);
