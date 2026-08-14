@@ -54,41 +54,10 @@ NetMerc.
   advance are covered; `lab`, `ld/mov` transfers, branches and `rep` are wired
   but not yet exercised. `fdvd` works end to end.
 - `mb86233_ref` — a whole-CPU `execute_run` reference model, with lockstep
-  against the core. It has already found two real bugs. **One divergence is
-  currently open, so `make test` is RED** — see below. FP ALU ops are still
-  excluded pending the NaN-payload and denormal plumbing.
-
-### Open divergence — `make test` is red
-
-Lockstep diverges inside the `ld/mov` transfer forms. Narrowed to:
-
-```
-MEMDATA trial=35 instr=8 pc=0011 op=1c1da06a addr=0006a
-        dut=26000000 | ref=00000000
-```
-
-A `mov mem, reg` (form 7/3) reads `data[0x6a]`. The **address is right**, the
-per-instruction **write streams match**, and the **read addresses match** — but
-the DUT's RAM holds `0x26000000` there where the model holds 0.
-
-| Evidence | Conclusion |
-|---|---|
-| `7/6`, `7/3`, `7/0` each alone clean | no form individually wrong |
-| `7/0` + `7/3` together diverge | an interaction |
-| directed store/load passes | basic path correct |
-| write streams identical | store side exonerated |
-| read addresses identical | addressing exonerated |
-| **read data differs** | **a write reached RAM outside the sampled window** |
-
-So something writes `0x6a` that the per-instruction comparison does not see.
-The likely candidates are a write asserted in a state the comparison window
-misses, or `mem_we` glitching outside `S_DST`/`S_DST_W`. Next step is to log
-*every* cycle where `dbg_mem_we` is high across a whole trial, rather than
-per instruction, and find which cycle writes `0x26000000`.
-
-Reproduce with `make test_core`; seeded at 20260814, deterministic.
-
-Left red deliberately. A green suite over a known transfer bug would be worse.
+  against the core, including the `ld/mov` transfer forms: **8,000 retires x 7
+  registers, zero divergence.** It found one real core bug (a truncated source
+  register index) and two harness faults. FP ALU ops are still excluded pending
+  the NaN-payload and denormal plumbing.
 
 ### Correction, 2026-08-14
 

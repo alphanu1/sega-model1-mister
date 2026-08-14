@@ -411,10 +411,35 @@ int main(int argc, char** argv) {
     auto rnd = [&]() { return (uint32_t)rng(); };
     long diverged = 0, compared = 0;
 
+    // Fresh DUT for the lockstep section. The directed tests above ran on
+    // this instance and left their stores in RAM — the store/load round trip
+    // alone leaves 0x123456 at 0x20 — which a fresh model knows nothing about.
+    // rst_n cannot clear that, and should not: real memory survives reset.
+    delete dut; dut = new Vmb86233_core;
+
+    // ONE model for the whole run, not one per trial. reset() asserts rst_n,
+    // which clears the DUT's registers but NOT its RAM — and that is correct,
+    // real memory is not cleared by reset. A fresh zeroed model each trial
+    // therefore disagrees with a DUT still holding the previous trial's
+    // stores, and a program that reads before writing sees the difference.
+    // That cost several rounds of narrowing: the store path, read addresses
+    // and write streams were all correct, because the offending write
+    // belonged to an earlier trial.
+    mb::Cpu ref;
+    ref.io_read  = io_read;
+    ref.io_write = io_write;
+
     for (int trial = 0; trial < 200 && diverged == 0; trial++) {
-      mb::Cpu ref;
-      ref.io_read  = io_read;
-      ref.io_write = io_write;
+      // Match what rst_n actually does: architectural registers only.
+      ref.a = ref.b = ref.d = ref.p = 0;
+      ref.pc = ref.ppc = 0; ref.sp = 0;
+      ref.b0 = ref.b1 = ref.x0 = ref.x1 = ref.i0 = ref.i1 = 0;
+      ref.vsmr = 7; ref.vsm = 0; ref.mask = 0; ref.m = 0;
+      ref.r = 1; ref.rpc = 1; ref.c0 = 1; ref.c1 = 1; ref.sft = 0;
+      for (int k = 0; k < 4; k++) ref.pcs[k] = 0;
+      for (int k = 0; k < 16; k++) ref.rf[k] = 0;
+      ref.st = mb::F_ZRC|mb::F_ZRD|mb::F_ZX0|mb::F_ZX1|mb::F_ZX2
+             | mb::F_ZC0|mb::F_ZC1;
       for (auto& w : prog) w = enc_nop();
       // A short program of forms with no memory traffic, so the comparison is
       // about sequencing and the ALU rather than the untested transfer paths.

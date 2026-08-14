@@ -86,6 +86,23 @@ module mb86233_mem (
   logic [31:0] ram0 [0:255];
   logic [31:0] ram1 [0:511];
 
+  // Power-on contents are ZERO, and that is not a simulation convenience.
+  // Cyclone V M10K blocks take their contents from the FPGA configuration
+  // bitstream, so on real hardware these come up initialised. Leaving them
+  // undefined in RTL makes simulation disagree with the device it models.
+  //
+  // This was found by lockstep: a generated program read address 0x6a before
+  // ever writing it, the reference returned 0 from a zeroed array and the DUT
+  // returned 0x26000000 from uninitialised memory. It looked exactly like a
+  // transfer bug for several rounds of narrowing — the store path, the read
+  // addresses and the write streams were all correct, because nothing had
+  // been stored at all.
+  integer ri;
+  initial begin
+    for (ri = 0; ri < 256; ri = ri + 1) ram0[ri] = 32'd0;
+    for (ri = 0; ri < 512; ri = ri + 1) ram1[ri] = 32'd0;
+  end
+
   logic [7:0] a0;
   logic [8:0] a1;
   assign a0 = addr[7:0];
