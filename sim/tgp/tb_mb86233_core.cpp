@@ -203,6 +203,19 @@ static uint32_t enc_stm(uint32_t m16) {
 static uint32_t enc_alu0f(uint32_t alu) {
   return (0x0fu << 26) | ((alu & 0x1f) << 20) | (1u << 17);
 }
+// ld/mov encoders. Type 0x07: alu in bits 25:21, sub-op in 20:18, r2 in 17:9,
+// r1 in 8:0. Sub-op 7 sub-decodes on r2>>6, and the low 6 bits of r2 are the
+// register index (read_reg/write_reg mask to 0x3f).
+//
+// All of these use DIRECT addressing (r & 0x180 == 0), so the EA is just
+// r & 0x7f and lands inside RAM bank 0. That also leaves bit 8 clear, so
+// ea_post performs no index update — the transfer is isolated from the AGU's
+// post-increment, which has its own harness.
+static uint32_t enc_ldmov7(uint32_t form, uint32_t r1, uint32_t reg, uint32_t alu=0) {
+  uint32_t r2 = ((form & 7) << 6) | (reg & 0x3f);
+  return (0x07u << 26) | ((alu & 0x1f) << 21) | (7u << 18)
+       | ((r2 & 0x1ff) << 9) | (r1 & 0x1ff);
+}
 // clr0: type 0x0f, sub-op 0, bits 2/3/4 select A/B/D.
 static uint32_t enc_clr0(bool a, bool b, bool d) {
   return (0x0fu << 26) | (a ? 4u : 0) | (b ? 8u : 0) | (d ? 0x10u : 0);
@@ -385,11 +398,13 @@ int main(int argc, char** argv) {
 
     for (int trial = 0; trial < 200 && diverged == 0; trial++) {
       mb::Cpu ref;
+      ref.io_read  = io_read;
+      ref.io_write = io_write;
       for (auto& w : prog) w = enc_nop();
       // A short program of forms with no memory traffic, so the comparison is
       // about sequencing and the ALU rather than the untested transfer paths.
       for (int i = 0; i < 24; i++) {
-        uint32_t pick = rnd() % 6;
+        uint32_t pick = rnd() % 7;
         uint32_t w;
         switch (pick) {
           case 0: w = enc_ldi(rnd() % 0x20, rnd() & 0xffffff); break;
@@ -407,6 +422,24 @@ int main(int argc, char** argv) {
               0x01,0x02,0x03,0x04,0x16,0x17,0x18,0x19,0x1a,0x1b
             };
             w = enc_alu0f(INT_OPS[rnd() % 10]);
+            break;
+          }
+          case 5: {
+            // Memory transfers, direct-addressed into RAM bank 0.
+            //   7/0  reg -> data[ea]     7/3  data[ea] -> reg
+            //   7/6  reg -> reg
+            static const uint32_t FORMS[] = {0, 3, 6};
+            uint32_t form = FORMS[rnd() % 3];
+            uint32_t addr = rnd() & 0x7f;
+            // Target A/B/D/P specifically. The obvious choice is the general
+            // register file at 0x20-0x2f, but the core does not expose it, so
+            // those transfers would be invisible to the comparison and the
+            // test would pass without checking anything. Only registers the
+            // core exposes can catch a transfer bug.
+            static const uint32_t VISIBLE[] = {0x10, 0x13, 0x19, 0x1c};
+            uint32_t reg = VISIBLE[rnd() % 4];
+            uint32_t src = VISIBLE[rnd() % 4];
+            w = enc_ldmov7(form, form == 6 ? src : addr, reg);
             break;
           }
           default: {
@@ -440,9 +473,13 @@ int main(int argc, char** argv) {
         };
         for (auto& c : chk) {
           if (c.got != c.exp) {
-            if (diverged < 3)
+            if (diverged < 3) {
               printf("  FAIL lockstep trial=%d instr=%d %s got=%08x exp=%08x\n",
                      trial, n, c.nm, c.got, c.exp);
+              printf("       pc=%04x opcode=%08x top=%02x\n",
+                     ref.ppc, ref.prog[ref.ppc & 0x7ff],
+                     (ref.prog[ref.ppc & 0x7ff] >> 26) & 0x3f);
+            }
             diverged++;
             break;
           }

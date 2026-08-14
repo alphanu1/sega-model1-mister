@@ -430,7 +430,11 @@ module mb86233_core (
 
     unique case (state)
       S_SRC, S_SRC_W: begin
-        if (x_src_reg) rf_rd_addr = {3'd0, agu_r[2:0]};   // read_reg(r) masks to 6 bits
+        // read_reg masks its argument to 6 bits, so the index is agu_r[5:0].
+        // Taking only [2:0] silently reads register 0 for every target above
+        // 7 — every transfer out of A (0x10), B (0x13), D (0x19) or P (0x1c)
+        // read the wrong register and no directed test noticed.
+        if (x_src_reg) rf_rd_addr = agu_r[5:0];
         else if (x_src_sp == mb86233_pkg::EP_DATA) begin
           mem_req = 1'b1; mem_addr = ea_src;
         end else if (x_src_sp == mb86233_pkg::EP_IO) begin

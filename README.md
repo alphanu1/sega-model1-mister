@@ -53,11 +53,27 @@ NetMerc.
   owed. `ldi`, `lipl`/`lia`/`lib`/`lid`, `stm`, `clr0`, `cfxd` rounding and PC
   advance are covered; `lab`, `ld/mov` transfers, branches and `rep` are wired
   but not yet exercised. `fdvd` works end to end.
-- `mb86233_ref` — a whole-CPU `execute_run` reference model, and **lockstep
-  against it: 8,000 retires x 7 registers, zero divergence.** This is the
-  mechanism exit criterion 2 needs. Two exclusions remain before it satisfies
-  the criterion: FP ALU ops (the documented NaN-payload and denormal
-  divergences need plumbing through) and the memory transfer forms. Fetch/decode for the six instruction
+- `mb86233_ref` — a whole-CPU `execute_run` reference model, with lockstep
+  against the core. It has already found two real bugs. **One divergence is
+  currently open, so `make test` is RED** — see below. FP ALU ops are still
+  excluded pending the NaN-payload and denormal plumbing.
+
+### Open divergence — `make test` is red
+
+Lockstep diverges on a `mov mem, reg` transfer:
+
+```
+FAIL lockstep trial=35 instr=8 A got=26000000 exp=00000000
+     pc=0011 opcode=1c1da06a top=07
+     alu=00 sub_op=7 r2=0d0 (form 7/3, reg 0x10) r1=06a (direct, offset 0x6a)
+```
+
+The DUT reads `0x26000000` from `data[0x6a]` where the model reads 0, so an
+earlier store went to a different address in one of them. Reproduce with
+`make test_core`; the generator is seeded at 20260814 so it is deterministic.
+
+This is left red deliberately. The suite reporting green while the core has a
+known transfer bug would be worse than a failing build. Fetch/decode for the six instruction
   types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
   needs.
 - `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.
