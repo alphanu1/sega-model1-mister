@@ -45,9 +45,18 @@ get_exp(v)    = (v >> 23) & 0xff
 get_mant(v)   = (v & 0x80000000) ? (v | 0x7f800000) : (v & 0x807fffff)
 ```
 
-Note `get_mant` sign-extends through the exponent field. That asymmetry is real.
-`set_mant`'s mask has a stray extra digit in MAME's source and evaluates as written —
-replicate the arithmetic result, not the apparent intent.
+Note `get_mant` sign-extends through the exponent field where `set_mant` does not.
+**That asymmetry is real** and is worth the comment it carries: removing the
+sign-extension produces 93,765 mismatches in the `mb86233_regs` fuzz run.
+
+**Corrected 2026-08-14.** This section previously warned that `set_mant`'s mask
+"has a stray extra digit in MAME's source and evaluates as written — replicate
+the arithmetic result, not the apparent intent." That is wrong, and the warning
+was misleading. `0x07f800000` has nine hex digits, but the extra one is a
+*leading zero*: it equals `0x7f800000` exactly, which is also the obvious intent.
+Substituting one for the other produces zero mismatches across 3,000,000 cases.
+There is no hazard here and nothing to replicate carefully. The literal is kept
+verbatim only so the transcription matches the source line for line.
 
 ---
 
@@ -180,6 +189,7 @@ virtual-pinned.
 | `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
 | `mb86233_agu` | 176 | 0 | 0 | 0 | n/a, combinational |
 | `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
+| `mb86233_regs` | 646 | 781 | 0 | 0 | 825.08 MHz |
 
 `mb86233_alu` already contains one `fp_mul` and one `fp_add`, so a TGP instance
 built from what exists today is **alu + agu + seq = 1670 ALM, 1 DSP, 0 M10K**,

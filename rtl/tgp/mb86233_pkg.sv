@@ -181,8 +181,17 @@ package mb86233_pkg;
 
   // ------------------------------------------------- A/B/D/P field accessors
   //
-  // Copied verbatim from MAME. get_mant sign-extends through the exponent
-  // field; that asymmetry against set_mant is real, not a transcription error.
+  // Copied verbatim from MAME.
+  //
+  // get_mant sign-extends through the exponent field where set_mant does not.
+  // That asymmetry IS real: dropping the sign-extension costs 93765 mismatches
+  // in the mb86233_regs fuzz run.
+  //
+  // set_mant's 0x07f800000 is NOT a second quirk, despite what this repo's
+  // docs said until 2026-08-14. The literal has nine hex digits but the extra
+  // one is a leading zero, so it equals 0x7f800000 — the obvious intent.
+  // Swapping one for the other produces zero mismatches over 3,000,000 cases.
+  // Kept verbatim only so the transcription matches MAME line for line.
 
   function automatic logic [31:0] set_exp(input logic [31:0] v,
                                           input logic [31:0] e);

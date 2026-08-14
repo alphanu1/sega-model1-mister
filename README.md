@@ -35,7 +35,13 @@ NetMerc.
 - `mb86233_seq` — PC, the 4-deep hardware PC stack, all ten decoded branch
   conditions and six subtypes, loop counters and the repeat register.
   **3,000,000 lockstep cases, zero mismatches.**
-- Top level — not started.
+- `mb86233_regs` — the 0x00-0x3f register space, the 16-entry file at 0x20-0x2f,
+  the `get_exp`/`set_exp`/`get_mant`/`set_mant` accessors, and the narrow-register
+  truncation. **3,000,000 lockstep cases, zero mismatches, all 64 addresses
+  covered.**
+- Top level (`mb86233_core`) — not started. Fetch/decode for the six instruction
+  types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
+  needs.
 - `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.
   **282,606 fuzz cases, zero mismatches.** Not yet wired into the ALU: it has a
   busy handshake where the ALU is uniform-latency-2, so `fdvd` (0x10) still
@@ -73,6 +79,7 @@ for tracking relative change between edits:
 | `mb86233_alu` | 2974 | 381 |
 | `mb86233_agu` | 220 | 0 |
 | `mb86233_seq` | 163 | 106 |
+| `mb86233_regs` | 646 | 781 |
 
 `mb86233_alu` includes one `fp_mul` and one `fp_add`, so it is the whole FP datapath
 plus the integer side, not an increment on the two above. `mb86233_agu` is purely
