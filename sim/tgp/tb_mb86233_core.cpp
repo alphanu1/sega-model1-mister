@@ -474,9 +474,39 @@ int main(int argc, char** argv) {
         // instruction's write to land; eight is enough for the NEXT
         // instruction to retire too, which would put the DUT a step ahead of
         // the model and manufacture a divergence on every trial.
-        if (!run_instrs(1, 1)) break;
+        // Capture the DUT's data-memory writes for this instruction.
+        uint32_t dut_wa = 0xffffffff, dut_wd = 0; int dut_nw = 0;
+        {
+          int seen = 0; long budget = 4000; uint32_t last = 0xffffffff;
+          while (seen < 1 && budget-- > 0) {
+            step_cycle();
+            if (dut->dbg_mem_we) {
+              // The FSM holds the write across two states; count distinct
+              // addresses, not cycles.
+              if (dut->dbg_mem_addr != last) { dut_nw++; last = dut->dbg_mem_addr; }
+              dut_wa = dut->dbg_mem_addr; dut_wd = dut->dbg_mem_wdata;
+            }
+            if (dut->retire) seen++;
+          }
+          step_cycle();
+          if (seen != 1) break;
+        }
+        ref.writes.clear();
         ref.step();
         compared++;
+
+        // Compare the write STREAM, not the resulting arrays.
+        uint32_t ref_wa = ref.writes.empty() ? 0xffffffff : ref.writes.back().addr;
+        uint32_t ref_wd = ref.writes.empty() ? 0 : ref.writes.back().data;
+        if (dut_wa != ref_wa || (ref_wa != 0xffffffff && dut_wd != ref_wd)) {
+          if (diverged < 3)
+            printf("  MEMWRITE trial=%d instr=%d pc=%04x op=%08x\n"
+                   "     dut addr=%05x data=%08x (n=%d) | ref addr=%05x data=%08x (n=%zu)\n",
+                   trial, n, ref.ppc, ref.prog[ref.ppc & 0x7ff],
+                   dut_wa, dut_wd, dut_nw, ref_wa, ref_wd, ref.writes.size());
+          diverged++;
+          break;
+        }
         struct { const char* nm; uint32_t got, exp; } chk[] = {
           {"A",  dut->dbg_a,  ref.a},
           {"B",  dut->dbg_b,  ref.b},

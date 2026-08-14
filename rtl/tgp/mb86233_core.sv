@@ -85,6 +85,12 @@ module mb86233_core (
   output logic [31:0] dbg_p,
   output logic [31:0] dbg_st,
   output logic [15:0] dbg_m,
+  // Data-memory write port, for the lockstep bridge. Registers alone cannot
+  // localise a store/load divergence — you see the wrong value arrive without
+  // seeing where it was written.
+  output logic [16:0] dbg_mem_addr,
+  output logic [31:0] dbg_mem_wdata,
+  output logic        dbg_mem_we,
   output logic [7:0]  dbg_c0,
   output logic [7:0]  dbg_c1,
   output logic [7:0]  dbg_rep
@@ -339,6 +345,9 @@ module mb86233_core (
   assign dbg_a  = reg_a;  assign dbg_b  = reg_b;
   assign dbg_d  = reg_d;  assign dbg_p  = reg_p;
   assign dbg_st = st;  assign dbg_m = reg_m;
+  assign dbg_mem_addr  = mem_addr;
+  assign dbg_mem_wdata = mem_wdata;
+  assign dbg_mem_we    = mem_req & mem_we;
   assign dbg_c0 = seq_c0; assign dbg_c1 = seq_c1; assign dbg_rep = seq_rep;
 
   assign retire    = (state == S_RETIRE);

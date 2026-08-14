@@ -72,6 +72,12 @@ struct Cpu {
 
   bool unimplemented = false;   // sticky: hit a case MAME only logs
 
+  // Write trace. Recorded at the call, NOT inferred by diffing the RAM after
+  // the fact: a store of a value already present changes nothing, so array
+  // diffing silently misses it and makes the DUT look like it wrote alone.
+  struct Wr { uint32_t addr, data; };
+  std::vector<Wr> writes;
+
   Cpu() : prog(2048,0), ram0(256,0), ram1(512,0) {
     st = F_ZRC|F_ZRD|F_ZX0|F_ZX1|F_ZX2|F_ZC0|F_ZC1;
   }
@@ -165,6 +171,7 @@ struct Cpu {
     return 0;
   }
   void data_write(uint32_t ea, uint32_t v) {
+    writes.push_back({ea, v});
     if (ea <= 0x0ff) { ram0[ea] = v; return; }
     if (ea >= 0x200 && ea <= 0x3ff) { ram1[ea - 0x200] = v; return; }
     if (ea == 0x400 && fifo_write) fifo_write(v);
