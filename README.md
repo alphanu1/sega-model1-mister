@@ -39,6 +39,9 @@ NetMerc.
   the `get_exp`/`set_exp`/`get_mant`/`set_mant` accessors, and the narrow-register
   truncation. **3,000,000 lockstep cases, zero mismatches, all 64 addresses
   covered.**
+- `mb86233_mem` — both RAM banks and the data-space decode. **178,399 lockstep
+  cases, zero mismatches.** Infers 3 M10K blocks, the first non-zero memory on
+  the gate.
 - Top level (`mb86233_core`) — not started. Fetch/decode for the six instruction
   types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
   needs.
@@ -58,6 +61,7 @@ NetMerc.
 | `mb86233_agu` | 176 | 176 | comb | comb | 0 |
 | `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 |
 | `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 |
+| `mb86233_mem` | 123 | — | n/a | — | 0, 3 M10K |
 
 The two toolchains agree within 2 ALM and a few percent of Fmax, so the earlier
 "measured on 24.1, not the 17.0.x MiSTer uses" caveat is resolved.

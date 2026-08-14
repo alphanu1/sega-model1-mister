@@ -54,7 +54,7 @@ if [ "${regs:-0}" = "0" ]; then
   printf '  %-24s %s\n' "Fmax" "n/a (combinational)"
 elif [ -f "$sta" ]; then
   awk '
-    /^; Slow .* Model Fmax Summary/ { inblk = 1; next }
+    /^; Slow .* Model Fmax Summary/ { inblk = 1; saw_blk = 1; next }
     inblk && /^; *[0-9.]+ MHz/ {
       line = $0; sub(/^; */, "", line); split(line, a, " ");
       v = a[1] + 0;
@@ -62,8 +62,9 @@ elif [ -f "$sta" ]; then
     }
     inblk && /^This panel reports FMAX/ { inblk = 0 }
     END {
-      if (best != "") printf "  %-24s %.2f MHz\n", "Fmax (worst corner)", best;
-      else            printf "  %-24s %s\n", "Fmax", "not found - check STA section names";
+      if (best != "")   printf "  %-24s %.2f MHz\n", "Fmax (worst corner)", best;
+      else if (saw_blk) printf "  %-24s %s\n", "Fmax", "n/a (no register-to-register paths)";
+      else              printf "  %-24s %s\n", "Fmax", "NOT FOUND - check STA section names";
     }
   ' "$sta"
 

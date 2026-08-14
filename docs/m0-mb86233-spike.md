@@ -137,14 +137,34 @@ headroom. Do not pipeline aggressively; correctness and area matter, speed does 
 
 ## Memory map
 
-- Program: 32-bit words, 16-bit word address space
-- Data RAM banks: `0x000-0x0ff` and `0x200-0x3ff`
-- Register file: separate 16-entry space
-- Model 1 copro output FIFO sits at `0x400`, reached by the automatic +0x200 adder with
-  `X1 = 0x200`. Accesses to `0x100-0x1ff` and `0x400+` route externally.
+From `copro_data_map` in `third_party/mame/src/mame/sega/model1_m.cpp`:
 
-The +0x200 auto-add on one side of move/load addressing is not optional decoration; the
-FIFO writes depend on it.
+| Range | Contents |
+|---|---|
+| `0x0000-0x00ff` | RAM bank 0, 256 words |
+| `0x0100` | `copro_fifo_in`, **read only**, a single address |
+| `0x0200-0x03ff` | RAM bank 1, 512 words |
+| `0x0400` | `copro_fifo_out`, **write only**, a single address |
+
+Program space is `0x000-0x7ff` ROM — 2048 words of microcode. The register file
+space maps only `0x0` (leds, write-ignored) on Model 1.
+
+**Corrected 2026-08-14.** This section previously said "accesses to `0x100-0x1ff`
+and `0x400+` route externally", implying two external windows of 256 and 64K
+words. There is exactly **one address at each end, one direction each**. A write
+to `0x0100` and a read from `0x0400` hit no handler at all. Decoding `0x0100` as
+a 256-word window produces 63,534 mismatches in the `mb86233_mem` fuzz run;
+dropping the direction gate on `0x0400` produces 267.
+
+The +0x200 auto-add on one side of move/load addressing is not optional
+decoration; the FIFO writes depend on it. It works precisely because `0x400` is a
+single decoded address — `x1 = 0x200` plus the adder lands on it exactly.
+
+There is also an **IO space** (`copro_io_map`) that the `lab mem, mem (e)` form
+reads, and it is not memory: it holds the Model 1 board's hardware math
+accelerators — `sincos`, `atan`, `inv`, `isqrt` — plus a windowed view of the
+copro RAM. Those belong to the copro glue rather than the TGP, but the core needs
+the port, and M2 needs the functions.
 
 ---
 
@@ -190,6 +210,7 @@ onwards) and 24.1std Lite.
 | `mb86233_agu` | 176 | 176 | comb | comb | 0 | 0 |
 | `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 | 0 |
 | `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 | 0 |
+| `mb86233_mem` | 123 | — | n/a | — | 0 | **3** |
 
 **The two toolchains agree.** Every module is within 2 ALM and a few percent of
 Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
