@@ -221,7 +221,11 @@ int main(int argc, char** argv) {
   const int NS = sizeof(seeds) / sizeof(seeds[0]);
 
   struct Pend { uint32_t op; Regs r; bool xv; uint32_t xd; bool live; };
-  Pend pipe[4] = {};
+  // Depth follows the ALU's uniform latency, now 5: the FP units are 4 and the operand mux adds one. It was 4 after fp_add and fp_mul were
+  // retimed for the Fmax gate. This is the fifth time a latency change has had
+  // to be mirrored here; a stale depth produces a 100% failure rate that looks
+  // exactly like broken hardware.
+  Pend pipe[6] = {};
 
   const int PER_OP = 80000;
   const int N = NOPS * PER_OP;
@@ -258,7 +262,7 @@ int main(int argc, char** argv) {
     dut->xfer_d_valid = xv;
     dut->xfer_d_data  = xd;
 
-    for (int s = 3; s > 0; s--) pipe[s] = pipe[s - 1];
+    for (int s = 5; s > 0; s--) pipe[s] = pipe[s - 1];
     pipe[0] = { op, r, xv, xd, feed };
 
     tick();
@@ -267,9 +271,9 @@ int main(int argc, char** argv) {
     // just applied and pipe[1] holds the pair whose result out_valid is
     // presenting now. Indexing pipe[2] here instead produces a 100% failure
     // rate that reads exactly like a broken DUT — see docs/rtl-conventions.md.
-    if (!dut->out_valid || !pipe[1].live) continue;
+    if (!dut->out_valid || !pipe[4].live) continue;
 
-    const Pend& q = pipe[1];
+    const Pend& q = pipe[4];
     Ref ref = model(q.op, q.r, q.xv, q.xd);
 
     // fcpd writes no register, so ref.d_out holds whatever the arbitration

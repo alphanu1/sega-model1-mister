@@ -48,7 +48,11 @@ int main(int argc, char** argv) {
 
   const int N = 2000000;
   struct Pend { uint32_t a, b; bool sub; bool live; };
-  Pend pipe[3] = {};
+  // Depth follows fp_add's latency, which is now 4 after the Fmax retime.
+  // Getting this wrong does not look like a harness bug — the first fp_mul run
+  // showed 1.87 M failures that were entirely a depth off-by-one. See
+  // docs/rtl-conventions.md.
+  Pend pipe[6] = {};
   long checked = 0, skipped = 0, fails = 0;
 
   // Interesting operands seeded ahead of the random stream.
@@ -73,32 +77,31 @@ int main(int argc, char** argv) {
     dut->a = a;
     dut->b = b;
 
-    pipe[2] = pipe[1];
-    pipe[1] = pipe[0];
+    for (int s = 5; s > 0; s--) pipe[s] = pipe[s - 1];
     bool sub = (i & 1);
     dut->sub = sub;
     pipe[0] = { a, b, sub, feed };
 
     tick();
 
-    if (dut->out_valid && pipe[1].live) {
-      float ref_f = pipe[1].sub ? (u2f(pipe[1].a) - u2f(pipe[1].b))
-                                : (u2f(pipe[1].a) + u2f(pipe[1].b));
+    if (dut->out_valid && pipe[3].live) {
+      float ref_f = pipe[3].sub ? (u2f(pipe[3].a) - u2f(pipe[3].b))
+                                : (u2f(pipe[3].a) + u2f(pipe[3].b));
       uint32_t ref = f2u(ref_f);
       uint32_t got = dut->result;
 
       // Denormal INPUTS are out of scope: the RTL has no pre-normaliser.
       // Denormal RESULTS are out of scope: the RTL flushes, the host does not.
       // Both are tracked as open questions in docs/m0-mb86233-spike.md.
-      if (is_denorm(pipe[1].a) || is_denorm(pipe[1].b) ||
+      if (is_denorm(pipe[3].a) || is_denorm(pipe[3].b) ||
           is_denorm(ref) || std::isnan(ref_f)) { skipped++; continue; }
 
       checked++;
       if (got != ref) {
         if (fails < 20) {
           printf("MISMATCH a=%08x %s b=%08x  ref=%08x got=%08x  (%g %s %g = %g, got %g)\n",
-                 pipe[1].a, pipe[1].sub?"-":"+", pipe[1].b, ref, got,
-                 u2f(pipe[1].a), pipe[1].sub?"-":"+", u2f(pipe[1].b), ref_f, u2f(got));
+                 pipe[3].a, pipe[3].sub?"-":"+", pipe[3].b, ref, got,
+                 u2f(pipe[3].a), pipe[3].sub?"-":"+", u2f(pipe[3].b), ref_f, u2f(got));
         }
         fails++;
       }

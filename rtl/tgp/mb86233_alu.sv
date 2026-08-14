@@ -22,9 +22,11 @@
 // is not a choice: ops 0x09/0x0a/0x0d specify `A*B -> P` concurrent with
 // `D +/- P -> D`, so both units must exist and both must run together.
 //
-// Uniform latency 2, set by fp_mul/fp_add. Integer results are computed
-// combinationally and pushed through two stages to line up, so the consumer
-// sees one timing regardless of op. The TGP retires ~5.3 M instructions/sec
+// Uniform latency 5: the FP units are 4, plus one for the registered operand
+// mux in front of them. Integer results are computed combinationally and pushed
+// through five stages to line up, so the consumer sees one timing regardless of op.
+// The depth is not free to choose: it must equal the FP units' latency exactly,
+// or FP and non-FP results retire on different cycles. The TGP retires ~5.3 M instructions/sec
 // against a 50 MHz fabric clock; spending two cycles everywhere costs nothing
 // and removes a whole class of alignment bug.
 //
@@ -102,6 +104,26 @@ module mb86233_alu #(
     endcase
   end
 
+  // The operand mux is REGISTERED before the FP units. It selects fp_add's
+  // inputs from the ALU op, and leaving it combinational put it in front of
+  // fp_add's align stage — measured as
+  //   From alu_op_r[4]  To fp_add|sA_sticky
+  // holding the core to 69 MHz once the FP units themselves were retimed.
+  //
+  // This costs one more cycle of ALU latency, which is why ALU_LAT is 5 while
+  // the FP units are 4.
+  logic [31:0] opr_add_a, opr_add_b, opr_mul_a, opr_mul_b;
+  logic        opr_sub, opr_valid;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) opr_valid <= 1'b0;
+    else begin
+      opr_valid <= in_valid;
+      opr_add_a <= add_a;  opr_add_b <= add_b;  opr_sub <= add_sub;
+      opr_mul_a <= reg_a;  opr_mul_b <= reg_b;
+    end
+  end
+
   // The multiplier only ever computes A*B. No mux needed.
   logic [31:0] mul_result, add_result;
 
@@ -149,14 +171,14 @@ module mb86233_alu #(
 
   fp_mul #(.FLUSH_DENORM_IN(FLUSH_DENORM_IN)) u_mul (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(in_valid), .a(reg_a), .b(reg_b),
+    .in_valid(opr_valid), .a(opr_mul_a), .b(opr_mul_b),
     .out_valid(mul_ovalid), .result(mul_result),
     .overflow(mul_ovf), .underflow(mul_unf), .invalid(mul_inv)
   );
 
   fp_add #(.FLUSH_DENORM_IN(FLUSH_DENORM_IN)) u_add (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(in_valid), .a(add_a), .b(add_b), .sub(add_sub),
+    .in_valid(opr_valid), .a(opr_add_a), .b(opr_add_b), .sub(opr_sub),
     .out_valid(add_ovalid), .result(add_result),
     .overflow(add_ovf), .underflow(add_unf), .invalid(add_inv)
   );
@@ -337,30 +359,50 @@ module mb86233_alu #(
   // Stages 1-2 — align the non-FP paths with fp_add/fp_mul latency
   // ==================================================================
 
-  logic        s1_valid, s2_valid;
-  logic [4:0]  s1_op,    s2_op;
-  logic [31:0] s1_int,   s2_int;
-  logic [31:0] s1_bit,   s2_bit;
-  logic [31:0] s1_st,    s2_st;
-  logic        s1_xv,    s2_xv;
-  logic [31:0] s1_xd,    s2_xd;
-  r1_src_e     s1_src,   s2_src;
+  // A four-deep shift of everything the final stage needs. Written as arrays so
+  // the depth is one constant rather than a chain of hand-written stages that
+  // must all be edited together if the FP latency changes again.
+  // 4 for the FP units plus 1 for the registered operand mux above.
+  localparam int ALU_LAT = 5;
 
+  logic        pv   [1:ALU_LAT];
+  logic [4:0]  pop  [1:ALU_LAT];
+  logic [31:0] pint [1:ALU_LAT];
+  logic [31:0] pbit [1:ALU_LAT];
+  logic [31:0] pst  [1:ALU_LAT];
+  logic        pxv  [1:ALU_LAT];
+  logic [31:0] pxd  [1:ALU_LAT];
+  r1_src_e     psrc [1:ALU_LAT];
+
+  integer pi;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      s1_valid <= 1'b0;
-      s2_valid <= 1'b0;
+      for (pi = 1; pi <= ALU_LAT; pi = pi + 1) pv[pi] <= 1'b0;
     end else begin
-      s1_valid <= in_valid;  s2_valid <= s1_valid;
-      s1_op    <= op;        s2_op    <= s1_op;
-      s1_int   <= int_result; s2_int  <= s1_int;
-      s1_bit   <= bit_result; s2_bit  <= s1_bit;
-      s1_st    <= st_in;     s2_st    <= s1_st;
-      s1_src   <= r1_src;    s2_src   <= s1_src;
-      s1_xv    <= xfer_d_valid; s2_xv <= s1_xv;
-      s1_xd    <= xfer_d_data;  s2_xd <= s1_xd;
+      pv[1] <= in_valid;   pop[1]  <= op;
+      pint[1] <= int_result; pbit[1] <= bit_result;
+      pst[1] <= st_in;     psrc[1] <= r1_src;
+      pxv[1] <= xfer_d_valid; pxd[1] <= xfer_d_data;
+      for (pi = 2; pi <= ALU_LAT; pi = pi + 1) begin
+        pv[pi]   <= pv[pi-1];   pop[pi]  <= pop[pi-1];
+        pint[pi] <= pint[pi-1]; pbit[pi] <= pbit[pi-1];
+        pst[pi]  <= pst[pi-1];  psrc[pi] <= psrc[pi-1];
+        pxv[pi]  <= pxv[pi-1];  pxd[pi]  <= pxd[pi-1];
+      end
     end
   end
+
+  // The final stage reads the deepest entry; the names below are unchanged so
+  // the rest of the module did not have to move.
+  logic        s2_valid, s2_xv;
+  logic [4:0]  s2_op;
+  logic [31:0] s2_int, s2_bit, s2_st, s2_xd;
+  r1_src_e     s2_src;
+
+  assign s2_valid = pv[ALU_LAT];   assign s2_op  = pop[ALU_LAT];
+  assign s2_int   = pint[ALU_LAT]; assign s2_bit = pbit[ALU_LAT];
+  assign s2_st    = pst[ALU_LAT];  assign s2_src = psrc[ALU_LAT];
+  assign s2_xv    = pxv[ALU_LAT];  assign s2_xd  = pxd[ALU_LAT];
 
   // ==================================================================
   // Stage 2 — result select, flags, write arbitration

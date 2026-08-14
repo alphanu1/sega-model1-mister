@@ -10,8 +10,21 @@
 //
 // IEEE-754 single precision adder / subtractor.
 //
-// 2-stage pipeline. Stage 1 orders operands by magnitude and aligns. Stage 2
-// adds, normalises via leading-zero count, rounds and packs.
+// 4-stage pipeline, LATENCY 4. Retimed from 2 stages to meet the M0 Fmax gate.
+//
+//   A  unpack, order by magnitude, 27-bit align shift
+//   B  add or subtract
+//   C  leading-zero count and normalise shift
+//   D  round and pack
+//
+// Two separate paths forced this, both measured with make quartus_paths:
+// inside the core the ALU operand mux fed stage 1's compare-align-subtract
+// chain (~54 MHz), and standalone the old stage 2 ran lzc -> normalise shift ->
+// 24-bit round carry chain (~78.7 MHz). Splitting either alone leaves the other
+// as the ceiling, so both are cut.
+//
+// fp_mul carries the same latency so mb86233_alu keeps a single alignment
+// depth for its non-FP results.
 //
 // This is the area-dominant FP block: two barrel shifters and an LZC, all soft
 // logic. If the M0 resource gate fails, this module is where to look first.
@@ -110,7 +123,47 @@ module fp_add #(
   logic eff_sub;
   assign eff_sub = big_sign ^ small_sign;
 
-  // ------------------------------------------------------------ stage 1
+  // ------------------------------------------------- stage A: align only
+  //
+  // The 27-bit barrel shifter ends here. Everything downstream of it — the
+  // add, the normalise, the round — is in a later stage, which is the point
+  // of the retime.
+
+  logic        sA_valid, sA_sign, sA_nan, sA_inf, sA_invalid, sA_both_zero;
+  logic        sA_zero_sign, sA_eff_sub, sA_sticky;
+  logic [7:0]  sA_exp;
+  logic [26:0] sA_big, sA_small;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      sA_valid <= 1'b0;
+    end else begin
+      sA_valid   <= in_valid;
+      sA_sign    <= big_sign;
+      sA_exp     <= big_exp;
+      sA_big     <= big_ext;
+      sA_small   <= small_aligned;
+      sA_sticky  <= sticky_lost;
+      sA_eff_sub <= eff_sub;
+      sA_invalid <= (a_is_nan | b_is_nan) | (a_is_inf & b_is_inf & (a_sign ^ b_sign));
+      sA_nan     <= (a_is_nan | b_is_nan) | (a_is_inf & b_is_inf & (a_sign ^ b_sign));
+      sA_inf     <= (a_is_inf | b_is_inf) & ~(a_is_inf & b_is_inf & (a_sign ^ b_sign));
+      sA_both_zero <= a_is_zero & b_is_zero;
+      // -0 + -0 = -0; every other zero pairing gives +0 under round-to-nearest.
+      sA_zero_sign <= a_sign & b_sign;
+    end
+  end
+
+  // ------------------------------------------------- stage B: add / subtract
+  //
+  // On effective subtract the bits discarded by the align shifter represent a
+  // positive eps that was never subtracted, so big - small_aligned overshoots.
+  // Borrow one LSB and let the round stage see sticky=1: the true remainder is
+  // (1 - eps) LSBs, which lies strictly between 0 and 1.
+  logic [27:0] sum_raw;
+  assign sum_raw = sA_eff_sub
+                 ? ({1'b0, sA_big} - {1'b0, sA_small} - {27'd0, sA_sticky})
+                 : ({1'b0, sA_big} + {1'b0, sA_small});
 
   logic        s1_valid, s1_sign, s1_nan, s1_inf, s1_invalid, s1_both_zero;
   logic        s1_zero_sign;
@@ -119,32 +172,22 @@ module fp_add #(
   logic        s1_sticky;
   logic        s1_exact_cancel;
 
-  // On effective subtract the bits discarded by the align shifter represent a
-  // positive eps that was never subtracted, so big - small_aligned overshoots.
-  // Borrow one LSB and let the round stage see sticky=1: the true remainder is
-  // (1 - eps) LSBs, which lies strictly between 0 and 1.
-  logic [27:0] sum_raw;
-  assign sum_raw = eff_sub
-                 ? ({1'b0, big_ext} - {1'b0, small_aligned} - {27'd0, sticky_lost})
-                 : ({1'b0, big_ext} + {1'b0, small_aligned});
-
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       s1_valid <= 1'b0;
     end else begin
-      s1_valid   <= in_valid;
-      s1_sign    <= big_sign;
-      s1_exp     <= big_exp;
-      s1_sum     <= sum_raw;
-      s1_sticky  <= sticky_lost;
-      s1_invalid <= (a_is_nan | b_is_nan) | (a_is_inf & b_is_inf & (a_sign ^ b_sign));
-      s1_nan     <= (a_is_nan | b_is_nan) | (a_is_inf & b_is_inf & (a_sign ^ b_sign));
-      s1_inf     <= (a_is_inf | b_is_inf) & ~(a_is_inf & b_is_inf & (a_sign ^ b_sign));
+      s1_valid        <= sA_valid;
+      s1_sign         <= sA_sign;
+      s1_exp          <= sA_exp;
+      s1_sum          <= sum_raw;
+      s1_sticky       <= sA_sticky;
+      s1_invalid      <= sA_invalid;
+      s1_nan          <= sA_nan;
+      s1_inf          <= sA_inf;
       // Exact cancellation returns +0 under round-to-nearest.
-      s1_exact_cancel <= eff_sub && (sum_raw == 28'd0) && !sticky_lost;
-      s1_both_zero    <= a_is_zero & b_is_zero;
-      // -0 + -0 = -0; every other zero pairing gives +0 under round-to-nearest.
-      s1_zero_sign    <= a_sign & b_sign;
+      s1_exact_cancel <= sA_eff_sub && (sum_raw == 28'd0) && !sA_sticky;
+      s1_both_zero    <= sA_both_zero;
+      s1_zero_sign    <= sA_zero_sign;
     end
   end
 
@@ -179,13 +222,46 @@ module fp_add #(
     end
   end
 
+  // --------------------------------- stage C: register the normalised sum
+  //
+  // The leading-zero count and the normalise shift end here; the round adder's
+  // 24-bit carry chain starts in stage D. Standalone measurement put
+  // lzc -> shift -> round-carry on one path at ~78.7 MHz, which was the
+  // ceiling once the core-side path was cut.
+  logic        sC_valid, sC_sign, sC_nan, sC_inf, sC_invalid;
+  logic        sC_both_zero, sC_zero_sign, sC_exact_cancel, sC_zero_result;
+  logic [27:0] sC_shifted;
+  logic        sC_sticky_in;
+  logic signed [9:0] sC_exp_adj;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      sC_valid <= 1'b0;
+    end else begin
+      sC_valid        <= s1_valid;
+      sC_sign         <= s1_sign;
+      sC_shifted      <= shifted;
+      sC_exp_adj      <= exp_adj;
+      sC_sticky_in    <= lost_bit | s1_sticky;
+      sC_nan          <= s1_nan;
+      sC_inf          <= s1_inf;
+      sC_invalid      <= s1_invalid;
+      sC_both_zero    <= s1_both_zero;
+      sC_zero_sign    <= s1_zero_sign;
+      sC_exact_cancel <= s1_exact_cancel;
+      sC_zero_result  <= (s1_sum == 28'd0) && !s1_sticky;
+    end
+  end
+
+  // ------------------------------------------------ stage D: round and pack
+
   logic [22:0] frac_pre;
   logic        guard, round_bit, sticky;
 
-  assign frac_pre  = shifted[25:3];
-  assign guard     = shifted[2];
-  assign round_bit = shifted[1];
-  assign sticky    = shifted[0] | lost_bit | s1_sticky;
+  assign frac_pre  = sC_shifted[25:3];
+  assign guard     = sC_shifted[2];
+  assign round_bit = sC_shifted[1];
+  assign sticky    = sC_shifted[0] | sC_sticky_in;
 
   logic round_up;
   assign round_up = guard & (round_bit | sticky | frac_pre[0]);
@@ -195,13 +271,13 @@ module fp_add #(
   logic [22:0]       frac_final;
 
   assign frac_rnd   = {1'b0, frac_pre} + {23'd0, round_up};
-  assign exp_rnd    = exp_adj + (frac_rnd[23] ? 10'sd1 : 10'sd0);
+  assign exp_rnd    = sC_exp_adj + (frac_rnd[23] ? 10'sd1 : 10'sd0);
   assign frac_final = frac_rnd[23] ? 23'd0 : frac_rnd[22:0];
 
   logic ovf, unf, is_zero_result;
   assign ovf            = (exp_rnd >= 10'sd255);
   assign unf            = (exp_rnd <= 10'sd0);
-  assign is_zero_result = (s1_sum == 28'd0) && !s1_sticky;
+  assign is_zero_result = sC_zero_result;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -211,28 +287,28 @@ module fp_add #(
       underflow <= 1'b0;
       invalid   <= 1'b0;
     end else begin
-      out_valid <= s1_valid;
-      invalid   <= s1_valid & s1_invalid;
+      out_valid <= sC_valid;
+      invalid   <= sC_valid & sC_invalid;
       overflow  <= 1'b0;
       underflow <= 1'b0;
 
-      if (s1_nan) begin
+      if (sC_nan) begin
         result <= 32'h7fc00000;
-      end else if (s1_inf) begin
-        result <= {s1_sign, 8'hff, 23'd0};
-      end else if (s1_both_zero) begin
+      end else if (sC_inf) begin
+        result <= {sC_sign, 8'hff, 23'd0};
+      end else if (sC_both_zero) begin
         // -0 + -0 = -0; every other zero pairing gives +0.
-        result <= {s1_zero_sign, 8'h00, 23'd0};
-      end else if (s1_exact_cancel || is_zero_result) begin
+        result <= {sC_zero_sign, 8'h00, 23'd0};
+      end else if (sC_exact_cancel || is_zero_result) begin
         result <= 32'h00000000;
       end else if (ovf) begin
-        result   <= {s1_sign, 8'hff, 23'd0};
+        result   <= {sC_sign, 8'hff, 23'd0};
         overflow <= s1_valid;
       end else if (unf) begin
-        result    <= {s1_sign, 8'h00, 23'd0};
-        underflow <= s1_valid;
+        result    <= {sC_sign, 8'h00, 23'd0};
+        underflow <= sC_valid;
       end else begin
-        result <= {s1_sign, exp_rnd[7:0], frac_final};
+        result <= {sC_sign, exp_rnd[7:0], frac_final};
       end
     end
   end

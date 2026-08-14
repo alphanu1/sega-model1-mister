@@ -10,11 +10,20 @@
 //
 // IEEE-754 single precision multiplier.
 //
-// 2-stage pipeline. Stage 1 unpacks and issues the 24x24 significand multiply
-// (one Cyclone V variable-precision DSP block in 27x27 mode). Stage 2
-// normalises, rounds and packs.
+// 4-stage pipeline, LATENCY 4.
 //
-// Latency 2, fully pipelined, one result per clock. The TGP retires roughly
+//   1  unpack and issue the 24x24 significand multiply (one Cyclone V
+//      variable-precision DSP block in 27x27 mode)
+//   2  normalise
+//   3  round
+//   4  pack
+//
+// fp_mul was never the timing bottleneck — it measures 114-117 MHz on its own.
+// The extra stages exist so it matches fp_add's latency after fp_add was
+// retimed to 4 for the Fmax gate. mb86233_alu pushes every non-FP result
+// through a matching delay, and that only works if both FP units agree.
+//
+// Fully pipelined, one result per clock. The TGP retires roughly
 // 5.3 M instructions/sec at a 16 MHz part clock so throughput is irrelevant;
 // the pipeline exists to keep the DSP block registered and Fmax comfortable.
 //
@@ -113,13 +122,33 @@ module fp_mul #(
   assign norm_exp   = s1_exp + (norm_shift ? 11'sd1 : 11'sd0);
 
   // norm_prod[47] is the implicit bit, [46:24] the fraction.
+  // ------------------------------------------- stage 2: register normalised
+  logic               s2_valid, s2_sign, s2_zero, s2_inf, s2_nan, s2_invalid;
+  logic [47:0]        s2_prod;
+  logic signed [10:0] s2_exp;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) s2_valid <= 1'b0;
+    else begin
+      s2_valid   <= s1_valid;
+      s2_sign    <= s1_sign;
+      s2_prod    <= norm_prod;
+      s2_exp     <= norm_exp;
+      s2_zero    <= s1_zero;
+      s2_inf     <= s1_inf;
+      s2_nan     <= s1_nan;
+      s2_invalid <= s1_invalid;
+    end
+  end
+
+  // ------------------------------------------------------ stage 3: round
   logic [22:0] frac_pre;
   logic        guard, round_bit, sticky;
 
-  assign frac_pre  = norm_prod[46:24];
-  assign guard     = norm_prod[23];
-  assign round_bit = norm_prod[22];
-  assign sticky    = |norm_prod[21:0];
+  assign frac_pre  = s2_prod[46:24];
+  assign guard     = s2_prod[23];
+  assign round_bit = s2_prod[22];
+  assign sticky    = |s2_prod[21:0];
 
   // Round to nearest, ties to even.
   logic round_up;
@@ -130,13 +159,37 @@ module fp_mul #(
   logic [22:0]        frac_final;
 
   assign frac_rnd   = {1'b0, frac_pre} + {23'd0, round_up};
-  assign exp_rnd    = norm_exp + (frac_rnd[23] ? 11'sd1 : 11'sd0);
+  assign exp_rnd    = s2_exp + (frac_rnd[23] ? 11'sd1 : 11'sd0);
   assign frac_final = frac_rnd[23] ? 23'd0 : frac_rnd[22:0];
 
   logic ovf, unf;
   assign ovf = (exp_rnd >= 11'sd255);
   assign unf = (exp_rnd <= 11'sd0);
 
+  // Registered between the round adder and the pack, so the carry chain and
+  // the special-case mux are not on one path.
+  logic               s3_valid, s3_sign, s3_zero, s3_inf, s3_nan, s3_invalid;
+  logic               s3_ovf, s3_unf;
+  logic [22:0]        s3_frac;
+  logic signed [10:0] s3_exp;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) s3_valid <= 1'b0;
+    else begin
+      s3_valid   <= s2_valid;
+      s3_sign    <= s2_sign;
+      s3_frac    <= frac_final;
+      s3_exp     <= exp_rnd;
+      s3_zero    <= s2_zero;
+      s3_inf     <= s2_inf;
+      s3_nan     <= s2_nan;
+      s3_invalid <= s2_invalid;
+      s3_ovf     <= ovf;
+      s3_unf     <= unf;
+    end
+  end
+
+  // ------------------------------------------------------- stage 4: pack
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       out_valid <= 1'b0;
@@ -145,26 +198,26 @@ module fp_mul #(
       underflow <= 1'b0;
       invalid   <= 1'b0;
     end else begin
-      out_valid <= s1_valid;
-      invalid   <= s1_valid & s1_invalid;
+      out_valid <= s3_valid;
+      invalid   <= s3_valid & s3_invalid;
       overflow  <= 1'b0;
       underflow <= 1'b0;
 
-      if (s1_nan) begin
+      if (s3_nan) begin
         result <= 32'h7fc00000;                    // quiet NaN
-      end else if (s1_inf) begin
-        result <= {s1_sign, 8'hff, 23'd0};
-      end else if (s1_zero) begin
-        result <= {s1_sign, 8'h00, 23'd0};
-      end else if (ovf) begin
-        result   <= {s1_sign, 8'hff, 23'd0};
-        overflow <= s1_valid;
-      end else if (unf) begin
+      end else if (s3_inf) begin
+        result <= {s3_sign, 8'hff, 23'd0};
+      end else if (s3_zero) begin
+        result <= {s3_sign, 8'h00, 23'd0};
+      end else if (s3_ovf) begin
+        result   <= {s3_sign, 8'hff, 23'd0};
+        overflow <= s3_valid;
+      end else if (s3_unf) begin
         // Denormal output path not built: flush. See OPEN QUESTION above.
-        result    <= {s1_sign, 8'h00, 23'd0};
-        underflow <= s1_valid;
+        result    <= {s3_sign, 8'h00, 23'd0};
+        underflow <= s3_valid;
       end else begin
-        result <= {s1_sign, exp_rnd[7:0], frac_final};
+        result <= {s3_sign, s3_exp[7:0], s3_frac};
       end
     end
   end
