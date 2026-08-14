@@ -16,12 +16,13 @@ RTL    := rtl/tgp
 # Per-module source lists for the Quartus spike flow.
 SRCS_fp_mul := $(RTL)/fp_mul.sv
 SRCS_fp_add := $(RTL)/fp_add.sv
+SRCS_fp_div := $(RTL)/fp_div.sv
 SRCS_mb86233_alu := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                     $(RTL)/mb86233_alu.sv
 SRCS_mb86233_agu := $(RTL)/mb86233_agu.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -30,11 +31,12 @@ all: test
 lint:
 	verilator --lint-only -Wall $(VFLAGS) $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv --top-module fp_mul
 	verilator --lint-only -Wall $(VFLAGS) $(RTL)/fp_add.sv --top-module fp_add
+	verilator --lint-only -Wall $(VFLAGS) $(RTL)/fp_div.sv --top-module fp_div
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_alu) --top-module mb86233_alu
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_agu) --top-module mb86233_agu
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_seq) --top-module mb86233_seq
 
-test: test_fp_mul test_fp_add test_alu test_agu test_seq
+test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq
 
 test_fp_mul:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_mul \
@@ -45,6 +47,11 @@ test_fp_add:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_add \
 	  $(RTL)/fp_add.sv sim/tgp/tb_fp_add.cpp -o tb_fp_add --Mdir obj_fpadd
 	./obj_fpadd/tb_fp_add
+
+test_fp_div:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_div \
+	  $(RTL)/fp_div.sv sim/tgp/tb_fp_div.cpp -o tb_fp_div --Mdir obj_fpdiv
+	./obj_fpdiv/tb_fp_div
 
 test_alu:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module mb86233_alu \
@@ -67,7 +74,7 @@ test_seq:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := fp_mul fp_add mb86233_alu mb86233_agu mb86233_seq
+AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -135,7 +142,7 @@ quartus_report:
 	@cd quartus && ./report.sh $(MOD)
 
 clean:
-	rm -rf obj_fpmul obj_fpadd obj_alu obj_agu obj_seq
+	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq
 
 distclean: clean
 	rm -rf quartus/build

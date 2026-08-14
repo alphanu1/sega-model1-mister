@@ -160,6 +160,7 @@ Known baseline, yosys 0.66 generic 6-LUT mapping, `synth -lut 6 -flatten`:
 | `mb86233_alu` | 2974 | 381 | includes one `fp_mul` + one `fp_add` |
 | `mb86233_agu` | 220 | 0 | purely combinational |
 | `mb86233_seq` | 163 | 106 | PC, 4-deep stack, counters |
+| `fp_div` | 241 | 102 | iterative, 29-cycle |
 
 Record the yosys version with the numbers. The first two were previously logged as
 1362/747 under an older yosys; the flop counts were identical and only the LUT

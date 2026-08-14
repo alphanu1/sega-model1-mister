@@ -176,6 +176,7 @@ virtual-pinned.
 |---|---|---|---|---|---|
 | `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
 | `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
+| `fp_div` | 263 | 137 | 0 | 0 | 106.30 MHz |
 | `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
 | `mb86233_agu` | 176 | 0 | 0 | 0 | n/a, combinational |
 | `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
@@ -211,7 +212,9 @@ and 8 DSP. D4 holds comfortably.
 - No top level. The register file, program store, both data RAM banks and the
   external bus are not built, which is why M10K reads 0 — the memories that will
   consume it do not exist yet.
-- `fp_div` is unwritten, so `fdvd` contributes nothing to these numbers.
+- `fp_div` is written and verified but not yet instantiated in the ALU, so its
+  263 ALM are not inside the 1319. A TGP instance including it is ~1930 ALM,
+  still comfortably inside the 4K threshold.
 - **Quartus 24.1std, not 17.0.x.** MiSTer cores build against 17.0.x, and its
   fitter and DSP inference differ. These numbers are a strong signal, not the
   sign-off. Re-measure on 17.0.x before treating the gate as closed.

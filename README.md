@@ -36,7 +36,10 @@ NetMerc.
   conditions and six subtypes, loop counters and the repeat register.
   **3,000,000 lockstep cases, zero mismatches.**
 - Top level — not started.
-- `fp_div` — not started, so `fdvd` (0x10) decodes but never writes D.
+- `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.
+  **282,606 fuzz cases, zero mismatches.** Not yet wired into the ALU: it has a
+  busy handshake where the ALU is uniform-latency-2, so `fdvd` (0x10) still
+  decodes without writing D. See the note below.
 
 **Real device numbers, Quartus Prime Lite 24.1std, 5CSEBA6U23I7, 50 MHz constraint:**
 
@@ -44,6 +47,7 @@ NetMerc.
 |---|---|---|---|---|---|
 | `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
 | `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
+| `fp_div` | 263 | 137 | 0 | 0 | 106.30 MHz |
 | `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
 | `mb86233_agu` | 176 | 0 | 0 | 0 | combinational |
 | `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
@@ -79,6 +83,18 @@ Read that as roughly 1600-2300 ALM and one DSP block per TGP instance for everyt
 built so far. Three physical instances still looks affordable, which is what decision
 D4 rests on. Everything M0 specifies is now measured except `fp_div` and the top
 level that ties these four together — and only Quartus settles the gate.
+
+### Open design question — fdvd integration
+
+`fp_div` is verified standalone but not instantiated in `mb86233_alu`, because
+the two disagree about time. `fp_mul` and `fp_add` are fixed-latency-2 and the
+ALU is built around that uniformity — every non-FP result is pushed through two
+stages purely to line up. A radix-2 divider is 29 cycles, and pipelining it to
+latency 2 would cost far more than one opcode is worth.
+
+So the ALU needs a `busy`/stall path for this one op. That is a real interface
+change and it belongs with the top level, which has to handle stalls anyway for
+external memory. Deferred deliberately rather than bolted on.
 
 ### Correction, 2026-08-14
 
