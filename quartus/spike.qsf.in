@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sega Model 1 core for MiSTer FPGA — Copyright (C) 2026 alphanu1
+# Quartus settings template for an M0 synthesis-only spike.
+#
+# Not a MiSTer core project. No sys/ framework, no pin assignments, no .rbf.
+# Purpose is one number: what does a single module cost on the real device.
+#
+# @MODULE@ and @SRCS@ are substituted by the Makefile.
+
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY @MODULE@
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0.2
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
+
+# Match MiSTer core conventions so the numbers transfer.
+set_global_assignment -name OPTIMIZATION_MODE "Aggressive Performance"
+set_global_assignment -name VERILOG_INPUT_VERSION SYSTEMVERILOG_2005
+set_global_assignment -name VERILOG_SHOW_LMF_MAPPING_MESSAGES OFF
+
+# Virtual-pin everything. A spike has far more ports than the package has pins,
+# and without this the fitter fails before it reports anything useful.
+set_instance_assignment -name VIRTUAL_PIN ON -to *
+
+set_global_assignment -name SDC_FILE spike.sdc
+
+@SRCS@

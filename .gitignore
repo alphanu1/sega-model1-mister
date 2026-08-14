@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------- vendored
+# Populated by tools/bootstrap.sh. Pinned by deps.lock, never committed.
+/third_party/
+
+# --------------------------------------------------------------- verilator
+obj_dir/
+# Was obj_fp*/, which silently stopped covering new harnesses the moment one
+# was not named obj_fp<something> — obj_alu/ slipped straight through.
+/obj_*/
+/sim/**/obj_*/
+*.vcd
+*.fst
+*.fst.hier
+*.wlf
+
+# ----------------------------------------------------------------- yosys
+*.json.yosys
+/yosys.log
+# abc writes its command history into the working directory on every
+# `make area` run, which for this Makefile is the repo root.
+/abc.history
+*.blif
+*.edif
+
+# ---------------------------------------------------------------- quartus
+# Spike builds and any core build tree.
+/quartus/build/
+db/
+incremental_db/
+output_files/
+greybox_tmp/
+simulation/
+timing/
+.qsys_edit/
+qdb/
+*.qws
+*.rpt
+*.summary
+*.smsg
+*.pin
+*.done
+*.jdi
+*.sld
+*.qar
+*.qarlog
+*.sopcinfo
+*.bak
+*.orig
+*.rej
+
+# Bitstreams and programming files.
+*.sof
+*.pof
+*.rbf
+*.jic
+*.map
+*.fit
+*.sta
+*.asm
+
+# MiSTer release output.
+/releases/
+
+# --------------------------------------------------------------- toolchain
+/tools/**/__pycache__/
+*.pyc
+
+# --------------------------------------------------------------------- roms
+# Never commit ROM images or anything derived from them.
+*.zip
+*.7z
+/roms/
+/rom/
+
+# ------------------------------------------------------------------- editor
+# Shared project settings are committed; everything else under .vscode/ is not.
+# Note the directory itself must not be excluded — git will not re-include a
+# file underneath an excluded directory, so this has to be `.vscode/*`.
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ------------------------------------------------------------------ agents
+# Shared project settings are committed; per-user local overrides are not.
+/.claude/settings.local.json
+/.claude/**/*.local.json

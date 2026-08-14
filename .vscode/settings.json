@@ -1,0 +1,39 @@
+{
+  // third_party/ holds four upstream clones, each with its own .git. VS Code
+  // auto-detects them and lists them in Source Control, which is noise: they
+  // are read-only reference material vendored by tools/bootstrap.sh, never
+  // edited here.
+  //
+  // MAME additionally trips the "too many active changes" warning. Its index
+  // carries ~31,400 files while only ~34 are on disk, the rest marked
+  // skip-worktree by the --no-cone sparse checkout. That is intentional (it is
+  // what keeps the clone at ~5 MB instead of several GB); VS Code counts index
+  // entries rather than honouring skip-worktree and hits its 10,000 limit.
+  //
+  // Listed explicitly rather than using git.autoRepositoryDetection, because
+  // reading third_party/mame/src/devices/cpu/mb86233/ is routine work here and
+  // the "openEditors" mode would re-activate the repo the moment those files
+  // are opened.
+  "git.ignoredRepositories": [
+    "third_party/template",
+    "third_party/s32",
+    "third_party/geometrizer",
+    "third_party/mame"
+  ],
+
+  // Keep the file watcher off ~41 MB of vendored source and its history.
+  // Not added to search.exclude on purpose: MAME is the oracle and grepping it
+  // is a daily activity.
+  "files.watcherExclude": {
+    "**/third_party/**": true,
+    "**/obj_fpmul/**": true,
+    "**/obj_fpadd/**": true
+  },
+
+  "[systemverilog]": {
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2
+  },
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true
+}

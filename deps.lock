@@ -1,0 +1,6 @@
+# Pinned upstream revisions. Regenerate with tools/bootstrap.sh --update
+# 2026-08-14T17:41:57Z
+template       MiSTer-devel/Template_MiSTer b4726d2dd8cfad67db3f8ba060aa4e8c13047662
+s32            meathax/s32 79053611b9c4915af2dd3586c1e0146e532cc8e6
+geometrizer    frangarcj/geometrizer 9440db112fb457d5d35ad33aefb645d13a377f8f
+mame           mamedev/mame 619de9928ca565b9d42f4dc6a8c0af6f73e9058c
