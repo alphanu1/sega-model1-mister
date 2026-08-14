@@ -22,9 +22,10 @@ SRCS_mb86233_alu := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
 SRCS_mb86233_agu := $(RTL)/mb86233_agu.sv
 SRCS_mb86233_regs := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_regs.sv
 SRCS_mb86233_mem := $(RTL)/mb86233_mem.sv
+SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -39,8 +40,9 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_seq) --top-module mb86233_seq
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_regs) --top-module mb86233_regs
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_mem) --top-module mb86233_mem
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_dec) --top-module mb86233_dec
 
-test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem
+test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec
 
 test_fp_mul:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_mul \
@@ -82,13 +84,18 @@ test_mem:
 	  $(SRCS_mb86233_mem) sim/tgp/tb_mb86233_mem.cpp -o tb_mem --Mdir obj_mem
 	./obj_mem/tb_mem
 
+test_dec:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module mb86233_dec \
+	  $(SRCS_mb86233_dec) sim/tgp/tb_mb86233_dec.cpp -o tb_dec --Mdir obj_dec
+	./obj_dec/tb_dec
+
 # Proxy only: generic 6-LUT mapping, no DSP inference, no device model.
 # Useful for tracking relative change between edits. Does not settle the M0 gate.
 # The stat block must be isolated with awk before grepping: yosys logs
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem
+AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -156,7 +163,7 @@ quartus_report:
 	@cd quartus && ./report.sh $(MOD)
 
 clean:
-	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem
+	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem obj_dec
 
 distclean: clean
 	rm -rf quartus/build

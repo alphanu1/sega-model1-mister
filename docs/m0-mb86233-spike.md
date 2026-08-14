@@ -178,6 +178,9 @@ rtl/tgp/fp_div.sv           IEEE-754 single divider (fdvd only)
 rtl/tgp/mb86233_alu.sv      ALU op decode + P/D writeback + status flags
 rtl/tgp/mb86233_agu.sv      address generation, both EA modes, +0x200 adder
 rtl/tgp/mb86233_seq.sv      sequencer, PC stack, branch/call/return
+rtl/tgp/mb86233_regs.sv     register file, 0x00-0x3f space
+rtl/tgp/mb86233_mem.sv      data-space RAM banks and decode
+rtl/tgp/mb86233_dec.sv      instruction decoder
 rtl/tgp/mb86233_core.sv     top level
 sim/tgp/tb_mb86233.cpp      Verilator harness
 sim/tgp/oracle/             MAME lockstep bridge
@@ -211,6 +214,7 @@ onwards) and 24.1std Lite.
 | `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 | 0 |
 | `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 | 0 |
 | `mb86233_mem` | 123 | — | n/a | — | 0 | **3** |
+| `mb86233_dec` | 121 | — | comb | — | 0 | 0 |
 
 **The two toolchains agree.** Every module is within 2 ALM and a few percent of
 Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
