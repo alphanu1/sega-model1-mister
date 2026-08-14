@@ -104,7 +104,8 @@ test_xfer:
 
 test_core:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module mb86233_core \
-	  $(SRCS_mb86233_core) sim/tgp/tb_mb86233_core.cpp -o tb_core --Mdir obj_core
+	  $(SRCS_mb86233_core) sim/tgp/tb_mb86233_core.cpp sim/tgp/mb86233_ref.cpp \
+	  -CFLAGS -Isim/tgp -o tb_core --Mdir obj_core
 	./obj_core/tb_core
 
 # Proxy only: generic 6-LUT mapping, no DSP inference, no device model.

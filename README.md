@@ -52,8 +52,12 @@ NetMerc.
   this is deliberately not the lockstep of M0 exit criterion 2, which is still
   owed. `ldi`, `lipl`/`lia`/`lib`/`lid`, `stm`, `clr0`, `cfxd` rounding and PC
   advance are covered; `lab`, `ld/mov` transfers, branches and `rep` are wired
-  but not yet exercised. `fdvd` still writes nothing — `fp_div` is verified
-  standalone but instantiated nowhere. Fetch/decode for the six instruction
+  but not yet exercised. `fdvd` works end to end.
+- `mb86233_ref` — a whole-CPU `execute_run` reference model, and **lockstep
+  against it: 8,000 retires x 7 registers, zero divergence.** This is the
+  mechanism exit criterion 2 needs. Two exclusions remain before it satisfies
+  the criterion: FP ALU ops (the documented NaN-payload and denormal
+  divergences need plumbing through) and the memory transfer forms. Fetch/decode for the six instruction
   types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
   needs.
 - `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.

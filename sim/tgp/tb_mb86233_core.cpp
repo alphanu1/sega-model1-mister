@@ -23,11 +23,13 @@
 //   third_party/mame/src/devices/cpu/mb86233/mb86233.cpp
 
 #include "Vmb86233_core.h"
+#include "mb86233_ref.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
 #include <vector>
 #include <cstdlib>
+#include <random>
 
 static Vmb86233_core* dut;
 static std::vector<uint32_t> prog(2048, 0);
@@ -365,6 +367,93 @@ int main(int argc, char** argv) {
   for (int i = 0; i < 200; i++) { step_cycle(); if (dut->unimplemented) saw_unimpl = true; }
   checks++;
   if (saw_unimpl) { printf("  FAIL unimplemented asserted on decoded stream\n"); fails++; }
+
+  // ------------------------------------------------------------ LOCKSTEP
+  //
+  // The reference model steps beside the DUT and every architecturally visible
+  // register the core exposes is compared after each retire. This is the shape
+  // exit criterion 2 requires; what is still missing from the criterion is the
+  // real microcode driven by real host commands, not the mechanism.
+  //
+  // Programs are generated from instruction forms the core implements, with
+  // branch targets bounded inside the program so a run cannot wander off.
+  printf("test: lockstep against the reference model\n");
+  {
+    std::mt19937 rng(20260814u);
+    auto rnd = [&]() { return (uint32_t)rng(); };
+    long diverged = 0, compared = 0;
+
+    for (int trial = 0; trial < 200 && diverged == 0; trial++) {
+      mb::Cpu ref;
+      for (auto& w : prog) w = enc_nop();
+      // A short program of forms with no memory traffic, so the comparison is
+      // about sequencing and the ALU rather than the untested transfer paths.
+      for (int i = 0; i < 24; i++) {
+        uint32_t pick = rnd() % 6;
+        uint32_t w;
+        switch (pick) {
+          case 0: w = enc_ldi(rnd() % 0x20, rnd() & 0xffffff); break;
+          case 1: w = enc_lipl(rnd() & 3, rnd() & 0xffffff); break;
+          case 2: w = enc_stm(rnd() & 0xffff); break;
+          case 3: w = enc_clr0(rnd()&1, rnd()&1, rnd()&1); break;
+          case 4: {
+            // Integer/logical ALU ops only. The FP ops carry the documented
+            // NaN-payload and denormal divergences — the RTL emits a canonical
+            // 0x7fc00000 where the host reference propagates the operand's
+            // payload — and lockstep has no way to skip a single register the
+            // way the per-op harnesses do. Extending this to FP needs those
+            // exclusions plumbed through, which is the next piece of work.
+            static const uint32_t INT_OPS[] = {
+              0x01,0x02,0x03,0x04,0x16,0x17,0x18,0x19,0x1a,0x1b
+            };
+            w = enc_alu0f(INT_OPS[rnd() % 10]);
+            break;
+          }
+          default: {
+            // Always-branch to a bounded target, so programs terminate.
+            uint32_t tgt = 1 + (rnd() % 20);
+            w = (0x2fu << 26) | (0x16u << 20) | (0u << 17) | tgt;
+            break;
+          }
+        }
+        prog[i] = w;
+      }
+      for (size_t i = 0; i < prog.size(); i++) ref.prog[i] = prog[i];
+
+      reset();
+      for (int n = 0; n < 40 && diverged == 0; n++) {
+        // settle=1, not 8. One cycle is exactly enough for the retiring
+        // instruction's write to land; eight is enough for the NEXT
+        // instruction to retire too, which would put the DUT a step ahead of
+        // the model and manufacture a divergence on every trial.
+        if (!run_instrs(1, 1)) break;
+        ref.step();
+        compared++;
+        struct { const char* nm; uint32_t got, exp; } chk[] = {
+          {"A",  dut->dbg_a,  ref.a},
+          {"B",  dut->dbg_b,  ref.b},
+          {"D",  dut->dbg_d,  ref.d},
+          {"P",  dut->dbg_p,  ref.p},
+          {"M",  dut->dbg_m,  ref.m},
+          {"C0", dut->dbg_c0, ref.c0},
+          {"C1", dut->dbg_c1, ref.c1},
+        };
+        for (auto& c : chk) {
+          if (c.got != c.exp) {
+            if (diverged < 3)
+              printf("  FAIL lockstep trial=%d instr=%d %s got=%08x exp=%08x\n",
+                     trial, n, c.nm, c.got, c.exp);
+            diverged++;
+            break;
+          }
+        }
+      }
+    }
+    checks++;
+    printf("  lockstep: compared=%ld registers-per-retire=7 diverged=%ld\n",
+           compared, diverged);
+    if (diverged) fails++;
+  }
 
   // ------------------------------------------------- real microcode smoke test
   //
