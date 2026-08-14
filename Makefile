@@ -24,9 +24,13 @@ SRCS_mb86233_regs := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_regs.sv
 SRCS_mb86233_mem := $(RTL)/mb86233_mem.sv
 SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
+SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
+                     $(RTL)/mb86233_alu.sv $(RTL)/mb86233_agu.sv $(RTL)/mb86233_seq.sv \
+                     $(RTL)/mb86233_regs.sv $(RTL)/mb86233_mem.sv $(RTL)/mb86233_dec.sv \
+                     $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -43,8 +47,9 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_mem) --top-module mb86233_mem
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_dec) --top-module mb86233_dec
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_xfer) --top-module mb86233_xfer
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_core) --top-module mb86233_core
 
-test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer
+test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 test_fp_mul:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_mul \
@@ -95,6 +100,11 @@ test_xfer:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module mb86233_xfer \
 	  $(SRCS_mb86233_xfer) sim/tgp/tb_mb86233_xfer.cpp -o tb_xfer --Mdir obj_xfer
 	./obj_xfer/tb_xfer
+
+test_core:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module mb86233_core \
+	  $(SRCS_mb86233_core) sim/tgp/tb_mb86233_core.cpp -o tb_core --Mdir obj_core
+	./obj_core/tb_core
 
 # Proxy only: generic 6-LUT mapping, no DSP inference, no device model.
 # Useful for tracking relative change between edits. Does not settle the M0 gate.
@@ -170,7 +180,7 @@ quartus_report:
 	@cd quartus && ./report.sh $(MOD)
 
 clean:
-	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem obj_dec obj_xfer
+	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem obj_dec obj_xfer obj_core
 
 distclean: clean
 	rm -rf quartus/build

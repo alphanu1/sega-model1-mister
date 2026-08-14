@@ -47,8 +47,11 @@ NetMerc.
   `ld/mov` sub-op covered.
 - `mb86233_xfer` — transfer routing: which space and addressing side each side of
   a `ld/mov` uses. **256 cases, exhaustive, zero mismatches.**
-- Top level (`mb86233_core`) — not started. What remains is the FSM: sequencing
-  each instruction's memory accesses, wiring the ten blocks, and the stall path. Fetch/decode for the six instruction
+- `mb86233_core` — the top level. Fetch, decode, memory sequencing and retire,
+  wiring all ten blocks. **Directed harness only, 10 checks, zero failures** —
+  this is deliberately not the lockstep of M0 exit criterion 2, which is still
+  owed. `ldi`, `lipl`/`lia`/`lib`/`lid` and PC advance are covered; `lab`,
+  `ld/mov` transfers, branches and `rep` are wired but not yet exercised. Fetch/decode for the six instruction
   types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
   needs.
 - `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.
