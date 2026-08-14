@@ -50,8 +50,10 @@ NetMerc.
 - `mb86233_core` — the top level. Fetch, decode, memory sequencing and retire,
   wiring all ten blocks. **Directed harness only, 10 checks, zero failures** —
   this is deliberately not the lockstep of M0 exit criterion 2, which is still
-  owed. `ldi`, `lipl`/`lia`/`lib`/`lid` and PC advance are covered; `lab`,
-  `ld/mov` transfers, branches and `rep` are wired but not yet exercised. Fetch/decode for the six instruction
+  owed. `ldi`, `lipl`/`lia`/`lib`/`lid`, `stm`, `clr0`, `cfxd` rounding and PC
+  advance are covered; `lab`, `ld/mov` transfers, branches and `rep` are wired
+  but not yet exercised. `fdvd` still writes nothing — `fp_div` is verified
+  standalone but instantiated nowhere. Fetch/decode for the six instruction
   types, both RAM banks, the external bus and FIFO, and the stall path `fdvd`
   needs.
 - `fp_div` — IEEE-754 single divider, radix-2 restoring, 29-cycle latency.

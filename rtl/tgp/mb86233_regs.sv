@@ -72,6 +72,12 @@ module mb86233_regs (
   input  logic        alu_p_we,
   input  logic [31:0] alu_p,
 
+  // clr0 (opcode 0x0f sub-op 0) clears any combination of A, B and D in one
+  // instruction, so it cannot go through the single write port.
+  input  logic        clr_a,
+  input  logic        clr_b,
+  input  logic        clr_d,
+
   // AGU post-increment writeback for the index registers.
   input  logic        agu_x0_we,
   input  logic [15:0] agu_x0,
@@ -234,6 +240,12 @@ module mb86233_regs (
       // transfer that used the address.
       if (agu_x0_we) x0 <= agu_x0;
       if (agu_x1_we) x1 <= agu_x1;
+
+      // clr0 last: MAME applies it inside the 0x0f case, after alu_pre and
+      // before alu_post_1, so it beats anything the transfer path wrote.
+      if (clr_a) reg_a <= 32'd0;
+      if (clr_b) reg_b <= 32'd0;
+      if (clr_d) reg_d <= 32'd0;
     end
   end
 

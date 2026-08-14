@@ -84,6 +84,7 @@ module mb86233_core (
   output logic [31:0] dbg_d,
   output logic [31:0] dbg_p,
   output logic [31:0] dbg_st,
+  output logic [15:0] dbg_m,
   output logic [7:0]  dbg_c0,
   output logic [7:0]  dbg_c1,
   output logic [7:0]  dbg_rep
@@ -163,6 +164,7 @@ module mb86233_core (
   logic        c0_we, c1_we;
   logic [7:0]  c0_wd, c1_wd;
 
+  logic        clr_a_now, clr_b_now, clr_d_now;
   logic        alu_d_we, alu_p_we;
   logic [31:0] alu_d_val, alu_p_val;
   logic        agu_x0_we, agu_x1_we;
@@ -177,12 +179,19 @@ module mb86233_core (
     .alu_p_we(alu_p_we), .alu_p(alu_p_val),
     .agu_x0_we(agu_x0_we), .agu_x0(agu_x_next),
     .agu_x1_we(agu_x1_we), .agu_x1(agu_x_next),
+    .clr_a(clr_a_now), .clr_b(clr_b_now), .clr_d(clr_d_now),
     .c0_we(c0_we), .c0_wd(c0_wd), .c1_we(c1_we), .c1_wd(c1_wd),
     .c0(seq_c0), .c1(seq_c1),
     .reg_a(reg_a), .reg_b(reg_b), .reg_d(reg_d), .reg_p(reg_p),
     .b0(b0), .b1(b1), .x0(x0), .x1(x1), .i0(i0), .i1(i1),
     .vsmr(vsmr), .sft(sft), .mask(mask)
   );
+
+  // M is NOT the MASK register. write_reg(0x3c) sets m_mask; m_m is written
+  // only by the stm instruction (0x0d sub-op 5), and cfxd reads its rounding
+  // mode from (m_m >> 1) & 3. Wiring MASK here instead makes every cfxd use
+  // whatever an unrelated register write last left behind.
+  logic [15:0] reg_m;
 
   // The status word. Only ZRD/SGD come from the ALU and only ZC0/ZC1 from the
   // sequencer, so ST is assembled here rather than owned by either.
@@ -268,7 +277,7 @@ module mb86233_core (
     .clk(clk), .rst_n(rst_n),
     .in_valid(alu_in_valid), .op(d_alu),
     .reg_a(reg_a), .reg_b(reg_b), .reg_d(reg_d), .reg_p(reg_p),
-    .sft(sft), .m(mask), .st_in(st),
+    .sft(sft), .m(reg_m), .st_in(st),
     .xfer_d_valid(xfer_d_valid), .xfer_d_data(xfer_d_data),
     .out_valid(alu_out_valid),
     .d_out(alu_d_val), .d_we(alu_d_we),
@@ -323,9 +332,13 @@ module mb86233_core (
                      && (x_src_sp == mb86233_pkg::EP_PROG)
                      ? agu_ea[15:0] : seq_pc;
 
+  assign clr_a_now = (state == S_RETIRE) & d_repgrp & (d_fsub == 3'd0) & d_clra;
+  assign clr_b_now = (state == S_RETIRE) & d_repgrp & (d_fsub == 3'd0) & d_clrb;
+  assign clr_d_now = (state == S_RETIRE) & d_repgrp & (d_fsub == 3'd0) & d_clrd;
+
   assign dbg_a  = reg_a;  assign dbg_b  = reg_b;
   assign dbg_d  = reg_d;  assign dbg_p  = reg_p;
-  assign dbg_st = st;
+  assign dbg_st = st;  assign dbg_m = reg_m;
   assign dbg_c0 = seq_c0; assign dbg_c1 = seq_c1; assign dbg_rep = seq_rep;
 
   assign retire    = (state == S_RETIRE);
@@ -336,6 +349,7 @@ module mb86233_core (
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       state        <= S_FETCH;
+      reg_m        <= 16'd0;
       ir           <= 32'd0;
       src_val      <= 32'd0;
       lab_a_val    <= 32'd0;
@@ -383,7 +397,12 @@ module mb86233_core (
             alu_launched <= 1'b0;
           end
         end
-        S_RETIRE: state <= S_FETCH;
+        S_RETIRE: begin
+          // stm/stmh: bit 0 selects floating point, bits 2:1 the cfxd rounding
+          // mode. Only sub-op 5 is implemented in MAME; the rest log.
+          if (d_stm && d_stmsub == 3'd5) reg_m <= d_stmm;
+          state <= S_FETCH;
+        end
 
         default: state <= S_FETCH;
       endcase

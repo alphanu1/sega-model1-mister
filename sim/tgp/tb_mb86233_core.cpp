@@ -190,7 +190,21 @@ static uint32_t enc_ldi(uint32_t reg, uint32_t imm24) {
 static uint32_t enc_lipl(uint32_t sel, uint32_t imm24) {
   return (0x0eu << 26) | ((sel & 3) << 24) | (imm24 & 0xffffff);
 }
-static uint32_t enc_nop() { return (0x0fu << 26); }   // rep group, sub 0, no clears
+static uint32_t enc_nop() { return (0x0fu << 26); }
+// stm/stmh: type 0x0d, sub-op 5, low 16 bits become M.
+static uint32_t enc_stm(uint32_t m16) {
+  return (0x0du << 26) | (5u << 17) | (m16 & 0xffff);
+}
+// A 0x0f-group instruction carrying an ALU op: the ALU field for this type is
+// bits 24:20, not 25:21. sub-op 1 (clr1) has no side effect of its own, so this
+// runs the ALU and nothing else.
+static uint32_t enc_alu0f(uint32_t alu) {
+  return (0x0fu << 26) | ((alu & 0x1f) << 20) | (1u << 17);
+}
+// clr0: type 0x0f, sub-op 0, bits 2/3/4 select A/B/D.
+static uint32_t enc_clr0(bool a, bool b, bool d) {
+  return (0x0fu << 26) | (a ? 4u : 0) | (b ? 8u : 0) | (d ? 0x10u : 0);
+}   // rep group, sub 0, no clears
 
 static long fails = 0, checks = 0;
 static void ck(const char* what, uint32_t got, uint32_t exp) {
@@ -245,6 +259,71 @@ int main(int argc, char** argv) {
   reset();
   if (!run_instrs(2)) { printf("  FAIL timeout\n"); fails++; }
   ck("lipl P top byte kept", dut->dbg_p, 0xff123456);
+
+  // ---------------------------------------------------------------- stm
+  printf("test: stm writes M, which is NOT the MASK register\n");
+  for (auto& w : prog) w = enc_nop();
+  prog[0] = enc_stm(0x0006);              // rounding mode 3 in bits 2:1
+  reset();
+  if (!run_instrs(1)) { printf("  FAIL timeout\n"); fails++; }
+  ck("stm -> M", dut->dbg_m, 0x0006);
+
+  // stm must ignore every sub-op but 5 — MAME implements only stmh.
+  for (auto& w : prog) w = enc_nop();
+  prog[0] = enc_stm(0x0006);
+  prog[1] = (0x0du << 26) | (3u << 17) | 0x00ff;   // sub-op 3: logs, no effect
+  reset();
+  if (!run_instrs(2)) { printf("  FAIL timeout\n"); fails++; }
+  ck("stm sub-op 3 ignored", dut->dbg_m, 0x0006);
+
+  // ------------------------------------------------------------ cfxd/M
+  //
+  // Proves M is actually WIRED to the ALU, not merely stored. cfxd converts D
+  // to int32 using the rounding mode in M[2:1]; 1.5 rounds to 2 under
+  // round-half-away-from-zero and to 1 under floor.
+  printf("test: cfxd rounding follows M, so M reaches the ALU\n");
+  //
+  // D is built as 1.5 via the field accessors: set_exp(D,0x7f) gives 1.0, then
+  // set_mant(D,0x400000) gives 0x3fc00000. 1.5 is the point of the value —
+  // round-half-away-from-zero gives 2, floor gives 1, so the two modes
+  // DISAGREE. An exact value like 2.0 would pass under either and prove
+  // nothing about whether M's mode is read at all.
+  auto cfxd_with = [&](uint32_t m16) -> uint32_t {
+    for (auto& w : prog) w = enc_nop();
+    prog[0] = enc_stm(m16);
+    prog[1] = enc_ldi(0x1a, 0x00007f);       // set_exp(D, 0x7f) -> 1.0
+    prog[2] = enc_ldi(0x1b, 0x400000);       // set_mant(D, 0x400000) -> 1.5
+    prog[3] = enc_alu0f(0x0f);               // cfxd
+    reset();
+    if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
+    return dut->dbg_d;
+  };
+  ck("cfxd 1.5 mode0 roundf -> 2", cfxd_with(0x0000), 2);
+  ck("cfxd 1.5 mode2 floor  -> 1", cfxd_with(0x0004), 1);
+
+  // --------------------------------------------------------------- clr0
+  printf("test: clr0 clears A, B and D independently, and together\n");
+  for (auto& w : prog) w = enc_nop();
+  prog[0] = enc_ldi(0x10, 0x111111);
+  prog[1] = enc_ldi(0x13, 0x222222);
+  prog[2] = enc_ldi(0x19, 0x333333);
+  prog[3] = enc_clr0(true, false, false);   // A only
+  reset();
+  if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
+  ck("clr0 A cleared", dut->dbg_a, 0);
+  ck("clr0 B untouched", dut->dbg_b, 0x00222222);
+  ck("clr0 D untouched", dut->dbg_d, 0x00333333);
+
+  for (auto& w : prog) w = enc_nop();
+  prog[0] = enc_ldi(0x10, 0x111111);
+  prog[1] = enc_ldi(0x13, 0x222222);
+  prog[2] = enc_ldi(0x19, 0x333333);
+  prog[3] = enc_clr0(true, true, true);     // all three at once
+  reset();
+  if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
+  ck("clr0 all A", dut->dbg_a, 0);
+  ck("clr0 all B", dut->dbg_b, 0);
+  ck("clr0 all D", dut->dbg_d, 0);
 
   // ------------------------------------------------------------ retire/pc
   printf("test: PC advances one per retired instruction\n");

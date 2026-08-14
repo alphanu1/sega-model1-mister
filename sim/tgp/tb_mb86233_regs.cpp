@@ -129,6 +129,7 @@ int main(int argc, char** argv) {
   dut->alu_d_we = 0; dut->alu_d = 0; dut->alu_p_we = 0; dut->alu_p = 0;
   dut->agu_x0_we = 0; dut->agu_x0 = 0; dut->agu_x1_we = 0; dut->agu_x1 = 0;
   dut->c0 = 1; dut->c1 = 1;
+  dut->clr_a = 0; dut->clr_b = 0; dut->clr_d = 0;
   for (int i = 0; i < 4; i++) tick();
   dut->rst_n = 1;
 
