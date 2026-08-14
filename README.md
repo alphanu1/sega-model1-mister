@@ -15,7 +15,7 @@ NetMerc.
 
 | Milestone | State |
 |---|---|
-| M0 — MB86233 spike | in progress: FP datapath and ALU verified, AGU/sequencer not started |
+| M0 — MB86233 spike | in progress: FP datapath, ALU and AGU verified; sequencer not started |
 | M1 — V60, bus, 2D, boot | not started |
 | M2 — geometry pipeline | not started |
 | M3 — rasterizer and video | not started |
@@ -29,7 +29,10 @@ NetMerc.
 - `mb86233_alu` — operand mux, integer/logical/shift, `cxfd`/`cfxd`, status flags and
   write-priority arbitration. **2,170,367 fuzz cases across all 24 decoded opcodes plus
   4 undecoded ones, zero mismatches.**
-- AGU, sequencer, top level — not started.
+- `mb86233_agu` — `ea_pre`/`ea_post` for both banks, all four mode-3 sub-forms, the
+  `+0x200` adder and both of its wrap behaviours. **3,000,000 fuzz cases, zero
+  mismatches, every addressing mode covered.**
+- Sequencer, top level — not started.
 - `fp_div` — not started, so `fdvd` (0x10) decodes but never writes D.
 
 Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`, **not** Quartus
@@ -40,14 +43,16 @@ ALMs; the 24x24 significand multiply will move into a DSP block under Quartus):
 | `fp_mul` | 1312 | 99 |
 | `fp_add` | 690 | 80 |
 | `mb86233_alu` | 2974 | 381 |
+| `mb86233_agu` | 220 | 0 |
 
 `mb86233_alu` includes one `fp_mul` and one `fp_add`, so it is the whole FP datapath
-plus the integer side, not an increment on the two above.
+plus the integer side, not an increment on the two above. `mb86233_agu` is purely
+combinational — no flops — because MAME's `ea_pre_*`/`ea_post_*` are functions of the
+instruction field with no state of their own.
 
-Read that as roughly 1500-2200 ALM and one DSP block per TGP instance for everything
+Read that as roughly 1600-2300 ALM and one DSP block per TGP instance for everything
 built so far. Three physical instances still looks affordable, which is what decision
-D4 rests on — but the AGU and sequencer are not in that number yet, and only Quartus
-settles it.
+D4 rests on — but the sequencer is not in that number yet, and only Quartus settles it.
 
 ### Correction, 2026-08-14
 
@@ -99,7 +104,7 @@ No Quartus needed. Requires verilator and yosys.
 
 ```
 make lint                  # verilator lint
-make test                  # fuzz fp_mul and fp_add
+make test                  # fuzz every module with a harness
 make area                  # yosys proxy synthesis
 ```
 
