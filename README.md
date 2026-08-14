@@ -60,6 +60,44 @@ NetMerc.
   FP post path applied to instruction types that never reach it — plus three
   harness faults.
 
+### Real device numbers — Quartus 17.0.0 Lite, 5CSEBA6U23I7
+
+| Module | ALMs | DSP | M10K | Fmax |
+|---|---|---|---|---|
+| `fp_mul` | 161 | **1** | 0 | 136.56 MHz |
+| `fp_add` | 406 | 0 | 0 | 129.08 MHz |
+| `fp_div` | 263 | 0 | 0 | 113.96 MHz |
+| `mb86233_agu` | 176 | 0 | 0 | combinational |
+| `mb86233_seq` | 174 | 0 | 0 | 231.64 MHz |
+| `mb86233_regs` | 644 | 0 | 0 | 827.81 MHz |
+| `mb86233_mem` | 123 | 0 | **3** | n/a |
+| `mb86233_dec` | 121 | 0 | 0 | combinational |
+| `mb86233_xfer` | 28 | 0 | 0 | combinational |
+| **`mb86233_core`** | **2554** | **1** | **3** | **72.17 MHz** |
+
+Against the gate the whole TGP passes ALM (2554 vs < 4K), DSP (1 vs 1-2) and
+M10K (3 vs < 6) with margin. **Fmax is 72.17 MHz** — inside the 60-80 MHz
+"investigate" band, above the 60 MHz fail line, short of the 80 MHz pass mark.
+
+Three retiming passes got it there, each aimed with `make quartus_paths`:
+
+| Change | Fmax |
+|---|---|
+| baseline | 51.47 |
+| register the decoded ALU op | 54.28 |
+| split `fp_add` and `fp_mul` from 2 stages to 4 | 69.29 |
+| register the FP operand mux | 72.17 |
+
+`fp_add` went 76.35 to 129.08 MHz and `fp_mul` 116.85 to 136.56, so the FP
+units are no longer the limit. The remaining path has left them entirely: it is
+now `state.S_DST` to `src_val`, the core FSM's own source-capture mux.
+
+Cost: 2493 to 2554 ALM and ALU latency 2 to 5, both cheap for a part retiring
+~5.3 M instructions/sec against a 50 MHz fabric. Every result is bit-identical —
+the FP harnesses report the same checked and skipped counts as before, and
+lockstep 8,000 retires with zero divergence.
+
+
 ### Correction, 2026-08-14
 
 The shift and integer opcodes were transcribed two slots high: `lsrd` at 0x18 through
