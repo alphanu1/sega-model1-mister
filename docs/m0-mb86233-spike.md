@@ -175,59 +175,70 @@ sim/tgp/oracle/             MAME lockstep bridge
    instruction. Zero divergence.
 3. Standalone Quartus synthesis against `5CSEBA6U23I7` with a 50 MHz constraint.
 
-## Measured — first Quartus run, 2026-08-14
+## Measured — Quartus, 2026-08-14
 
-Quartus Prime Lite **24.1std**, not the 17.0.x this document specifies. See the
-caveat below. Device 5CSEBA6U23I7, 50 MHz constraint, I/O paths cut, all ports
-virtual-pinned.
+Device 5CSEBA6U23I7, 50 MHz constraint, I/O paths cut, all ports virtual-pinned.
+Built on **both** toolchains: 17.0.0 Lite (what MiSTer's `sys/` requires from M1
+onwards) and 24.1std Lite.
 
-| Module | ALMs | Registers | DSP | M10K | Fmax (worst slow corner) |
-|---|---|---|---|---|---|
-| `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
-| `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
-| `fp_div` | 263 | 137 | 0 | 0 | 106.30 MHz |
-| `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
-| `mb86233_agu` | 176 | 0 | 0 | 0 | n/a, combinational |
-| `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
-| `mb86233_regs` | 646 | 781 | 0 | 0 | 825.08 MHz |
+| Module | ALM 17.0 | ALM 24.1 | Fmax 17.0 | Fmax 24.1 | DSP | M10K |
+|---|---|---|---|---|---|---|
+| `fp_mul` | 144 | 144 | 116.85 | 114.31 | **1** | 0 |
+| `fp_add` | 411 | 410 | 76.35 | 77.42 | 0 | 0 |
+| `fp_div` | 263 | 263 | 113.96 | 106.30 | 0 | 0 |
+| `mb86233_alu` | 1318 | 1319 | 91.99 | 94.64 | **1** | 0 |
+| `mb86233_agu` | 176 | 176 | comb | comb | 0 | 0 |
+| `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 | 0 |
+| `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 | 0 |
 
-`mb86233_alu` already contains one `fp_mul` and one `fp_add`, so a TGP instance
-built from what exists today is **alu + agu + seq = 1670 ALM, 1 DSP, 0 M10K**,
-and the binding Fmax is the ALU's 94.64 MHz.
+**The two toolchains agree.** Every module is within 2 ALM and a few percent of
+Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
+whichever is used, the answer is the same.
 
-**The DSP question is settled.** `fp_mul` infers exactly one DSP block, which is
-what D4 rests on. It also drops from 1312 LUT6 under the yosys proxy to 144 ALM
-under Quartus — better than the "roughly 300" this document predicted, because
-the significand multiply leaves the fabric entirely.
+A TGP instance from what exists today — `alu + agu + seq + regs + div`, where
+the ALU already contains one `fp_mul` and one `fp_add` — is:
 
-Note `fp_add` standalone reports 77.42 MHz but the ALU containing it reports
-94.64 MHz. Standalone numbers are pessimistic here: in isolation the module's
-critical path terminates at virtual pins with nothing to retime against.
-**The instance-level number is the one the gate should read.**
+| Metric | 17.0 | 24.1 | Threshold | Verdict |
+|---|---|---|---|---|
+| ALM | 2575 | 2579 | < 4K | pass |
+| DSP | 1 | 1 | 1-2 | pass |
+| M10K | 0 | 0 | < 6 | pass |
+| Fmax | 91.99 MHz | 94.64 MHz | > 80 MHz | pass |
 
-Against the gate below, per instance:
+Three instances extrapolate to ~7.7K ALM and 3 DSP against a 15K / 8 budget.
 
-| Metric | Measured | Threshold | Verdict |
-|---|---|---|---|
-| ALM | 1670 | < 4K | pass |
-| DSP | 1 | 1-2 | pass |
-| M10K | 0 | < 6 | pass |
-| Fmax | 94.64 MHz | > 80 MHz | pass |
+**The DSP question is settled.** `fp_mul` infers exactly one DSP block on both
+toolchains, which is what D4 rests on, and drops from 1312 LUT6 under the yosys
+proxy to 144 ALM because the 24x24 significand multiply leaves the fabric.
 
-Three instances extrapolate to ~5.0K ALM and 3 DSP, against a budget of 15K ALM
-and 8 DSP. D4 holds comfortably.
+Standalone Fmax is pessimistic: `fp_add` alone reads 76-77 MHz while the ALU
+containing it reads 92-95 MHz. In isolation the critical path terminates at
+virtual pins with nothing to retime against. **The instance-level number is what
+the gate should read.**
 
-**This is not the gate closed.** What is missing:
+**Still not the gate closed.** There is no top level, so the program store and
+both RAM banks are absent — which is why M10K reads 0, not because the memories
+are free. `fp_div` is verified but not yet instantiated in the ALU, so its 263
+ALM sit outside the 1318.
 
-- No top level. The register file, program store, both data RAM banks and the
-  external bus are not built, which is why M10K reads 0 — the memories that will
-  consume it do not exist yet.
-- `fp_div` is written and verified but not yet instantiated in the ALU, so its
-  263 ALM are not inside the 1319. A TGP instance including it is ~1930 ALM,
-  still comfortably inside the 4K threshold.
-- **Quartus 24.1std, not 17.0.x.** MiSTer cores build against 17.0.x, and its
-  fitter and DSP inference differ. These numbers are a strong signal, not the
-  sign-off. Re-measure on 17.0.x before treating the gate as closed.
+### Installing 17.0 alongside a newer Quartus
+
+`tools/install-quartus17.sh`, and the procedure is not obvious:
+
+- `setup.sh` marks the install as **Lite Edition**. Running
+  `QuartusLiteSetup.run` directly installs the binaries but leaves it as
+  "SJ Standard Edition", and every build then fails with
+  `Error (292025): License file is not specified.`
+- `setup.sh` then **stalls before installing the device families** — it stops
+  writing files and sits in `futex_wait`. With the default UI it blocks on a GUI
+  progress dialog, because the base installer forces `--unattendedmodeui minimal`
+  on its children whatever it was given; with `--unattendedmodeui none` it still
+  stalls, just silently.
+- So the device families are installed by hand. Each `.qdz` is a plain zip
+  already rooted at `quartus/common/devinfo/<family>/`, so extracting it into the
+  install directory puts everything exactly where the installer would have.
+  `quartus_sh --qinstall` is not an alternative: it takes `-qda` and rejects
+  `.qdz` as a different format.
 
 ## Resource gate
 

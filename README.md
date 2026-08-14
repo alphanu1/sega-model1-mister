@@ -47,27 +47,30 @@ NetMerc.
   busy handshake where the ALU is uniform-latency-2, so `fdvd` (0x10) still
   decodes without writing D. See the note below.
 
-**Real device numbers, Quartus Prime Lite 24.1std, 5CSEBA6U23I7, 50 MHz constraint:**
+**Real device numbers on 5CSEBA6U23I7, 50 MHz constraint, both toolchains:**
 
-| Module | ALMs | Registers | DSP | M10K | Fmax |
+| Module | ALM 17.0 | ALM 24.1 | Fmax 17.0 | Fmax 24.1 | DSP |
 |---|---|---|---|---|---|
-| `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
-| `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
-| `fp_div` | 263 | 137 | 0 | 0 | 106.30 MHz |
-| `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
-| `mb86233_agu` | 176 | 0 | 0 | 0 | combinational |
-| `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
+| `fp_mul` | 144 | 144 | 116.85 | 114.31 | **1** |
+| `fp_add` | 411 | 410 | 76.35 | 77.42 | 0 |
+| `fp_div` | 263 | 263 | 113.96 | 106.30 | 0 |
+| `mb86233_alu` | 1318 | 1319 | 91.99 | 94.64 | **1** |
+| `mb86233_agu` | 176 | 176 | comb | comb | 0 |
+| `mb86233_seq` | 174 | 175 | 231.64 | 244.20 | 0 |
+| `mb86233_regs` | 644 | 646 | 827.81 | 825.08 | 0 |
 
-A TGP instance from what exists today is **1670 ALM, 1 DSP, 0 M10K at 94.64 MHz**
-(`mb86233_alu` already includes one `fp_mul` and one `fp_add`). Every gate
-threshold passes, and the 24x24 significand multiply does infer a DSP block —
-the assumption D4 rests on. Three instances extrapolate to ~5.0K ALM and 3 DSP
-against a 15K/8 budget.
+The two toolchains agree within 2 ALM and a few percent of Fmax, so the earlier
+"measured on 24.1, not the 17.0.x MiSTer uses" caveat is resolved.
 
-Not the gate closed: there is no top level, so the register file, program store
-and both RAM banks are absent and M10K reads 0; `fp_div` is unwritten; and this
-is Quartus 24.1std rather than the 17.0.x MiSTer builds with. Details and
-caveats in `docs/m0-mb86233-spike.md`.
+A TGP instance from what exists today is **2575 ALM, 1 DSP, 0 M10K at 92 MHz**
+(the ALU already contains one `fp_mul` and one `fp_add`). Every gate threshold
+passes — ALM 2575 vs <4K, DSP 1 vs 1-2, Fmax 92 vs >80 — and the 24x24
+significand multiply does infer a DSP block, which is the assumption D4 rests on.
+Three instances extrapolate to ~7.7K ALM and 3 DSP against a 15K/8 budget.
+
+Not the gate closed: there is no top level, so the program store and both RAM
+banks are absent and M10K reads 0; `fp_div` is verified but not yet wired into
+the ALU. Details in `docs/m0-mb86233-spike.md`.
 
 Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`) is still used
 for tracking relative change between edits:

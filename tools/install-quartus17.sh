@@ -121,9 +121,15 @@ case "$SRC" in
       echo "  gitignored: yes"
     fi
 
-    rm -rf "$TMP"
-    mkdir -p "$TMP"
-    tar -xf "$SRC" -C "$TMP"
+    # Reuse an existing unpack rather than spending minutes re-extracting 6 GB
+    # when only the installer arguments needed fixing.
+    if [ -f "$TMP/setup.sh" ]; then
+      echo "  reusing existing unpack (delete $TMP to force a fresh one)"
+    else
+      rm -rf "$TMP"
+      mkdir -p "$TMP"
+      tar -xf "$SRC" -C "$TMP"
+    fi
     # Parenthesised: without the group, -maxdepth applies per-branch and the
     # -o precedence makes the match unreliable.
     RUN="$(find "$TMP" -maxdepth 2 \( -name 'setup.sh' -o -name '*Setup*.run' \) | head -1)"
@@ -145,20 +151,95 @@ case "$SRC" in
   *) die "expected a .tar or .run installer, got $SRC" ;;
 esac
 
-say "== installing (unattended, this takes a while)"
+say "== installing"
 mkdir -p "$DEST"
-# No --disable-components. The component names differ between Quartus releases
-# and an unrecognised one can abort the whole unattended run; disk is cheap
-# next to re-downloading several GB. Trim afterwards if it matters.
-"$RUN" --mode unattended --installdir "$DEST" --accept_eula 1 2>&1 | tail -20 || true
 
-if [ -n "$CLEAN" ]; then
-  say "== cleaning up"
-  echo "  removing $CLEAN"
-  rm -rf "$CLEAN"
-elif [ "$KEEP" = 1 ] && [ -d "$EXTRACT" ]; then
-  warn "  keeping $EXTRACT (--keep); it is gitignored but uses several GB"
+# WHAT ACTUALLY WORKS, established the hard way on 2026-08-14.
+#
+# setup.sh installs the Quartus binaries and — critically — marks the install
+# as Lite Edition. Skipping it and running QuartusLiteSetup.run directly gets
+# the binaries but leaves the install identifying as "SJ Standard Edition",
+# which then fails every build with:
+#
+#   Error (292025): License file is not specified.
+#
+# Lite is the licence-free edition, so that marker is not cosmetic.
+#
+# BUT setup.sh reliably stalls partway through, before installing the device
+# families. Twice observed: the process stops writing files, CPU time freezes,
+# and it sits in futex_wait indefinitely. With the default UI it blocks on a
+# GUI progress dialog (the base installer forces --unattendedmodeui minimal on
+# its children regardless of what it was given); with --unattendedmodeui none
+# it still stalls, just without a window. Either way it never reaches the
+# devices.
+#
+# So: run setup.sh until the binaries and the Lite marker exist, stop it, and
+# install the device families by hand. Each .qdz is a plain zip already rooted
+# at quartus/common/devinfo/<family>/, so extracting it into the install
+# directory puts every file exactly where the installer would have.
+# quartus_sh --qinstall is NOT an alternative: it takes -qda and rejects .qdz
+# as a different format.
+
+opts="$("$RUN" --help 2>&1 || true)"
+inst_args=(--mode unattended --installdir "$DEST")
+case "$opts" in *--unattendedmodeui*) inst_args+=(--unattendedmodeui none) ;; esac
+case "$opts" in *--accept_eula*)      inst_args+=(--accept_eula 1) ;; esac
+
+allowed="$(printf '%s\n' "$opts" \
+  | awk '/--disable-components/{f=1} f && /Allowed:/{sub(/.*Allowed: */,""); print; exit}')"
+drop=""
+for c in quartus_help quartus_update modelsim_ase modelsim_ae \
+         arria_lite cyclone cyclone10lp max max10; do
+  for a in $allowed; do
+    if [ "$a" = "$c" ]; then drop="${drop:+$drop,}$c"; break; fi
+  done
+done
+if [ -n "$drop" ]; then
+  echo "  skipping components: $drop"
+  inst_args+=(--disable-components "$drop")
 fi
+
+echo "  running setup.sh in the background; it will be stopped once the"
+echo "  binaries and the Lite edition marker are present"
+"$RUN" "${inst_args[@]}" > "$DEST/../quartus17-setup.log" 2>&1 &
+setup_pid=$!
+
+# Poll for the two things setup.sh is needed for. Give up after 30 minutes.
+deadline=$(( SECONDS + 1800 ))
+have_bins=0
+while [ $SECONDS -lt $deadline ]; do
+  if [ -x "$DEST/quartus/bin/quartus_sh" ] \
+     && "$DEST/quartus/bin/quartus_sh" --version 2>/dev/null | grep -qi 'lite edition'; then
+    have_bins=1
+    break
+  fi
+  kill -0 $setup_pid 2>/dev/null || break
+  sleep 15
+done
+
+if kill -0 $setup_pid 2>/dev/null; then
+  echo "  binaries and Lite marker present; stopping the installer"
+  pkill -9 -P $setup_pid 2>/dev/null || true
+  kill -9 $setup_pid 2>/dev/null || true
+  wait $setup_pid 2>/dev/null || true
+fi
+
+[ "$have_bins" = 1 ] || die "setup.sh never produced a Lite-edition install; see $DEST/../quartus17-setup.log"
+
+say "== installing device families from the .qdz archives"
+# Idempotent: re-extracting over an existing family is harmless.
+qdz_dir="$(dirname "$RUN")/components"
+[ -d "$qdz_dir" ] || qdz_dir="$(dirname "$RUN")"
+for q in "$qdz_dir"/cyclonev-*.qdz; do
+  [ -f "$q" ] || continue
+  echo "  extracting $(basename "$q")"
+  python3 - "$q" "$DEST" <<'PYEOF'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    z.extractall(sys.argv[2])
+    print(f"    {len(z.namelist())} entries")
+PYEOF
+done
 
 say "== verify"
 if [ -x "$DEST/quartus/bin/quartus_map" ]; then

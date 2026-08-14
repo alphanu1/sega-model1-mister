@@ -38,9 +38,16 @@ Expected output, exactly:
 ```
 fp_mul: checked=1885699 skipped=114301 fails=0
 fp_add: checked=1968564 skipped=31436 fails=0
+fp_div: checked=282606 skipped=17394 fails=0 max_latency=29
+mb86233_alu: checked=2170367 skipped=149633 fails=0 uncovered_ops=0
+mb86233_agu: checked=3000000 skipped=0 fails=0 uncovered_modes=0
+mb86233_seq: checked=3000000 skipped=0 fails=0 uncovered=0
+mb86233_regs: checked=3000000 skipped=0 fails=0 uncovered_regs=0
 ```
 
-If either reports a nonzero `fails`, stop and fix that before starting new work.
+If any reports a nonzero `fails`, or a nonzero `uncovered_*`, stop and fix that
+before starting new work. The counts are reproducible: the harnesses seed
+mt19937 with a fixed constant, so they do not drift with toolchain or host.
 
 ---
 
@@ -114,31 +121,23 @@ gate — only Quartus does.
 
 The full core `.rbf` build does not exist yet. There is no top level until M1.
 
-**The Quartus path now runs.** First executed 2026-08-14 against Quartus Prime Lite
-**24.1std** — not the 17.0.x this file specifies, which is what happens to be
-installed. Numbers are in `docs/m0-mb86233-spike.md`; all five modules build and
-every gate threshold passes. Re-measure on 17.0.x before treating the gate as
-closed, since MiSTer cores build against that and its fitter differs.
+**The Quartus path runs, on both toolchains.** 17.0.0 Lite and 24.1std are
+installed side by side; `make quartus_list` shows them, `QUARTUS=17.0` selects
+one, and every report prints the version that produced it. Numbers agree within
+2 ALM — see `docs/m0-mb86233-spike.md`.
 
-Four things were broken on first use, as predicted:
+Installing 17.0 is not obvious and `tools/install-quartus17.sh` encodes it:
+`setup.sh` is what marks the install Lite Edition (running
+`QuartusLiteSetup.run` directly leaves it as Standard, which then fails every
+build with `Error (292025): License file is not specified`), but `setup.sh`
+stalls before installing the device families, so those are extracted from their
+`.qdz` archives by hand — each is a plain zip already rooted at
+`quartus/common/devinfo/`.
 
-1. `@SRCS@` appeared in a *comment* in `spike.qsf.in` and was substituted there
-   too. The replacement contains newlines, so it split the comment and left
-   trailing prose as a bare line: `Error (125048): Error reading Quartus Prime
-   Settings File`. Never write a placeholder token in a comment.
-2. `report.sh` matched the Fmax section as `Slow 1100mV 85C Model`. The corner
-   name depends on the part's temperature grade, and `5CSEBA6U23I7` is industrial,
-   so it reports 100C and -40C. The field came out silently empty. It now scans
-   every slow corner and takes the worst.
-3. The fit report repeats each metric in several tables with different formats,
-   so a plain grep printed each two or three times.
-4. A combinational module has no Fmax table at all, which read as a parse failure.
-
-Two things that do **not** work, both left in place with the reasoning recorded in
-`spike.qsf.in`: `VIRTUAL_PIN OFF -to clk` does not override the `-to *` wildcard,
-and a `set_location_assignment` on the still-virtual clock fails the fitter
-outright. The resulting ripple-clock Critical Warning is expected and does not
-affect Fmax, because `spike.sdc` cuts every I/O path.
+Four report-parsing faults were found on first use and are fixed: a placeholder
+token substituted inside a comment; an Fmax section name matched as `85C` when
+an industrial part reports `100C`/`-40C`; metrics printed two or three times;
+and a combinational module's absent Fmax table reading as a parse failure.
 
 **When testing a Quartus change, re-run `quartus_map`, not just `quartus_fit`.**
 A fit-only rerun reuses the previous synthesis netlist and will happily report
@@ -168,26 +167,32 @@ datasheet with opcode encodings in English. Read `mb86233d.cpp` alongside
 
 ## Immediate next task
 
-`rtl/tgp/mb86233_alu.sv`.
+`rtl/tgp/mb86233_core.sv`, the top level. Everything it ties together exists and
+is verified: `mb86233_alu`, `mb86233_agu`, `mb86233_seq`, `mb86233_regs`,
+`fp_mul`, `fp_add`, `fp_div`.
 
-The opcode table is already transcribed into `rtl/tgp/mb86233_pkg.sv` with the semantics
-in `docs/m0-mb86233-spike.md`. `fp_mul` and `fp_add` are done and verified. What remains:
+What the core has to add:
 
-1. Operand mux feeding the two FP units. The structure falls out of ops `0x09`/`0x0a`/
-   `0x0d`: `A*B -> P` runs concurrently with `D +/- P -> D`. One multiplier, one adder,
-   both live in the same cycle.
-2. Integer/logical/shift ops (`0x01`-`0x04`, `0x16`-`0x1b`).
-3. `cxfd` / `cfxd` int-float conversion, with `cfxd` honouring the four rounding modes in
-   `M[2:1]`: 0 nearest, 1 ceil, 2 floor, 3 truncate.
-4. Status flag generation. Flag bit positions are in the package; the masks per op are in
-   `mb86233.cpp` `alu_pre`.
-5. Write-priority arbitration between the ALU result and a concurrent transfer.
-6. A fuzz testbench covering every opcode in the table.
+1. Instruction fetch from program memory (32-bit words, 16-bit word address
+   space) and decode of the six instruction types: `lab` (0x00), `ld`/`mov`
+   (0x07), `stm`/`clm` (0x0d), `lipl`/`lia`/`lib`/`lid` (0x0e),
+   `rep`/`clr0`/`clr1`/`set` (0x0f), `ldi` (0x10-0x1f), and branches
+   (0x2f/0x3f). `execute_run` in `mb86233.cpp` is the whole dispatch.
+2. Both data RAM banks, `0x000-0x0ff` and `0x200-0x3ff`.
+3. The external bus port, and the Model 1 copro output FIFO at `0x400`.
+4. **A stall path.** External reads stall (`m_stall` / `goto do_stall` in MAME),
+   and `fdvd` needs one too — `fp_div` is a 29-cycle iterative block with a busy
+   handshake, while `mb86233_alu` is uniform-latency-2. That mismatch is why
+   `fp_div` is verified but not yet instantiated, and it is the core's problem
+   to solve rather than something to bolt onto the ALU.
 
-`fp_div` (op `0x10`, `fdvd`) is still unwritten. It is one opcode and can lag the rest.
+Then the MAME lockstep bridge, which is M0 exit criterion 2 and the only part of
+the verification model not yet built.
 
-After that: AGU (`mb86233_agu.sv`), sequencer (`mb86233_seq.sv`), top level, then the
-Quartus gate. `docs/m0-mb86233-spike.md` has the ordering and the pass/fail thresholds.
+Note `mb86233_seq` owns `c0`/`c1` and the ZC flags while `mb86233_regs` forwards
+writes to them as strobes; `x0`/`x1` live in the register file but the AGU's
+post-increment wins; `d`/`p` live there but the ALU's writeback wins. The core
+wires those, it does not re-arbitrate them.
 
 ---
 
