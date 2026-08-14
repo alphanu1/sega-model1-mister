@@ -7,7 +7,12 @@
 # large; this constraint exists to make the STA report a meaningful slack
 # number, not because the design is speed-critical.
 
-create_clock -name clk -period 20.000 [get_ports {clk}]
+# Guarded: mb86233_agu is purely combinational and has no clk port at all, and
+# an unguarded create_clock on an empty collection aborts the whole SDC, taking
+# the false-path cuts below with it.
+if {[llength [get_ports -nowarn {clk}]] > 0} {
+    create_clock -name clk -period 20.000 [get_ports {clk}]
+}
 
 derive_clock_uncertainty
 

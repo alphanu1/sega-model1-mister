@@ -114,9 +114,35 @@ gate — only Quartus does.
 
 The full core `.rbf` build does not exist yet. There is no top level until M1.
 
-**The Quartus path has never been executed.** It was written from the flow, not run.
-Expect to fix a path or a report-parsing regex on first use; the greps in
-`quartus/report.sh` are Quartus-version-sensitive.
+**The Quartus path now runs.** First executed 2026-08-14 against Quartus Prime Lite
+**24.1std** — not the 17.0.x this file specifies, which is what happens to be
+installed. Numbers are in `docs/m0-mb86233-spike.md`; all five modules build and
+every gate threshold passes. Re-measure on 17.0.x before treating the gate as
+closed, since MiSTer cores build against that and its fitter differs.
+
+Four things were broken on first use, as predicted:
+
+1. `@SRCS@` appeared in a *comment* in `spike.qsf.in` and was substituted there
+   too. The replacement contains newlines, so it split the comment and left
+   trailing prose as a bare line: `Error (125048): Error reading Quartus Prime
+   Settings File`. Never write a placeholder token in a comment.
+2. `report.sh` matched the Fmax section as `Slow 1100mV 85C Model`. The corner
+   name depends on the part's temperature grade, and `5CSEBA6U23I7` is industrial,
+   so it reports 100C and -40C. The field came out silently empty. It now scans
+   every slow corner and takes the worst.
+3. The fit report repeats each metric in several tables with different formats,
+   so a plain grep printed each two or three times.
+4. A combinational module has no Fmax table at all, which read as a parse failure.
+
+Two things that do **not** work, both left in place with the reasoning recorded in
+`spike.qsf.in`: `VIRTUAL_PIN OFF -to clk` does not override the `-to *` wildcard,
+and a `set_location_assignment` on the still-virtual clock fails the fitter
+outright. The resulting ripple-clock Critical Warning is expected and does not
+affect Fmax, because `spike.sdc` cuts every I/O path.
+
+**When testing a Quartus change, re-run `quartus_map`, not just `quartus_fit`.**
+A fit-only rerun reuses the previous synthesis netlist and will happily report
+success for a setting that actually breaks the build.
 
 ---
 

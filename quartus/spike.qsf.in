@@ -5,7 +5,11 @@
 # Not a MiSTer core project. No sys/ framework, no pin assignments, no .rbf.
 # Purpose is one number: what does a single module cost on the real device.
 #
-# @MODULE@ and @SRCS@ are substituted by the Makefile.
+# The MODULE and SRCS placeholders below are substituted by the Makefile.
+# Do not write either token in a comment: the Makefile substitutes every
+# occurrence, and the SRCS replacement contains newlines, so a token inside a
+# comment splits it and leaves the trailing prose as a bare line that Quartus
+# rejects with "Error (125048): Error reading Quartus Prime Settings File".
 
 set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name DEVICE 5CSEBA6U23I7
@@ -23,6 +27,33 @@ set_global_assignment -name VERILOG_SHOW_LMF_MAPPING_MESSAGES OFF
 # Virtual-pin everything. A spike has far more ports than the package has pins,
 # and without this the fitter fails before it reports anything useful.
 set_instance_assignment -name VIRTUAL_PIN ON -to *
+
+# ...except the clock. The wildcard above catches clk too, and a virtual-pinned
+# clock is routed through general logic instead of a global clock network:
+#
+#   Critical Warning (15725): clock port is fed by virtual pin "clk~input";
+#   timing analysis treats input to the clock port as a ripple clock
+#
+# The clock is virtual too, and that produces:
+#
+#   Critical Warning (15725): clock port is fed by virtual pin "clk~input";
+#   timing analysis treats input to the clock port as a ripple clock
+#
+# This is expected in this flow and is left in place. Two things were tried:
+#
+#   set_instance_assignment -name VIRTUAL_PIN OFF -to clk
+#     Accepted without complaint and has no effect. The wildcard above wins;
+#     the fit report still shows 0 real pins.
+#
+#   set_location_assignment PIN_V11 -to clk   (FPGA_CLK1_50 on the DE10-Nano)
+#     Fails outright once the clock is still virtual:
+#     "Error (171011): Can't assign node clk to location PIN_V11 --
+#      node is type Combinational cell", then the fitter gives up entirely.
+#
+# Making the clock real needs the wildcard replaced by an explicit per-port
+# list, which the template cannot write without knowing each module's ports.
+# Fmax here is a register-to-register number and spike.sdc cuts every I/O
+# path, so the ripple clock does not enter the measured paths.
 
 set_global_assignment -name SDC_FILE spike.sdc
 

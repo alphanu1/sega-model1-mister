@@ -166,6 +166,56 @@ sim/tgp/oracle/             MAME lockstep bridge
    instruction. Zero divergence.
 3. Standalone Quartus synthesis against `5CSEBA6U23I7` with a 50 MHz constraint.
 
+## Measured — first Quartus run, 2026-08-14
+
+Quartus Prime Lite **24.1std**, not the 17.0.x this document specifies. See the
+caveat below. Device 5CSEBA6U23I7, 50 MHz constraint, I/O paths cut, all ports
+virtual-pinned.
+
+| Module | ALMs | Registers | DSP | M10K | Fmax (worst slow corner) |
+|---|---|---|---|---|---|
+| `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
+| `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
+| `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
+| `mb86233_agu` | 176 | 0 | 0 | 0 | n/a, combinational |
+| `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
+
+`mb86233_alu` already contains one `fp_mul` and one `fp_add`, so a TGP instance
+built from what exists today is **alu + agu + seq = 1670 ALM, 1 DSP, 0 M10K**,
+and the binding Fmax is the ALU's 94.64 MHz.
+
+**The DSP question is settled.** `fp_mul` infers exactly one DSP block, which is
+what D4 rests on. It also drops from 1312 LUT6 under the yosys proxy to 144 ALM
+under Quartus — better than the "roughly 300" this document predicted, because
+the significand multiply leaves the fabric entirely.
+
+Note `fp_add` standalone reports 77.42 MHz but the ALU containing it reports
+94.64 MHz. Standalone numbers are pessimistic here: in isolation the module's
+critical path terminates at virtual pins with nothing to retime against.
+**The instance-level number is the one the gate should read.**
+
+Against the gate below, per instance:
+
+| Metric | Measured | Threshold | Verdict |
+|---|---|---|---|
+| ALM | 1670 | < 4K | pass |
+| DSP | 1 | 1-2 | pass |
+| M10K | 0 | < 6 | pass |
+| Fmax | 94.64 MHz | > 80 MHz | pass |
+
+Three instances extrapolate to ~5.0K ALM and 3 DSP, against a budget of 15K ALM
+and 8 DSP. D4 holds comfortably.
+
+**This is not the gate closed.** What is missing:
+
+- No top level. The register file, program store, both data RAM banks and the
+  external bus are not built, which is why M10K reads 0 — the memories that will
+  consume it do not exist yet.
+- `fp_div` is unwritten, so `fdvd` contributes nothing to these numbers.
+- **Quartus 24.1std, not 17.0.x.** MiSTer cores build against 17.0.x, and its
+  fitter and DSP inference differ. These numbers are a strong signal, not the
+  sign-off. Re-measure on 17.0.x before treating the gate as closed.
+
 ## Resource gate
 
 | Metric | Pass | Investigate | Fail |

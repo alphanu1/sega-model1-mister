@@ -38,8 +38,29 @@ NetMerc.
 - Top level — not started.
 - `fp_div` — not started, so `fdvd` (0x10) decodes but never writes D.
 
-Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`, **not** Quartus
-ALMs; the 24x24 significand multiply will move into a DSP block under Quartus):
+**Real device numbers, Quartus Prime Lite 24.1std, 5CSEBA6U23I7, 50 MHz constraint:**
+
+| Module | ALMs | Registers | DSP | M10K | Fmax |
+|---|---|---|---|---|---|
+| `fp_mul` | 144 | 101 | **1** | 0 | 114.31 MHz |
+| `fp_add` | 410 | 81 | 0 | 0 | 77.42 MHz |
+| `mb86233_alu` | 1319 | 461 | **1** | 0 | 94.64 MHz |
+| `mb86233_agu` | 176 | 0 | 0 | 0 | combinational |
+| `mb86233_seq` | 175 | 106 | 0 | 0 | 244.20 MHz |
+
+A TGP instance from what exists today is **1670 ALM, 1 DSP, 0 M10K at 94.64 MHz**
+(`mb86233_alu` already includes one `fp_mul` and one `fp_add`). Every gate
+threshold passes, and the 24x24 significand multiply does infer a DSP block —
+the assumption D4 rests on. Three instances extrapolate to ~5.0K ALM and 3 DSP
+against a 15K/8 budget.
+
+Not the gate closed: there is no top level, so the register file, program store
+and both RAM banks are absent and M10K reads 0; `fp_div` is unwritten; and this
+is Quartus 24.1std rather than the 17.0.x MiSTer builds with. Details and
+caveats in `docs/m0-mb86233-spike.md`.
+
+Proxy synthesis (yosys 0.66, generic 6-LUT mapping with `-flatten`) is still used
+for tracking relative change between edits:
 
 | Module | LUT6 | FF |
 |---|---|---|
