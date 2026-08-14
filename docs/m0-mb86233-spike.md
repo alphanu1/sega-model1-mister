@@ -241,10 +241,45 @@ else is faster. The critical path is created by assembly — decode feeding
 `mb86233_xfer`, feeding the AGU, feeding the memory address, all combinational
 inside one FSM state.
 
-That is cheap to fix and the fix costs a cycle, which this design has in
-abundance: register the decoded control or the effective address and add a state.
-Deliberately not done yet, because doing it before the lockstep bridge exists
-would mean re-verifying a pipeline change with no reference to check it against.
+#### What has been done, and what closing the gap would take
+
+One retiming pass is complete: the decoded ALU op now reaches the FP operand
+mux through a register latched in `S_DECODE`. That moved the core from
+**51.47 to 54.28 MHz** and *reduced* ALMs from 2518 to 2493 — a shorter path
+lets the fitter stop duplicating logic. Lockstep confirmed identical behaviour
+over 8000 retires, which is why the change could be verified rather than hoped
+at. The register costs no cycles, since the FSM already spent a state there.
+
+`make quartus_paths` names the endpoints, and this is worth recording because
+the first assumption was wrong: the miss was attributed to
+decode → `mb86233_xfer` → AGU → memory address. Retiming there would have cost
+a pipeline stage and moved Fmax by nothing.
+
+**Two paths now stand between the core and 80 MHz, and both are inside
+`fp_add`:**
+
+| Context | Path | Reaches |
+|---|---|---|
+| in the core | operand mux → `fp_add` stage 1: magnitude compare, 27-bit align shift, subtract, exact-cancel | ~54 MHz |
+| `fp_add` alone | stage 2: `s1_sum` → leading-zero count → normalise shift → 24-bit round carry chain | ~78.7 MHz |
+
+So splitting stage 1 alone caps the design at `fp_add`'s standalone 76.35 MHz —
+still under the gate. Reaching 80 needs **both** stages split, taking `fp_add`
+from two stages to four.
+
+That has consequences beyond one file. `mb86233_alu` is built on fp_mul and
+fp_add being uniform latency 2, and pushes every non-FP result through two
+stages purely to line up; `fp_mul` would have to grow to match, and the ALU's
+alignment depth with it. It is a deliberate piece of work against a block with
+1.9 M verified cases behind it, not a continuation of the retiming pass.
+
+**Worth settling before doing it:** whether 80 MHz is the right threshold. The
+constraint in `quartus/spike.sdc` is a flat 50 MHz, the part clock is 16 MHz,
+and the TGP retires ~5.3 M instructions/sec. 54.28 MHz meets the constraint
+with slack. The 80 MHz figure predates any measurement, and D4's reversal
+condition is written in terms of 6K ALM and 60 MHz — which this passes on ALM
+and misses on Fmax by 6 MHz. That is a decision-record question, not an
+implementation one.
 
 **The two toolchains agree.** Every module is within 2 ALM and a few percent of
 Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
