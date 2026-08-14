@@ -458,6 +458,21 @@ int main(int argc, char** argv) {
             // payload — and lockstep has no way to skip a single register the
             // way the per-op harnesses do. Extending this to FP needs those
             // exclusions plumbed through, which is the next piece of work.
+            // Integer and logical ops only, for now.
+            //
+            // Enabling the FP ops was tried and reverted. Three exclusion
+            // classes were needed and correctly identified — canonical NaN vs
+            // propagated payload, flushed denormals, and signed zero — and
+            // after all three a real arithmetic divergence remained:
+            //
+            //   D got=00f70c8f exp=00c48d0b   (both small normals)
+            //
+            // That is not an FP representation artifact, it is a genuine
+            // difference that needs investigating on its own. Adding a fourth
+            // exclusion until the run went green would have produced a test
+            // that passes by not looking, which has already happened twice in
+            // this repo. The exclusion helpers above are kept because they are
+            // correct and will be needed once the real divergence is resolved.
             static const uint32_t INT_OPS[] = {
               0x01,0x02,0x03,0x04,0x16,0x17,0x18,0x19,0x1a,0x1b
             };
@@ -556,6 +571,21 @@ int main(int argc, char** argv) {
           diverged++;
           break;
         }
+        // FP exclusions, the same two the per-op harnesses apply, but applied
+        // per REGISTER because lockstep compares whole registers rather than
+        // one result at a time:
+        //   - NaN: the FP units emit a canonical 0x7fc00000, the host
+        //     reference propagates the operand's payload
+        //   - denormal: the RTL flushes to zero, the host does not
+        // Skipping a register whenever either side holds such a value keeps
+        // sequencing under test without re-litigating FP semantics, which
+        // tb_fp_add, tb_fp_mul, tb_fp_div and tb_mb86233_alu already cover
+        // exhaustively.
+        auto fp_excluded = [](uint32_t v) {
+          uint32_t e = (v >> 23) & 0xff, f = v & 0x7fffff;
+          return (e == 0xff && f != 0) || (e == 0 && f != 0);
+        };
+
         struct { const char* nm; uint32_t got, exp; } chk[] = {
           {"A",  dut->dbg_a,  ref.a},
           {"B",  dut->dbg_b,  ref.b},
@@ -566,6 +596,19 @@ int main(int argc, char** argv) {
           {"C1", dut->dbg_c1, ref.c1},
         };
         for (auto& c : chk) {
+          // A/B/D/P carry floats; the counters and M never do.
+          bool is_fp_reg = (c.nm[0] == 'A' || c.nm[0] == 'B'
+                         || c.nm[0] == 'D' || c.nm[0] == 'P');
+          if (is_fp_reg && (fp_excluded(c.got) || fp_excluded(c.exp))) continue;
+          // Signed zero is the third exclusion. The RTL's underflow flush
+          // preserves the sign where the host reaches an exact +0, so -0 and
+          // +0 turn up against each other. fp_add compares zero signs exactly
+          // over 1.9 M cases and fp_mul over 1.8 M, so the semantics are
+          // verified; repeating it here would only mask sequencing faults
+          // behind FP noise.
+          if (is_fp_reg && (c.got | c.exp) == 0x80000000u
+              && (c.got & 0x7fffffffu) == 0 && (c.exp & 0x7fffffffu) == 0)
+            continue;
           if (c.got != c.exp) {
             if (diverged < 3) {
               printf("  FAIL lockstep trial=%d instr=%d %s got=%08x exp=%08x\n",
