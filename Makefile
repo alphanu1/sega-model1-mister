@@ -157,7 +157,7 @@ else
   QUARTUS_BIN := $(firstword $(foreach d,$(QUARTUS_ROOTS),$(if $(findstring /$(QUARTUS)/,$(d)),$(d))))
 endif
 
-.PHONY: quartus_list
+.PHONY: quartus_list quartus_paths
 quartus_list:
 	@echo "Quartus installs found:"; \
 	 for d in $(QUARTUS_ROOTS); do \
@@ -176,6 +176,15 @@ quartus:
 	@cp quartus/spike.sdc $(QDIR)/spike.sdc
 	@echo "PROJECT_REVISION = \"$(MOD)\"" > $(QDIR)/$(MOD).qpf
 	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c 'quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)'
+
+# Where the critical path actually is. The STA summary reports slack and not
+# endpoints, so this is what makes a retime targeted rather than speculative.
+quartus_paths:
+	@test -d $(QDIR) || { echo "run 'make quartus MOD=$(MOD)' first"; exit 1; }
+	@cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" \
+	  quartus_sta -t ../../report_timing.tcl $(MOD) 2>&1 \
+	  | grep -vE '^Info \(1[0-9]{4}\)|^ *Info: (Copyright|Your use|and other|including|associated|to the terms|refer to|the sole|Altera|manufactured|programming|functions)' \
+	  | sed -n '/Path #/,$$p' | head -60
 	@$(MAKE) --no-print-directory quartus_report MOD=$(MOD)
 
 quartus_report:
