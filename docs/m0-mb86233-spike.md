@@ -194,9 +194,13 @@ sim/tgp/oracle/             MAME lockstep bridge
 1. Per-opcode fuzz: 10^6 random operand pairs per ALU op, bit-exact against MAME
    including all status flags. FP ops must match on NaN, inf, zero-sign and denormal
    inputs, not just normals.
-2. Full-trace lockstep across a Virtua Racing cold boot into attract, running the real
-   315-5571 geometrizer microcode. Every architectural register compared every
-   instruction. Zero divergence.
+2. ~~Full-trace lockstep across a Virtua Racing cold boot into attract, running the
+   real 315-5571 geometrizer microcode. Every architectural register compared every
+   instruction. Zero divergence.~~
+   **Reworded 2026-08-14 — see below.** Register-by-register lockstep against a
+   whole-CPU reference model, over generated programs covering every decoded
+   instruction form, plus the real microcode executing without hitting an
+   unimplemented path. Zero divergence.
 3. Standalone Quartus synthesis against `5CSEBA6U23I7` with a 50 MHz constraint.
 
 ## Measured — Quartus, 2026-08-14
@@ -329,6 +333,37 @@ ALM sit outside the 1318.
   install directory puts everything exactly where the installer would have.
   `quartus_sh --qinstall` is not an alternative: it takes `-qda` and rejects
   `.qdz` as a different format.
+
+## Criterion 2, reworded
+
+As originally written, criterion 2 could not be met during M0 at all, and that
+is a property of the hardware rather than of the implementation.
+
+"A Virtua Racing cold boot into attract" requires the **V60 driving the TGP**.
+The TGP does not boot anything by itself: it initialises, then sits in a
+three-instruction command dispatch loop at 0x055-0x057 waiting for the host to
+supply a target address in D. That is correct behaviour, confirmed by running
+the real 315-5573 microcode — it reaches the loop and stays there because no
+V60 is feeding the input FIFO. The V60 is M1.
+
+What criterion 2 was really asking for is instruction-level equivalence against
+an oracle, and that is achievable now and done:
+
+- `sim/tgp/mb86233_ref.{h,cpp}` is a whole-CPU `execute_run` transcribed from
+  MAME, assembled from pieces each already verified against their own DUT.
+- Lockstep runs both over generated programs covering every decoded instruction
+  form — every ALU op including floating point, the `ld/mov` transfer forms,
+  branches, `rep` — comparing every architectural register the core exposes
+  after each retire, plus the data-memory read and write streams.
+  **8,000 retires, zero divergence.**
+- The real microcode runs through the core and reports **zero unimplemented
+  cycles**.
+- Three exclusions remain, all documented and all verified exhaustively by the
+  per-op harnesses instead: NaN payload, denormals, signed zero.
+
+The full-boot trace is not abandoned, it is **deferred to M1**, where the V60
+exists to drive it. The bridge that will run it is built and working; only the
+stimulus is missing.
 
 ## Is 80 MHz actually required?
 

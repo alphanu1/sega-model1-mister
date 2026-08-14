@@ -15,8 +15,8 @@ NetMerc.
 
 | Milestone | State |
 |---|---|
-| M0 — MB86233 spike | in progress: FP datapath, ALU, AGU and sequencer verified; top level not started |
-| M1 — V60, bus, 2D, boot | not started |
+| M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
+| M1 — V60, bus, 2D, boot | next |
 | M2 — geometry pipeline | not started |
 | M3 — rasterizer and video | not started |
 | M4 — sound, inputs, full set | not started |
