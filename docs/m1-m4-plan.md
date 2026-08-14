@@ -5,6 +5,43 @@ resource gate reports.
 
 ---
 
+### M1 baseline, measured 2026-08-14
+
+Reproduced before writing anything, per the plan's own warning not to assume an
+imported core is a solved problem.
+
+**Unit suite** (`third_party/s32/verif/v60/run_v60_verilator.sh`):
+**22 passed, 6 build-failed.** All six failures are the Icarus white-box tests,
+and none is a core fault — Icarus 13.0 refuses to compile `s32_v60.sv` at all:
+
+```
+rtl/cpu/v60/s32_v60.sv:1317: error: This assignment requires an explicit cast.
+  ea_len <= 5'd1 + disp_len(modtop[1:0]);
+```
+
+21 sites, all the same shape: a function result used in arithmetic without an
+explicit width cast. Verilator accepts it; Icarus 13 does not. This is the same
+class of problem as the yosys strictness issues found in M0 — code that passes
+one toolchain and not another — and it wants the same fix, an explicit cast at
+each site. It belongs in **our** copy once the V60 is imported into `rtl/`,
+because `third_party/` is gitignored and re-cloned by `bootstrap.sh`, so a
+patch there would not survive.
+
+**The real M1 risk is timing, not correctness.** s32's own baseline records:
+
+| | s32 V60 | MAME |
+|---|---|---|
+| CPI, attract gameplay | **22.70** | flat 8 |
+| work vs idle, char select | 42% work | 15% work |
+| FSM state distribution | **S_FILLW 40%, S_FILL 16%** | — |
+
+56% of all cycles sit in fetch. A prefetch redesign was in progress upstream
+targeting CPI ~10-12, but `docs/v60-prefetch-plan.md` is **not present** in the
+vendored tree — only the baseline that references it. So that work either did
+not land or is not published, and M1 should budget for doing it rather than
+inheriting it.
+
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**
