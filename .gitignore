@@ -84,8 +84,3 @@ qdb/
 *~
 .DS_Store
 Thumbs.db
-
-# ------------------------------------------------------------------ agents
-# Shared project settings are committed; per-user local overrides are not.
-/.claude/settings.local.json
-/.claude/**/*.local.json
