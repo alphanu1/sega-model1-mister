@@ -75,6 +75,13 @@ NetMerc.
 | `mb86233_mem` | 123 | — | n/a | — | 0, 3 M10K |
 | `mb86233_dec` | 121 | — | comb | — | 0 |
 | `mb86233_xfer` | 28 | — | comb | — | 0 |
+| **`mb86233_core`** | **2153** | — | **51.65** | — | **1 DSP, 3 M10K** |
+
+The assembled core passes ALM, DSP and M10K with margin but **misses the Fmax
+gate**: 51.65 MHz against a > 80 MHz threshold. It still meets the flat 50 MHz
+constraint and the part runs at 16 MHz, so this is not functional — but it is a
+gate miss and is recorded as one. No individual block is close to it (the ALU is
+96 MHz); the path is created by assembly. See `docs/m0-mb86233-spike.md`.
 
 The two toolchains agree within 2 ALM and a few percent of Fmax, so the earlier
 "measured on 24.1, not the 17.0.x MiSTer uses" caveat is resolved.

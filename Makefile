@@ -18,13 +18,14 @@ SRCS_fp_mul := $(RTL)/fp_mul.sv
 SRCS_fp_add := $(RTL)/fp_add.sv
 SRCS_fp_div := $(RTL)/fp_div.sv
 SRCS_mb86233_alu := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
-                    $(RTL)/mb86233_alu.sv
+                    $(RTL)/fp_div.sv $(RTL)/mb86233_alu.sv
 SRCS_mb86233_agu := $(RTL)/mb86233_agu.sv
 SRCS_mb86233_regs := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_regs.sv
 SRCS_mb86233_mem := $(RTL)/mb86233_mem.sv
 SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
+                     $(RTL)/fp_div.sv \
                      $(RTL)/mb86233_alu.sv $(RTL)/mb86233_agu.sv $(RTL)/mb86233_seq.sv \
                      $(RTL)/mb86233_regs.sv $(RTL)/mb86233_mem.sv $(RTL)/mb86233_dec.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
@@ -112,7 +113,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer
+AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.

@@ -301,6 +301,24 @@ int main(int argc, char** argv) {
   ck("cfxd 1.5 mode0 roundf -> 2", cfxd_with(0x0000), 2);
   ck("cfxd 1.5 mode2 floor  -> 1", cfxd_with(0x0004), 1);
 
+  // --------------------------------------------------------------- fdvd
+  //
+  // End-to-end through the FSM, which must stall for the divider's ~29 cycles.
+  // D=6.0 / A=2.0 = 3.0. Built with the field accessors, since sext24 cannot
+  // express an exponent-bearing float.
+  printf("test: fdvd divides D by A, and the FSM waits for it\n");
+  for (auto& w : prog) w = enc_nop();
+  // exponent 0x81 is 2^2 = 4.0; mantissa 0x400000 is +0.5, so D = 4 * 1.5 = 6.0.
+  // (0x200000 would be +0.25, giving 5.0 — worth stating, because getting that
+  // wrong makes a correct divider look broken.)
+  prog[0] = enc_ldi(0x1a, 0x000081);       // set_exp(D,0x81)   -> 4.0
+  prog[1] = enc_ldi(0x1b, 0x400000);       // set_mant(D,0x400000) -> 6.0
+  prog[2] = enc_ldi(0x11, 0x000080);       // set_exp(A,0x80)   -> 2.0
+  prog[3] = enc_alu0f(0x10);               // fdvd
+  reset();
+  if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
+  ck("fdvd 6.0/2.0 -> 3.0", dut->dbg_d, 0x40400000);
+
   // --------------------------------------------------------------- clr0
   printf("test: clr0 clears A, B and D independently, and together\n");
   for (auto& w : prog) w = enc_nop();

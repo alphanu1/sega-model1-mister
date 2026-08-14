@@ -269,7 +269,7 @@ module mb86233_core (
   // ==================================================================
 
   logic        alu_in_valid, alu_out_valid;
-  logic        alu_extra, alu_unimpl;
+  logic        alu_extra, alu_busy;
   logic        xfer_d_valid;
   logic [31:0] xfer_d_data;
 
@@ -283,7 +283,7 @@ module mb86233_core (
     .d_out(alu_d_val), .d_we(alu_d_we),
     .p_out(alu_p_val), .p_we(alu_p_we),
     .st_out(alu_st_out), .extra_cycle(alu_extra),
-    .unimplemented(alu_unimpl)
+    .busy(alu_busy)
   );
 
   // ==================================================================
@@ -344,7 +344,7 @@ module mb86233_core (
   assign retire    = (state == S_RETIRE);
   assign retire_pc = seq_pc;
   assign unimplemented = d_unimpl | x_unimpl | rf_rd_unimpl | rf_wr_unimpl
-                       | alu_unimpl | seq_unimpl;
+                       | seq_unimpl;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -392,6 +392,11 @@ module mb86233_core (
 
         S_ALU: begin
           alu_launched <= 1'b1;
+          // out_valid already accounts for the divide: it is div_done for
+          // fdvd and the pipeline for everything else. Do NOT also gate on
+          // alu_busy — div_inflight only clears on the edge, so busy is still
+          // high during the very cycle div_done fires, and the FSM would never
+          // leave this state.
           if (!alu_active || alu_out_valid) begin
             state        <= S_RETIRE;
             alu_launched <= 1'b0;

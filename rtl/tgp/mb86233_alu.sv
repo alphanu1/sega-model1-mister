@@ -28,9 +28,14 @@
 // against a 50 MHz fabric clock; spending two cycles everywhere costs nothing
 // and removes a whole class of alignment bug.
 //
-// NOT IMPLEMENTED: fdvd (0x10). fp_div does not exist yet. The op decodes and
-// asserts `unimplemented`; d_we stays low so it cannot silently corrupt D.
-// docs/m0-mb86233-spike.md has this as the one opcode allowed to lag.
+// fdvd (0x10) breaks the uniform latency. fp_mul and fp_add are fixed-latency-2
+// and everything else is pushed through two stages to line up with them, but a
+// radix-2 divider is 29 cycles. Rather than pipeline the divider — far more area
+// than one opcode is worth — the ALU asserts `busy` and the caller waits.
+//
+// The divide runs beside the normal pipeline: its result is latched with the ST
+// captured at issue, and the ordinary two-stage path is suppressed for this op
+// so it cannot retire the instruction early with a stale result.
 
 `timescale 1ns/1ps
 
@@ -63,7 +68,7 @@ module mb86233_alu #(
   output logic        p_we,
   output logic [31:0] st_out,
   output logic        extra_cycle,     // this op burns one more cycle
-  output logic        unimplemented    // fdvd reached the ALU
+  output logic        busy             // a divide is in flight; hold the caller
 );
 
   // ==================================================================
@@ -91,6 +96,41 @@ module mb86233_alu #(
 
   // The multiplier only ever computes A*B. No mux needed.
   logic [31:0] mul_result, add_result;
+
+  // ------------------------------------------------------------- divider
+
+  logic        div_start, div_busy_i, div_done;
+  logic [31:0] div_result;
+  logic        div_ovf, div_unf, div_dvz, div_inv;
+
+  logic        div_inflight;
+  logic [31:0] div_st_hold;      // ST as it was when the divide was issued
+
+  // Numerator is D, denominator is A: MAME evaluates f2u(u2f(m_d) / u2f(m_a)).
+  fp_div #(.FLUSH_DENORM_IN(FLUSH_DENORM_IN)) u_div (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(div_start), .a(reg_d), .b(reg_a),
+    .busy(div_busy_i), .out_valid(div_done), .result(div_result),
+    .overflow(div_ovf), .underflow(div_unf),
+    .div_by_zero(div_dvz), .invalid(div_inv)
+  );
+
+  assign div_start = in_valid & (op == mb86233_pkg::ALU_FDVD) & ~div_inflight & ~div_busy_i;
+  assign busy      = div_inflight | div_busy_i;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      div_inflight <= 1'b0;
+      div_st_hold  <= 32'd0;
+    end else begin
+      if (div_start) begin
+        div_inflight <= 1'b1;
+        div_st_hold  <= st_in;
+      end else if (div_done) begin
+        div_inflight <= 1'b0;
+      end
+    end
+  end
 
   // Deliberately unused. MAME's flag model never sets OVD, UND or DVZD from
   // anywhere: alu_pre puts them in the clear-mask and stset_set_sz_* only ever
@@ -331,6 +371,21 @@ module mb86233_alu #(
   // Flags. Only ZRD and SGD are ever set; CPD/OVD/DVZD sit in the mask so they
   // are cleared and never restored. stset_set_sz_int and _fp differ only in
   // whether the sign bit alone counts as nonzero.
+  // Divide result flags. Computed from the ST captured when the divide was
+  // issued, not the current one: ST can move on during the ~29 cycles it runs.
+  // fdvd is an FP op, so this is stset_set_sz_fp.
+  logic        div_flag_zero;
+  logic [31:0] div_st_set, div_st_next;
+  always_comb begin
+    div_flag_zero = ((div_result & 32'h7fffffff) == 32'd0);
+    if (div_flag_zero)       div_st_set = 32'd1 << mb86233_pkg::F_ZRD;
+    else if (div_result[31]) div_st_set = 32'd1 << mb86233_pkg::F_SGD;
+    else                     div_st_set = 32'd0;
+    div_st_next = (div_st_hold
+                   & ~mb86233_pkg::alu_st_mask(mb86233_pkg::ALU_FDVD))
+                | div_st_set;
+  end
+
   logic        flag_zero;
   logic [31:0] st_set, st_mask, st_next;
 
@@ -364,12 +419,14 @@ module mb86233_alu #(
   assign fdvd = (s2_op == mb86233_pkg::ALU_FDVD);
 
   always_comb begin
-    // fdvd has no divider behind it yet: never write D from it. A transfer in
-    // the same instruction still lands, so this degrades to "the division did
-    // not happen" rather than to garbage in D.
-    if (fdvd) begin
+    // The divide retires on its own completion, not on the pipeline. While it
+    // is in flight the normal path must not write D at all.
+    if (div_done) begin
+      d_out = div_result;
+      d_we  = 1'b1;                        // FP result beats a transfer
+    end else if (fdvd) begin
       d_out = s2_xd;
-      d_we  = s2_valid & s2_xv;
+      d_we  = 1'b0;                        // suppressed until the divide lands
     end else if (alu_d_fp) begin
       d_out = r1;                          // FP beats a concurrent transfer
       d_we  = s2_valid;
@@ -383,10 +440,12 @@ module mb86233_alu #(
   end
 
   assign p_out       = mul_result;
-  assign p_we        = s2_valid & mb86233_pkg::alu_writes_p(s2_op);
-  assign st_out      = st_next;
-  assign out_valid   = s2_valid;
+  // No P writes while a divide is in flight: the pipeline behind it is not
+  // this instruction's.
+  assign p_we        = s2_valid & mb86233_pkg::alu_writes_p(s2_op) & ~div_inflight;
+  assign st_out      = div_done ? div_st_next : st_next;
+  // fdvd retires when the divider finishes; every other op on the pipeline.
+  assign out_valid   = div_done | (s2_valid & ~fdvd);
   assign extra_cycle = s2_valid & mb86233_pkg::alu_is_fp_post(s2_op);
-  assign unimplemented = s2_valid & fdvd;
 
 endmodule

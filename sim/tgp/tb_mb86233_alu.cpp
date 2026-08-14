@@ -20,7 +20,12 @@
 //   BSD-3-Clause, copyright-holders: Olivier Galibert
 //
 // Skips, every one deliberate and explained at its skip site:
-//   - fdvd (0x10): fp_div is not written yet
+//   - fdvd (0x10): NOT DRIVEN. It is variable-latency: the ALU holds `busy` for
+//     the ~29 cycles the divider runs and cannot accept work meanwhile. This
+//     harness issues one op per cycle and has no way to honour that, so driving
+//     fdvd corrupts the ops pipelined around it — 40000 failures, none of them
+//     in fdvd itself. Covered by tb_fp_div and by the core harness, which does
+//     respect busy.
 //   - denormal operands and denormal results: the RTL flushes, the host does
 //     not (same open question as fp_add/fp_mul)
 //   - cfxd out-of-range and non-finite inputs: s32(float) is UB in C++
@@ -166,9 +171,7 @@ static Ref model(uint32_t op, const Regs& r, bool xv, uint32_t xd) {
   out.p_out = (op == FML) ? r1 : r2;   // fml puts the product in r1, not r2
 
   // transfers beat integer ops, FP ops beat transfers
-  if (op == FDVD) {                    // not implemented in RTL; see header
-    out.d_we = xv;  out.d_out = xd;
-  } else if (is_fp_d(op)) {
+  if (is_fp_d(op)) {
     out.d_we = true; out.d_out = r1;
   } else if (xv) {
     out.d_we = true; out.d_out = xd;
@@ -199,9 +202,6 @@ int main(int argc, char** argv) {
     ANDD, ORAD, EORD, NOTD, FCPD, FADD, FSBD, FML, FMSD, FMRD, FABD,
     FSMD, FSPD, CXFD, CFXD, FNED, BAPA, BSPA, LSRD, LSLD, ASRD, ASLD,
     ADDD, SUBD,
-    // Driven but skipped, so the gap shows up in the skipped count instead of
-    // being invisible. Whoever writes fp_div removes the skip below.
-    FDVD,
     0x00, 0x12, 0x15, 0x1c,   // undecoded: must leave D and ST alone
   };
   const int NOPS = sizeof(OPS) / sizeof(OPS[0]);
@@ -277,8 +277,7 @@ int main(int argc, char** argv) {
     // ---------------------------------------------------------- skips
     bool skip = false;
 
-    // fdvd: fp_div is unwritten. The RTL decodes it but never writes D.
-    if (q.op == FDVD) skip = true;
+    // fdvd is NOT driven by this harness at all — see the OPS list.
 
     // Denormal operands and denormal results: the RTL flushes, the host does
     // not. Same open question as fp_add/fp_mul, tracked in the M0 doc.

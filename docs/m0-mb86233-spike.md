@@ -217,6 +217,34 @@ onwards) and 24.1std Lite.
 | `mb86233_mem` | 123 | — | n/a | — | 0 | **3** |
 | `mb86233_dec` | 121 | — | comb | — | 0 | 0 |
 | `mb86233_xfer` | 28 | — | comb | — | 0 | 0 |
+| **`mb86233_core`** | **2153** | — | **51.65** | — | **1** | **3** |
+
+### The assembled core misses the Fmax gate
+
+`mb86233_core` is the whole TGP: all eleven blocks, both RAM banks, the
+divider. Against the gate:
+
+| Metric | Measured | Pass | Verdict |
+|---|---|---|---|
+| ALM | 2153 | < 4K | pass, with margin |
+| DSP | 1 | 1-2 | pass |
+| M10K | 3 | < 6 | pass |
+| **Fmax** | **51.65 MHz** | **> 80 MHz** | **FAIL** — below the 60 MHz floor |
+
+It still meets the flat 50 MHz constraint in `quartus/spike.sdc`, and the part
+runs at 16 MHz retiring ~5.3 M instructions/sec, so this is not a functional
+problem. But the gate asks for 80 MHz and this is 51.65, which lands under the
+60 MHz "fail" line rather than in the investigate band.
+
+Note no individual block is near this: the ALU alone is 96.26 MHz and everything
+else is faster. The critical path is created by assembly — decode feeding
+`mb86233_xfer`, feeding the AGU, feeding the memory address, all combinational
+inside one FSM state.
+
+That is cheap to fix and the fix costs a cycle, which this design has in
+abundance: register the decoded control or the effective address and add a state.
+Deliberately not done yet, because doing it before the lockstep bridge exists
+would mean re-verifying a pipeline change with no reference to check it against.
 
 **The two toolchains agree.** Every module is within 2 ALM and a few percent of
 Fmax. The version caveat that hedged the earlier 24.1-only numbers is resolved:
