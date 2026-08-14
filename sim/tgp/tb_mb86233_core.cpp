@@ -32,6 +32,103 @@
 static Vmb86233_core* dut;
 static std::vector<uint32_t> prog(2048, 0);
 
+// ------------------------------------------------------- copro IO model
+//
+// copro_io_map is NOT memory. It is the Model 1 board's math accelerators, and
+// every one of them is a lookup into the copro_tables ROM rather than a
+// computation:
+//
+//   0x0020-0x0023  sincos      0x0024-0x0027  atan
+//   0x0028-0x0029  inv         0x002a-0x002b  isqrt
+//   0x8000-0xffff  data window
+//
+// Transcribed from model1_m.cpp. This is board glue, not TGP, so it lives in
+// the harness until M2 builds the real copro. Without it the TGP's math calls
+// return garbage and the microcode never leaves its init loop.
+static std::vector<uint32_t> tables;      // 0x10000 u32 entries when loaded
+static uint32_t io_sincos_base = 0;
+static uint32_t io_inv_base    = 0;
+static uint32_t io_isqrt_base  = 0;
+static uint32_t io_atan_base[4] = {0,0,0,0};
+static uint32_t io_data_base   = 0;
+static uint32_t io_ramadr[4]   = {0,0,0,0};
+
+static uint32_t tbl(uint32_t i) {
+  return tables.empty() ? 0 : tables[i & 0xffff];
+}
+
+static uint32_t copro_sincos_r(uint32_t off) {
+  uint32_t ang = io_sincos_base + off * 0x4000;
+  uint32_t index = ang & 0x3fff;
+  if (ang & 0x4000) {
+    int v = 0x4000 - (int)index;
+    index = (uint32_t)(v < 0x3fff ? v : 0x3fff);
+  }
+  uint32_t r = tbl(index);
+  if (ang & 0x8000) r ^= 0x80000000u;
+  return r;
+}
+
+static uint32_t copro_inv_r(uint32_t off) {
+  uint32_t index = ((io_inv_base >> 9) & 0x3ffe) | (off & 1);
+  uint32_t r = tbl(index | 0x8000);
+  uint8_t bexp = (io_inv_base >> 23) & 0xff;
+  uint8_t exp  = (uint8_t)((r >> 23) + (0x7f - bexp));
+  r = (r & 0x807fffffu) | ((uint32_t)exp << 23);
+  if (io_inv_base & 0x80000000u) r ^= 0x80000000u;
+  return r;
+}
+
+static uint32_t copro_isqrt_r(uint32_t off) {
+  uint32_t index = 0x2000 ^ (((io_isqrt_base >> 10) & 0x3ffe) | (off & 1));
+  uint32_t r = tbl(index | 0xc000);
+  uint8_t bexp = (io_isqrt_base >> 24) & 0x7f;
+  uint8_t exp  = (uint8_t)((r >> 23) + (0x3f - bexp));
+  r = (r & 0x807fffffu) | ((uint32_t)exp << 23);
+  if (!(off & 1)) r &= 0x7fffffffu;
+  return r;
+}
+
+static uint32_t copro_atan_r() {
+  uint32_t idx = io_atan_base[3] & 0xffff;
+  if (idx & 0xc000) idx = 0x3fff;
+  uint32_t r = tbl(idx | 0x4000);
+
+  // MAME's comment: corrects for a bug in the table itself, which the hardware
+  // evidently compensates for somehow. Reproduced verbatim.
+  uint16_t dt = (uint16_t)((r >> 16) + r);
+  if (dt & 0x001) { if ((r & 0x00f) == 0x00e) r -= 0x00000001; else r -= 0x00010000; }
+  if (dt & 0x010) { if ((r & 0x0f0) == 0x0e0) r -= 0x00000010; else r -= 0x00100000; }
+  if (dt & 0x100) { if ((r & 0xf00) == 0xe00) r -= 0x00000100; else r -= 0x01000000; }
+
+  bool s0 = io_atan_base[0] & 0x80000000u;
+  bool s1 = io_atan_base[1] & 0x80000000u;
+  bool s2 = io_atan_base[2] & 0x80000000u;
+  if (s0 ^ s1 ^ s2) r >>= 16;
+  if (s2) r += 0x4000;
+  if ((s0 && !s2) || (s1 && s2)) r += 0x8000;
+  return r & 0xffff;
+}
+
+static uint32_t io_read(uint32_t a) {
+  if (a >= 0x8000) return tbl((io_data_base & ~0x7fffu) | (a & 0x7fff));
+  if (a >= 0x20 && a <= 0x23) return copro_sincos_r(a & 1);
+  if (a >= 0x24 && a <= 0x27) return copro_atan_r();
+  if (a >= 0x28 && a <= 0x29) return copro_inv_r(a & 1);
+  if (a >= 0x2a && a <= 0x2b) return copro_isqrt_r(a & 1);
+  if ((a & ~0x18u) == 0x0000) return io_ramadr[(a >> 3) & 3];
+  return 0;
+}
+
+static void io_write(uint32_t a, uint32_t v) {
+  if (a >= 0x20 && a <= 0x23) io_sincos_base = v;
+  else if (a >= 0x24 && a <= 0x27) io_atan_base[a & 3] = v;
+  else if (a >= 0x28 && a <= 0x29) io_inv_base = v;
+  else if (a >= 0x2a && a <= 0x2b) io_isqrt_base = v;
+  else if (a == 0x2e) io_data_base = v;
+  else if ((a & ~0x18u) == 0x0000) io_ramadr[(a >> 3) & 3] = v;
+}
+
 static void tick() {
   dut->clk = 0; dut->eval();
   dut->clk = 1; dut->eval();
@@ -40,10 +137,11 @@ static void tick() {
 // Drive the program ROM: synchronous, data valid the cycle after addr.
 static void step_cycle() {
   dut->prog_rdata = prog[dut->prog_addr & 0x7ff];
-  dut->io_ack = 1;          // IO always ready in this harness
+  dut->io_ack = 1;
   dut->fifo_ack = 1;
-  dut->io_rdata = 0xa5a5a5a5;
-  dut->fifo_rdata = 0x5a5a5a5a;
+  dut->io_rdata = io_read(dut->io_addr);
+  dut->fifo_rdata = 0;      // input FIFO: no command data in this harness
+  if (dut->io_wr) io_write(dut->io_addr, dut->io_wdata);
   tick();
 }
 
@@ -181,6 +279,21 @@ int main(int argc, char** argv) {
   //
   // The ROM is loaded at runtime from a path and never vendored, per hard
   // rule 2. Absent, the test is skipped rather than failed.
+  const char* tbl_path = getenv("MB86233_COPRO_TABLES");
+  if (tbl_path) {
+    FILE* tf = fopen(tbl_path, "rb");
+    if (tf) {
+      tables.assign(0x10000, 0);
+      std::vector<uint8_t> tb(0x40000, 0);
+      size_t n = fread(tb.data(), 1, tb.size(), tf);
+      fclose(tf);
+      for (size_t i = 0; i < 0x10000; i++)
+        tables[i] = (uint32_t)tb[4*i] | ((uint32_t)tb[4*i+1] << 8)
+                  | ((uint32_t)tb[4*i+2] << 16) | ((uint32_t)tb[4*i+3] << 24);
+      printf("test: copro_tables loaded (%zu bytes)\n", n);
+    }
+  }
+
   const char* rom = getenv("MB86233_TGP_ROM");
   if (rom) {
     FILE* f = fopen(rom, "rb");
@@ -213,6 +326,15 @@ int main(int argc, char** argv) {
       for (auto v : seen_pc) covered += v;
       printf("  retired=%ld  distinct PCs=%ld  unimplemented cycles=%ld\n",
              retired, covered, unimpl_cycles);
+      // Print the visited PCs as ranges, so a tight wait loop is obvious.
+      printf("  visited:");
+      for (size_t i = 0; i < seen_pc.size(); ) {
+        if (!seen_pc[i]) { i++; continue; }
+        size_t j = i; while (j + 1 < seen_pc.size() && seen_pc[j+1]) j++;
+        if (j > i) printf(" %03zx-%03zx", i, j); else printf(" %03zx", i);
+        i = j + 1;
+      }
+      printf("\n");
       checks++;
       if (retired == 0) {
         printf("  FAIL real microcode retired no instructions\n");
