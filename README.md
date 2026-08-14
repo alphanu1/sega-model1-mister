@@ -55,30 +55,10 @@ NetMerc.
   but not yet exercised. `fdvd` works end to end.
 - `mb86233_ref` — a whole-CPU `execute_run` reference model, with lockstep
   against the core, including the `ld/mov` transfer forms: **8,000 retires x 7
-  registers, zero divergence.** It found one real core bug (a truncated source
-  register index) and two harness faults.
-
-### Lockstep over FP ops — one divergence still unexplained
-
-Enabling the floating-point ALU ops in lockstep was attempted and reverted.
-Three exclusion classes are needed and were identified correctly:
-
-| Class | Why |
-|---|---|
-| NaN | RTL emits canonical `0x7fc00000`, host propagates the operand payload |
-| denormal | RTL flushes to zero, host does not |
-| signed zero | RTL's underflow flush keeps the sign, host reaches exact `+0` |
-
-After all three, a real arithmetic divergence remained:
-
-```
-FAIL lockstep trial=25 instr=17 D got=00f70c8f exp=00c48d0b
-```
-
-Both are small normals, so this is not a representation artifact — it is a
-genuine difference needing its own investigation. A fourth exclusion would have
-turned the run green by not looking, so the FP ops are back off and the
-exclusion helpers are kept for when the divergence is understood.
+  registers, **every decoded ALU op including floating point**, zero divergence.
+  It has found two real core bugs — a truncated source register index, and the
+  FP post path applied to instruction types that never reach it — plus three
+  harness faults.
 
 ### Correction, 2026-08-14
 

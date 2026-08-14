@@ -61,6 +61,14 @@ module mb86233_alu #(
   input  logic        xfer_d_valid,
   input  logic [31:0] xfer_d_data,
 
+  // Whether this instruction reaches alu_post_2, the floating-point post path.
+  // MAME's case 0x0f (rep/clr0/clr1/set) calls alu_pre and alu_post_1 and then
+  // STOPS — it never calls alu_post_2 — so an FP op encoded there computes its
+  // result and discards it. Types 0x00 and 0x07 do call it. Applying the FP
+  // writeback unconditionally makes every FP op in the 0x0f group write D or P
+  // when the hardware does not.
+  input  logic        fp_post_en,
+
   output logic        out_valid,
   output logic [31:0] d_out,
   output logic        d_we,
@@ -423,13 +431,13 @@ module mb86233_alu #(
     // is in flight the normal path must not write D at all.
     if (div_done) begin
       d_out = div_result;
-      d_we  = 1'b1;                        // FP result beats a transfer
+      d_we  = fp_post_en;                  // FP result beats a transfer
     end else if (fdvd) begin
       d_out = s2_xd;
       d_we  = 1'b0;                        // suppressed until the divide lands
     end else if (alu_d_fp) begin
       d_out = r1;                          // FP beats a concurrent transfer
-      d_we  = s2_valid;
+      d_we  = s2_valid & fp_post_en;
     end else if (s2_xv) begin
       d_out = s2_xd;                       // transfer beats an integer op
       d_we  = s2_valid;
@@ -442,7 +450,9 @@ module mb86233_alu #(
   assign p_out       = mul_result;
   // No P writes while a divide is in flight: the pipeline behind it is not
   // this instruction's.
-  assign p_we        = s2_valid & mb86233_pkg::alu_writes_p(s2_op) & ~div_inflight;
+  // P is written only from alu_post_2, so it follows the same gate.
+  assign p_we        = s2_valid & mb86233_pkg::alu_writes_p(s2_op)
+                     & ~div_inflight & fp_post_en;
   assign st_out      = div_done ? div_st_next : st_next;
   // fdvd retires when the divider finishes; every other op on the pipeline.
   assign out_valid   = div_done | (s2_valid & ~fdvd);

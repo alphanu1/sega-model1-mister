@@ -191,6 +191,11 @@ int main(int argc, char** argv) {
     dut->clk = 1; dut->eval();
   };
 
+  // This harness models the lab / ld/mov context, where MAME does reach
+  // alu_post_2. The 0x0f group, which does not, is exercised by the core
+  // harness in sequence — it cannot be expressed here, because this drives the
+  // ALU directly with no instruction type around it.
+  dut->fp_post_en = 1;
   dut->rst_n = 0; dut->in_valid = 0;
   for (int i = 0; i < 4; i++) tick();
   dut->rst_n = 1;

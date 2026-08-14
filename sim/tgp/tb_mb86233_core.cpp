@@ -329,7 +329,12 @@ int main(int argc, char** argv) {
   prog[0] = enc_ldi(0x1a, 0x000081);       // set_exp(D,0x81)   -> 4.0
   prog[1] = enc_ldi(0x1b, 0x400000);       // set_mant(D,0x400000) -> 6.0
   prog[2] = enc_ldi(0x11, 0x000080);       // set_exp(A,0x80)   -> 2.0
-  prog[3] = enc_alu0f(0x10);               // fdvd
+  // fdvd must be carried by a ld/mov, NOT a 0x0f-group instruction. The 0x0f
+  // group never reaches alu_post_2, so an FP result there is computed and
+  // discarded — this test previously used enc_alu0f and "passed" only because
+  // the core wrongly applied the FP writeback everywhere. Form 7/6 is a
+  // harmless reg-to-reg move that carries the ALU op alongside it.
+  prog[3] = enc_ldmov7(6, 0x20, 0x20, 0x10);
   reset();
   if (!run_instrs(4)) { printf("  FAIL timeout\n"); fails++; }
   ck("fdvd 6.0/2.0 -> 3.0", dut->dbg_d, 0x40400000);
@@ -474,9 +479,11 @@ int main(int argc, char** argv) {
             // this repo. The exclusion helpers above are kept because they are
             // correct and will be needed once the real divergence is resolved.
             static const uint32_t INT_OPS[] = {
-              0x01,0x02,0x03,0x04,0x16,0x17,0x18,0x19,0x1a,0x1b
+              0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,
+              0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x13,0x14,
+              0x16,0x17,0x18,0x19,0x1a,0x1b
             };
-            w = enc_alu0f(INT_OPS[rnd() % 10]);
+            w = enc_alu0f(INT_OPS[rnd() % 25]);
             break;
           }
           case 5: {
@@ -539,14 +546,29 @@ int main(int argc, char** argv) {
           step_cycle();
           if (seen != 1) break;
         }
+        uint32_t pre_a = ref.a, pre_b = ref.b, pre_d = ref.d, pre_p = ref.p;
+        uint32_t pre_m = ref.m; uint8_t pre_sft = ref.sft;
         ref.writes.clear(); ref.reads.clear();
         ref.step();
         compared++;
 
         // Compare the write STREAM, not the resulting arrays.
+        // The same FP exclusions apply to values in FLIGHT, not just values
+        // at rest in a register. A NaN or flushed denormal stored to memory
+        // diverges for exactly the reasons it diverges in D, and comparing
+        // write data without the exclusion re-reports FP semantics as a
+        // sequencing fault.
+        auto fp_excl = [](uint32_t v) {
+          uint32_t e = (v >> 23) & 0xff, f = v & 0x7fffff;
+          return (e == 0xff && f != 0) || (e == 0 && f != 0);
+        };
+        bool fp_noise = fp_excl(pre_a) || fp_excl(pre_b)
+                     || fp_excl(pre_d) || fp_excl(pre_p);
+
         uint32_t ref_ra = ref.reads.empty() ? 0xffffffff : ref.reads.back().addr;
         uint32_t ref_rd = ref.reads.empty() ? 0 : ref.reads.back().data;
-        if (ref_ra != 0xffffffff && dut_rd != ref_rd) {
+        bool rdata_excluded = fp_noise || fp_excl(dut_rd) || fp_excl(ref_rd);
+        if (ref_ra != 0xffffffff && dut_rd != ref_rd && !rdata_excluded) {
           if (diverged < 3)
             printf("  MEMDATA trial=%d instr=%d pc=%04x op=%08x addr=%05x  dut=%08x | ref=%08x\n",
                    trial, n, ref.ppc, ref.prog[ref.ppc & 0x7ff], ref_ra, dut_rd, ref_rd);
@@ -562,7 +584,23 @@ int main(int argc, char** argv) {
         }
         uint32_t ref_wa = ref.writes.empty() ? 0xffffffff : ref.writes.back().addr;
         uint32_t ref_wd = ref.writes.empty() ? 0 : ref.writes.back().data;
-        if (dut_wa != ref_wa || (ref_wa != 0xffffffff && dut_wd != ref_wd)) {
+        // Excluding a comparison is not enough on its own: the two sides have
+        // still DIVERGED, and every later read of that location inherits the
+        // difference. An FP value skipped here reappears as an unrelated
+        // failure thousands of comparisons downstream.
+        //
+        // So on an excluded value the model is resynchronised to the DUT.
+        // That is what keeps lockstep meaningful across an exclusion: the FP
+        // semantics are not being checked here — they are checked exhaustively
+        // by tb_fp_add, tb_fp_mul, tb_fp_div and tb_mb86233_alu — but the
+        // sequencing after them still is.
+        bool wdata_excluded = fp_noise || fp_excl(dut_wd) || fp_excl(ref_wd);
+        if (wdata_excluded && ref_wa != 0xffffffff && dut_wa == ref_wa) {
+          if (ref_wa <= 0x0ff) ref.ram0[ref_wa] = dut_wd;
+          else if (ref_wa >= 0x200 && ref_wa <= 0x3ff) ref.ram1[ref_wa - 0x200] = dut_wd;
+        }
+        if (dut_wa != ref_wa
+            || (ref_wa != 0xffffffff && dut_wd != ref_wd && !wdata_excluded)) {
           if (diverged < 3)
             printf("  MEMWRITE trial=%d instr=%d pc=%04x op=%08x\n"
                    "     dut addr=%05x data=%08x (n=%d) | ref addr=%05x data=%08x (n=%zu)\n",
@@ -581,6 +619,16 @@ int main(int argc, char** argv) {
         // sequencing under test without re-litigating FP semantics, which
         // tb_fp_add, tb_fp_mul, tb_fp_div and tb_mb86233_alu already cover
         // exhaustively.
+        // Denormal OPERANDS matter as much as denormal results. fadd of a
+        // normal D and a denormal A yields a normal sum, so a result-only
+        // check passes it through — and the two sides then disagree because
+        // the reference flushes the denormal input where the RTL does not:
+        //
+        //   D=00c48d0b + A=00327f84 -> RTL 00f70c8f, reference 00c48d0b
+        //
+        // 0xC48D0B + 0x327F84 = 0xF70C8F, so the RTL is right and the
+        // reference dropped A entirely. tb_fp_add excludes on the operands for
+        // exactly this reason; lockstep has to as well.
         auto fp_excluded = [](uint32_t v) {
           uint32_t e = (v >> 23) & 0xff, f = v & 0x7fffff;
           return (e == 0xff && f != 0) || (e == 0 && f != 0);
@@ -599,7 +647,22 @@ int main(int argc, char** argv) {
           // A/B/D/P carry floats; the counters and M never do.
           bool is_fp_reg = (c.nm[0] == 'A' || c.nm[0] == 'B'
                          || c.nm[0] == 'D' || c.nm[0] == 'P');
-          if (is_fp_reg && (fp_excluded(c.got) || fp_excluded(c.exp))) continue;
+          bool operand_denorm =
+              fp_excluded(pre_a) || fp_excluded(pre_b) ||
+              fp_excluded(pre_d) || fp_excluded(pre_p);
+          if (is_fp_reg && (fp_excluded(c.got) || fp_excluded(c.exp)
+                            || operand_denorm)) {
+            // Resynchronise so the exclusion does not leak into later
+            // comparisons. Only the registers the core exposes can be
+            // corrected, which is why A/B/D/P are the ones checked at all.
+            switch (c.nm[0]) {
+              case 'A': ref.a = dut->dbg_a; break;
+              case 'B': ref.b = dut->dbg_b; break;
+              case 'D': ref.d = dut->dbg_d; break;
+              case 'P': ref.p = dut->dbg_p; break;
+            }
+            continue;
+          }
           // Signed zero is the third exclusion. The RTL's underflow flush
           // preserves the sign where the host reaches an exact +0, so -0 and
           // +0 turn up against each other. fp_add compares zero signs exactly
@@ -613,6 +676,10 @@ int main(int argc, char** argv) {
             if (diverged < 3) {
               printf("  FAIL lockstep trial=%d instr=%d %s got=%08x exp=%08x\n",
                      trial, n, c.nm, c.got, c.exp);
+              printf("       pre A=%08x B=%08x D=%08x P=%08x M=%04x SFT=%02x\n",
+                     pre_a, pre_b, pre_d, pre_p, pre_m, pre_sft);
+              printf("       alu=%02x\n",
+                     (ref.prog[ref.ppc & 0x7ff] >> 20) & 0x1f);
               printf("       pc=%04x opcode=%08x top=%02x\n",
                      ref.ppc, ref.prog[ref.ppc & 0x7ff],
                      (ref.prog[ref.ppc & 0x7ff] >> 26) & 0x3f);

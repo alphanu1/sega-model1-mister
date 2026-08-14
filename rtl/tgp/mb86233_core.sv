@@ -287,6 +287,8 @@ module mb86233_core (
     .reg_a(reg_a), .reg_b(reg_b), .reg_d(reg_d), .reg_p(reg_p),
     .sft(sft), .m(reg_m), .st_in(st),
     .xfer_d_valid(xfer_d_valid), .xfer_d_data(xfer_d_data),
+    // lab and ld/mov reach alu_post_2; the 0x0f group does not.
+    .fp_post_en(d_lab | d_ldmov),
     .out_valid(alu_out_valid),
     .d_out(alu_d_val), .d_we(alu_d_we),
     .p_out(alu_p_val), .p_we(alu_p_we),
