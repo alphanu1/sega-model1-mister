@@ -27,6 +27,35 @@ each site. It belongs in **our** copy once the V60 is imported into `rtl/`,
 because `third_party/` is gitignored and re-cloned by `bootstrap.sh`, so a
 patch there would not survive.
 
+#### MAME's V60 cycle count is a placeholder — do not target it
+
+Before using any "we are Nx slower than MAME" figure, read
+`third_party/mame/src/devices/cpu/v60/v60.cpp`:
+
+```
+614:  // Actual cycles / instruction is unknown
+626:      m_icount -= 8;  /* fix me -- this is just an average */
+```
+
+That is the **only** `m_icount -=` in the file. Every V60 instruction costs a
+flat 8 cycles, and MAME says in its own comment that the real figure is unknown
+and this is a guess.
+
+So the s32 baseline's "ours 22.70 vs MAME 8, about 2.8x" is not a measurement
+of being 2.8x too slow. It compares against a number MAME explicitly disclaims.
+Chasing CPI 10-12 to approach 8 would be optimising toward a placeholder.
+
+**This narrows hard rule 3.** MAME is the oracle for *behaviour* — instruction
+semantics, registers, flags, memory effects — and M0 leaned on that heavily and
+correctly. It is **not** an oracle for V60 instruction timing, and nothing in
+this project should treat it as one.
+
+What would settle it: the uPD70616 datasheet's instruction timing tables, or
+measurement against real hardware. Until then the honest target is not a CPI
+number at all but whether the V60 sustains the game's real-time workload —
+which is exactly what M1's bandwidth telemetry is for, and what the M0 TGP
+result was framed as (9.83 cycles/instruction, 52.1 MHz needed, 1.38x headroom).
+
 **The real M1 risk is timing, not correctness.** s32's own baseline records:
 
 | | s32 V60 | MAME |
@@ -40,6 +69,12 @@ targeting CPI ~10-12, but `docs/v60-prefetch-plan.md` is **not present** in the
 vendored tree — only the baseline that references it. So that work either did
 not land or is not published, and M1 should budget for doing it rather than
 inheriting it.
+
+But note the target itself is suspect, per the section above: CPI 10-12 was
+chosen to approach MAME's 8, and MAME's 8 is a self-declared guess. 56% of
+cycles in fetch is worth fixing on its own merits — it is a real inefficiency
+regardless of what the reference says — but "how close to 8" is not the measure
+of success. Whether the game's workload fits in real time is.
 
 
 ## M1 — V60, bus, 2D subsystem, boot
