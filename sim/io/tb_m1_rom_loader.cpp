@@ -137,6 +137,7 @@ static uint16_t read_word(Loader& h, uint32_t waddr) {
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
+
   Loader h;
   std::mt19937 rng(20260815u);
 
@@ -205,7 +206,7 @@ int main(int argc, char** argv) {
     // assumes the next write cannot arrive loses words here, and the loss is
     // silent — which is why overflow is an explicit output rather than an
     // assumption.
-    for (int lat = 0; lat <= 6; lat++) {
+    for (int lat = 0; lat <= 64; lat++) {
       Loader g;
       std::mt19937 r2(1000u + lat);
       g.reset();
@@ -231,7 +232,7 @@ int main(int argc, char** argv) {
         h.fails++;
       }
     }
-    printf("  host wait latency 0..6 all clean\n");
+    printf("  host wait latency 0..64 all clean\n");
   }
 
   printf("test: rom_loaded waits for the last write to drain\n");
@@ -306,6 +307,98 @@ int main(int argc, char** argv) {
     } else {
       printf("  ROM word intact through a foreign index transfer\n");
     }
+  }
+
+
+  // hps_io drives ioctl_wait onto HPS_BUS[37], so asserting it outside a
+  // download stalls the HPS itself. Ungated on ioctl_download it was held from
+  // FPGA configuration until SDRAM init finished — about 125 us at 80 MHz —
+  // and MiSTer reads the core's CONF_STR inside that window. The core ran and
+  // reported no name, which looks exactly like a bitstream that will not load.
+  //
+  // The window is reproduced here rather than forced: mem_ready is genuinely
+  // low while the real controller does its JEDEC bring-up.
+  printf("test: ioctl_wait stays silent while SDRAM inits and nothing is downloading\n");
+  {
+    Loader t;
+    t.d->rst_n = 0;
+    for (int i = 0; i < 8; i++) t.tick();
+    t.d->rst_n = 1;
+    t.d->ioctl_download = 0;
+
+    long window = 0, held = 0;
+    while (!t.d->mem_ready && window < 30000) {
+      t.tick();
+      window++;
+      if (t.d->ioctl_wait) held++;
+    }
+    h.checks++;
+    if (held) {
+      printf("  FAIL ioctl_wait asserted for %ld of %ld cycles before SDRAM was ready\n",
+             held, window);
+      h.fails++;
+    } else {
+      printf("  %ld cycles of SDRAM bring-up with the HPS bus left free\n", window);
+    }
+
+    // ...and it must still hold off a download that starts before SDRAM is up.
+    Loader u;
+    u.d->rst_n = 0;
+    for (int i = 0; i < 8; i++) u.tick();
+    u.d->rst_n = 1;
+    u.d->ioctl_download = 1;
+    u.d->ioctl_index = 0;
+    u.tick(); u.tick();
+    h.checks++;
+    if (u.d->mem_ready) {
+      printf("  (SDRAM already up; the download-wait case is covered elsewhere)\n");
+    } else if (!u.d->ioctl_wait) {
+      printf("  FAIL a download starting before SDRAM is ready was not held off\n");
+      h.fails++;
+    } else {
+      printf("  a download before SDRAM is ready is still held off\n");
+    }
+  }
+
+
+  // SUSTAINED TRANSFER, which nothing above covers. The region test streams 400
+  // words per region — about 5 KB — on the reasoning that the address mapping is
+  // the identity, which is true and says nothing about whether the thing keeps
+  // running. A real ROM load is 6 MB in one continuous stream, and on hardware it
+  // stalled near the end with the HPS waiting on ioctl_wait.
+  //
+  // The refresh interval is 700 cycles, so a 5 KB test crosses a handful of
+  // refreshes and a 6 MB one crosses thousands. Anything that deadlocks between
+  // the write port and a refresh is invisible at the smaller size.
+  printf("test: a sustained transfer does not stall\n");
+  {
+    Loader t;
+    t.reset();
+    std::mt19937 srng(4242u);
+    const uint32_t WORDS = 120000;          // 240 KB, thousands of refreshes
+
+    long before = t.cyc;
+    stream(t, srng, 0x0000000, WORDS, 2);
+    finish_download(t);
+    long took = t.cyc - before;
+
+    h.checks++;
+    // stream() has no internal guard: if it had hung, we would not be here. What
+    // this checks is that it finished in a sane number of cycles rather than
+    // crawling because the FIFO spent the whole time full.
+    double cyc_per_word = (double)took / WORDS;
+    if (cyc_per_word > 60.0) {
+      printf("  FAIL %.1f cycles per word — the transfer is stalling\n", cyc_per_word);
+      h.fails++;
+    } else {
+      printf("  %u words in %ld cycles, %.1f cycles/word\n",
+             WORDS, took, cyc_per_word);
+    }
+
+    h.checks++;
+    if (t.d->overflow) { printf("  FAIL buffer overflowed during sustained transfer\n"); h.fails++; }
+    h.checks++;
+    if (!t.d->rom_loaded) { printf("  FAIL rom_loaded never asserted after a sustained transfer\n"); h.fails++; }
   }
 
   h.checks++;

@@ -79,13 +79,25 @@ module m1_rom_loader #(
   // Write buffer depth, in 16-bit words, and how many in-flight transfers to
   // leave room for after `ioctl_wait` asserts.
   //
-  // These are sized from measurement, not taste: at MARGIN=2 the testbench
-  // overflowed as soon as the modelled host took three cycles to react, and a
-  // dropped word is a corrupt ROM that passes its own load. The buffer is
-  // cheap next to being wrong, and the test sweeps the host's reaction latency
-  // to prove the margin holds rather than assuming it.
-  parameter int unsigned FIFO_DEPTH = 8,
-  parameter int unsigned WAIT_MARGIN = 6,
+  // WHAT THESE HAVE TO SURVIVE IS THE HPS, NOT THE TESTBENCH
+  //
+  // ioctl_wait does not stop the host; it asks it to stop. Everything already
+  // in flight still arrives, and `FIFO_DEPTH - WAIT_MARGIN` is exactly how many
+  // of those the buffer can absorb before it starts dropping them.
+  //
+  // At 8 and 6 the buffer tolerated 15 cycles of host reaction and silently
+  // dropped words at 16 — 200 ns at 80 MHz, well inside a single HPS bus round
+  // trip. The test did not catch it because it swept 0..6, which is the margin
+  // the parameter was set to: it confirmed the setting instead of testing it.
+  // On hardware that is a ROM with holes in it, reported as a successful load,
+  // and the CPU crashes on it much later looking like a core bug.
+  //
+  // 512 and 256 give roughly 3.2 us of host latency. The sweep now runs to 64
+  // — an order of magnitude past anything plausible — and the buffer is block
+  // RAM rather than flip-flops, so the depth costs two M10K instead of 20,000
+  // registers.
+  parameter int unsigned FIFO_DEPTH = 512,
+  parameter int unsigned WAIT_MARGIN = 256,
 
   // ioctl index carrying the ROM stream.
   parameter logic [15:0] ROM_INDEX = 16'd0
@@ -127,8 +139,13 @@ module m1_rom_loader #(
   localparam int unsigned AW = $clog2(FIFO_DEPTH);
 
   // ---------------------------------------------------------------- buffer
-  logic [24:1]        fifo_addr [FIFO_DEPTH];
-  logic [15:0]        fifo_data [FIFO_DEPTH];
+  //
+  // Block RAM, and it has to stay that way: at 512 entries the register form is
+  // 20,480 flip-flops, which Quartus builds without complaint — the same silent
+  // fallback documented in rtl/m1_mainram.sv. The ramstyle makes a regression a
+  // build error rather than half the device.
+  (* ramstyle = "M10K" *) logic [24:1] fifo_addr [FIFO_DEPTH];
+  (* ramstyle = "M10K" *) logic [15:0] fifo_data [FIFO_DEPTH];
   logic [AW:0]        wptr, rptr;          // one extra bit distinguishes full
   logic [AW:0]        level;
 
@@ -140,7 +157,23 @@ module m1_rom_loader #(
 
   // Assert wait with room still left, not once full. The host keeps sending
   // for a few cycles after it sees this.
-  assign ioctl_wait = ~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN));
+  // GATED ON ioctl_download, AND THAT IS NOT COSMETIC.
+  //
+  // hps_io drives this straight onto the HPS bus — `assign HPS_BUS[37] =
+  // ioctl_wait` — so it is not a private signal between this module and the
+  // loader. It tells the HPS to stall.
+  //
+  // Ungated, ~mem_ready holds it from the instant the FPGA is configured until
+  // the SDRAM controller finishes its JEDEC bring-up, about 125 us at 80 MHz.
+  // MiSTer reads the core's CONF_STR immediately after enabling the bridge,
+  // which lands inside that window: it gets nothing, the core reports no name,
+  // and the core never appears to load at all. The FPGA is running the whole
+  // time, which is what makes it look like a dead bitstream rather than a
+  // handshake held low.
+  //
+  // Outside a download there is nothing to wait for, so say nothing.
+  assign ioctl_wait = ioctl_download &
+                      (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
   logic is_sdram, is_tgp;
   assign is_sdram = (ioctl_addr < TGP_PROG_BASE);
@@ -168,9 +201,13 @@ module m1_rom_loader #(
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
-      for (int k = 0; k < FIFO_DEPTH; k++) begin
-        fifo_addr[k] <= '0; fifo_data[k] <= '0;
-      end
+      // THE ARRAYS ARE DELIBERATELY NOT CLEARED HERE.
+      //
+      // A reset that writes every entry is a second write port on the memory
+      // and no block RAM has one, so it forces the whole buffer into
+      // flip-flops. Nothing reads an entry the pointers have not written:
+      // rptr only advances behind wptr, so the contents at reset are
+      // unreachable rather than merely unlikely to matter.
     end else begin
       tgp_wr <= 1'b0;
       ack_d  <= sdr_wr_ack;
