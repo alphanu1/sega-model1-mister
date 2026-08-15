@@ -26,6 +26,8 @@ SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
 SRCS_bw_monitor := rtl/mem/bw_monitor.sv
 SRCS_sdram_model := sim/mem/sdram_model.sv
+SRCS_m1_sdram := rtl/mem/m1_sdram.sv
+SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/fp_div.sv \
                      $(RTL)/mb86233_alu.sv $(RTL)/mb86233_agu.sv $(RTL)/mb86233_seq.sv \
@@ -33,7 +35,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -53,6 +55,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_core) --top-module mb86233_core
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_bw_monitor) --top-module bw_monitor
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_sdram_model) --top-module sdram_model
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_sdram) --top-module m1_sdram
 	$(MAKE) --no-print-directory lint_v60
 
 # The V60 is imported from meathax/s32 and lints under a relaxed flag set.
@@ -70,7 +73,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -87,6 +90,15 @@ test_sdram_model:
 	  -GT_RC=12 $(SRCS_sdram_model) sim/mem/tb_sdram_model.cpp \
 	  -CFLAGS -DTB_T_RC=12 -o tb_sdmodel_rc --Mdir obj_sdmodel_rc
 	./obj_sdmodel_rc/tb_sdmodel_rc
+
+# Data integrity and protocol compliance in one run: the shadow memory catches
+# address decode and burst ordering, the device model catches the timing
+# faults that simulate perfectly and then fail on real silicon.
+test_m1_sdram:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sdram_harness \
+	  $(SRCS_m1_sdram_harness) sim/mem/tb_m1_sdram.cpp \
+	  -o tb_m1sdram --Mdir obj_m1sdram
+	./obj_m1sdram/tb_m1sdram
 
 test_bw_monitor:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module bw_monitor \
@@ -159,7 +171,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_sdram fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.

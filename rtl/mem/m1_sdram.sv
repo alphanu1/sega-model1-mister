@@ -1,0 +1,531 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Sega Model 1 core for MiSTer FPGA
+// Copyright (C) 2026 alphanu1
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version. See LICENSE for the full text.
+//
+// Single-chip 16-bit SDR SDRAM controller with a per-master round-robin
+// arbiter, for the port map in docs/00-decisions.md D8.
+//
+// PROVENANCE
+//
+// The state machine follows meathax's System 32 controller
+// (third_party/s32/rtl/mem/sdram.sv, GPL-3.0, so licence-compatible per D7).
+// That is deliberate. It encodes two hazards that were found the hard way and
+// are invisible from a datasheet:
+//
+//   - Requests must be latched on the REQUEST RISING EDGE, not sampled as a
+//     level qualified by !pend && !ack. The level-sampled version has a
+//     one-cycle drop window: a requester that issues its next request in
+//     direct response to an ack presents a pulse whose first cycle is blocked
+//     by the still-clearing pend and whose second by the stretched ack. The
+//     transaction vanishes and the port hangs forever. Which transactions hit
+//     the window depends on arbitration history, so it appears as "adding an
+//     unrelated master broke the CPU".
+//
+//   - Completion must clear pend on the ack RISING EDGE and must do so BEFORE
+//     the new-request latch in the same process, so a chained request landing
+//     on the very edge that clears pend wins rather than vanishing.
+//
+// Reimplementing from scratch would have meant rediscovering both.
+//
+// WHAT IS DIFFERENT HERE
+//
+//   - Ports are a generic array rather than six copy-pasted blocks. Six
+//     near-identical hand-written port blocks is six chances to transpose an
+//     index, and the arbiter becomes a loop instead of a priority ladder
+//     repeated once per rotation position.
+//   - Any port may write. D8 puts V60 work RAM in external memory, so p0
+//     needs a write path; s32's read ports are read-only because all of its
+//     RAM is internal.
+//   - DQ is split into dq_i/dq_o/dq_oe. The tri-state lives at the top level
+//     where the physical pin is, which keeps this module and the device model
+//     straightforwardly simulatable.
+//   - Timing is parameterised, in clock cycles, and the same numbers are
+//     handed to sdram_model in simulation. Hardcoded cycle counts silently
+//     stop being correct when the clock changes, and nothing catches it.
+//   - dbg_req/dbg_grant are brought out for bw_monitor, so telemetry does not
+//     have to reach inside the module.
+//
+// REQUEST CONTRACT
+//
+// One transaction per request RISING EDGE. The address, write data and byte
+// enables are sampled on that edge. A request held high is serviced exactly
+// once — a requester expecting re-service per ack from a held level will
+// hang. Requesters must be single-outstanding.
+
+`timescale 1ns/1ps
+
+module m1_sdram #(
+  parameter int unsigned NP = 5,      // read/write ports, see D8
+
+  // Device timing, in clk cycles. Defaults suit -7E parts around 100 MHz.
+  parameter int unsigned T_RCD  = 2,
+  parameter int unsigned T_RP   = 2,
+  parameter int unsigned T_RC   = 7,
+  parameter int unsigned T_RAS  = 5,
+  parameter int unsigned T_WR   = 2,
+  parameter int unsigned CL     = 2,
+
+  // Refresh cadence. 8192 rows per 64 ms is one per 781 cycles at 100 MHz;
+  // the margin below that absorbs a transfer in flight when the timer fires.
+  parameter int unsigned T_REFI = 700,
+
+  // Power-up delay. JEDEC wants >100 us of NOP before the first command.
+  parameter int unsigned INIT_NOP = 10000,
+
+  // Ack hold. Requesters on a slower synchronous clock must see exactly one
+  // rising edge with ack high, so this is 2 for a clk/2 requester.
+  parameter int unsigned ACK_HOLD = 2
+) (
+  input  logic                 clk,
+  input  logic                 rst_n,
+  output logic                 ready,
+
+  // SDRAM device
+  output logic                 sd_cke,
+  output logic                 sd_cs_n,
+  output logic                 sd_ras_n,
+  output logic                 sd_cas_n,
+  output logic                 sd_we_n,
+  output logic [1:0]           sd_ba,
+  output logic [12:0]          sd_a,
+  output logic [1:0]           sd_dqm,
+  output logic [15:0]          sd_dq_o,
+  output logic                 sd_dq_oe,
+  input  logic [15:0]          sd_dq_i,
+
+  // ROM download. Highest priority while it is active; game logic is held in
+  // reset during download, so starving the other ports costs nothing.
+  input  logic                 wr_req,
+  input  logic [24:1]          wr_addr,
+  input  logic [15:0]          wr_din,
+  input  logic [1:0]           wr_be,
+  output logic                 wr_ack,
+
+  // Masters. Word-addressed; a burst port's address must be burst-aligned.
+  input  logic [NP-1:0]        p_req,
+  input  logic [NP-1:0]        p_we,
+  input  logic [NP-1:0][24:1]  p_addr,
+  input  logic [NP-1:0][15:0]  p_din,
+  input  logic [NP-1:0][1:0]   p_be,
+  output logic [NP-1:0][63:0]  p_dout,
+  output logic [NP-1:0]        p_ack,
+
+  // Telemetry taps for bw_monitor. `dbg_req` is the latched pending state
+  // rather than the raw input, because demand is "asking and not yet served",
+  // which a one-cycle request pulse would not show.
+  output logic [NP-1:0]        dbg_req,
+  output logic [NP-1:0]        dbg_grant
+);
+
+  // Burst length per port, in 16-bit words. D8: p1 is tile character fetch and
+  // p2 is polygon/TGP data, both of which are consumed in runs, so they burst.
+  // The rest are single-word random access.
+  function automatic logic [3:0] blen(input int unsigned p);
+    case (p)
+      1, 2:    blen = 4'd4;
+      default: blen = 4'd1;
+    endcase
+  endfunction
+
+  localparam logic [3:0] C_NOP   = 4'b0111;   // {cs,ras,cas,we}
+  localparam logic [3:0] C_ACT   = 4'b0011;
+  localparam logic [3:0] C_READ  = 4'b0101;
+  localparam logic [3:0] C_WRITE = 4'b0100;
+  localparam logic [3:0] C_PRE   = 4'b0010;
+  localparam logic [3:0] C_REF   = 4'b0001;
+  localparam logic [3:0] C_MRS   = 4'b0000;
+
+  // Round trip from the edge that issues a READ to the edge that can read the
+  // captured word, counted term by term rather than guessed:
+  //
+  //   +1  cmd is registered, so the device sees the command one edge later
+  //   +CL the device presents data CL edges after it samples the command
+  //   +1  dq_i is registered into dq_r, which is what puts the pin-to-register
+  //       path in the input IOE instead of in a core timing arc
+  //   +1  the capture logic reads dq_r, which is a register output
+  //
+  // CL+3. The first version of this said CL+2 — the outbound register was
+  // counted and the capture read was not — and every read returned zero.
+  // This off-by-one has now cost the project six debugging sessions across
+  // four modules, which is why it is spelled out instead of asserted.
+  localparam int unsigned RD_LAT = CL + 3;
+
+  localparam int unsigned WIDX = NP;          // write port's grant index
+
+  // ADDRESS DECODE
+  //
+  // A 32 MB module is 8192 rows x 512 columns x 4 banks of 16-bit words, so
+  // 13 + 9 + 2 = 24 bits, which is exactly the [24:1] word address the ports
+  // supply. Column is therefore NINE bits.
+  //
+  // s32's controller takes the column from [10:1] — ten bits — which with 13
+  // row bits and 2 bank bits needs 25 address bits and so overlaps bit 10
+  // between row and column. Copying that here would have aliased every
+  // address pair differing only in bit 10 onto one location, which reads as
+  // sporadic data corruption rather than as an address fault.
+  localparam int unsigned COL_BITS = 9;
+
+  logic [3:0]  cmd;
+  assign {sd_cs_n, sd_ras_n, sd_cas_n, sd_we_n} = cmd;
+  assign sd_cke = 1'b1;
+
+  typedef enum logic [3:0] {
+    S_INIT, S_IDLE, S_DISPATCH, S_PRE_XFER, S_ACT, S_RCD,
+    S_RD, S_RDW, S_WR, S_WRRC, S_PRE_REF, S_REFW
+  } state_t;
+  state_t state;
+
+  // ---------------------------------------------------------------- mailbox
+  // Metadata is captured with the request because arbitration may delay a
+  // port long after the producer moved on to its next address.
+  logic [NP-1:0]        pend;
+  logic [NP-1:0][24:1]  addr_p;
+  logic [NP-1:0][15:0]  din_p;
+  logic [NP-1:0][1:0]   be_p;
+  logic [NP-1:0]        we_p;
+  logic                 wr_pend;
+  logic [24:1]          wr_addr_p;
+  logic [15:0]          wr_din_p;
+  logic [1:0]           wr_be_p;
+
+  logic [NP-1:0] req_d, ack_d;
+  logic          wr_req_d, wr_ack_d;
+
+  assign dbg_req = pend;
+
+  int unsigned i;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      pend <= '0; wr_pend <= 1'b0;
+      req_d <= '0; ack_d <= '0; wr_req_d <= 1'b0; wr_ack_d <= 1'b0;
+      addr_p <= '0; din_p <= '0; be_p <= '0; we_p <= '0;
+      wr_addr_p <= '0; wr_din_p <= '0; wr_be_p <= '0;
+    end else begin
+      req_d    <= p_req;
+      ack_d    <= p_ack;
+      wr_req_d <= wr_req;
+      wr_ack_d <= wr_ack;
+
+      // Completion first, so a request edge landing on the same edge that
+      // clears pend overrides it below rather than vanishing. See the header.
+      for (i = 0; i < NP; i = i + 1)
+        if (p_ack[i] && !ack_d[i]) pend[i] <= 1'b0;
+      if (wr_ack && !wr_ack_d) wr_pend <= 1'b0;
+
+      for (i = 0; i < NP; i = i + 1) begin
+        if (p_req[i] && !req_d[i]) begin
+          pend[i]   <= 1'b1;
+          addr_p[i] <= p_addr[i];
+          din_p[i]  <= p_din[i];
+          be_p[i]   <= p_be[i];
+          we_p[i]   <= p_we[i];
+        end
+      end
+      if (wr_req && !wr_req_d) begin
+        wr_pend   <= 1'b1;
+        wr_addr_p <= wr_addr;
+        wr_din_p  <= wr_din;
+        wr_be_p   <= wr_be;
+      end
+    end
+  end
+
+  // ------------------------------------------------------------- arbitration
+  // Round-robin over pending read/write ports, rotating after every grant so a
+  // master that always has a request outstanding — the V60 during a cache miss
+  // storm — cannot hold the bus. The write port sits above the rotation and
+  // only matters during ROM download.
+  logic [$clog2(NP)-1:0] rr_next;
+  logic [$clog2(NP)-1:0] rr_grant;
+  logic                  rr_valid;
+
+  int unsigned j, cand;
+  always_comb begin
+    rr_valid = 1'b0;
+    rr_grant = rr_next;
+    // Walk the rotation from rr_next and take the first pending port. A loop
+    // rather than a case ladder per rotation position: the ladder form is NP
+    // copies of the same priority chain and every copy is a chance to mistype
+    // an index.
+    for (j = 0; j < NP; j = j + 1) begin
+      cand = (rr_next + j) % NP;
+      if (pend[cand] && !rr_valid) begin
+        rr_valid = 1'b1;
+        rr_grant = ($clog2(NP))'(cand);
+      end
+    end
+  end
+
+  // ------------------------------------------------------------- transfer
+  logic [$clog2(NP+1)-1:0] grant;
+  logic                    grant_is_wr;
+  logic [24:1]             xfer_addr;
+  logic [3:0]              rd_total, rd_issued, rd_captured;
+  logic                    is_write;
+  logic [15:0]             din_r;
+  logic [1:0]              be_r;
+  logic [15:0]             cap_buf [4];
+
+  logic        row_open;
+  logic [1:0]  open_bank;
+  logic [12:0] open_row;
+  // Cycles still owed to tRAS before the open row may be precharged. With
+  // auto-precharge the device enforced this internally; taking that back means
+  // taking the obligation back with it.
+  logic [3:0]  ras_cnt;
+
+  // A transfer whose bank and row are already open skips PRECHARGE and
+  // ACTIVATE. This is the entire reason locality is worth anything: measured
+  // before it existed, sequential traffic ran at exactly the same rate as
+  // random — 0.263 words/cycle either way on a 4-word burst port — because
+  // every read closed the row behind itself.
+  logic        row_hit;
+  assign row_hit = row_open && (xfer_addr[24:23] == open_bank)
+                            && (xfer_addr[22:10] == open_row);
+
+  logic [15:0]              init_cnt;
+  logic [$clog2(T_REFI+1)-1:0] ref_cnt;
+  logic                     ref_pend;
+  logic [3:0]               wait_cnt;
+  logic [RD_LAT-1:0]        cl_pipe;
+  logic [1:0]               ack_hold;
+  logic [15:0]              dq_r;
+
+  assign dbg_grant = grant_mask;
+  logic [NP-1:0] grant_mask;
+  always_comb begin
+    grant_mask = '0;
+    // A port is "granted" for telemetry while the controller is executing its
+    // transfer, not merely on the single cycle it was selected. Bandwidth is a
+    // question about occupancy, so counting selection edges would report a
+    // fraction of the true figure.
+    if (!grant_is_wr && state != S_IDLE && state != S_INIT &&
+        state != S_PRE_REF && state != S_REFW)
+      grant_mask[grant] = 1'b1;
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      cmd <= C_NOP; sd_ba <= '0; sd_a <= '0; sd_dqm <= 2'b11;
+      sd_dq_o <= '0; sd_dq_oe <= 1'b0;
+      state <= S_INIT; ready <= 1'b0;
+      init_cnt <= 16'(INIT_NOP);
+      ref_cnt <= '0; ref_pend <= 1'b0;
+      row_open <= 1'b0; open_bank <= '0; open_row <= '0;
+      cl_pipe <= '0; ack_hold <= '0; ras_cnt <= '0;
+      p_ack <= '0; wr_ack <= 1'b0; p_dout <= '0;
+      grant <= '0; grant_is_wr <= 1'b0; rr_next <= '0;
+      rd_total <= 4'd1; rd_issued <= '0; rd_captured <= '0;
+      is_write <= 1'b0; xfer_addr <= '0; din_r <= '0; be_r <= '0;
+      wait_cnt <= '0; dq_r <= '0;
+    end else begin
+      cmd      <= C_NOP;
+      sd_dq_oe <= 1'b0;
+      dq_r     <= sd_dq_i;
+
+      if (ack_hold != 0) ack_hold <= ack_hold - 1'b1;
+      else begin p_ack <= '0; wr_ack <= 1'b0; end
+
+      if (state == S_INIT) begin
+        sd_dqm <= 2'b11;
+        init_cnt <= init_cnt - 1'b1;
+        // JEDEC bring-up: NOPs, precharge all, eight refreshes, mode register.
+        // Spacing is generous rather than minimal; this runs once.
+        case (init_cnt)
+          16'd400: begin cmd <= C_PRE; sd_a <= 13'h400; end
+          16'd360, 16'd350, 16'd340, 16'd330,
+          16'd320, 16'd310, 16'd300, 16'd290: cmd <= C_REF;
+          16'd200: begin
+            cmd   <= C_MRS;
+            sd_ba <= 2'b00;
+            sd_a  <= 13'b000_0_00_010_0_000;   // CL2, sequential, burst 1
+          end
+          16'd1: begin ready <= 1'b1; state <= S_IDLE; end
+          default: ;
+        endcase
+      end else begin
+        sd_dqm <= 2'b00;
+
+        if (ras_cnt != 0) ras_cnt <= ras_cnt - 1'b1;
+
+        ref_cnt <= ref_cnt + 1'b1;
+        if (ref_cnt == ($clog2(T_REFI+1))'(T_REFI)) begin
+          ref_cnt  <= '0;
+          ref_pend <= 1'b1;
+        end
+
+        // Read capture. The tap index is derived from CL, not written down.
+        cl_pipe <= {cl_pipe[RD_LAT-2:0], 1'b0};
+        if (cl_pipe[RD_LAT-1]) begin
+          cap_buf[rd_captured[1:0]] <= dq_r;
+          rd_captured <= rd_captured + 1'b1;
+          if (rd_captured + 1'b1 == rd_total) begin
+            // The final word and its buffer write share an edge, so deliver
+            // the staged word directly rather than reading back a stale slot.
+            case (rd_total)
+              4'd1:    p_dout[grant] <= {48'd0, dq_r};
+              default: p_dout[grant] <= {dq_r, cap_buf[2], cap_buf[1], cap_buf[0]};
+            endcase
+            p_ack[grant] <= 1'b1;
+            ack_hold     <= 2'(ACK_HOLD - 1);
+          end
+        end
+
+        case (state)
+          S_IDLE: begin
+            if (ref_pend && cl_pipe == 0 && ras_cnt == 0) begin
+              cmd      <= C_PRE;
+              sd_a     <= 13'h400;              // A10: precharge all
+              row_open <= 1'b0;
+              wait_cnt <= 4'(T_RP - 1);
+              state    <= S_PRE_REF;
+            end else if (wr_pend || rr_valid) begin
+              logic [24:1] sel;
+              if (wr_pend) begin
+                grant       <= ($clog2(NP+1))'(WIDX);
+                grant_is_wr <= 1'b1;
+                sel         = wr_addr_p;
+                din_r       <= wr_din_p;
+                be_r        <= wr_be_p;
+                is_write    <= 1'b1;
+                rd_total    <= 4'd1;
+              end else begin
+                grant       <= ($clog2(NP+1))'(rr_grant);
+                grant_is_wr <= 1'b0;
+                sel         = addr_p[rr_grant];
+                din_r       <= din_p[rr_grant];
+                be_r        <= be_p[rr_grant];
+                is_write    <= we_p[rr_grant];
+                rd_total    <= we_p[rr_grant] ? 4'd1 : blen(rr_grant);
+                rr_next     <= (rr_grant == ($clog2(NP))'(NP-1))
+                                 ? '0 : rr_grant + 1'b1;
+              end
+              xfer_addr   <= sel;
+              rd_issued   <= '0;
+              rd_captured <= '0;
+              // A dedicated dispatch cycle keeps the port mux and the row
+              // comparator out of the command-output timing cone. Requesters
+              // wait for ack, so this costs latency, not semantics.
+              state <= S_DISPATCH;
+            end
+          end
+
+          S_DISPATCH: begin
+            if (row_hit) begin
+              state <= is_write ? S_WR : S_RD;
+            end else if (row_open) begin
+              // tRAS is owed from the ACTIVATE that opened this row.
+              if (ras_cnt == 0) begin
+                cmd      <= C_PRE;
+                sd_a     <= 13'h400;
+                row_open <= 1'b0;
+                wait_cnt <= 4'(T_RP - 1);
+                state    <= S_PRE_XFER;
+              end
+            end else begin
+              state <= S_ACT;
+            end
+          end
+
+          S_PRE_XFER: begin
+            if (wait_cnt == 0) state <= S_ACT;
+            else wait_cnt <= wait_cnt - 1'b1;
+          end
+
+          S_ACT: begin
+            cmd       <= C_ACT;
+            sd_ba     <= xfer_addr[24:23];
+            sd_a      <= xfer_addr[22:10];
+            open_bank <= xfer_addr[24:23];
+            open_row  <= xfer_addr[22:10];
+            row_open  <= 1'b1;
+            ras_cnt   <= 4'(T_RAS - 1);
+            wait_cnt  <= 4'(T_RCD - 1);
+            state     <= S_RCD;
+          end
+
+          S_RCD: begin
+            if (wait_cnt == 0) state <= is_write ? S_WR : S_RD;
+            else wait_cnt <= wait_cnt - 1'b1;
+          end
+
+          S_WR: begin
+            cmd      <= C_WRITE;
+            sd_ba    <= xfer_addr[24:23];
+            sd_a     <= {3'b000, 1'b0, xfer_addr[9:1]};  // A10 low: keep row open
+            sd_dq_o  <= din_r;
+            sd_dq_oe <= 1'b1;
+            sd_dqm   <= ~be_r;
+            // Hold past tWR and tRAS before anything can precharge this row.
+            // The row is left open on purpose: a download write stream is
+            // sequential and the next word usually hits the same row.
+            wait_cnt <= 4'((T_WR > T_RAS - T_RCD) ? T_WR : T_RAS - T_RCD);
+            state    <= S_WRRC;
+          end
+
+          S_WRRC: begin
+            if (wait_cnt == 4'((T_WR > T_RAS - T_RCD) ? T_WR : T_RAS - T_RCD)) begin
+              if (grant_is_wr) wr_ack <= 1'b1;
+              else             p_ack[grant] <= 1'b1;
+              ack_hold <= 2'(ACK_HOLD - 1);
+            end
+            if (wait_cnt == 0) state <= S_IDLE;
+            else wait_cnt <= wait_cnt - 1'b1;
+          end
+
+          S_RD: begin
+            // One READ per cycle. The last one carries A10, requesting
+            // auto-precharge, so the row closes without a separate command.
+            cmd        <= C_READ;
+            sd_ba      <= xfer_addr[24:23];
+            // A10 low: the row stays open so the next transfer to it can skip
+            // PRECHARGE and ACTIVATE entirely. A10 is the auto-precharge bit
+            // and the column is nine bits, so A9 is padded explicitly — a
+            // packing of {3'b000, x, col} would land x on A9, which the device
+            // ignores.
+            sd_a       <= {2'b00, 1'b0, 1'b0, xfer_addr[9:1]};
+            cl_pipe[0] <= 1'b1;
+            // Bursts wrap inside the open row: incrementing the full address
+            // would walk off the end of the row on the last column and read
+            // from a row that was never activated.
+            xfer_addr[9:1] <= xfer_addr[9:1] + 1'b1;
+            rd_issued  <= rd_issued + 1'b1;
+            if (rd_issued + 1'b1 == rd_total) begin
+              // The row is deliberately left open. The capture pipeline still
+              // has to drain before the shared cap_buf can be reused.
+              state <= S_RDW;
+            end
+          end
+
+          S_RDW: begin
+            if (cl_pipe == 0) state <= S_IDLE;
+          end
+
+          S_PRE_REF: begin
+            if (wait_cnt == 0) begin
+              cmd      <= C_REF;
+              row_open <= 1'b0;
+              ref_pend <= 1'b0;
+              wait_cnt <= 4'(T_RC - 1);
+              state    <= S_REFW;
+            end else wait_cnt <= wait_cnt - 1'b1;
+          end
+
+          S_REFW: begin
+            if (wait_cnt == 0) state <= S_IDLE;
+            else wait_cnt <= wait_cnt - 1'b1;
+          end
+
+          default: state <= S_IDLE;
+        endcase
+      end
+    end
+  end
+
+endmodule

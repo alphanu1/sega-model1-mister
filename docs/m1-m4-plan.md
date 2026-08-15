@@ -128,6 +128,47 @@ regardless of what the reference says — but "how close to 8" is not the measur
 of success. Whether the game's workload fits in real time is.
 
 
+### SDRAM bandwidth, measured 2026-08-15
+
+D2 and D3 both rest on a bandwidth figure that had only ever been arithmetic.
+`make test_m1_sdram` now measures it against a protocol-checking device model,
+with data integrity verified at the same time.
+
+Streaming traffic — every master walking its own cursor in its own bank, which
+is what the board does: V60 code fetch, tile character runs, polygon stream,
+sample stream:
+
+| | words/cycle | at 100 MHz | at 143 MHz |
+|---|---|---|---|
+| Aggregate, five masters | 0.153 | 30.6 MB/s | 43.8 MB/s |
+| p1 alone, 4-word bursts, sequential | 0.326 | 65.2 MB/s | 93.2 MB/s |
+| p0 alone, single words, sequential | 0.109 | 21.8 MB/s | 31.2 MB/s |
+
+**D3 needs 55-75 MB/s aggregate with banding. The controller delivers 30.6 at
+100 MHz.** It is short by roughly a factor of two, and closing that is M1 work,
+not something to discover in M3.
+
+Two findings behind those numbers.
+
+The first version auto-precharged after every read, so the row closed behind
+each transfer and **sequential traffic ran at exactly the same rate as random —
+locality gain 1.00x**. Adding row reuse (skip PRECHARGE and ACTIVATE when the
+bank and row are already open) took the gain to 1.54x on single words and 1.40x
+on bursts. That change is in and measured.
+
+What remains is that each transfer waits for its own read-capture pipeline to
+drain before the next one starts, so per-transfer latency is paid serially
+instead of being overlapped. A 4-word burst to an open row spends 4 cycles
+issuing and about 5 draining. Overlapping the next transfer's ACTIVATE and CAS
+with the previous transfer's data return is the remaining factor of two, and it
+is a real redesign of the issue/capture split rather than a tuning parameter.
+
+Note the clock matters as much as the design: the same controller at 143 MHz
+delivers 43.8 MB/s. The operating point is not yet chosen and should be settled
+alongside the pipelining work rather than after it.
+
+---
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**
