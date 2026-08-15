@@ -36,7 +36,9 @@ module tb_m1_boot #(
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
-localparam integer PRELOAD_WORDS = 32'hC0000;
+// ROMX, ROM0 and the banked data ROMs. The boot ROM checksums the data ROMs
+// too, so preloading only the program leaves that sweep reading zeros.
+localparam integer PRELOAD_WORDS = 32'h300000;
 
 reg clk = 0, rst_n = 0;
 always #5 clk = ~clk;
@@ -235,9 +237,21 @@ initial begin
              cycles, ce_cycles, dbg_halted, dbg_fp_trap);
     $display("BOOT: pc now %06h, range visited %06h..%06h, ifetch lines %0d",
              dbg_pc, pcmin, pcmax, if_lines);
+    // Cycles per instruction, with a caveat that matters more than the number:
+    // the V60's block group (MOVC/CMPC and friends) is ONE instruction that
+    // runs for as long as the block is large, and Model 1's boot ROM checksums
+    // megabytes with it. Averaged across that, "cycles per instruction" says
+    // nothing about instruction throughput — the 199 this first reported was a
+    // single block instruction sweeping ROM, not a slow CPU.
+    //
+    // A real figure needs a window that excludes block instructions, or a
+    // workload without them. Reported anyway, labelled, because it is still the
+    // right measure over ordinary code and the label stops it being quoted as
+    // if it were.
     if (instrs > 0)
-        $display("BOOT: %0d instructions, %0d.%02d cycles/instr (CPU clocks)",
-                 instrs, ce_cycles/instrs, ((ce_cycles*100)/instrs)%100);
+        $display("BOOT: %0d instructions over %0d CPU cycles = %0d.%02d avg (INCLUDES block instructions)",
+                 instrs, ce_cycles, ce_cycles/instrs,
+                 ((ce_cycles % instrs) * 100) / instrs);
     $display("BOOT: sdram violations flags=%04h", v_flags);
     $display("BOOT: bus accesses by 64KB page:");
     for (i = 0; i < 256; i = i + 1)

@@ -61,8 +61,10 @@ def main():
     ap.add_argument('game', choices=sorted(SETS))
     ap.add_argument('zip')
     ap.add_argument('-o', '--out', default='build/rom')
-    ap.add_argument('-w', '--words', type=lambda x: int(x,0), default=0xC0000,
-                    help='16-bit words of the packed image to emit (default ROMX+ROM0)')
+    ap.add_argument('-w', '--words', type=lambda x: int(x,0), default=0x300000,
+                    help='16-bit words of the packed image to emit; the default '
+                         'covers ROMX, ROM0 and the banked data ROMs, which the '
+                         'boot ROM checksums')
     args = ap.parse_args()
 
     # maincpu as MAME lays it out, sparse, then packed below.
