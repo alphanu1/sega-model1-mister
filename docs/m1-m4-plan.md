@@ -27,6 +27,51 @@ each site. It belongs in **our** copy once the V60 is imported into `rtl/`,
 because `third_party/` is gitignored and re-cloned by `bootstrap.sh`, so a
 patch there would not survive.
 
+#### V60 fetch, measured 2026-08-15 — the prefetch is already in, and it works
+
+**Correction to the figures quoted above.** BASELINE.md's 22.7 cycles/instruction
+and "56% of all cycles in fetch" are its own Phase 0 capture, taken *before* the
+prefetch redesign: "Captured 2026-07-23 before the fetch/prefetch redesign". The
+copy imported into `rtl/cpu/v60/` already contains that redesign — `v60.sv:802`
+notes S_FILLW "is retained for the enum but no longer reached: instruction fetch
+is performed asynchronously by the PFU". Those numbers describe the old code.
+
+`make v60_cpi` measures the current one. Production cadence (/3 clock enable),
+sweeping memory acknowledge latency, CPU cycles per instruction:
+
+| memory latency | FAST_IFETCH=0 | FAST_IFETCH=1 |
+|---|---|---|
+| 0 | 6.08 | 6.00 |
+| 8 | 6.22 | 6.01 |
+| 32 | 6.69 | 6.05 |
+| 64 | 6.45 | **6.11** |
+
+**With the wide fetch port the core is effectively immune to memory latency** —
+64-cycle memory costs 1.8%. Five line fetches served a 514-instruction run, and
+`dreads` fell to zero: all instruction traffic left the data port. That matters
+directly, because m1_sdram measured a worst case of 86 cycles under load from
+five masters, and this says the V60 can live with it.
+
+**FAST_IFETCH defaults to 0 and must be turned on for this core.** s32 leaves it
+off because their unit tests run at ce=1 where the data adapter is already fast
+and `if_*` can stay unconnected. On the real board that default is the slow
+path. The port wants an 8-byte line, which is exactly a 4-word burst on
+m1_sdram — the same shape p1 and p2 already serve — so this is wiring, not a
+redesign.
+
+**What this does NOT establish.** The benchmark is a 12-byte loop, the best
+possible case for a fetch window: once resident it never misses. It proves
+latency *tolerance*, not real-code CPI. BASELINE's 22.7 came from ga2 attract
+gameplay with far worse locality, and the equivalent number for this core needs
+real game code — which is what M1's boot test provides. Neither of s32's fetch
+tests can settle it either: `tb_v60_fetch` runs ce=1 with the fast port off, so
+there is no latency to hide, and `tb_v60_fetch_wide` serves the wide port with
+zero latency, assuming away the thing the prefetch exists to survive. Both
+report cycles≈3128, which read side by side suggests the redesign achieved
+nothing; it cannot have, because neither configuration lets it do anything.
+
+---
+
 #### MAME's V60 cycle count is a placeholder — do not target it
 
 Before using any "we are Nx slower than MAME" figure, read
