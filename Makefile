@@ -36,7 +36,7 @@ SRCS_TOP_CORE := rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/io/m1_rom_loader.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
-  rtl/video/m1_palette.sv rtl/video/m1_video.sv \
+  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/video/m1_diag.sv \
   rtl/m1_mainram.sv rtl/m1_main.sv rtl/m1_integrated.sv \
   rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
@@ -59,6 +59,7 @@ SRCS_m1_tile_mixer := rtl/video/m1_tile_mixer.sv
 SRCS_m1_tile_fetch := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv
 SRCS_m1_video_timing := rtl/video/m1_video_timing.sv
 SRCS_m1_palette := rtl/video/m1_palette.sv
+SRCS_m1_diag := rtl/video/m1_diag.sv
 SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv rtl/video/m1_palette.sv rtl/video/m1_video.sv
 SRCS_m1_raster_div := rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
@@ -74,7 +75,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 lint_top test test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -107,6 +108,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_fetch) --top-module m1_tile_fetch
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_video_timing) --top-module m1_video_timing
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_palette) --top-module m1_palette
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_diag) --top-module m1_diag
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_video) --top-module m1_video
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_raster_div) --top-module m1_raster_div
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_raster_fill) --top-module m1_raster_fill
@@ -129,9 +131,9 @@ lint_top:
 	  echo "third_party/template missing — run ./tools/bootstrap.sh"; exit 1; }
 	@verilator --lint-only -Wno-fatal +incdir+third_party/template \
 	  +incdir+build/lintinc --top-module emu \
-	  Model1.sv rtl/m1_pll.sv $(SRCS_TOP_CORE) \
+	  Model1.sv $(SRCS_TOP_CORE) \
 	  third_party/template/sys/hps_io.sv > build/lintinc/top.log 2>&1; \
-	 grep "%Error" build/lintinc/top.log | grep -v altera_pll \
+	 grep "%Error" build/lintinc/top.log | grep -vE "altera_pll|'pll'" \
 	   | grep -v "Exiting due to" > build/lintinc/real.log; \
 	 if [ -s build/lintinc/real.log ]; then cat build/lintinc/real.log; exit 1; \
 	 else echo "lint_top: clean (only altera_pll unresolved, as expected)"; fi
@@ -151,7 +153,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -216,6 +218,11 @@ test_palette:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_palette \
 	  $(SRCS_m1_palette) sim/video/tb_m1_palette.cpp -o tb_pal --Mdir obj_pal
 	./obj_pal/tb_pal
+
+test_diag:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_diag \
+	  $(SRCS_m1_diag) sim/video/tb_m1_diag.cpp -o tb_diag --Mdir obj_diag
+	./obj_diag/tb_diag
 
 test_video_timing:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_video_timing \
@@ -495,11 +502,24 @@ m1_frame:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION --top-module tb_m1_frame -GRUN_CYCLES=$(FRAME_CYCLES) \
+	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
 	./build/m1frame/m1frame
 
 FRAME_CYCLES ?= 120000000
+
+# The ROM arrives over ioctl by default, because that is what hardware does and
+# a preloaded memory hides an entire class of fault. FRAME_DOWNLOAD=0 restores
+# the old poke-it-into-the-model behaviour when the CPU and video path are what
+# is being isolated.
+#
+# FRAME_HOLD_CPU=0 releases the V60 on the SDRAM controller's `ready` instead of
+# on the loader's `rom_loaded` — which is what Model1.sv did until the white
+# screen on hardware was traced to it. Kept as a switch so the failure can be
+# reproduced rather than only described.
+FRAME_DOWNLOAD ?= 1
+FRAME_HOLD_CPU ?= 1
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to

@@ -53,6 +53,13 @@ module m1_integrated (
 
   // Asynchronous, released into both domains by the synchronisers below.
   input  logic        rst_n,
+
+  // The memory subsystem's reset: PLL lock only, never the OSD or game reset.
+  // The ROM loader lives on this one because it holds the HPS off while SDRAM
+  // is initialising, and MiSTer resets the core while streaming a ROM — so a
+  // loader on the game reset waits for SDRAM that is held in reset, while the
+  // HPS waits for the loader. See Model1.sv.
+  input  logic        mem_rst_n,
   input  logic        rom_loaded,     // clk_sys domain
 
   // SDRAM data port and instruction fetch
@@ -110,6 +117,10 @@ module m1_integrated (
   output logic        dbg_fp_trap,
   output logic [15:0] dbg_io_replies,
   output logic        rom_loaded_o,
+  // Set, and stuck, if the loader ever had to drop a word the HPS sent after
+  // ioctl_wait went up. Brought out because a dropped word is a corrupt ROM
+  // that reports a successful load and fails much later as a CPU fault.
+  output logic        ldr_overflow,
   output logic [7:0]  dbg_fetches
 );
 
@@ -124,8 +135,8 @@ module m1_integrated (
   // Asserted asynchronously, released synchronously, separately per domain. A
   // reset released on one clock and used on another is the classic way to have
   // half a design come out of reset a cycle before the rest.
-  logic [1:0] rst_sync_sys, rst_sync_cpu;
-  logic       rst_n_sys, rst_n_cpu;
+  logic [1:0] rst_sync_sys, rst_sync_cpu, rst_sync_mem;
+  logic       rst_n_sys, rst_n_cpu, rst_n_mem;
 
   always_ff @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) rst_sync_sys <= 2'b00;
@@ -135,8 +146,14 @@ module m1_integrated (
     if (!rst_n) rst_sync_cpu <= 2'b00;
     else        rst_sync_cpu <= {rst_sync_cpu[0], 1'b1};
   end
+  always_ff @(posedge clk_sys or negedge mem_rst_n) begin
+    if (!mem_rst_n) rst_sync_mem <= 2'b00;
+    else            rst_sync_mem <= {rst_sync_mem[0], 1'b1};
+  end
+
   always_comb rst_n_sys = rst_sync_sys[1];
   always_comb rst_n_cpu = rst_sync_cpu[1];
+  always_comb rst_n_mem = rst_sync_mem[1];
 
   // rom_loaded is a level raised in the fast domain and read in the slow one:
   // two flops, and nothing downstream cares about the two-cycle skew because it
@@ -226,14 +243,14 @@ module m1_integrated (
   );
 
   m1_rom_loader loader (
-    .clk(clk_sys), .rst(~rst_n_sys), .mem_ready(rom_loaded),
+    .clk(clk_sys), .rst(~rst_n_mem), .mem_ready(rom_loaded),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
     .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
     .ioctl_wait(ioctl_wait),
     .sdr_wr_req(ldr_wr_req), .sdr_wr_addr(ldr_wr_addr),
     .sdr_wr_din(ldr_wr_din), .sdr_wr_be(ldr_wr_be), .sdr_wr_ack(ldr_wr_ack),
     .tgp_wr(tgp_wr), .tgp_addr(tgp_addr), .tgp_din(tgp_din),
-    .rom_loaded(rom_loaded_o), .overflow()
+    .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)
   );
 
   bw_monitor #(.MASTERS(5), .CW(24), .BW(8)) mon (

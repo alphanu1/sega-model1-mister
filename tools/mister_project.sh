@@ -32,7 +32,7 @@ ln -sfn "$root/Model1.sv" "$stage/Model1.sv"
 # a human reading it does: memory, then I/O, then video, then the board.
 cat > "$stage/files.qip" <<'EOF'
 set_global_assignment -name SYSTEMVERILOG_FILE Model1.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_pll.sv
+set_global_assignment -name QIP_FILE rtl/pll.qip
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_cdc_port.sv
@@ -51,6 +51,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_mixer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_video_timing.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_palette.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_diag.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_mainram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_main.sv
@@ -79,10 +80,11 @@ cat > "$stage/Model1.sdc" <<'EOF'
 #
 #     -group [get_clocks { *|pll|pll_inst|altera_pll_i|*[*].*|divclk}]
 #
-# which is why rtl/m1_pll.sv's instance names have to be exactly pll / pll_inst /
-# altera_pll_i. They were not, once, and the core's clocks fell outside every
-# group and got timed against the audio PLL: -87 ns of setup slack, a clean
-# build, and nothing running on hardware.
+# which is why the PLL comes from the generated IP in rtl/pll.qip, whose module
+# and instance are both named `pll`. A hand-instantiated altera_pll produced the
+# wrong hierarchy once, the clocks fell outside every group and got timed
+# against the audio PLL: -87 ns of setup slack, a clean build, and nothing
+# running on hardware.
 #
 # Being in one group means clk_sys and clk_cpu are timed against EACH OTHER,
 # which is also wrong. They are asynchronous by construction - everything that
