@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
       line_starts++;
       // line_number must name the line about to be rendered, i.e. the next
       // one, wrapping at the end of the frame.
-      int expect = (d->vcnt == V_TOTAL - 1) ? 0 : (int)d->vcnt + 1;
+      int expect = ((int)d->vcnt + 2) % V_TOTAL;
       if ((int)d->line_number != expect) line_num_ok = false;
     }
     if (d->vblank_start) vblank_starts++;

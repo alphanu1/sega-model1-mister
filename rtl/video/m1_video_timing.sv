@@ -56,10 +56,16 @@ module m1_video_timing #(
   output logic       vsync,
   output logic       visible,
 
-  // Rising edge one line before a visible line starts, so a scanline renderer
-  // has a whole line of blanking to fill its buffer. Rendering during the line
-  // it is displayed would need the fetch to keep ahead of the beam, which the
-  // measured 699-1614 cycles per layer cannot guarantee.
+  // Fires at the START of each line, naming the NEXT line, so a renderer has a
+  // whole line period to fill its buffer.
+  //
+  // The first version fired at the start of horizontal blanking instead, on
+  // the reasoning that a renderer should work during blanking. Blanking is 160
+  // dot clocks — 960 core cycles — and four layers need 2,796 even on repeated
+  // tiles, so rendering ran on into the line it was supposed to be displaying
+  // and the picture was a mixture of two lines. A whole line period is 656 dot
+  // clocks, 3,936 core cycles, which is the budget the tilemap fetch was
+  // measured against.
   output logic       line_start,
   output logic [8:0] line_number,
 
@@ -88,10 +94,23 @@ module m1_video_timing #(
   assign hsync = (hcnt >= 10'(H_SYNC_START)) && (hcnt < 10'(H_SYNC_END));
   assign vsync = (vcnt >= 10'(V_SYNC_START)) && (vcnt < 10'(V_SYNC_END));
 
-  // Kick the renderer at the start of the horizontal blanking that precedes
-  // the next line, and name that next line.
-  assign line_start  = ce_pix && (hcnt == 10'(H_VISIBLE));
-  assign line_number = (vcnt == 10'(V_TOTAL - 1)) ? 9'd0 : 9'(vcnt + 10'd1);
+  // Fires on the LAST pixel of a line, so the buffer swap it triggers takes
+  // effect exactly at the line boundary.
+  //
+  // `hcnt == 0` looks like the right condition and is one pixel too late: hcnt
+  // is a register, so that test is true during the pixel in which hcnt already
+  // holds 0, and a swap driven from it lands one pixel into the line. Column
+  // zero is then read from the previous line's buffer — one wrong pixel down
+  // the left edge of every line, with everything after it correct, which
+  // reads as a fetch fault rather than a timing one.
+  assign line_start = ce_pix && (hcnt == 10'(H_TOTAL - 1));
+
+  // Two lines ahead, not one. At this instant the swap is about to make the
+  // buffer written during the current line the one displayed on the next, so
+  // the buffer being started now is the one after that.
+  assign line_number = (vcnt >= 10'(V_TOTAL - 2))
+                     ? 9'(vcnt + 10'd2 - 10'(V_TOTAL))
+                     : 9'(vcnt + 10'd2);
 
   assign vblank_start = ce_pix && (hcnt == 10'(H_VISIBLE)) &&
                         (vcnt == 10'(V_VISIBLE - 1));

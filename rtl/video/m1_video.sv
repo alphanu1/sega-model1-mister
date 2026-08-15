@@ -1,0 +1,310 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Sega Model 1 core for MiSTer FPGA
+// Copyright (C) 2026 alphanu1
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version. See LICENSE for the full text.
+//
+// 2D video path: four tilemap layers, line buffered, mixed, palette mapped.
+//
+// STRUCTURE
+//
+// One fetch engine is instantiated, not four, and the four layers are rendered
+// through it one after another into four line buffers. That is not a saving of
+// three engines' worth of logic so much as a saving of arbitration: the
+// character fetches all go to one SDRAM port, and four concurrent engines would
+// need an arbiter in front of it whose only job would be to serialise them
+// anyway. Sequential rendering makes the port, the tile RAM port and the decode
+// datapath single-owner by construction.
+//
+// The cost is that the four layers' fetch times add rather than overlap, which
+// is exactly the budget recorded in docs/m1-m4-plan.md: about 700 cycles per
+// layer on repeated tiles against ~1025 available per layer, and about 1600 on
+// entirely distinct ones. Text and menu screens fit; four dense layers do not.
+//
+// TIMING
+//
+// Everything runs on the core clock. `ce_pix` divides it to the 16 MHz dot
+// clock MAME specifies, so scanout advances on ce_pix while fetch runs at full
+// rate — which is the whole reason a line's worth of fetching fits inside a
+// line's worth of display time.
+//
+// Rendering happens a line ahead. m1_video_timing raises `line_start` at the
+// beginning of the horizontal blanking that precedes a line and names the line
+// about to be rendered; the buffers written during that period are the ones
+// scanned out next. Rendering into the buffer being displayed would need fetch
+// to stay ahead of the beam, which at 1600 cycles for a dense layer it cannot.
+//
+// SCROLL REGISTERS LIVE IN TILE RAM
+//
+// draw_common reads them out of the tilemap's own RAM rather than from a
+// separate register file:
+//
+//   hscr = tile_ram[0x5000 + (layer >> 1)]
+//   vscr = tile_ram[0x5004 + (layer >> 1)]
+//
+// so they are fetched through the same port as everything else, two reads per
+// layer per line, before that layer starts.
+
+`timescale 1ns/1ps
+
+module m1_video #(
+  parameter int unsigned COLUMNS = 62
+) (
+  input  logic        clk,
+  input  logic        ce_pix,
+  input  logic        rst_n,
+
+  input  logic [13:0] tile_mask,
+
+  // Tile RAM, on chip. The V60 owns the other port.
+  output logic [14:0] tram_addr,
+  input  logic [15:0] tram_data,
+
+  // Character RAM, external. Two consecutive words per request.
+  output logic        char_req,
+  output logic [17:0] char_addr,
+  input  logic [31:0] char_data,
+  input  logic        char_ack,
+
+  // Palette RAM, on chip. The V60 owns the other port.
+  output logic [11:0] pal_addr,
+  input  logic [15:0] pal_data,
+
+  // Video out
+  output logic [7:0]  vid_r,
+  output logic [7:0]  vid_g,
+  output logic [7:0]  vid_b,
+  output logic        vid_hs,
+  output logic        vid_vs,
+  output logic        vid_hb,
+  output logic        vid_vb,
+
+  output logic        vblank_irq,     // to the V60
+  output logic [7:0]  dbg_fetches     // last line's fetch count, worst layer
+);
+
+  // ------------------------------------------------------------- timing
+  logic [9:0] hcnt, vcnt;
+  logic       hblank, vblank, visible, line_start, vblank_start;
+  logic       hsync_i, vsync_i;
+  logic [8:0] line_number;
+
+  m1_video_timing timing (
+    .clk(clk), .ce_pix(ce_pix), .rst_n(rst_n),
+    .hcnt(hcnt), .vcnt(vcnt),
+    .hblank(hblank), .vblank(vblank),
+    .hsync(hsync_i), .vsync(vsync_i), .visible(visible),
+    .line_start(line_start), .line_number(line_number),
+    .vblank_start(vblank_start)
+  );
+
+  assign vblank_irq  = vblank_start;
+
+  // ------------------------------------------------------- line buffers
+  // Double buffered: `bank` is written while ~bank is displayed.
+  logic bank;
+
+  logic [13:0] lbuf [2][4][512];      // {prio, transparent, pal_index}
+  logic [13:0] rd_q [4];
+
+  // ---------------------------------------------------------- sequencer
+  typedef enum logic [2:0] {
+    Q_IDLE, Q_HSCR, Q_HSCR_W, Q_VSCR, Q_VSCR_W, Q_RUN, Q_NEXT
+  } qstate_t;
+  qstate_t q;
+
+  logic [1:0]  cur_layer;
+  logic [8:0]  cur_line;
+  logic [15:0] hscr_r, vscr_r;
+  logic        f_start;
+  logic        f_busy, f_done;
+  logic [14:0] f_tram_addr;
+  logic [7:0]  f_fetches;
+
+  logic        f_lb_we;
+  logic [8:0]  f_lb_addr;
+  logic [11:0] f_lb_pal;
+  logic        f_lb_transparent, f_lb_prio;
+
+  // The sequencer borrows the tile RAM port to read the scroll registers, so
+  // the address is muxed rather than driven straight from the fetch engine.
+  logic [14:0] seq_tram_addr;
+  logic        seq_owns_tram;
+  assign tram_addr = seq_owns_tram ? seq_tram_addr : f_tram_addr;
+
+  m1_tile_fetch #(.COLUMNS(COLUMNS)) fetch (
+    .clk(clk), .rst_n(rst_n),
+    .start(f_start), .line(cur_line), .layer(cur_layer),
+    .hscr(hscr_r), .vscr(vscr_r), .tile_mask(tile_mask),
+    .busy(f_busy), .done(f_done),
+    .tram_addr(f_tram_addr), .tram_data(tram_data),
+    .char_req(char_req), .char_addr(char_addr),
+    .char_data(char_data), .char_ack(char_ack),
+    .lb_we(f_lb_we), .lb_addr(f_lb_addr), .lb_pal(f_lb_pal),
+    .lb_transparent(f_lb_transparent), .lb_prio(f_lb_prio),
+    .fetches(f_fetches)
+  );
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
+      hscr_r <= '0; vscr_r <= '0; f_start <= 1'b0;
+      seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
+      bank <= 1'b0; dbg_fetches <= '0;
+    end else begin
+      f_start <= 1'b0;
+
+      case (q)
+        Q_IDLE: begin
+          seq_owns_tram <= 1'b1;
+          if (line_start) begin
+            // Only reached when the previous line finished in time. If it did
+            // not, the sequencer is still in Q_RUN and this edge is ignored —
+            // see the overrun note on Q_RUN.
+            cur_line    <= line_number;
+            cur_layer   <= 2'd0;
+            dbg_fetches <= '0;
+            // Flip on the line boundary: what was just rendered becomes what
+            // is displayed.
+            bank        <= ~bank;
+            q           <= Q_HSCR;
+          end
+        end
+
+        // hscr = tile_ram[0x5000 + layer]
+        Q_HSCR: begin
+          seq_tram_addr <= 15'h5000 + {13'd0, cur_layer};
+          q             <= Q_HSCR_W;
+        end
+        Q_HSCR_W: begin
+          hscr_r        <= tram_data;
+          seq_tram_addr <= 15'h5004 + {13'd0, cur_layer};
+          q             <= Q_VSCR;
+        end
+        Q_VSCR: q <= Q_VSCR_W;
+        Q_VSCR_W: begin
+          vscr_r        <= tram_data;
+          seq_owns_tram <= 1'b0;
+          f_start       <= 1'b1;
+          q             <= Q_RUN;
+        end
+
+        Q_RUN: begin
+          // OVERRUN
+          //
+          // A line's worth of fetching is 3,936 core cycles and four dense
+          // layers need about 6,456, so the budget can be exceeded — see
+          // docs/m1-m4-plan.md. When it is, line_start arrives while this is
+          // still running.
+          //
+          // Ignoring it, which is what happens by virtue of not being in
+          // Q_IDLE, means the bank does not flip and the line already in the
+          // display buffer is shown again. That is a repeated scanline: wrong,
+          // but locally wrong and stable. Flipping mid-fetch instead would
+          // send the remaining writes to the buffer being displayed, tearing
+          // every layer of every following line — a whole-screen failure from
+          // a one-line overrun.
+          if (f_done) begin
+            if (f_fetches > dbg_fetches) dbg_fetches <= f_fetches;
+            q <= Q_NEXT;
+          end
+        end
+
+        Q_NEXT: begin
+          seq_owns_tram <= 1'b1;
+          if (cur_layer == 2'd3) q <= Q_IDLE;
+          else begin
+            cur_layer <= cur_layer + 2'd1;
+            q         <= Q_HSCR;
+          end
+        end
+
+        default: q <= Q_IDLE;
+      endcase
+    end
+  end
+
+  // Writes go to the bank being rendered; reads come from the other one.
+  always_ff @(posedge clk) begin
+    if (f_lb_we)
+      lbuf[bank][cur_layer][f_lb_addr] <= {f_lb_prio, f_lb_transparent, f_lb_pal};
+    for (int L = 0; L < 4; L++)
+      rd_q[L] <= lbuf[~bank][L][hcnt[8:0]];
+  end
+
+  // ------------------------------------------------------------- mixing
+  logic [3:0][11:0] mix_pal;
+  logic [3:0]       mix_transp, mix_prio;
+
+  always_comb begin
+    for (int L = 0; L < 4; L++) begin
+      mix_pal[L]    = rd_q[L][11:0];
+      mix_transp[L] = rd_q[L][12];
+      mix_prio[L]   = rd_q[L][13];
+    end
+  end
+
+  logic [11:0] mixed;
+  logic [3:0]  mix_src;
+
+  m1_tile_mixer mixer (
+    .pal_index(mix_pal),
+    .transparent(mix_transp),
+    .prio(mix_prio),
+    .disabled(4'b0000),          // already folded into transparent by the fetch
+    .poly_index(12'd0),
+    .poly_valid(1'b0),           // no 3D until M2
+    .backdrop(12'd0),
+    .pixel(mixed),
+    .source(mix_src)
+  );
+
+  assign pal_addr = mixed;
+
+  logic [7:0] pr, pg, pb;
+  m1_palette pal (.entry(pal_data), .r(pr), .g(pg), .b(pb));
+
+  // The colour for column hcnt is not ready in the same pixel it is addressed:
+  // the line buffer read is registered, and so is the palette RAM. Both settle
+  // easily inside one dot clock — there are several core cycles per ce_pix —
+  // but the result still lands one pixel later than the counter that selected
+  // it.
+  //
+  // So blanking is delayed by exactly the same one pixel. Without that the
+  // image sits one column left of its own blanking window, which does not look
+  // like a timing bug on a scaler that crops a little; it looks like the game
+  // is drawing one column of garbage at the edge.
+  // Everything here is delayed by exactly ONE pixel, and it has to be the same
+  // one for the data and for the flags.
+  //
+  // `pr` is already the colour for the current hcnt — the line buffer and
+  // palette reads both complete inside the pixel period — so latching it here
+  // makes vid_r the colour of the column just passed, and latching `hblank`
+  // alongside makes the flags describe that same column. Gating the data with
+  // a second delayed copy of `visible` instead put the colour one pixel behind
+  // its own blanking, which blanked the first visible column of every line and
+  // left the rest correct: a single black column down the left edge.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      vid_r <= '0; vid_g <= '0; vid_b <= '0;
+      vid_hb <= 1'b1; vid_vb <= 1'b1; vid_hs <= 1'b0; vid_vs <= 1'b0;
+    end else if (ce_pix) begin
+      // Every sync and blank is delayed with the data, not just `visible`.
+      // Exposing undelayed blanking beside delayed colour puts the picture one
+      // column out of its own window, which a scaler renders as a stray column
+      // at the edge rather than as anything recognisably a timing fault.
+      vid_hb <= hblank;
+      vid_vb <= vblank;
+      vid_hs <= hsync_i;
+      vid_vs <= vsync_i;
+      vid_r <= visible ? pr : 8'd0;
+      vid_g <= visible ? pg : 8'd0;
+      vid_b <= visible ? pb : 8'd0;
+    end
+  end
+
+endmodule
