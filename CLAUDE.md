@@ -38,6 +38,10 @@ Expected output, exactly:
 ```
 bw_monitor[cw=24,bw=8]: checked=2000000 skipped=0 fails=0 uncovered=0 snaps=3867 wraps=0 sat=0
 bw_monitor[cw=12,bw=4]: checked=2000000 skipped=0 fails=0 uncovered=0 snaps=3867 wraps=122 sat=534462
+sdram_model[trc=7]: checks=1944 fails=0
+sdram_model[trc=12]: checks=1945 fails=0
+m1_sdram: checks=80009 fails=0 violations=0 reads=79998 writes=6644
+m1_rom_loader: checks=1675 fails=0 violations=0
 fp_mul: checked=1885699 skipped=114301 fails=0
 fp_add: checked=1968564 skipped=31436 fails=0
 fp_div: checked=282606 skipped=17394 fails=0 max_latency=29
