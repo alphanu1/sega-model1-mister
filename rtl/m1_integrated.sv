@@ -88,6 +88,7 @@ module m1_integrated (
   output logic [23:0] dbg_pc,
   output logic        dbg_halted,
   output logic        dbg_fp_trap,
+  output logic [15:0] dbg_io_replies,
   output logic        rom_loaded_o,
   output logic [7:0]  dbg_fetches
 );
@@ -109,6 +110,7 @@ module m1_integrated (
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
     .vblank_irq(vblank_irq),
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
+    .dbg_io_replies(dbg_io_replies),
     .rom_bank(rom_bank)
   );
 

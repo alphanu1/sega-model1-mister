@@ -30,12 +30,13 @@ SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
 SRCS_m1_glue := rtl/io/m1_glue.sv
+SRCS_m1_ioboard := rtl/io/m1_ioboard.sv
 SRCS_m1_mainram := rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
-  rtl/mem/bw_monitor.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
+  rtl/io/m1_ioboard.sv rtl/mem/bw_monitor.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
@@ -59,7 +60,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -83,6 +84,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_rom_loader) --top-module m1_rom_loader
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_decode) --top-module m1_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_glue) --top-module m1_glue
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_ioboard) --top-module m1_ioboard
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_decode) --top-module m1_tile_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_mixer) --top-module m1_tile_mixer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_fetch) --top-module m1_tile_fetch
@@ -108,7 +110,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -205,6 +207,15 @@ test_glue:
 	  $(SRCS_m1_glue) sim/io/tb_m1_glue.cpp -o tb_glue --Mdir obj_glue
 	./obj_glue/tb_glue
 
+# No MAME oracle: MAME runs the real Z80. The reference is the protocol the
+# boot trace established, tested as properties — including the two that have
+# already gone wrong for real, a second handshake with a different code and a
+# poll being mistaken for a request.
+test_ioboard:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
+	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard --Mdir obj_ioboard
+	./obj_ioboard/tb_ioboard
+
 test_decode:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_decode \
 	  $(SRCS_m1_decode) sim/io/tb_m1_decode.cpp -o tb_decode --Mdir obj_decode
@@ -287,7 +298,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_glue m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_glue m1_ioboard m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -390,7 +401,7 @@ m1_boot:
 	  -GWATCH_PAGE=$(WATCH_PAGE) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
-	  rtl/io/m1_glue.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
 

@@ -59,7 +59,14 @@ module m1_mainram (
   input  logic [14:0] vid_tram_addr,
   output logic [15:0] vid_tram_data,
   input  logic [11:0] vid_pal_addr,
-  output logic [15:0] vid_pal_data
+  output logic [15:0] vid_pal_data,
+
+  // I/O board side of the RAM at 0xc00000. Byte-wide, write-only, and it
+  // shares the V60's physical write port — hold io_we until io_ack.
+  input  logic        io_we,
+  input  logic [10:0] io_addr,
+  input  logic [7:0]  io_din,
+  output logic        io_ack
 );
 
   logic tram_we, pram_we, dl0_we, dl1_we, cxlat_we, dpram_we;
@@ -134,10 +141,47 @@ module m1_mainram (
   end
 
   // I/O 0xc00000-0xc00fff
+  //
+  // The real board has an MB8421 here — a true dual-port RAM, V60 on one side
+  // and the I/O board on the other. **Quartus 17.0 will not infer one from this
+  // array.** Measured, not assumed: adding a second write port took m1_mainram
+  // from 192 ALM / 324 M10K to 16,059 ALM / 322 M10K, because 2048x8 of
+  // dpram_lo fell out of block RAM into 16,384 flip-flops — and the fit
+  // reported success. Both the textbook true-dual-port shape and the same shape
+  // with `no_rw_check` were tried at 2048 entries on their own; both gave zero
+  // M10K. See docs/rtl-conventions.md.
+  //
+  // So the two masters share one physical write port, with the V60 taking
+  // priority and the I/O side told to wait. That is behaviourally identical
+  // here: the I/O board writes about three bytes across an entire boot, and
+  // io_ack makes the stall explicit rather than dropping a write on a
+  // collision. What it gives up is simultaneous writes from both sides, which
+  // nothing in this design does.
+  logic        dp_we;
+  logic [10:0] dp_waddr;
+  logic [7:0]  dp_wdata;
+  logic        v60_dp_write;
+
+  always_comb begin
+    v60_dp_write = dpram_we && be[0];
+    if (v60_dp_write) begin
+      dp_we    = 1'b1;
+      dp_waddr = addr[11:1];
+      dp_wdata = wdata[7:0];
+    end else begin
+      dp_we    = io_we;
+      dp_waddr = io_addr;
+      dp_wdata = io_din;
+    end
+    // The I/O write landed this cycle. Held low while the V60 owns the port,
+    // which is what the responder waits on.
+    io_ack = io_we && !v60_dp_write;
+  end
+
   (* ramstyle = "M10K" *) logic [7:0] dpram_lo [2048];
   (* ramstyle = "M10K" *) logic [7:0] dpram_hi [2048];
   always_ff @(posedge clk) begin
-    if (dpram_we && be[0]) dpram_lo[addr[11:1]] <= wdata[7:0];
+    if (dp_we)             dpram_lo[dp_waddr]   <= dp_wdata;
     if (dpram_we && be[1]) dpram_hi[addr[11:1]] <= wdata[15:8];
     dpram_q <= {dpram_hi[addr[11:1]], dpram_lo[addr[11:1]]};
   end

@@ -50,6 +50,11 @@ module m1_main #(
   // two — useful for telling a fetch-bridge fault from a CPU one.
   parameter bit FAST_IFETCH = 1'b1,
 
+  // The I/O board responder. On by default because boot does not complete
+  // without something answering the handshake; a test that wants to drive the
+  // DPRAM's far side itself turns it off.
+  parameter bit IOBOARD = 1'b1,
+
   // SDRAM word addresses, from the byte layout above.
   parameter logic [24:1] WRAM_BASE = 24'hF80000,   // 0x1F00000 >> 1
   parameter logic [24:1] NVRAM_BASE = 24'hFA0000,  // 0x1F40000 >> 1
@@ -102,6 +107,7 @@ module m1_main #(
   // Sticky. Set if a build without the FP group ever meets an FP opcode; see
   // the note on the port in v60.sv.
   output logic        dbg_fp_trap,
+  output logic [15:0] dbg_io_replies,
   output logic [2:0]  rom_bank
 );
 
@@ -206,6 +212,12 @@ module m1_main #(
   // arrays; on its own it is a couple of minutes.
   logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q;
 
+  // The I/O board's far side of the DPRAM. Tied off when IOBOARD is 0 so the
+  // port cannot float into the RAM.
+  logic        io_we, io_ack;
+  logic [10:0] io_addr;
+  logic [7:0]  io_din;
+
   m1_mainram rams (
     .clk(clk),
     .we(m_req && m_we), .be(m_be), .addr(m_addr), .wdata(m_wdata),
@@ -215,8 +227,32 @@ module m1_main #(
     .tram_q(tram_q), .pram_q(pram_q), .dl0_q(dl0_q), .dl1_q(dl1_q),
     .cxlat_q(cxlat_q), .dpram_q(dpram_q),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
-    .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data)
+    .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
+    .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack)
   );
+
+  // ------------------------------------------------------- I/O board
+  // Answers the boot handshake through the DPRAM's far side. What it covers
+  // and what it deliberately does not is in m1_ioboard.sv's header.
+  generate
+    if (IOBOARD) begin : g_ioboard
+      m1_ioboard ioboard (
+        .clk(clk), .rst_n(rst_n),
+        .v60_req(m_req), .v60_we(m_we), .v60_sel_dpram(sel_dpram),
+        .v60_addr(m_addr[11:1]), .v60_wdata(m_wdata[7:0]),
+        .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack),
+        .replies(dbg_io_replies)
+      );
+    end else begin : g_no_ioboard
+      always_comb begin
+        io_we          = 1'b0;
+        io_addr        = 11'd0;
+        io_din         = 8'd0;
+        dbg_io_replies = 16'd0;
+      end
+      // io_ack is driven by the RAM; nothing consumes it in this branch.
+    end
+  endgenerate
 
   // ---------------------------------------------------------- GLUE regs
   // Extracted into m1_glue so the interrupt semantics can be tested directly.

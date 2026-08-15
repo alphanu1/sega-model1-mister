@@ -35,6 +35,28 @@ not worth finding out which one is right this time.
 
 **Cast loop-derived values explicitly.** `5'(27 - i)`, not `27 - i`.
 
+**Quartus 17.0 will not infer a two-write-port M10K.** Not from any shape tried.
+Measured 2026-08-15 at 2048x8 standalone, which is the "test the idiom small"
+rule paying for itself again — the full-module version of this question costs a
+Quartus run per attempt:
+
+| shape | M10K | ALM |
+|---|---|---|
+| one write port, byte lanes — what the tree uses | inferred | 192 (whole `m1_mainram`) |
+| second write port, no second read | **0** | 15,888 |
+| true dual port, both sides read and write | **0** | 17,344 |
+| second write port + `no_rw_check` | **0** | 15,888 |
+| true dual port + `no_rw_check` | **0** | 17,344 |
+
+In the full module that failure cost 192 -> **16,059 ALM**, because 2048x8 became
+16,384 flip-flops, and the fit reported success. The M10K count barely moved
+(324 -> 322), so **watch memory bits and register count, not just M10K** — a
+memory falling out of RAM shows up there first.
+
+Where two masters genuinely need one memory, share the single write port with an
+explicit priority and an acknowledge, as `m1_mainram`'s DPRAM does for the I/O
+board. It costs a stall on collision and keeps an idiom that is known to infer.
+
 ---
 
 ## Structure

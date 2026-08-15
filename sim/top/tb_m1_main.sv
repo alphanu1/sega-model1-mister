@@ -86,6 +86,7 @@ wire        if_ack;
 wire [23:0] dbg_pc;
 wire        dbg_halted;
 wire        dbg_fp_trap;
+wire [15:0] dbg_io_replies;
 
 m1_main #(.START_PC(PROG_PC), .FAST_IFETCH(FASTIF[0])) main (
     .clk(clk), .ce(ce), .rst_n(rst_n), .rom_loaded(rom_loaded),
@@ -96,7 +97,7 @@ m1_main #(.START_PC(PROG_PC), .FAST_IFETCH(FASTIF[0])) main (
     .vid_tram_addr(15'd0), .vid_tram_data(),
     .vid_pal_addr(12'd0),  .vid_pal_data(),
     .vblank_irq(1'b0),
-    .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
+    .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap), .dbg_io_replies(dbg_io_replies),
     .rom_bank()
 );
 
