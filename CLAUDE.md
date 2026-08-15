@@ -36,14 +36,24 @@ make lint && make test
 Expected output, exactly:
 
 ```
+bw_monitor[cw=24,bw=8]: checked=2000000 skipped=0 fails=0 uncovered=0 snaps=3867 wraps=0 sat=0
+bw_monitor[cw=12,bw=4]: checked=2000000 skipped=0 fails=0 uncovered=0 snaps=3867 wraps=122 sat=534462
 fp_mul: checked=1885699 skipped=114301 fails=0
 fp_add: checked=1968564 skipped=31436 fails=0
 fp_div: checked=282606 skipped=17394 fails=0 max_latency=29
-mb86233_alu: checked=2170367 skipped=149633 fails=0 uncovered_ops=0
+mb86233_alu: checked=2170388 skipped=69612 fails=0 uncovered_ops=0
 mb86233_agu: checked=3000000 skipped=0 fails=0 uncovered_modes=0
 mb86233_seq: checked=3000000 skipped=0 fails=0 uncovered=0
 mb86233_regs: checked=3000000 skipped=0 fails=0 uncovered_regs=0
+mb86233_mem: checked=178399 skipped=0 fails=0 uncovered=0
+mb86233_dec: checked=3000000 skipped=0 fails=0 uncovered=0
+mb86233_xfer: checked=256 skipped=0 fails=0 (exhaustive)
+mb86233_core: checks=23 fails=0 lockstep_regs=8000 diverged=0 (microcode-driven lockstep still owed)
 ```
+
+`bw_monitor` is built twice on purpose. At the real counter widths a 500 k-cycle
+run cannot wrap a 24-bit counter or saturate an 8-bit burst counter, so the
+narrow `-GCW=12 -GBW=4` build is the only thing that reaches those paths.
 
 If any reports a nonzero `fails`, or a nonzero `uncovered_*`, stop and fix that
 before starting new work. The counts are reproducible: the harnesses seed

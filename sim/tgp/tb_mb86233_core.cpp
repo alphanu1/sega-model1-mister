@@ -410,11 +410,14 @@ int main(int argc, char** argv) {
   //
   // Programs are generated from instruction forms the core implements, with
   // branch targets bounded inside the program so a run cannot wander off.
+  // Hoisted out of the block so the final summary can report them. A summary
+  // that understates what ran is a real defect: it tells the next reader the
+  // lockstep is still owed when it has been running clean for some time.
+  long diverged = 0, compared = 0;
   printf("test: lockstep against the reference model\n");
   {
     std::mt19937 rng(20260814u);
     auto rnd = [&]() { return (uint32_t)rng(); };
-    long diverged = 0, compared = 0;
 
     // Fresh DUT for the lockstep section. The directed tests above ran on
     // this instance and left their stores in RAM — the store/load round trip
@@ -774,8 +777,11 @@ int main(int argc, char** argv) {
     printf("test: microcode — MB86233_TGP_ROM unset, skipped\n");
   }
 
-  printf("mb86233_core: checks=%ld fails=%ld (directed; lockstep still owed)\n",
-         checks, fails);
+  // Criterion 2 wants real microcode driven by real host commands; the
+  // mechanism itself is built and clean, so say what actually ran.
+  printf("mb86233_core: checks=%ld fails=%ld lockstep_regs=%ld diverged=%ld"
+         " (microcode-driven lockstep still owed)\n",
+         checks, fails, compared, diverged);
   delete dut;
   return fails ? 1 : 0;
 }

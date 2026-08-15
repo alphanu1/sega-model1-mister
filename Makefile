@@ -24,6 +24,7 @@ SRCS_mb86233_regs := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_regs.sv
 SRCS_mb86233_mem := $(RTL)/mb86233_mem.sv
 SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
+SRCS_bw_monitor := rtl/mem/bw_monitor.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/fp_div.sv \
                      $(RTL)/mb86233_alu.sv $(RTL)/mb86233_agu.sv $(RTL)/mb86233_seq.sv \
@@ -31,7 +32,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -49,6 +50,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_dec) --top-module mb86233_dec
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_xfer) --top-module mb86233_xfer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_core) --top-module mb86233_core
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_bw_monitor) --top-module bw_monitor
 	$(MAKE) --no-print-directory lint_v60
 
 # The V60 is imported from meathax/s32 and lints under a relaxed flag set.
@@ -66,7 +68,20 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+
+# Built twice. The narrow build is not a smaller version of the same test: at
+# the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
+# 8-bit burst counter, so those two paths would ship untested. Shrinking the
+# parameters is the only way to reach them without a run of billions of cycles.
+test_bw_monitor:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module bw_monitor \
+	  $(SRCS_bw_monitor) sim/mem/tb_bw_monitor.cpp -o tb_bwmon --Mdir obj_bwmon
+	./obj_bwmon/tb_bwmon
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module bw_monitor \
+	  -GCW=12 -GBW=4 $(SRCS_bw_monitor) sim/mem/tb_bw_monitor.cpp \
+	  -CFLAGS "-DTB_CW=12 -DTB_BW=4" -o tb_bwmon_n --Mdir obj_bwmon_n
+	./obj_bwmon_n/tb_bwmon_n
 
 test_fp_mul:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_mul \
@@ -130,7 +145,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -207,7 +222,7 @@ quartus_report:
 	@cd quartus && ./report.sh $(MOD)
 
 clean:
-	rm -rf obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem obj_dec obj_xfer obj_core
+	rm -rf obj_bwmon obj_fpmul obj_fpadd obj_fpdiv obj_alu obj_agu obj_seq obj_regs obj_mem obj_dec obj_xfer obj_core
 
 distclean: clean
 	rm -rf quartus/build
