@@ -25,6 +25,12 @@ obj_dir/
 # ---------------------------------------------------------------- quartus
 # Spike builds and any core build tree.
 /quartus/build/
+# Verilator build trees from tools/run_v60_tests.sh. Anchored with a leading
+# slash so it means the top-level directory only, and checked for as a whole
+# line rather than a substring — an earlier check tested for "/build/" being
+# present, which "/quartus/build/" already satisfies, so the rule was silently
+# never added and the logs got committed.
+/build/
 db/
 incremental_db/
 output_files/
