@@ -25,6 +25,7 @@ SRCS_mb86233_mem := $(RTL)/mb86233_mem.sv
 SRCS_mb86233_dec := $(RTL)/mb86233_dec.sv
 SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
 SRCS_bw_monitor := rtl/mem/bw_monitor.sv
+SRCS_sdram_model := sim/mem/sdram_model.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/fp_div.sv \
                      $(RTL)/mb86233_alu.sv $(RTL)/mb86233_agu.sv $(RTL)/mb86233_seq.sv \
@@ -32,7 +33,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_bw_monitor test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -51,6 +52,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_xfer) --top-module mb86233_xfer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_core) --top-module mb86233_core
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_bw_monitor) --top-module bw_monitor
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_sdram_model) --top-module sdram_model
 	$(MAKE) --no-print-directory lint_v60
 
 # The V60 is imported from meathax/s32 and lints under a relaxed flag set.
@@ -68,12 +70,24 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
 # 8-bit burst counter, so those two paths would ship untested. Shrinking the
 # parameters is the only way to reach them without a run of billions of cycles.
+# The device model is a verification component, so its own tests are fault
+# injection: each JEDEC rule gets a targeted violation and must report that
+# rule, not merely report something.
+test_sdram_model:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module sdram_model \
+	  $(SRCS_sdram_model) sim/mem/tb_sdram_model.cpp -o tb_sdmodel --Mdir obj_sdmodel
+	./obj_sdmodel/tb_sdmodel
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module sdram_model \
+	  -GT_RC=12 $(SRCS_sdram_model) sim/mem/tb_sdram_model.cpp \
+	  -CFLAGS -DTB_T_RC=12 -o tb_sdmodel_rc --Mdir obj_sdmodel_rc
+	./obj_sdmodel_rc/tb_sdmodel_rc
+
 test_bw_monitor:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module bw_monitor \
 	  $(SRCS_bw_monitor) sim/mem/tb_bw_monitor.cpp -o tb_bwmon --Mdir obj_bwmon
