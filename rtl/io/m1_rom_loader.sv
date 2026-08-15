@@ -25,8 +25,10 @@
 // responsible for layout means a region can only be misplaced by editing the
 // MRA, where it is visible, rather than by arithmetic in RTL.
 //
-//   0x0000000  V60 program ROM        4 MB   (D8 p0)
-//   0x0400000  TGP data ROM           2 MB   (D8 p2)
+//   0x0000000  V60 program (ROMX)     1 MB   (D8 p0)
+//   0x0100000  V60 boot (ROM0)      512 KB   (D8 p0)
+//   0x0180000  V60 banked data ROM    4 MB   (D8 p0)
+//   0x0580000  TGP data ROM         512 KB   (D8 p2)
 //   0x0600000  sound 68000 program    1 MB   (D8 p3)
 //   0x0700000  MultiPCM samples 1     4 MB   (D8 p4)
 //   0x0B00000  MultiPCM samples 2     4 MB   (D8 p4)
@@ -34,8 +36,21 @@
 //   0x1F00000  TGP program ROM        8 KB   -> on-chip, not SDRAM
 //   0x1F02000  end
 //
-// 31 MB of SDRAM, which is what D8 predicted from MAME's region list and
-// which fits a single 32 MB module, so D2 holds.
+// 31 MB of SDRAM, fitting a single 32 MB module, so D2 holds.
+//
+// Sized from MEASURED ROM extents across all ten dumped Model 1 games, not
+// from MAME's ROM_REGION declarations. Those are upper bounds and total 33 MB,
+// which would not fit — and concluding that D2 fails on the strength of them
+// would have been wrong.
+//
+// The V60's four sub-regions are the one place the stream is not a plain copy
+// of a MAME region, because `maincpu` is sparse: it spans 19.5 MB of address
+// space holding 5.5 MB of ROM, with the program at 0x200000, the boot vectors
+// at 0xf80000 and the banked data ROMs at 0x1000000. Storing that sparsely
+// would spend 19.5 MB of the module on 5.5 MB of ROM. The MRA packs it, and
+// m1_decode maps V60 addresses onto the packed layout — that mapping belongs
+// with the decode because it is a property of the V60's address space, which
+// is fixed silicon, rather than of the stream, which the MRA controls.
 //
 // The TGP program ROM is the one exception, because it is 32-bit and lives in
 // the TGP's own program memory rather than external RAM. Two 16-bit ioctl
