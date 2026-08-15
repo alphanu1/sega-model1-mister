@@ -35,7 +35,10 @@ module tb_m1_boot #(
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     // Page whose individual addresses are logged. Defaults to the I/O board's
     // dual-port RAM, which is where boot currently stops.
-    parameter [7:0]   WATCH_PAGE = 8'hC0
+    parameter [7:0]   WATCH_PAGE = 8'hC0,
+    // What to write back into DPRAM 0x20, and how long to take about it.
+    parameter [7:0]   IO_REPLY   = 8'h00,
+    parameter integer IO_LATENCY = 2000
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
@@ -172,6 +175,48 @@ initial begin
     $display("preloaded %0d words", PRELOAD_WORDS);
 end
 
+// ------------------------------------------------- minimal I/O responder
+//
+// The V60 writes "SEGA" into DPRAM 0x1a-0x1d, writes 1 to DPRAM 0x20, and
+// polls 0x20. On the real board a Z80 answers. This is the smallest thing that
+// could answer it: notice the request flag and change it.
+//
+// It lives in the testbench rather than in RTL on purpose. The reply VALUE is
+// not yet known — the shape of the handshake is — so this is an experiment to
+// find out what the V60 accepts, not an implementation. Whatever it turns out
+// to want gets built properly, in RTL, afterwards.
+//
+// The DPRAM is byte-laned inside m1_mainram, so byte 0x20 is dpram_lo[0x20]:
+// the V60's 0xc00040 becomes word address 0x600020, whose low eleven bits are
+// 0x20, and the low byte lane carries the data because the region is
+// umask16(0x00ff).
+integer io_wait = 0;
+reg     io_pending = 0;
+
+always @(posedge clk) begin
+    if (!rst_n) begin io_pending <= 0; io_wait <= 0; end
+    else begin
+        // Request: the V60 wrote 1 to DPRAM 0x20.
+        if (main.m_req && main.m_we && main.sel_dpram &&
+            main.m_addr[11:1] == 11'h20 && main.m_wdata[7:0] == 8'h01) begin
+            io_pending <= 1'b1;
+            io_wait    <= 0;
+        end else if (io_pending) begin
+            // A real Z80 at 4 MHz takes a while; anything non-instant will do.
+            if (io_wait < IO_LATENCY) io_wait <= io_wait + 1;
+            else begin
+                main.rams.dpram_lo[11'h20] <= IO_REPLY[7:0];
+                io_pending <= 1'b0;
+                if (io_replies < 8)
+                    $display("  IO: answered the SEGA handshake with %02h at cycle %0d",
+                             IO_REPLY[7:0], cycles);
+                io_replies = io_replies + 1;
+            end
+        end
+    end
+end
+integer io_replies = 0;
+
 // ------------------------------------------------------- access histogram
 // When the CPU stops making progress the question is what it is waiting for,
 // and that is answered by which addresses it keeps reading. A histogram by
@@ -281,6 +326,8 @@ initial begin
         $display("BOOT: %0d instructions over %0d CPU cycles = %0d.%02d avg (INCLUDES block instructions)",
                  instrs, ce_cycles, ce_cycles/instrs,
                  ((ce_cycles % instrs) * 100) / instrs);
+    $display("BOOT: io handshake replies=%0d (reply value %02h)",
+             io_replies, IO_REPLY);
     $display("BOOT: sdram violations flags=%04h", v_flags);
     $display("BOOT: bus accesses by 64KB page:");
     for (i = 0; i < 256; i = i + 1)

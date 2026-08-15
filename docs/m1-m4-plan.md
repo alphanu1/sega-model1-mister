@@ -494,9 +494,16 @@ responder change 0x20 and see whether the V60 proceeds. If it does, the trace
 names whatever it asks for next; if it does not, the question is only what value
 it expects, against a known handshake rather than an unknown one.
 
-Worth noting for whichever implementation is chosen: a signature handshake is
-also how the I/O board would identify ITSELF, so the reply may well be a
-signature rather than a bare acknowledgement.
+**Confirmed by answering it.** A responder that writes 0 back into DPRAM 0x20
+after a delay unblocks the V60 immediately: the PC moves from fe022c to fe095a
+and instruction fetches rise from 63,634 to 65,154, on a single reply. So the
+protocol is a signature plus a request flag which the responder clears, and a
+bare acknowledgement is enough — it does not need a signature in return, which
+was the plausible-sounding guess.
+
+The responder lives in the boot testbench, deliberately, as an experiment
+rather than an implementation. What it establishes is what the RTL has to do;
+building it properly comes after the trace says what the V60 asks for next.
 
 #### Both options cost more than first estimated
 
