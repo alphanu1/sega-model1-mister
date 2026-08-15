@@ -66,6 +66,43 @@ inventing arbitration that the real board does not have.
 
 Reverses if: M0 measures a single instance above 6K ALM or below 60 MHz Fmax.
 
+**Reversed 2026-08-15, on different grounds: one instance, not three.**
+
+Not because that condition was met — M0 measured 2,554 ALM at 72.17 MHz, well
+inside it. Because the premise was wrong.
+
+The board carries more than one MB86233. From model1.cpp's own header:
+
+    315-5571      - Fujitsu MB86233 Geometrizer (IC57/IC58, QFP160)
+    315-5572      - Fujitsu MB86233 Geometrizer (different code) (IC60/IC66)
+    COPRO         - Fujitsu MB86233 Coprocessor (QFP160), differs per game
+
+But **MAME instantiates exactly one**, the COPRO, and produces correct output.
+The Geometrizer ROMs are dumped, declared as `ROM_REGION32_LE( 0x2000,
+"315_5571" )` and `"315_5572"` — and referenced nowhere else in the entire
+driver. They are loaded and never executed. What MAME does instead is
+`tgp_render` in model1_v.cpp, which models the rasterizing hardware in C++
+downstream of the single coprocessor's display list.
+
+Hard rule 3 makes MAME the oracle and D6 makes lockstep against it the
+verification model. One instance is therefore sufficient to match the thing
+this project checks itself against; three would be matching a board detail the
+oracle does not exercise, at 2,554 ALM each.
+
+Frees **5,108 ALM**, which the measured budget needs — 30,395 built against
+41,910, with 12,500-19,500 still to build.
+
+What this gives up, stated plainly: if the Geometrizers do work on real silicon
+that MAME approximates elsewhere, this core will match MAME and not the board.
+That is an accepted consequence of choosing MAME as the oracle, not an
+oversight, and it is why this entry records it rather than quietly dropping two
+instances.
+
+Reverses if: geometry output diverges from real hardware in a way traceable to
+the missing Geometrizers — which needs a real board to observe, or a game whose
+output MAME itself gets wrong. Restoring them costs 2,554 ALM each and the
+design is not structured to prevent it.
+
 ---
 
 ## D5 — Virtua Racing is the bring-up title

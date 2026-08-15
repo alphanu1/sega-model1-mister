@@ -483,27 +483,27 @@ effectively unlimited; that is no longer true.
 
 #### The budget, with real numbers
 
-Built and measured: 21,796 (this) + 7,662 (three TGPs, D4) + 937 (m1_sdram)
-= **30,395 ALM. 11,515 left.**
+Built and measured: 21,796 (this) + 2,554 (one TGP, D4 as reversed) + 937
+(m1_sdram) = **25,287 ALM. 16,623 left.**
+
+D4 originally called for three TGP instances. It was reversed on 2026-08-15
+after finding that MAME instantiates one MB86233 and never executes the two
+Geometrizer ROMs it loads — see that entry. That frees 5,108 ALM.
 
 Still to build, estimated: MiSTer `sys/` 3,000-4,000; sound — 68000, YM3438 and
 two MultiPCM — 5,000-7,000; I/O board as a Z80 3,000-2,500; rasterizer
 3,000-6,000. **12,500-19,500 against 11,515 available.**
 
-So it does not fit as things stand. Two levers, both measured rather than
-guessed:
+Against 16,623 available that fits, with the pessimistic end uncomfortably
+close. One further lever is measured and held in reserve:
 
 - **V60 without the FP group: -1,987 ALM**, and Fmax 24.62 -> 45.54. Evidence is
   good (no trap across 7.8M instructions of real boot code, no excess of
   FP-shaped byte pairs in the ROMs) but not conclusive: attract mode and
   gameplay have not run, and only two of eight ROM sets were scanned.
-- **D4, three TGP instances: -5,108 ALM** for two of them. MAME instantiates one
-  MB86233 and produces correct output; the board has three. D4's own reversal
-  condition was never met, so this would be reversing it on budget grounds
-  rather than on the terms it set.
-
-With both, 18,610 available against a 12,500-19,500 need. Neither should be
-taken before the rasterizer is sized, since it carries the widest uncertainty.
+With NO_FP as well, 18,610 against a 12,500-19,500 need. That lever should not
+be taken before the rasterizer is sized, since it carries the widest
+uncertainty of anything left and is the one block nothing is known about.
 
 ---
 
