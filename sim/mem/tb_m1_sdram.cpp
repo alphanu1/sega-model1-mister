@@ -283,6 +283,36 @@ int main(int argc, char** argv) {
     printf("  row thrash: %ld fails\n", h.fails - start_fails);
   }
 
+  // ------------------------------------------------ read/write collision
+  // A WRITE drives DQ; a read in flight means the device drives DQ. The
+  // controller guards against issuing one during the other, and a guard that
+  // is never exercised is indistinguishable from a guard that does not work.
+  // This phase alternates a burst read with a write to the same bank and row
+  // as tightly as the arbiter allows, which is the tightest spacing the two
+  // can ever have.
+  printf("test: write against in-flight read data\n");
+  {
+    long start_fails = h.fails;
+    // Different banks, so the two never touch the same address. Overlapping
+    // them would race the shadow instead: the controller does not order a
+    // concurrent read and write to one location, so a test that assumed an
+    // order would be testing the harness, not the controller. The collision
+    // being provoked is on the shared DQ bus, which does not need the
+    // addresses to overlap.
+    for (int n = 0; n < 6000; n++) {
+      uint32_t rbase = (1u << 22) | (3u << 9);
+      uint32_t wbase = (2u << 22) | (5u << 9);
+      if (!h.port[1].busy) h.issue(1, rbase + ((n * 4) & 0x1fc), false, 0);
+      if (!h.port[0].busy)
+        h.issue(0, wbase + (n & 0x1ff), true, (uint16_t)(0x5a00 + (n & 0xff)));
+      h.step();
+    }
+    h.drain();
+    printf("  collision: %ld fails, %u violations\n",
+           h.fails - start_fails, h.d->violations);
+    h.checks++;
+  }
+
   // ------------------------------------------------------- throughput
   // D2 and D3 rest on a bandwidth figure that has so far only been arithmetic.
   // This measures it, and specifically measures whether locality helps: the

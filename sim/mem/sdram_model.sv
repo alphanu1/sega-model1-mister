@@ -122,6 +122,7 @@ module sdram_model #(
   localparam int V_MRS_OPEN   = 10;  // MRS with a bank open
   localparam int V_TMRD       = 11;
   localparam int V_DQ_FIGHT   = 12;  // both ends driving DQ
+  localparam int V_RD_TRUNC   = 13;  // PRECHARGE while read data still in flight
 
   // Command encoding, {cs_n, ras_n, cas_n, we_n}.
   localparam logic [3:0] C_NOP   = 4'b0111;
@@ -145,6 +146,10 @@ module sdram_model #(
   longint              t_act    [BANKS];   // cycle of last ACTIVATE
   longint              t_pre    [BANKS];   // cycle of last PRECHARGE
   longint              t_wr     [BANKS];   // cycle of last WRITE data
+  // Cycle by which this bank's outstanding read data has been delivered. A
+  // PRECHARGE before then truncates the burst on real silicon and returns
+  // nothing, which is a controller bug the model previously could not see.
+  longint              rd_due   [BANKS];
 
   longint cyc;
   longint t_act_any;
@@ -195,6 +200,7 @@ module sdram_model #(
     for (bi = 0; bi < BANKS; bi = bi + 1) begin
       row_open[bi] = 1'b0; open_row[bi] = '0;
       t_act[bi] = -1000; t_pre[bi] = -1000; t_wr[bi] = -1000;
+      rd_due[bi] = -1000;
     end
     for (bi = 0; bi < CL+2; bi = bi + 1) begin rd_v[bi] = 1'b0; rd_d[bi] = '0; end
   end
@@ -221,7 +227,14 @@ module sdram_model #(
 
     // Both ends driving the bus is a controller bug that a tri-state model
     // would hide behind an X. Name it.
-    if (rd_v[0] && dq_oe_i) flag(V_DQ_FIGHT, "controller drives DQ during read data");
+    //
+    // Compare the state in which the device is ACTUALLY driving, dq_oe_o, not
+    // rd_v[0] which is one edge earlier. The first version compared rd_v[0]
+    // and so checked the cycle before the device took the bus — a controller
+    // whose write data landed exactly one cycle later, which is the natural
+    // spacing its own state machine produces, collided for real and passed.
+    // The check existed, named the right hazard, and could not fire.
+    if (dq_oe_o && dq_oe_i) flag(V_DQ_FIGHT, "controller drives DQ during read data");
 
     if (CHECK_REFRESH && initialised && (cyc - t_ref) > longint'(T_REFI) * longint'(REFI_SLACK)) begin
       flag(V_REFRESH, $sformatf("no REFRESH for %0d cycles", cyc - t_ref));
@@ -272,6 +285,7 @@ module sdram_model #(
             col = a[COL_BITS-1:0];
             adr = addr_of(ba, open_row[ba], col);
             if (cmd == C_READ) begin
+              rd_due[ba] <= cyc + longint'(CL);
               // Slot CL-1, not CL. A READ at edge T must present data after
               // edge T+CL. The entry lands in slot S at edge T and reaches
               // slot 0 after edge T+S, and dq_o is registered from rd_d[0] one
@@ -327,6 +341,8 @@ module sdram_model #(
             // A10 selects precharge-all over the addressed bank.
             if (a[10] || (BA_BITS'(k) == ba)) begin
               if (row_open[k]) begin
+                if (cyc < rd_due[k])
+                  flag(V_RD_TRUNC, $sformatf("PRECHARGE bank %0d truncates read data", k));
                 if ((cyc - t_act[k]) < longint'(T_RAS))
                   flag(V_TRAS, $sformatf("tRAS: PRECHARGE %0d cycles after ACTIVATE",
                                          cyc - t_act[k]));

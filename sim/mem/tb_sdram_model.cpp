@@ -37,12 +37,12 @@
 enum {
   V_ACT_OPEN = 0, V_TRCD = 1, V_TRAS = 2, V_TRP = 3, V_TRC = 4, V_TRRD = 5,
   V_NO_ROW = 6, V_TWR = 7, V_REF_OPEN = 8, V_REFRESH = 9, V_MRS_OPEN = 10,
-  V_TMRD = 11, V_DQ_FIGHT = 12
+  V_TMRD = 11, V_DQ_FIGHT = 12, V_RD_TRUNC = 13
 };
 static const char* VNAME[] = {
   "ACT on open bank", "tRCD", "tRAS", "tRP", "tRC", "tRRD", "no open row",
   "tWR", "REF with bank open", "refresh interval", "MRS with bank open",
-  "tMRD", "DQ contention"
+  "tMRD", "DQ contention", "PRECHARGE truncates read"
 };
 
 // Timing, matching the model's parameters. Overridable so the harness can be
@@ -317,10 +317,17 @@ int main(int argc, char** argv) {
   { Dev dv; dv.init();
     dv.act(0,1); dv.nop(T_RCD); dv.wr(0,7,0x2222); dv.nop(T_WR);
     dv.rd(0,7);
-    // Drive DQ from the controller side while the device is returning data.
-    dv.nop(CL - 1);
-    dv.d->dq_oe_i = 1; dv.tick(); dv.d->dq_oe_i = 0;
+    // Drive DQ from the controller side during the cycle the device is
+    // actually driving it, which is CL edges after the READ.
+    dv.nop(CL);
+    dv.d->dq_oe_i = 1; dv.tick(); dv.tick(); dv.d->dq_oe_i = 0;
     expect_flag("DQ contention", dv, V_DQ_FIGHT); checks++; }
+
+  // PRECHARGE issued before the read data has been delivered truncates the
+  // burst. The controller must hold off precharging a bank while its own read
+  // is still returning, and nothing checked that until now.
+  { Dev dv; dv.init(); dv.act(0,1); dv.nop(T_RAS-1); dv.rd(0,2); dv.pre(0);
+    expect_flag("PRECHARGE truncates read", dv, V_RD_TRUNC); checks++; }
 
   printf("sdram_model[trc=%d]: checks=%ld fails=%d\n", T_RC, checks, failures);
   return failures ? 1 : 0;

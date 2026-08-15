@@ -177,7 +177,7 @@ module m1_sdram #(
 
   typedef enum logic [3:0] {
     S_INIT, S_IDLE, S_DISPATCH, S_PRE_XFER, S_ACT, S_RCD,
-    S_RD, S_RDW, S_WR, S_WRRC, S_PRE_REF, S_REFW
+    S_RD, S_WR, S_WRRC, S_PRE_REF, S_REFW
   } state_t;
   state_t state;
 
@@ -255,7 +255,7 @@ module m1_sdram #(
     // an index.
     for (j = 0; j < NP; j = j + 1) begin
       cand = (rr_next + j) % NP;
-      if (pend[cand] && !rr_valid) begin
+      if (pend[cand] && !inflight[cand] && !rr_valid) begin
         rr_valid = 1'b1;
         rr_grant = ($clog2(NP))'(cand);
       end
@@ -272,13 +272,27 @@ module m1_sdram #(
   logic [1:0]              be_r;
   logic [15:0]             cap_buf [4];
 
-  logic        row_open;
-  logic [1:0]  open_bank;
-  logic [12:0] open_row;
-  // Cycles still owed to tRAS before the open row may be precharged. With
+  // ROW STATE IS PER BANK
+  //
+  // The device holds one open row in each of its four banks, and the first
+  // version of this controller tracked a single one and closed all four with
+  // a precharge-all on every row change. With five masters interleaving, that
+  // meant p0's access evicted p1's row and almost every transfer became a row
+  // miss — a 16-cycle transfer instead of 10. Tracking each bank separately
+  // and precharging only the bank actually being reused is what lets the
+  // masters coexist, because D8 puts them in different address regions and
+  // therefore usually in different banks.
+  logic [3:0]  bank_open;
+  logic [12:0] bank_row [4];
+  // Cycles still owed to tRAS before that bank's row may be precharged. With
   // auto-precharge the device enforced this internally; taking that back means
   // taking the obligation back with it.
-  logic [3:0]  ras_cnt;
+  logic [3:0]  ras_cnt [4];
+
+  logic [1:0]  tbank;
+  logic [12:0] trow;
+  assign tbank = xfer_addr[24:23];
+  assign trow  = xfer_addr[22:10];
 
   // A transfer whose bank and row are already open skips PRECHARGE and
   // ACTIVATE. This is the entire reason locality is worth anything: measured
@@ -286,29 +300,72 @@ module m1_sdram #(
   // random — 0.263 words/cycle either way on a 4-word burst port — because
   // every read closed the row behind itself.
   logic        row_hit;
-  assign row_hit = row_open && (xfer_addr[24:23] == open_bank)
-                            && (xfer_addr[22:10] == open_row);
+  assign row_hit = bank_open[tbank] && (bank_row[tbank] == trow);
+
+  // Refresh needs every bank closed, so it must wait for the longest
+  // outstanding tRAS rather than just the one it happens to look at.
+  logic ras_any;
+  assign ras_any = (ras_cnt[0] != 0) || (ras_cnt[1] != 0)
+                || (ras_cnt[2] != 0) || (ras_cnt[3] != 0);
 
   logic [15:0]              init_cnt;
   logic [$clog2(T_REFI+1)-1:0] ref_cnt;
   logic                     ref_pend;
   logic [3:0]               wait_cnt;
-  logic [RD_LAT-1:0]        cl_pipe;
-  logic [1:0]               ack_hold;
   logic [15:0]              dq_r;
 
-  assign dbg_grant = grant_mask;
-  logic [NP-1:0] grant_mask;
-  always_comb begin
-    grant_mask = '0;
-    // A port is "granted" for telemetry while the controller is executing its
-    // transfer, not merely on the single cycle it was selected. Bandwidth is a
-    // question about occupancy, so counting selection edges would report a
-    // fraction of the true figure.
-    if (!grant_is_wr && state != S_IDLE && state != S_INIT &&
-        state != S_PRE_REF && state != S_REFW)
-      grant_mask[grant] = 1'b1;
-  end
+  // TAGGED READ CAPTURE
+  //
+  // The first version had one shared capture buffer and stalled each transfer
+  // until its own data had drained — S_RDW waiting for the pipeline to empty.
+  // That is five dead cycles on a ten-cycle row-hit burst, 40% of the
+  // transfer, spent idle waiting for words already in flight.
+  //
+  // Instead every CAS carries a tag naming the port it belongs to and which
+  // word of that port's burst it is. Capture then depends only on the tag, so
+  // the issue side never waits: it can activate a row or issue the next
+  // transfer's CAS while earlier data is still on its way back. Per-port
+  // buffers are what make that safe — a shared one would interleave two
+  // masters' words into the same array.
+  logic [RD_LAT-1:0]        tag_v;
+  logic [RD_LAT-1:0][2:0]   tag_p;      // port index
+  logic [RD_LAT-1:0][1:0]   tag_w;      // word index within the burst
+  logic [RD_LAT-1:0]        tag_last;
+  logic [NP-1:0][3:0][15:0] cap;
+
+  // Acks are per port now. A single shared hold counter was fine when only one
+  // transfer existed at a time; with two ports in flight it would clear the
+  // other port's ack early.
+  logic [NP-1:0][1:0]       ack_cnt;
+  logic [1:0]               wack_cnt;
+
+  // Cycles until this bank's last outstanding read data has landed. A bank may
+  // not be precharged while its own read is still returning, but other banks
+  // are free — which is the entire point of overlapping.
+  logic [3:0]               rd_bank_cnt [4];
+
+  // Ports with a transfer issued but not yet acknowledged.
+  //
+  // `pend` alone cannot serve this purpose. It means "wants service" and only
+  // clears on the ack, which used to be safe only because each transfer
+  // stalled until its own data had drained. Once the pipeline removed that
+  // stall, the FSM returned to arbitration while the data was still in flight,
+  // saw pend still set, and dispatched the very same transaction again —
+  // duplicate CAS commands, duplicate acks, and every port reading one
+  // delivery behind. The arbiter must therefore skip a port that is already
+  // being served, which is what this is.
+  logic [NP-1:0]            inflight;
+  logic                     wr_inflight;
+
+  logic pipe_busy;
+  assign pipe_busy = |tag_v;
+
+  // A port is "granted" for telemetry while its transfer is in flight, not
+  // merely on the cycle it was selected. Bandwidth is a question about
+  // occupancy, and counting selection edges would report a fraction of it.
+  // With the pipeline this is genuinely several ports at once, which is what
+  // the telemetry is there to show.
+  assign dbg_grant = inflight;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -317,8 +374,11 @@ module m1_sdram #(
       state <= S_INIT; ready <= 1'b0;
       init_cnt <= 16'(INIT_NOP);
       ref_cnt <= '0; ref_pend <= 1'b0;
-      row_open <= 1'b0; open_bank <= '0; open_row <= '0;
-      cl_pipe <= '0; ack_hold <= '0; ras_cnt <= '0;
+      bank_open <= '0;
+      for (int b = 0; b < 4; b++) begin bank_row[b] <= '0; ras_cnt[b] <= '0; end
+      tag_v <= '0; tag_p <= '0; tag_w <= '0; tag_last <= '0; cap <= '0;
+      ack_cnt <= '0; wack_cnt <= '0; inflight <= '0; wr_inflight <= 1'b0;
+      for (int b = 0; b < 4; b++) rd_bank_cnt[b] <= '0;
       p_ack <= '0; wr_ack <= 1'b0; p_dout <= '0;
       grant <= '0; grant_is_wr <= 1'b0; rr_next <= '0;
       rd_total <= 4'd1; rd_issued <= '0; rd_captured <= '0;
@@ -329,8 +389,21 @@ module m1_sdram #(
       sd_dq_oe <= 1'b0;
       dq_r     <= sd_dq_i;
 
-      if (ack_hold != 0) ack_hold <= ack_hold - 1'b1;
-      else begin p_ack <= '0; wr_ack <= 1'b0; end
+      for (int q = 0; q < NP; q++) begin
+        if (ack_cnt[q] != 0) ack_cnt[q] <= ack_cnt[q] - 1'b1;
+        else p_ack[q] <= 1'b0;
+        // inflight must clear on the SAME edge as pend, not on the delivery
+        // edge one cycle earlier. The mailbox clears pend when it observes the
+        // ack rising, so clearing inflight at delivery opens a one-cycle window
+        // where pend still holds the finished transaction and inflight no
+        // longer blocks it — and the arbiter re-dispatches the completed
+        // transaction's stale address. That returned the previous word for
+        // every read, which looks like a broken data path and is not one.
+        if (p_ack[q] && !ack_d[q]) inflight[q] <= 1'b0;
+      end
+      if (wr_ack && !wr_ack_d) wr_inflight <= 1'b0;
+      if (wack_cnt != 0) wack_cnt <= wack_cnt - 1'b1;
+      else wr_ack <= 1'b0;
 
       if (state == S_INIT) begin
         sd_dqm <= 2'b11;
@@ -352,7 +425,8 @@ module m1_sdram #(
       end else begin
         sd_dqm <= 2'b00;
 
-        if (ras_cnt != 0) ras_cnt <= ras_cnt - 1'b1;
+        for (int b = 0; b < 4; b++)
+          if (ras_cnt[b] != 0) ras_cnt[b] <= ras_cnt[b] - 1'b1;
 
         ref_cnt <= ref_cnt + 1'b1;
         if (ref_cnt == ($clog2(T_REFI+1))'(T_REFI)) begin
@@ -360,36 +434,60 @@ module m1_sdram #(
           ref_pend <= 1'b1;
         end
 
-        // Read capture. The tap index is derived from CL, not written down.
-        cl_pipe <= {cl_pipe[RD_LAT-2:0], 1'b0};
-        if (cl_pipe[RD_LAT-1]) begin
-          cap_buf[rd_captured[1:0]] <= dq_r;
-          rd_captured <= rd_captured + 1'b1;
-          if (rd_captured + 1'b1 == rd_total) begin
+        for (int b = 0; b < 4; b++)
+          if (rd_bank_cnt[b] != 0) rd_bank_cnt[b] <= rd_bank_cnt[b] - 1'b1;
+
+        // Read capture, driven entirely by the tag that travelled with the CAS.
+        tag_v    <= {1'b0, tag_v[RD_LAT-1:1]};
+        tag_p    <= {3'd0, tag_p[RD_LAT-1:1]};
+        tag_w    <= {2'd0, tag_w[RD_LAT-1:1]};
+        tag_last <= {1'b0, tag_last[RD_LAT-1:1]};
+        if (tag_v[0]) begin
+          cap[tag_p[0]][tag_w[0]] <= dq_r;
+          if (tag_last[0]) begin
             // The final word and its buffer write share an edge, so deliver
             // the staged word directly rather than reading back a stale slot.
-            case (rd_total)
-              4'd1:    p_dout[grant] <= {48'd0, dq_r};
-              default: p_dout[grant] <= {dq_r, cap_buf[2], cap_buf[1], cap_buf[0]};
-            endcase
-            p_ack[grant] <= 1'b1;
-            ack_hold     <= 2'(ACK_HOLD - 1);
+            // Word index 0 on the last word means this was a single-word
+            // transfer; anything else means the full four.
+            if (tag_w[0] == 2'd0)
+              p_dout[tag_p[0]] <= {48'd0, dq_r};
+            else
+              p_dout[tag_p[0]] <= {dq_r, cap[tag_p[0]][2],
+                                   cap[tag_p[0]][1], cap[tag_p[0]][0]};
+            p_ack[tag_p[0]]    <= 1'b1;
+            ack_cnt[tag_p[0]]  <= 2'(ACK_HOLD - 1);
           end
         end
 
         case (state)
           S_IDLE: begin
-            if (ref_pend && cl_pipe == 0 && ras_cnt == 0) begin
-              cmd      <= C_PRE;
-              sd_a     <= 13'h400;              // A10: precharge all
-              row_open <= 1'b0;
+            if (ref_pend && !pipe_busy && !ras_any) begin
+              cmd       <= C_PRE;
+              sd_a      <= 13'h400;             // A10: precharge all
+              bank_open <= '0;
               wait_cnt <= 4'(T_RP - 1);
               state    <= S_PRE_REF;
-            end else if (wr_pend || rr_valid) begin
+            end else if (!ref_pend &&
+                         ((wr_pend && !wr_inflight && !pipe_busy) ||
+                          (rr_valid && !(we_p[rr_grant] && pipe_busy)))) begin
+              // No new transfer once a refresh is due. Refresh needs every
+              // bank precharged and the read pipeline empty, and under
+              // continuous traffic the pipeline is never empty — so without
+              // this the refresh waits forever. The device model caught it
+              // immediately once the drain stall was removed; on hardware it
+              // would have been silent data decay, which is about the worst
+              // failure to debug in the field.
+              //
+              // The cost is a bubble of roughly a drain plus tRP plus tRC once
+              // every T_REFI cycles, which is a couple of percent.
+              // A write drives DQ, so it may not be issued while read data is
+              // still returning on the same wires. Reads have no such
+              // restriction, which is what lets them overlap.
               logic [24:1] sel;
-              if (wr_pend) begin
+              if (wr_pend && !wr_inflight && !pipe_busy) begin
                 grant       <= ($clog2(NP+1))'(WIDX);
                 grant_is_wr <= 1'b1;
+                wr_inflight <= 1'b1;
                 sel         = wr_addr_p;
                 din_r       <= wr_din_p;
                 be_r        <= wr_be_p;
@@ -403,6 +501,9 @@ module m1_sdram #(
                 be_r        <= be_p[rr_grant];
                 is_write    <= we_p[rr_grant];
                 rd_total    <= we_p[rr_grant] ? 4'd1 : blen(rr_grant);
+                // Writes take it too: a port writing is equally in flight and
+                // equally must not be re-selected before it completes.
+                inflight[rr_grant] <= 1'b1;
                 rr_next     <= (rr_grant == ($clog2(NP))'(NP-1))
                                  ? '0 : rr_grant + 1'b1;
               end
@@ -419,14 +520,25 @@ module m1_sdram #(
           S_DISPATCH: begin
             if (row_hit) begin
               state <= is_write ? S_WR : S_RD;
-            end else if (row_open) begin
-              // tRAS is owed from the ACTIVATE that opened this row.
-              if (ras_cnt == 0) begin
-                cmd      <= C_PRE;
-                sd_a     <= 13'h400;
-                row_open <= 1'b0;
-                wait_cnt <= 4'(T_RP - 1);
-                state    <= S_PRE_XFER;
+            end else if (bank_open[tbank]) begin
+              // Precharge only the bank being reused: A10 low with the bank
+              // address, not the precharge-all the first version used. tRAS is
+              // owed from the ACTIVATE that opened this bank's row.
+              // rd_bank_cnt is defensive and, at this FSM's spacing, not
+              // currently reachable — deleting it changes no test result. The
+              // reason is structural, not a missing case: the earliest a
+              // precharge can follow that bank's last CAS is CAS -> S_IDLE ->
+              // S_DISPATCH, which lands exactly on the cycle the data is due,
+              // never before it. It is kept because that margin is one state
+              // wide, and any future shortening of the dispatch path would
+              // start truncating read bursts silently.
+              if (ras_cnt[tbank] == 0 && rd_bank_cnt[tbank] == 0) begin
+                cmd              <= C_PRE;
+                sd_ba            <= tbank;
+                sd_a             <= 13'h000;
+                bank_open[tbank] <= 1'b0;
+                wait_cnt         <= 4'(T_RP - 1);
+                state            <= S_PRE_XFER;
               end
             end else begin
               state <= S_ACT;
@@ -442,10 +554,9 @@ module m1_sdram #(
             cmd       <= C_ACT;
             sd_ba     <= xfer_addr[24:23];
             sd_a      <= xfer_addr[22:10];
-            open_bank <= xfer_addr[24:23];
-            open_row  <= xfer_addr[22:10];
-            row_open  <= 1'b1;
-            ras_cnt   <= 4'(T_RAS - 1);
+            bank_row[tbank]  <= trow;
+            bank_open[tbank] <= 1'b1;
+            ras_cnt[tbank]   <= 4'(T_RAS - 1);
             wait_cnt  <= 4'(T_RCD - 1);
             state     <= S_RCD;
           end
@@ -471,9 +582,13 @@ module m1_sdram #(
 
           S_WRRC: begin
             if (wait_cnt == 4'((T_WR > T_RAS - T_RCD) ? T_WR : T_RAS - T_RCD)) begin
-              if (grant_is_wr) wr_ack <= 1'b1;
-              else             p_ack[grant] <= 1'b1;
-              ack_hold <= 2'(ACK_HOLD - 1);
+              if (grant_is_wr) begin
+                wr_ack   <= 1'b1;
+                wack_cnt <= 2'(ACK_HOLD - 1);
+              end else begin
+                p_ack[grant]    <= 1'b1;
+                ack_cnt[grant]  <= 2'(ACK_HOLD - 1);
+              end
             end
             if (wait_cnt == 0) state <= S_IDLE;
             else wait_cnt <= wait_cnt - 1'b1;
@@ -490,28 +605,29 @@ module m1_sdram #(
             // packing of {3'b000, x, col} would land x on A9, which the device
             // ignores.
             sd_a       <= {2'b00, 1'b0, 1'b0, xfer_addr[9:1]};
-            cl_pipe[0] <= 1'b1;
+            tag_v[RD_LAT-1]    <= 1'b1;
+            tag_p[RD_LAT-1]    <= grant[2:0];
+            tag_w[RD_LAT-1]    <= rd_issued[1:0];
+            tag_last[RD_LAT-1] <= (rd_issued + 1'b1 == rd_total);
+            rd_bank_cnt[tbank] <= 4'(RD_LAT);
             // Bursts wrap inside the open row: incrementing the full address
             // would walk off the end of the row on the last column and read
             // from a row that was never activated.
             xfer_addr[9:1] <= xfer_addr[9:1] + 1'b1;
             rd_issued  <= rd_issued + 1'b1;
             if (rd_issued + 1'b1 == rd_total) begin
-              // The row is deliberately left open. The capture pipeline still
-              // has to drain before the shared cap_buf can be reused.
-              state <= S_RDW;
+              // Straight back to arbitration. The row stays open, and the data
+              // still in flight is the tag pipeline's problem, not this state
+              // machine's — which is the change that removes the drain stall.
+              state <= S_IDLE;
             end
-          end
-
-          S_RDW: begin
-            if (cl_pipe == 0) state <= S_IDLE;
           end
 
           S_PRE_REF: begin
             if (wait_cnt == 0) begin
-              cmd      <= C_REF;
-              row_open <= 1'b0;
-              ref_pend <= 1'b0;
+              cmd       <= C_REF;
+              bank_open <= '0;
+              ref_pend  <= 1'b0;
               wait_cnt <= 4'(T_RC - 1);
               state    <= S_REFW;
             end else wait_cnt <= wait_cnt - 1'b1;

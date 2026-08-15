@@ -144,9 +144,43 @@ sample stream:
 | p1 alone, 4-word bursts, sequential | 0.326 | 65.2 MB/s | 93.2 MB/s |
 | p0 alone, single words, sequential | 0.109 | 21.8 MB/s | 31.2 MB/s |
 
-**D3 needs 55-75 MB/s aggregate with banding. The controller delivers 30.6 at
-100 MHz.** It is short by roughly a factor of two, and closing that is M1 work,
-not something to discover in M3.
+**Closed 2026-08-15.** Two changes took it from 30.6 to 100.2 MB/s at 100 MHz,
+which clears the requirement with margin:
+
+| | words/cycle | at 100 MHz |
+|---|---|---|
+| original, auto-precharge every read | 0.153 | 30.6 MB/s |
+| + per-bank open rows | 0.209 | 41.7 MB/s |
+| + pipelined tagged capture | 0.501 | 100.2 MB/s |
+
+**Per-bank open rows.** The device holds an open row in each of four banks; the
+controller tracked one and closed all four on every row change. With five
+masters interleaving, p0's access evicted p1's row and nearly every transfer
+became a row miss.
+
+**Pipelined capture.** Each transfer waited for its own read data to drain — 5
+dead cycles of a 10-cycle row-hit burst — before the next could start. Tagging
+each CAS with its port and word index makes capture independent of issue, so
+the FSM never waits for data it has already asked for.
+
+Single-master figures are unchanged at 0.109 and 0.326 words/cycle, and that is
+expected rather than a disappointment: one master with one outstanding request
+is bounded by round-trip latency, not by the controller. The aggregate gain
+comes from overlapping *different* masters. A master that needs more on its own
+has to issue multiple outstanding requests.
+
+Three bugs surfaced only once the drain stall was removed, and all three would
+have been extremely hard to find later:
+
+- `pend` was doing double duty as "wants service" and "not yet serviced". With
+  the stall gone the FSM re-entered arbitration while data was in flight, saw
+  `pend` still set, and re-dispatched the same transaction.
+- `inflight` cleared one cycle before `pend` did, leaving a window where the
+  arbiter re-dispatched a completed transaction's stale address. Every read
+  returned the previous word — which looks exactly like a broken data path.
+- Refresh starved completely. It required an empty read pipeline, and under
+  continuous traffic the pipeline is never empty. On hardware that is silent
+  data decay.
 
 Two findings behind those numbers.
 
@@ -156,16 +190,9 @@ locality gain 1.00x**. Adding row reuse (skip PRECHARGE and ACTIVATE when the
 bank and row are already open) took the gain to 1.54x on single words and 1.40x
 on bursts. That change is in and measured.
 
-What remains is that each transfer waits for its own read-capture pipeline to
-drain before the next one starts, so per-transfer latency is paid serially
-instead of being overlapped. A 4-word burst to an open row spends 4 cycles
-issuing and about 5 draining. Overlapping the next transfer's ACTIVATE and CAS
-with the previous transfer's data return is the remaining factor of two, and it
-is a real redesign of the issue/capture split rather than a tuning parameter.
-
-Note the clock matters as much as the design: the same controller at 143 MHz
-delivers 43.8 MB/s. The operating point is not yet chosen and should be settled
-alongside the pipelining work rather than after it.
+The clock still matters: the same controller at 143 MHz reaches 143 MB/s. The
+operating point is not yet chosen, and 100 MHz already clears the requirement,
+so the choice can now be made on Fmax closure rather than on bandwidth.
 
 ---
 
