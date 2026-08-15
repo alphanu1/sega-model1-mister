@@ -335,6 +335,32 @@ toolchain and want re-measuring on 17.0, which is now the Makefile default.
 
 ---
 
+### Tilemap scanline budget, measured 2026-08-15
+
+`make test_tile_fetch` reports cycles per layer per scanline against the real
+budget. A scanline is 656 pixel clocks at 16 MHz, about 41 us, which at 100 MHz
+is ~4100 SDRAM cycles for all four layers together.
+
+| content | cycles/layer/line | x4 layers | fits 4100? |
+|---|---|---|---|
+| text / menu, tiles repeat | 699 | 2,796 | yes |
+| worst case, every tile distinct | 1,614 | 6,456 | **no, by 57%** |
+
+**M1's exit criteria fit; the worst case does not.** The text layer and the
+service menu are exactly the repeated-tile case — a menu is mostly one blank
+tile and one font — so booting and navigating is comfortable. Four layers of
+entirely distinct characters is not, and that is a real limit rather than a
+pessimistic estimate.
+
+Three things would close it when it matters, in increasing order of effort: a
+multi-entry tile cache instead of the single retained row; fetching the full
+4-word burst the controller already serves, which covers two character rows per
+transaction instead of one; or simply that games rarely enable four dense
+layers at once. The measurement is in the test output, so this stays visible
+rather than being rediscovered in M3.
+
+---
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**
