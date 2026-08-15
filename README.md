@@ -31,8 +31,15 @@ what to do next, and the failure modes that have cost time.
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural
 reset vector, fetches through the packed ROM mapping, clears and tests NVRAM,
 work RAM, both display lists and tile RAM, passes the ROM checksum, completes the
-I/O board handshake, and runs game code out of work RAM — 5.3 M instruction
-fetches, zero SDRAM protocol violations, `dbg_fp_trap` never asserted.
+I/O board handshake, and runs game code out of work RAM. At the committed
+`BOOT_CYCLES=20000000`: 236,367 instructions, 116,359 wide-port fetch line
+fills, zero SDRAM protocol violations, `dbg_fp_trap` never asserted. Every
+figure from that test scales with the run length, so quote the two together.
+
+It also initialises the whole 2D path — 168,288 character RAM accesses, 53,673
+to tile RAM, 40,960 to the colour translation tables and 8,433 real xBGR-555
+palette entries — so the video block already built has content to display before
+any of the 3D path exists.
 
 | Block | ALM | Verification |
 |---|---|---|

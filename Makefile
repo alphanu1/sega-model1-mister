@@ -374,6 +374,10 @@ m1_main:
 # read counts, and writes in order with their data. That trace is the tool that
 # has found every boot blocker so far, so it is a variable rather than an edit:
 #   make m1_boot WATCH_PAGE=0xC0    # the I/O board
+#
+# Every count this prints scales with BOOT_CYCLES, so quote the two together or
+# the figure cannot be reproduced. A set of numbers recorded without their run
+# length already read as a regression once, and was not one.
 m1_boot:
 	@test -f build/rom/vr_v60.hex || { \
 	  echo "build/rom/vr_v60.hex missing — run:"; \

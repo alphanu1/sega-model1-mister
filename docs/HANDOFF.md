@@ -14,16 +14,39 @@ disagree again, this file is where the measurements are.
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural
 reset vector, fetches through the packed ROM mapping, clears and tests NVRAM,
 work RAM, both display lists and tile RAM, passes the ROM checksum, completes
-the I/O board handshake, and runs game code out of work RAM — 5,304,880
-instruction fetches, zero SDRAM protocol violations, `dbg_fp_trap` never
-asserted.
+the I/O board handshake, and runs game code out of work RAM, with zero SDRAM
+protocol violations and `dbg_fp_trap` never asserted.
 
-Two boot runs get cited in this document and they are not the same run. The
-**post-handshake run** is the current one: 20 M cycles, 5.3 M fetches, execution
-at `fe143d` out of work RAM. The **pre-handshake run** stopped at `fe095a`
-polling the I/O board, and is where the 7.8 M-instruction CPI and FP-trap
-figures come from — that one was mostly `MOVC` sweeping memory, so it is the
-weaker evidence of the two about what game code does.
+**Always quote the run length with a boot figure.** Every count from this test
+scales with `BOOT_CYCLES`, and the numbers in commit 9577ab3 (5,304,880 fetch
+lines, 19.90 CPI) came from a run roughly ten times the committed default with
+its length unrecorded — which is why they do not reproduce from `make m1_boot`
+and read as a regression when they are not. Reproducible, 2026-08-15:
+
+| `BOOT_CYCLES` | instructions | fetch line fills | CPI | busiest page |
+|---|---|---|---|---|
+| 20,000,000 (default) | 236,367 | 116,359 | 28.20 | tile RAM |
+| 100,000,000 | 1,619,871 | 2,422,369 | 20.57 | work RAM, 504,334 |
+
+Both end at `fe143d` with `replies=3`. CPI falls with run length because the
+early phase is dominated by block instructions sweeping memory; it is
+converging on the ~19.9 the longer run recorded, not disagreeing with it.
+
+Note `ifetch lines` counts **8-byte wide-port line fills, not instructions** —
+this document called them "instruction fetches" until 2026-08-15.
+
+Two boot phases get cited and they are not the same run. The **post-handshake**
+one above executes out of work RAM at `fe143d`. The **pre-handshake** one
+stopped at `fe095a` polling the I/O board, and is where the 7.8 M-instruction
+CPI and FP-trap figures come from — that one was mostly `MOVC` sweeping memory,
+so it is the weaker evidence of the two about what game code does.
+
+**Boot initialises the whole 2D path**, which matters for the top level: with no
+TGP and no rasterizer, a core built today still has content to display. Accesses
+over the default run — character RAM 168,288 across six pages, tile RAM 53,673,
+colour translation tables 40,960, display lists 0 and 1 at 16,420 each, palette
+8,433. The palette writes are real xBGR-555 entries (`8010 8200 c000 e318 801f
+83e0 83ff fc00 fc1f ffe0`), not a clear.
 
 Built, tested and area-measured:
 
