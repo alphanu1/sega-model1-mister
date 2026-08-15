@@ -306,7 +306,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi
+.PHONY: quartus_list quartus_paths v60_cpi m1_main
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -319,6 +319,11 @@ QDEFS ?=
 
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
 # it builds the CPU a dozen times and takes minutes.
+# V60 executing out of SDRAM through the loader, decode and controller. Not in
+# `make test`: it builds the CPU twice and takes a couple of minutes.
+m1_main:
+	@bash tools/run_m1_main.sh
+
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh
 
