@@ -191,10 +191,22 @@ module m1_main #(
   // ------------------------------------------------------------ on chip
   // Tile RAM is 0x8000 words and palette 0x2000; both are read every scanline
   // by the renderer, which is why D8 keeps them off the external bus.
-  logic [15:0] tram [32768];
-  logic [15:0] pram [8192];
+  //
+  // The display lists, the colour translation table and the I/O board's
+  // dual-port RAM are here too. None is needed to fetch an instruction, and
+  // all of them are needed to BOOT: startup code writes and reads back its RAM
+  // regions, and a region that acknowledges but reads as 0xFFFF fails that
+  // check. The failure is silent in the worst way — the CPU is executing
+  // correctly, it just never gets past its own self-test — so these exist
+  // before real ROM code is run rather than after it has been debugged.
+  logic [15:0] tram  [32768];   // SCR  0x700000-0x70ffff
+  logic [15:0] pram  [8192];    // COL  0x900000-0x903fff
+  logic [15:0] dl0   [32768];   // TGP  0x600000-0x60ffff
+  logic [15:0] dl1   [32768];   // TGP  0x610000-0x61ffff
+  logic [15:0] cxlat [24576];   // COL  0x910000-0x91bfff
+  logic [15:0] dpram [2048];    // I/O  0xc00000-0xc00fff
 
-  logic [15:0] tram_q, pram_q;
+  logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q;
 
   always_ff @(posedge clk) begin
     if (m_req && m_we && sel_tileram) begin
@@ -212,6 +224,34 @@ module m1_main #(
     end
     pram_q       <= pram[m_addr[13:1]];
     vid_pal_data <= pram[{1'b0, vid_pal_addr}];
+  end
+
+  // Byte-enabled like the rest: the V60 writes bytes as well as words, and a
+  // region that only takes 16-bit writes corrupts every byte store to it.
+  always_ff @(posedge clk) begin
+    if (m_req && m_we && sel_dlist0) begin
+      if (m_be[0]) dl0[m_addr[15:1]][7:0]  <= m_wdata[7:0];
+      if (m_be[1]) dl0[m_addr[15:1]][15:8] <= m_wdata[15:8];
+    end
+    dl0_q <= dl0[m_addr[15:1]];
+
+    if (m_req && m_we && sel_dlist1) begin
+      if (m_be[0]) dl1[m_addr[15:1]][7:0]  <= m_wdata[7:0];
+      if (m_be[1]) dl1[m_addr[15:1]][15:8] <= m_wdata[15:8];
+    end
+    dl1_q <= dl1[m_addr[15:1]];
+
+    if (m_req && m_we && sel_colxlat && (m_addr[15:1] < 15'd24576)) begin
+      if (m_be[0]) cxlat[m_addr[14:1]][7:0]  <= m_wdata[7:0];
+      if (m_be[1]) cxlat[m_addr[14:1]][15:8] <= m_wdata[15:8];
+    end
+    cxlat_q <= cxlat[m_addr[14:1]];
+
+    if (m_req && m_we && sel_dpram) begin
+      if (m_be[0]) dpram[m_addr[11:1]][7:0]  <= m_wdata[7:0];
+      if (m_be[1]) dpram[m_addr[11:1]][15:8] <= m_wdata[15:8];
+    end
+    dpram_q <= dpram[m_addr[11:1]];
   end
 
   // ---------------------------------------------------------- GLUE regs
@@ -247,12 +287,12 @@ module m1_main #(
       bst <= B_IDLE; sdr_req <= 1'b0; sdr_addr <= '0;
       rdata_r <= '0; ack_r <= 1'b0; sdr_ack_d <= 1'b0;
     end else begin
-      ack_r     <= 1'b0;
       sdr_ack_d <= sdr_ack;
 
       case (bst)
         B_IDLE: begin
-          if (m_req && !ack_r) begin
+          ack_r <= 1'b0;
+          if (m_req) begin
             if (to_sdram) begin
               // One transaction per request RISING edge — see m1_sdram.sv.
               sdr_addr <= sdram_word;
@@ -278,6 +318,10 @@ module m1_main #(
         B_LOCAL: begin
           if      (sel_tileram) rdata_r <= tram_q;
           else if (sel_palette) rdata_r <= pram_q;
+          else if (sel_dlist0)  rdata_r <= dl0_q;
+          else if (sel_dlist1)  rdata_r <= dl1_q;
+          else if (sel_colxlat) rdata_r <= cxlat_q;
+          else if (sel_dpram)   rdata_r <= dpram_q;
           else if (sel_glue)    rdata_r <= glue_rdata;
           // Everything the board does not decode, plus the regions this does
           // not implement yet: acknowledge and read as an unpulled bus.
@@ -286,9 +330,26 @@ module m1_main #(
           bst   <= B_ACK;
         end
 
-        // Hold off until the requester drops m_req, so one request produces
-        // exactly one acknowledge.
-        B_ACK: if (!m_req) bst <= B_IDLE;
+        // Hold the acknowledge until the requester drops m_req.
+        //
+        // It must not be a single-cycle pulse. The bus adapter runs on the
+        // CPU's clock enable — clk/3 in the production cadence — so it only
+        // looks at m_ack every third cycle and a one-cycle pulse is missed
+        // outright most of the time. The CPU then waits forever on a
+        // transaction that did complete. Booting real code, that presented as
+        // the V60 taking its reset vector, running nineteen instructions,
+        // issuing exactly one data read and then stopping dead.
+        //
+        // m1_sdram stretches its own ack for the same reason; this is the same
+        // requirement one level up, and holding until the request drops covers
+        // any enable ratio rather than a particular one.
+        B_ACK: begin
+          ack_r <= 1'b1;
+          if (!m_req) begin
+            ack_r <= 1'b0;
+            bst   <= B_IDLE;
+          end
+        end
 
         default: bst <= B_IDLE;
       endcase

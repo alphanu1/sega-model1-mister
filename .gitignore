@@ -120,3 +120,7 @@ Thumbs.db
 
 # Local working instructions, kept on disk but not published.
 /CLAUDE.md
+
+# ROM-derived images. Hard rule 2: nothing derived from ROMs is committed.
+/build/rom/
+*.hex

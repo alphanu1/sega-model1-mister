@@ -315,7 +315,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main
+.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -332,6 +332,26 @@ QDEFS ?=
 # `make test`: it builds the CPU twice and takes a couple of minutes.
 m1_main:
 	@bash tools/run_m1_main.sh
+
+# Boots real game code. Needs a ROM image, which is not in the repository:
+#   python3 tools/build_rom_image.py vr ~/roms/vr.zip -o build/rom
+# Not part of `make test` for that reason.
+m1_boot:
+	@test -f build/rom/vr_v60.hex || { \
+	  echo "build/rom/vr_v60.hex missing — run:"; \
+	  echo "  python3 tools/build_rom_image.py vr <path-to>/vr.zip -o build/rom"; \
+	  exit 1; }
+	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
+	  +define+SIMULATION --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
+	  --Mdir build/m1boot -o m1boot \
+	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
+	  rtl/io/m1_glue.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv \
+	  rtl/m1_main.sv sim/top/tb_m1_boot.sv
+	./build/m1boot/m1boot
+
+BOOT_CYCLES ?= 20000000
 
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh
