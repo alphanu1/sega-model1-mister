@@ -265,6 +265,10 @@ endif
 # by enough that quoting one without saying which is misleading.
 QOPT ?= Aggressive Performance
 
+# Preprocessor defines passed to synthesis, e.g. QDEFS=S32_V60_NO_FP=1 to build
+# the V60 without its floating-point group.
+QDEFS ?=
+
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
 # it builds the CPU a dozen times and takes minutes.
 v60_cpi:
@@ -285,7 +289,9 @@ quartus:
 	@mkdir -p $(QDIR)
 	@srcs=""; for f in $(SRCS_$(MOD)); do \
 	  srcs="$$srcs\nset_global_assignment -name SYSTEMVERILOG_FILE ../../../$$f"; done; \
-	  sed -e 's/@MODULE@/$(MOD)/g' -e 's|@QOPT@|$(QOPT)|' -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
+	  defs=""; for d in $(QDEFS); do \
+	    defs="$$defs\nset_global_assignment -name VERILOG_MACRO \"$$d\""; done; \
+	  sed -e 's/@MODULE@/$(MOD)/g' -e 's|@QOPT@|$(QOPT)|' -e "s|@DEFS@|$$defs|" -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
 	@cp quartus/spike.sdc $(QDIR)/spike.sdc
 	@echo "PROJECT_REVISION = \"$(MOD)\"" > $(QDIR)/$(MOD).qpf
 	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c 'quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)'

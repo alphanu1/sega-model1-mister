@@ -27,6 +27,42 @@ each site. It belongs in **our** copy once the V60 is imported into `rtl/`,
 because `third_party/` is gitignored and re-cloned by `bootstrap.sh`, so a
 patch there would not survive.
 
+#### V60 without the FP group, measured 2026-08-15
+
+The M1 work list already says to "strip the System 32 profile down to what
+Model 1 uses: no MMU paging, no FP group". s32 provides that as a preprocessor
+define, `S32_V60_NO_FP`, with a testbench asserting FP opcodes then take the
+architectural reserved-instruction vector. `make quartus MOD=s32_v60
+QDEFS=S32_V60_NO_FP=1`:
+
+| | with FP | without FP |
+|---|---|---|
+| ALM | 20,000 | 18,013 (-1,987, -10%) |
+| Fmax | 24.62 MHz | **45.54 MHz (+85%)** |
+| DSP | 16 | 15 |
+
+**The Fmax is the result, not the area.** The FP group sits on the critical
+path, and removing it nearly doubles the closing frequency. Combined with the
+fetch measurement above, that removes timing as a V60 concern with margin:
+matching a 16 MHz part needs `F >= 16 * CPI_ours / CPI_real`, and at 45.54 MHz
+even pessimistic assumptions on both sides fit.
+
+The unit suite with the define set: **27 passed, 2 failed, and the two are
+`tb_v60_fp` and `tb_v60_fpdecode`.** Nothing outside the FP group is affected.
+
+**Not enabled yet, deliberately.** Whether Model 1 game code executes V60 FP
+instructions is unverified. It is plausible that it does not — the TGP exists
+precisely because the V60's own floating point was inadequate for the job — but
+plausible is not measured, and a core that traps on an instruction the game
+really uses fails in a way that looks like a decode bug. The boot test settles
+it, and until then this is a one-variable build switch held in reserve rather
+than a decision taken.
+
+What it does change now: **V60 Fmax should stop driving decisions.** There is a
+known 45.54 MHz configuration available the moment it is needed.
+
+---
+
 #### V60 fetch, measured 2026-08-15 — the prefetch is already in, and it works
 
 **Correction to the figures quoted above.** BASELINE.md's 22.7 cycles/instruction

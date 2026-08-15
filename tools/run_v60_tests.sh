@@ -42,7 +42,7 @@ CPU="$ROOT/rtl/cpu/v60/v60_bus.sv $ROOT/rtl/cpu/v60/v60.sv"
 # translation unit; across a CPU this size that was 32 concurrent compilers,
 # which is how a few hundred MB of build became several GB in flight.
 VJOBS="${VJOBS:-8}"
-VFLAGS="--binary --timing -j $VJOBS -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH +define+SIMULATION"
+VFLAGS="--binary --timing -j $VJOBS -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH +define+SIMULATION ${VDEFS:-}"
 
 declare -A TB=(
   [tb_v60_smoke]="SMOKE PASS"                 [tb_v60_directed]="DIRECTED PASS"
@@ -83,7 +83,7 @@ for tb in $ORDER; do
   [ -f "$src" ] || { echo "SKIP  $tb (no file)"; skip=$((skip+1)); continue; }
   bdir="$OUT/$tb"; rm -rf "$bdir"; mkdir -p "$bdir"
   if is_icarus "$tb"; then
-    if ! iverilog -g2012 -Wno-timescale -o "$bdir/$tb.vvp" -s "$tb" $CPU "$src" > "$bdir.log" 2>&1; then
+    if ! iverilog -g2012 -Wno-timescale ${IDEFS:-} -o "$bdir/$tb.vvp" -s "$tb" $CPU "$src" > "$bdir.log" 2>&1; then
       echo "BUILDFAIL $tb (icarus)  (see $bdir.log)"; fail=$((fail+1)); failed="$failed $tb"; continue
     fi
     out="$(cd "$bdir" && timeout 300 vvp "$tb.vvp" 2>&1)"
