@@ -203,6 +203,7 @@ module sdram_model #(
   logic [COL_BITS-1:0] col;
   longint              adr;
   logic [DQ_BITS-1:0]  cur;
+  longint              eff_pre;
 
   always @(posedge clk) begin
     cyc <= cyc + 1;
@@ -291,9 +292,34 @@ module sdram_model #(
               writes_served <= writes_served + 1;
             end
           end
-          // A10 high on READ/WRITE is read-with-auto-precharge. The Model 1
-          // controller does not use it; if that changes, the bank state here
-          // has to close the row and this comment has to go.
+          // A10 high on READ/WRITE requests auto-precharge, which the
+          // controller uses on the final CAS of every read burst.
+          //
+          // The subtlety that makes this worth modelling rather than ignoring:
+          // the device does NOT precharge immediately. It delays internally
+          // until tRAS(min) is satisfied, so an auto-precharge that lands
+          // early is legal and must not be flagged as a tRAS violation. What
+          // it does affect is tRP for the next ACTIVATE to that bank, which is
+          // measured from the effective precharge point, not from the CAS. A
+          // model that closed the row at the CAS edge would let a controller
+          // re-activate too early and call it correct.
+          //
+          // The tRAS clamp below is datasheet fidelity, NOT a checked
+          // behaviour, and mutation testing is what established the
+          // difference: deleting it changes no test result. The reason is
+          // structural. The next ACTIVATE to this bank is bounded by
+          // eff_pre + tRP, which with the clamp is tRAS + tRP — and tRC is
+          // *defined* as tRAS + tRP, so the tRC check always binds first. It
+          // is kept because a model should describe the device rather than
+          // only the parts one controller can observe, but it is deliberately
+          // not claimed as covered.
+          if (a[10] && row_open[ba]) begin
+            eff_pre = (cmd == C_READ) ? (cyc + 1) : (cyc + longint'(T_WR));
+            if (eff_pre < t_act[ba] + longint'(T_RAS))
+              eff_pre = t_act[ba] + longint'(T_RAS);
+            row_open[ba] <= 1'b0;
+            t_pre[ba]    <= eff_pre;
+          end
         end
 
         C_PRE: begin

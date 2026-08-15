@@ -91,6 +91,9 @@ struct Dev {
     act(bank, row);
   }
   void rd (int bank, int col)  { cmd(0,1,0,1); d->ba = bank; d->a = col;  tick(); }
+  // A10 set: read with auto-precharge, which is what the controller issues on
+  // the final CAS of a burst.
+  void rdAp(int bank, int col) { cmd(0,1,0,1); d->ba = bank; d->a = col | (1<<10); tick(); }
   void wr (int bank, int col, uint16_t v, int mask = 0) {
     cmd(0,1,0,0); d->ba = bank; d->a = col;
     d->dq_i = v; d->dq_oe_i = 1; d->dqm = mask; tick();
@@ -218,6 +221,37 @@ int main(int argc, char** argv) {
     dv.nop(T_RAS); dv.pre(0); dv.nop(T_RP);
     expect_clean("DQM traffic", dv);
     checks++;
+  }
+
+  // ------------------------------------------------------- auto-precharge
+  // The device delays an auto-precharge internally until tRAS is met, so
+  // issuing one early is legal. What it must still enforce is tRP for the
+  // next ACTIVATE, measured from the effective precharge — not from the CAS.
+  printf("test: auto-precharge closes the row and still enforces tRP\n");
+  {
+    Dev dv; dv.init();
+    dv.act(0, 3); dv.nop(T_RCD); dv.wr(0, 4, 0xcafe); dv.nop(T_WR);
+    dv.rdAp(0, 4);
+    dv.nop(CL);
+    checks++;
+    if (dv.d->dq_o != 0xcafe) {
+      printf("  FAIL auto-precharge read got=%04x want=cafe\n", (unsigned)dv.d->dq_o);
+      failures++;
+    }
+    // Effective precharge is at tRAS after the ACTIVATE here, so wait past it
+    // and then tRP before re-activating the same bank.
+    dv.nop(T_RAS + T_RP + T_RC);
+    dv.act(0, 9); dv.nop(T_RCD); dv.rd(0, 4); dv.nop(CL + T_RAS);
+    dv.pre(0); dv.nop(T_RP);
+    expect_clean("legal auto-precharge", dv); checks++;
+  }
+  {
+    // Same shape, but re-activating immediately. tRP is measured from the
+    // delayed precharge point, so this must fail even though the CAS itself
+    // was many cycles ago.
+    Dev dv; dv.init();
+    dv.act(0, 3); dv.nop(T_RCD); dv.rdAp(0, 4); dv.act(0, 9);
+    expect_flag("tRP after auto-precharge", dv, V_TRP); checks++;
   }
 
   // ------------------------------------------------------------ fault cases

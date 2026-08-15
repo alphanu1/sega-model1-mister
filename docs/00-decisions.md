@@ -111,3 +111,39 @@ Reverses if: the s32 V60 is dropped for an independently written one, or meathax
 to dual-license. Nothing else in the tree blocks a move to GPL-2-or-later.
 
 See `THIRD_PARTY.md` for the component-by-component breakdown.
+
+---
+
+## D8 — Five SDRAM read ports, and work RAM goes external
+
+Derived from MAME's `model1_mem` and the ROM regions in `model1.cpp`, not estimated.
+
+What has to live in external RAM, because it cannot fit in 696 KB of M10K beside D3's
+62 KB band buffer:
+
+| Region | Size | Port |
+|---|---|---|
+| V60 ROM — ROMA, ROMO (banked), ROMX, ROM0 | ~3.5 MB | p0 |
+| V60 work RAM, RAMA 64 KB + RAMB 256 KB | 320 KB | p0 |
+| Tile character RAM, `0x780000-0x7fffff` | 512 KB | p1 |
+| TGP data ROM + polygon ROM | 2 MB + 16 MB | p2 |
+| Sound 68000 program | 768 KB | p3 |
+| MultiPCM samples, two banks | 8 MB | p4 |
+
+Roughly 31 MB, which fits a single 32 MB stick — so D2 survives contact with the real
+region list rather than merely being asserted.
+
+The split that matters is **work RAM external**. Putting the 320 KB of V60 RAM in M10K
+would be more comfortable for the V60 and it is the obvious first instinct, but it
+consumes 46% of the block RAM the band renderer depends on. D3 is load-bearing for D2:
+if the band buffer has to shrink, framebuffer traffic goes back to SDRAM and the
+bandwidth budget stops closing. Work RAM is the cheaper thing to make external because
+it is latency-sensitive and small, which is what a cache fixes, while the band buffer is
+bandwidth-sensitive and large, which caching does not fix.
+
+Tile *map* RAM (64 KB) and palette (64 KB) stay internal. They are read every scanline
+and are small enough not to threaten the band buffer.
+
+Reverses if: M1 telemetry shows p0 wait cycles dominating with work RAM external, and a
+V60 cache does not recover it. The fallback is work RAM in M10K and a smaller band, which
+costs D3 before it costs D2.
