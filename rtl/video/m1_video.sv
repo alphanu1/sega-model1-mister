@@ -107,9 +107,24 @@ module m1_video #(
   // ------------------------------------------------------- line buffers
   // Double buffered: `bank` is written while ~bank is displayed.
   logic bank;
+  logic [13:0] rd_q [4];              // {prio, transparent, pal_index}
 
-  logic [13:0] lbuf [2][4][512];      // {prio, transparent, pal_index}
-  logic [13:0] rd_q [4];
+  // EIGHT SEPARATE RAMS, NOT ONE ARRAY INDEXED BY BANK
+  //
+  // The obvious form is `logic [13:0] lbuf [2][4][512]` written at
+  // lbuf[bank][cur_layer][...] and read at lbuf[~bank][L][...]. Quartus cannot
+  // infer block RAM from that: the bank index is a signal rather than a
+  // constant, so the write is a dynamic selection across both banks and the
+  // read is a four-way dynamic select on top. It synthesises the whole thing
+  // as flip-flops — measured at 28,816 ALM and 57,658 registers with zero
+  // M10K, which is 69% of the device for 57 kbit of storage.
+  //
+  // Split into one array per (bank, layer) with the indices resolved at
+  // elaboration, each becomes an ordinary one-write one-read memory and maps to
+  // a single M10K. Both banks are read every cycle at the same address and the
+  // result is muxed afterwards, which costs a 14-bit mux instead of an address
+  // mux and keeps the memories inferrable.
+  logic [13:0] lb_q [2][4];
 
   // ---------------------------------------------------------- sequencer
   typedef enum logic [2:0] {
@@ -228,13 +243,27 @@ module m1_video #(
     end
   end
 
+  // genvars declared outside the loop headers. Inline `for (genvar i = ...)` is
+  // legal SystemVerilog and Verilator takes it, but Quartus 17.0 rejects it
+  // with "genvar is a reserved keyword" — the same toolchain-strictness class
+  // as the yosys and Icarus issues recorded in docs/rtl-conventions.md.
+  genvar gb, gl;
+  generate
+    for (gb = 0; gb < 2; gb++) begin : g_bank
+      for (gl = 0; gl < 4; gl++) begin : g_layer
+        logic [13:0] mem [512];
+        always_ff @(posedge clk) begin
+          if (f_lb_we && (bank == gb[0]) && (cur_layer == 2'(gl)))
+            mem[f_lb_addr] <= {f_lb_prio, f_lb_transparent, f_lb_pal};
+          lb_q[gb][gl] <= mem[hcnt[8:0]];
+        end
+      end
+    end
+  endgenerate
+
   // Writes go to the bank being rendered; reads come from the other one.
-  always_ff @(posedge clk) begin
-    if (f_lb_we)
-      lbuf[bank][cur_layer][f_lb_addr] <= {f_lb_prio, f_lb_transparent, f_lb_pal};
-    for (int L = 0; L < 4; L++)
-      rd_q[L] <= lbuf[~bank][L][hcnt[8:0]];
-  end
+  always_comb
+    for (int L = 0; L < 4; L++) rd_q[L] = lb_q[bank ? 0 : 1][L];
 
   // ------------------------------------------------------------- mixing
   logic [3:0][11:0] mix_pal;
