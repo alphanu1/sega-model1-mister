@@ -57,6 +57,34 @@
 // beyond the address it already has — but on this content it is most of the
 // benefit of one.
 
+// THIS ENGINE IS LATENCY-BOUND, AND THAT IS THE THING TO FIX
+//
+// Measured per layer per scanline: 1,614 cycles on distinct tiles, of which
+// 496 are emitting pixels and **1,118 are spent waiting**. 69% idle.
+//
+// The state machine below is strictly serialized — S_TILE, S_TILE_WAIT, S_CHAR
+// (request, then stall for the ~14-cycle SDRAM latency), S_EMIT for eight
+// pixels, repeat. Nothing overlaps, so every column pays the full memory
+// latency in series.
+//
+// The consequence is that the CLOCK CANNOT FIX IT. Four dense layers need
+// 6,456 cycles against 3,280 available in a scanline at 80 MHz; closing that by
+// frequency alone would take ~157 MHz, which this device will not give. Anyone
+// arriving here because four layers do not fit should not go looking for a
+// faster clock or spend S32_V60_NO_FP on it.
+//
+// What does fix it: the SDRAM side is nowhere near saturated. 62 bursts per
+// layer at ~9 cycles each on an open row is ~558 cycles, so prefetching two or
+// three columns ahead — hiding the latency behind the eight cycles of emission
+// already happening — makes a layer cost max(emit, fetch) ~= 560 instead of
+// emit + wait = 1,614. Four layers then fit in ~2,240 cycles with room spare.
+//
+// A second lever after that: char_data is 32 bits, which is eight 4bpp pixels
+// arriving at once, and S_EMIT currently spends eight cycles writing them one
+// at a time. A wider line-buffer write takes emission from 496 cycles to 62.
+//
+// Full working in docs/m1-m4-plan.md, "Where the 1,614 cycles go".
+
 `timescale 1ns/1ps
 
 module m1_tile_fetch #(

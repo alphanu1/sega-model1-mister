@@ -127,6 +127,13 @@ it.
 **2. `emu.sv` + MRA.** There is still no top level. Everything beneath it is
 built and tested; this is what puts the core on a DE10-Nano.
 
+**2a. Pipeline the tilemap fetch.** Four dense tilemap layers do not fit a
+scanline and cannot be made to by any reachable clock — the engine is 69% idle
+waiting on serialized fetches, so the fix is prefetching two or three columns
+ahead, not more MHz. Numbers and working in `docs/m1-m4-plan.md`, "Where the
+1,614 cycles go", and in `rtl/video/m1_tile_fetch.sv`'s header. Text and menu
+screens fit today, so this blocks nothing immediately and will block M3.
+
 **3. The I/O responder as RTL.** It currently lives in `sim/top/tb_m1_boot.sv`
 as an experiment, not an implementation.
 

@@ -391,12 +391,44 @@ tile and one font — so booting and navigating is comfortable. Four layers of
 entirely distinct characters is not, and that is a real limit rather than a
 pessimistic estimate.
 
-Three things would close it when it matters, in increasing order of effort: a
-multi-entry tile cache instead of the single retained row; fetching the full
-4-word burst the controller already serves, which covers two character rows per
-transaction instead of one; or simply that games rarely enable four dense
-layers at once. The measurement is in the test output, so this stays visible
-rather than being rediscovered in M3.
+Note the budget moved with the clock: the core now runs its fast domain at
+80 MHz rather than 100, because 96 did not close with `sys/` in the design (see
+rtl/m1_pll.sv). A scanline is therefore **3,280 cycles**, not 4,100.
+
+#### Where the 1,614 cycles go, and why the clock cannot fix it
+
+Decomposed, 2026-08-15:
+
+| | cycles/layer |
+|---|---|
+| emitting pixels, one per cycle | 496 |
+| **waiting on fetches** | **1,118** (18 per column, 62 columns) |
+
+**69% of the engine's time is spent waiting.** It is latency-bound, not
+bandwidth-bound, and that distinction is the whole point: no reachable clock
+fixes it. Four dense layers at 1,614 cycles each would need ~157 MHz, which
+neither this design nor this device will give.
+
+`m1_tile_fetch.sv` is strictly serialized — S_TILE, S_TILE_WAIT, S_CHAR
+(request, then stall for the ~14-cycle SDRAM latency), S_EMIT (eight pixels),
+repeat. Nothing overlaps.
+
+The SDRAM side is nowhere near saturated. 62 bursts per layer at roughly 9
+cycles each when the row is already open is about **558 cycles**. So with the
+fetch pipelined — prefetching two or three columns ahead so the latency hides
+behind emission — a layer costs `max(emit, fetch) ~= 560` rather than
+`emit + wait = 1,614`. Four layers becomes **~2,240 cycles against the 3,280
+available at 80 MHz**, with room to spare.
+
+A second lever sits on top of that. The character fetch returns 32 bits, which
+*is* eight pixels at 4bpp, and the engine currently spends eight cycles writing
+them one at a time. A wider line-buffer write drops emission from 496 cycles to
+62 per layer, after which fetch throughput is the only limit at all.
+
+**So four dense layers is reachable at 80 MHz.** It is a pipelining problem in
+one module, not a frequency problem — which is worth knowing before anyone
+spends the `S32_V60_NO_FP` lever or reopens the clock choice trying to buy
+their way out of it.
 
 ---
 
