@@ -454,6 +454,59 @@ amount of reasoning about the memory map would have produced.
 
 ---
 
+### Integrated area, measured 2026-08-15
+
+`make quartus MOD=m1_integrated` builds the V60 side and the 2D video side as
+one design — no framework, no clocking, no I/O board, no TGP, no SDRAM
+controller. It answers whether the per-module sums this plan has been quoting
+survive integration.
+
+| | integrated | standalone sum |
+|---|---|---|
+| ALM | 21,796 / 41,910 (52%) | ~21,400 |
+| M10K | 332 / 553 (60%) | — |
+| DSP | 16 / 112 | 16 |
+| Fmax | 24.62 MHz | 24.62 MHz (V60 alone) |
+
+**Integration is neutral.** The extra ~400 ALM is m1_main's bus routing, which
+had never been measured on its own. Cross-boundary optimisation and routing
+congestion did not move the total either way, so the summed figures elsewhere
+in this document can be trusted to about 2%.
+
+**Fmax is exactly the V60's standalone number**, which says the V60 is the
+critical path in context as well as alone. Nothing else in the design is close.
+
+**M10K is now a real constraint, not a free resource.** 332 of 553 for the main
+board's memories and the video line buffers, before D3's band buffer (~51),
+before sound, before sprites. Earlier entries in this plan treated block RAM as
+effectively unlimited; that is no longer true.
+
+#### The budget, with real numbers
+
+Built and measured: 21,796 (this) + 7,662 (three TGPs, D4) + 937 (m1_sdram)
+= **30,395 ALM. 11,515 left.**
+
+Still to build, estimated: MiSTer `sys/` 3,000-4,000; sound — 68000, YM3438 and
+two MultiPCM — 5,000-7,000; I/O board as a Z80 3,000-2,500; rasterizer
+3,000-6,000. **12,500-19,500 against 11,515 available.**
+
+So it does not fit as things stand. Two levers, both measured rather than
+guessed:
+
+- **V60 without the FP group: -1,987 ALM**, and Fmax 24.62 -> 45.54. Evidence is
+  good (no trap across 7.8M instructions of real boot code, no excess of
+  FP-shaped byte pairs in the ROMs) but not conclusive: attract mode and
+  gameplay have not run, and only two of eight ROM sets were scanned.
+- **D4, three TGP instances: -5,108 ALM** for two of them. MAME instantiates one
+  MB86233 and produces correct output; the board has three. D4's own reversal
+  condition was never met, so this would be reversing it on budget grounds
+  rather than on the terms it set.
+
+With both, 18,610 available against a 12,500-19,500 need. Neither should be
+taken before the rasterizer is sized, since it carries the widest uncertainty.
+
+---
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**

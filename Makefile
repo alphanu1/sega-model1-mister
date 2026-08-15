@@ -37,8 +37,8 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
   rtl/mem/bw_monitor.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
-  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_main.sv \
-  rtl/m1_integrated.sv
+  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
+  rtl/m1_main.sv rtl/m1_integrated.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
 SRCS_m1_tile_mixer := rtl/video/m1_tile_mixer.sv
 SRCS_m1_tile_fetch := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv
