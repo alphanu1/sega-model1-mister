@@ -417,7 +417,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot
+.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -475,6 +475,31 @@ m1_boot:
 
 BOOT_CYCLES ?= 20000000
 WATCH_PAGE  ?= 0xC0
+
+# Real boot code through the real video path, dumped as an image. This is the
+# one thing neither existing test covers: m1_video is verified against MAME on
+# synthetic tiles, boot is verified with no video instantiated, and
+# m1_integrated joins them. A black screen on hardware has a dozen causes and no
+# visibility into any of them; here it has a trace.
+#
+# Long by necessity — boot has to fill tile RAM before there is anything to
+# draw, and that took ~2.3 M cycles single-domain and more like four times that
+# now. FRAME_CYCLES is generous; watch the progress lines.
+m1_frame:
+	@test -f build/rom/vr_v60.hex || { \
+	  echo "build/rom/vr_v60.hex missing — run:"; \
+	  echo "  python3 tools/build_rom_image.py vr <path-to>/vr.zip -o build/rom"; \
+	  exit 1; }
+	@mkdir -p build
+	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
+	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
+	  +define+SIMULATION --top-module tb_m1_frame -GRUN_CYCLES=$(FRAME_CYCLES) \
+	  --Mdir build/m1frame -o m1frame \
+	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
+	./build/m1frame/m1frame
+
+FRAME_CYCLES ?= 120000000
 
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
 # it builds the CPU a dozen times and takes minutes.
