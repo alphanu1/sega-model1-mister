@@ -196,6 +196,64 @@ so the choice can now be made on Fmax closure rather than on bandwidth.
 
 ---
 
+### Resource breakdown, measured 2026-08-15
+
+Quartus, standalone per-module builds, virtual pins, `Aggressive Performance`.
+Device is the DE10-Nano's 5CSEBA6U23I7: **41,910 ALM, 112 DSP, 553 M10K**.
+
+| Block | ALM | % dev | DSP | M10K | Fmax | Toolchain |
+|---|---|---|---|---|---|---|
+| `s32_v60` | 20,000 | 47.7% | 16 | 0 | 24.62 MHz | 24.1std |
+| `mb86233_core` x3 (D4) | 7,662 | 18.3% | 3 | 18 | 72.17 MHz | 17.0 |
+| `m1_sdram` | 937 | 2.2% | 0 | 0 | 88.78 MHz | 24.1std |
+| `bw_monitor` | 381 | 0.9% | 0 | 0 | 237.64 MHz | 24.1std |
+| **committed so far** | **28,980** | **69.1%** | 19 | 18 | | |
+| **left for everything else** | **12,930** | **30.9%** | 93 | 535 | | |
+
+TGP internals, for reference — these are inside `mb86233_core`, not additional:
+`mb86233_alu` 1,522 (containing `fp_mul` 161, `fp_add` 406, `fp_div` 263),
+`mb86233_regs` 644, `mb86233_agu` 176, `mb86233_seq` 174, `mb86233_mem` 123 +
+3 M10K, `mb86233_dec` 121, `mb86233_xfer` 28. They sum to ~2,788 against the
+core's 2,554 because synthesis optimises across the boundaries.
+
+**Still to build:** MiSTer `sys/` framework (typically 2.5-4K ALM), tilemap and
+text layer, palette, priority mixer, the M3 rasterizer, sound (68000 + YM3438 +
+two MultiPCM), 315-5338A I/O and 315-5465 decode. That does not fit in 12,930
+comfortably, and the rasterizer is the largest single item still unwritten.
+
+#### The V60 is the problem, on both axes
+
+At 20,000 ALM it is 48% of the device on its own — more than twice all three
+TGPs combined. Rebuilt with `QOPT="Aggressive Area"` it is 17,406, so the real
+figure is 17.4-20K depending on target; either way it dominates.
+
+The shape says why: **28,990 combinational ALUTs against 4,148 registers.** That
+is a very flat design — wide combinational decode and muxing with little
+pipelining — which is also why **Fmax is 24.62 MHz, and 24.00 MHz under area
+optimisation.** Fmax barely moves between the two, so it is structural rather
+than an artefact of how it was compiled.
+
+Whether 24.62 MHz is enough is not yet answerable, and the reason is the
+placeholder problem recorded above: Model 1's V60 runs at 16 MHz, this core
+takes ~22.7 cycles/instruction, and the real chip's cycles/instruction is
+unknown because MAME's flat 8 is explicitly a guess. If the real figure were 8,
+the RTL would need ~45 MHz; if 12, ~30 MHz. Both are above what it closes at.
+
+The encouraging part is that one piece of work addresses both axes. BASELINE.md
+puts 56% of all cycles in fetch states, and a prefetch redesign both lowers
+cycles/instruction — which lowers the Fmax needed — and is likely to break up
+the combinational fetch path that is inflating area and limiting Fmax. That
+makes it the highest-value V60 work, and it should happen before anything is
+concluded about whether the whole design fits.
+
+**Caveat on these numbers.** Standalone per-module builds with virtual pins,
+summed. A real integrated build differs in both directions: cross-boundary
+optimisation can reduce, while routing congestion above ~70% utilisation
+usually costs Fmax. The three modules marked 24.1std were taken on the wrong
+toolchain and want re-measuring on 17.0, which is now the Makefile default.
+
+---
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**

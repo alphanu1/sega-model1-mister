@@ -27,6 +27,9 @@ SRCS_mb86233_xfer := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_xfer.sv
 SRCS_bw_monitor := rtl/mem/bw_monitor.sv
 SRCS_sdram_model := sim/mem/sdram_model.sv
 SRCS_m1_sdram := rtl/mem/m1_sdram.sv
+# Top module is s32_v60; the Quartus target keys off MOD, so the .qsf needs the
+# module name to match. Built standalone for area only, not integrated yet.
+SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv
 SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/fp_div.sv \
@@ -201,20 +204,35 @@ QDIR := quartus/build/$(MOD)
 # version that supports Cyclone V gives valid numbers — but the two must never
 # be confused, which is why the version is recorded with every report.
 #
-#   make quartus MOD=fp_add              newest install found
-#   make quartus MOD=fp_add QUARTUS=17.0 pick a specific one
+#   make quartus MOD=fp_add              17.0, the reference toolchain
+#   make quartus MOD=fp_add QUARTUS=24.1 pick a different one explicitly
 #
 # Auto-detects ~/intelFPGA*/<ver>/quartus/bin so the flow works without
 # exporting PATH by hand.
-QUARTUS ?=
+#
+# 17.0 IS THE DEFAULT, DELIBERATELY. The previous default was "newest install
+# found", which silently selected 24.1std once that was installed alongside —
+# so reports drifted between toolchains without anyone choosing it. 17.0.x is
+# the version this project targets, so it is what gets picked unless a
+# different one is named. If it is missing the build falls back to the newest
+# and says so, rather than failing.
+QUARTUS ?= 17.0
 QUARTUS_ROOTS := $(wildcard $(HOME)/intelFPGA_lite/*/quartus/bin $(HOME)/intelFPGA/*/quartus/bin /opt/intelFPGA_lite/*/quartus/bin /opt/intelFPGA/*/quartus/bin)
-ifeq ($(QUARTUS),)
+QUARTUS_MATCH := $(firstword $(foreach d,$(QUARTUS_ROOTS),$(if $(findstring /$(QUARTUS)/,$(d)),$(d))))
+ifeq ($(QUARTUS_MATCH),)
   QUARTUS_BIN := $(lastword $(sort $(QUARTUS_ROOTS)))
+  QUARTUS_FELLBACK := 1
 else
-  QUARTUS_BIN := $(firstword $(foreach d,$(QUARTUS_ROOTS),$(if $(findstring /$(QUARTUS)/,$(d)),$(d))))
+  QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
 .PHONY: quartus_list quartus_paths
+# Optimisation target. Every figure so far was taken at Aggressive Performance,
+# so that stays the default and the numbers remain comparable. An area question
+# wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
+# by enough that quoting one without saying which is misleading.
+QOPT ?= Aggressive Performance
+
 quartus_list:
 	@echo "Quartus installs found:"; \
 	 for d in $(QUARTUS_ROOTS); do \
@@ -226,10 +244,11 @@ quartus:
 	@test -n "$(QUARTUS_BIN)" || { echo "no Quartus install found. Looked in ~/intelFPGA_lite/*/quartus/bin and /opt. Use QUARTUS=<ver> or add to PATH; 'make quartus_list' shows what was found."; exit 1; }
 	@test -x "$(QUARTUS_BIN)/quartus_map" || { echo "$(QUARTUS_BIN)/quartus_map not executable"; exit 1; }
 	@echo "using $(QUARTUS_BIN)"
+	@test -z "$(QUARTUS_FELLBACK)" || echo "WARNING: Quartus $(QUARTUS) not found, fell back to $(QUARTUS_BIN). Reports will not match the reference toolchain." 
 	@mkdir -p $(QDIR)
 	@srcs=""; for f in $(SRCS_$(MOD)); do \
 	  srcs="$$srcs\nset_global_assignment -name SYSTEMVERILOG_FILE ../../../$$f"; done; \
-	  sed -e 's/@MODULE@/$(MOD)/g' -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
+	  sed -e 's/@MODULE@/$(MOD)/g' -e 's|@QOPT@|$(QOPT)|' -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
 	@cp quartus/spike.sdc $(QDIR)/spike.sdc
 	@echo "PROJECT_REVISION = \"$(MOD)\"" > $(QDIR)/$(MOD).qpf
 	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c 'quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)'

@@ -20,7 +20,7 @@ set_global_assignment -name ORIGINAL_QUARTUS_VERSION 17.0.2
 set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"
 
 # Match MiSTer core conventions so the numbers transfer.
-set_global_assignment -name OPTIMIZATION_MODE "Aggressive Performance"
+set_global_assignment -name OPTIMIZATION_MODE "@QOPT@"
 set_global_assignment -name VERILOG_INPUT_VERSION SYSTEMVERILOG_2005
 set_global_assignment -name VERILOG_SHOW_LMF_MAPPING_MESSAGES OFF
 
