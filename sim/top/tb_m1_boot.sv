@@ -180,6 +180,11 @@ integer hist [0:255];
 integer exact_addr [0:31];
 integer exact_cnt  [0:31];
 integer exact_wr   [0:31];
+integer wr_addr [0:23];
+integer wr_data [0:23];
+integer wr_be   [0:23];
+integer wr_cyc  [0:23];
+integer nwr = 0;
 integer nexact = 0;
 integer hi, j, found;
 reg [23:1] last_addr_seen = 0;
@@ -189,6 +194,7 @@ always @(posedge clk) begin
     if (!rst_n) begin
         for (hi = 0; hi < 256; hi = hi + 1) hist[hi] = 0;
         for (hi = 0; hi < 32; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; exact_wr[hi]=0; end
+        nwr = 0;
         nexact = 0;
     end else begin
         m_req_d <= main.m_req;
@@ -198,6 +204,18 @@ always @(posedge clk) begin
             // says which device the CPU is talking to; this says which
             // register, which is what a high-level implementation of that
             // device has to get right.
+            // Log every write to the watched page with its data. The
+            // addresses alone said the V60 sends a four-byte command and then
+            // polls one status byte; the command's CONTENT is what says what it
+            // is asking for, and guessing a reply without reading the request
+            // would be exactly the poking-until-it-boots this project avoids.
+            if (main.m_addr[23:16] == WATCH_PAGE && main.m_we && nwr < 24) begin
+                wr_addr[nwr] = {main.m_addr, 1'b0};
+                wr_data[nwr] = main.m_wdata;
+                wr_be[nwr]   = main.m_be;
+                wr_cyc[nwr]  = cycles;
+                nwr = nwr + 1;
+            end
             if (main.m_addr[23:16] == WATCH_PAGE) begin
                 found = 0;
                 for (j = 0; j < nexact; j = j + 1)
@@ -268,6 +286,10 @@ initial begin
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)
             $display("        %02h0000  %0d", i, hist[i]);
+    $display("BOOT: writes to page %02h0000, in order:", WATCH_PAGE);
+    for (i = 0; i < nwr; i = i + 1)
+        $display("        cyc %-10d %06h  be=%b  data=%04h", wr_cyc[i],
+                 wr_addr[i], wr_be[i], wr_data[i]);
     $display("BOOT: addresses touched in page %02h0000 (%0d distinct):",
              WATCH_PAGE, nexact);
     for (i = 0; i < nexact; i = i + 1)

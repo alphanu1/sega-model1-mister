@@ -473,6 +473,31 @@ write callbacks model1.cpp wires to the DPRAM's left port.
 checkout, and the DPRAM layout is documented nowhere else. The single layout
 fact `model1.cpp` exposes is netmerc writing pose data at 0x80-0x8b.
 
+#### The handshake, observed 2026-08-15
+
+Logging the write DATA rather than just the addresses answers what the V60 is
+asking for:
+
+    cyc 17991096   c00034  data=53      'S'
+    cyc 17991162   c00036  data=45      'E'
+    cyc 17991231   c00038  data=47      'G'
+    cyc 17991297   c0003a  data=41      'A'
+    cyc 17991492   c00040  data=01      request flag
+
+The V60 writes the ASCII signature **"SEGA"** into DPRAM 0x1a-0x1d, writes 1 to
+DPRAM 0x20, and then polls 0x20 and nothing else. A signature plus a
+request flag, waiting for the other side to change the flag.
+
+That is a protocol shape, not a guess, and it came from reading the request
+before inventing a reply. The next step is correspondingly narrow: have the
+responder change 0x20 and see whether the V60 proceeds. If it does, the trace
+names whatever it asks for next; if it does not, the question is only what value
+it expects, against a known handshake rather than an unknown one.
+
+Worth noting for whichever implementation is chosen: a signature handshake is
+also how the I/O board would identify ITSELF, so the reply may well be a
+signature rather than a bare acknowledgement.
+
 #### Both options cost more than first estimated
 
 - **HLE** (~300 ALM) needs the protocol, which exists only inside the Z80 ROM.
