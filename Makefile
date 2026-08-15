@@ -417,7 +417,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame
+.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -500,6 +500,17 @@ m1_frame:
 	./build/m1frame/m1frame
 
 FRAME_CYCLES ?= 120000000
+
+# The real core: sys_top plus emu, compiled to a .rbf for the DE10-Nano.
+#
+# Staged in build/mister with sys/ symlinked rather than vendored — see
+# tools/mister_project.sh for why. Long: this is the whole framework plus the
+# whole core, not one module against a virtual-pinned harness.
+rbf:
+	@bash tools/mister_project.sh
+	cd build/mister && PATH="$(QUARTUS_BIN):$$PATH" quartus_sh --flow compile Model1
+	@ls -la build/mister/output_files/*.rbf 2>/dev/null || \
+	  echo "no .rbf produced — check build/mister/output_files/"
 
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
 # it builds the CPU a dozen times and takes minutes.
