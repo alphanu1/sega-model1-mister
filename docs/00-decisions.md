@@ -147,7 +147,7 @@ permission.
 Reverses if: the s32 V60 is dropped for an independently written one, or meathax agrees
 to dual-license. Nothing else in the tree blocks a move to GPL-2-or-later.
 
-See `THIRD_PARTY.md` for the component-by-component breakdown.
+See `THIRD-PARTY.md` for the component-by-component breakdown.
 
 ---
 

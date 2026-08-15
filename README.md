@@ -5,8 +5,10 @@ Cyclone V (DE10-Nano), single SDRAM module.
 Model 1 is unclaimed on MiSTer and software emulation of it is still incomplete, so this
 is original work rather than a re-implementation of a solved problem. It is also the
 hardest arcade target that plausibly fits the fabric: NEC V60 at 16 MHz, three Fujitsu
-MB86233 floating-point DSPs, a flat-shaded polygon rasterizer with no texture unit and no
-Z-buffer, and 496x384 output at 24 kHz.
+MB86233 floating-point DSPs on the board, a flat-shaded polygon rasterizer with no
+texture unit and no Z-buffer, and 496x384 output at 24 kHz. The core implements one
+MB86233, because MAME instantiates one and never executes the other two — decision D4,
+reversed, with what that gives up stated there.
 
 Six titles: Virtua Racing, Virtua Formula, Virtua Fighter, Wing War, Star Wars Arcade,
 NetMerc.
@@ -16,10 +18,39 @@ NetMerc.
 | Milestone | State |
 |---|---|
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
-| M1 — V60, bus, 2D, boot | next |
+| M1 — V60, bus, 2D, boot | **boots real game code** — top level, rasterizer sizing and I/O board left |
 | M2 — geometry pipeline | not started |
 | M3 — rasterizer and video | not started |
 | M4 — sound, inputs, full set | not started |
+
+`docs/HANDOFF.md` is the current state of play: what is built, what it measures,
+what to do next, and the failure modes that have cost time.
+
+### M1 progress
+
+**Real Virtua Racing code boots and executes.** The V60 takes the architectural
+reset vector, fetches through the packed ROM mapping, clears and tests NVRAM,
+work RAM, both display lists and tile RAM, passes the ROM checksum, completes the
+I/O board handshake, and runs game code out of work RAM — 5.3 M instruction
+fetches, zero SDRAM protocol violations, `dbg_fp_trap` never asserted.
+
+| Block | ALM | Verification |
+|---|---|---|
+| `v60` (imported from s32, cast-fixed) | 20,000 | 29/29 unit tests |
+| `m1_sdram` + `sdram_model` | 937 | 80,009 checks, 0 protocol violations |
+| `m1_main` + `m1_mainram` + `m1_glue` | ~700 | boot, plus 25 glue checks |
+| `m1_video` — the whole 2D path | 287 | 380,929 checks against MAME |
+| `m1_rom_loader` / `m1_decode` | 319 | 1,675 / 466,714 checks |
+| `bw_monitor` | 381 | 2 M checks, mutation-tested |
+
+`make quartus MOD=m1_integrated` builds the V60 side and the 2D side as one
+design: **21,796 ALM, 332/553 M10K, 24.62 MHz**. Fmax is exactly the V60's
+standalone figure, so the V60 is the critical path in context as well as alone.
+
+**Budget: 25,287 ALM built of 41,910**, against 12,500-19,500 still to build
+(MiSTer `sys/`, sound, I/O board, rasterizer). It fits, with the pessimistic end
+uncomfortably close. One lever is measured and unspent — the V60 without its FP
+group, worth -1,987 ALM and Fmax 24.62 -> 45.54.
 
 ### M0 progress
 
@@ -48,11 +79,11 @@ NetMerc.
 - `mb86233_xfer` — transfer routing: which space and addressing side each side of
   a `ld/mov` uses. **256 cases, exhaustive, zero mismatches.**
 - `mb86233_core` — the top level. Fetch, decode, memory sequencing and retire,
-  wiring all ten blocks. **Directed harness only, 10 checks, zero failures** —
-  this is deliberately not the lockstep of M0 exit criterion 2, which is still
-  owed. `ldi`, `lipl`/`lia`/`lib`/`lid`, `stm`, `clr0`, `cfxd` rounding and PC
-  advance are covered; `lab`, `ld/mov` transfers, branches and `rep` are wired
-  but not yet exercised. `fdvd` works end to end.
+  wiring all ten blocks. **23 directed checks plus 8,000 lockstep retires, zero
+  failures and zero divergence.** `fdvd` works end to end. This is still
+  deliberately **not** the lockstep of M0 exit criterion 2, which wants real
+  microcode and remains owed — see `mb86233_ref` below for what the 8,000
+  retires actually drive.
 - `mb86233_ref` — a whole-CPU `execute_run` reference model, with lockstep
   against the core, including the `ld/mov` transfer forms: **8,000 retires x 7
   registers, **every decoded ALU op including floating point**, zero divergence.
@@ -125,16 +156,26 @@ resolution path as denormals — real traces, not the host.
 ```
 CLAUDE.md                       agent instructions — read first
 LICENSE                         GPL-3.0
-THIRD_PARTY.md                  component attribution and licence position
+THIRD-PARTY.md                  component attribution and licence position
 deps.lock                       pinned upstream revisions
 docs/00-decisions.md            decision record, with reversal conditions
 docs/m0-mb86233-spike.md        M0 specification and resource gate
-docs/m1-m4-plan.md              M1-M4
+docs/m1-m4-plan.md              M1-M4, and the measurements behind them
+docs/HANDOFF.md                 current state: built, measured, owed, next
 docs/rtl-conventions.md         coding rules, testbench shape, area baselines
+rtl/m1_main.sv                  main board — bus, arbitration, memory map
+rtl/m1_mainram.sv               on-chip memories (block RAM idiom matters here)
+rtl/m1_integrated.sv            V60 side + 2D side as one design, for measurement
+rtl/cpu/v60/                    NEC V60, imported from s32 and cast-fixed
+rtl/mem/                        SDRAM controller, device model, bandwidth monitor
+rtl/io/                         ROM loader, 315-5465 address decode, GLUE
+rtl/video/                      2D path — timing, tilemaps, priority mixer, palette
 rtl/tgp/                        MB86233 implementation
-sim/tgp/                        Verilator harnesses
-quartus/                        M0 spike synthesis project template
+sim/                            Verilator harnesses, mirroring rtl/
+sim/top/                        boot and integration testbenches
+quartus/                        synthesis project template
 tools/bootstrap.sh              vendors upstream deps into third_party/
+tools/build_rom_image.py        builds a ROM image; output is never committed
 third_party/                    NOT COMMITTED — run tools/bootstrap.sh
 ```
 
@@ -152,10 +193,27 @@ make test                  # fuzz every module with a harness
 make area                  # yosys proxy synthesis
 ```
 
+Three suites sit outside `make test` because each builds the V60 and takes
+minutes:
+
+```
+bash tools/run_v60_tests.sh                     # V60 unit suite, 29/29
+make m1_main                                    # CPU + memory integration
+make v60_cpi                                    # CPI against memory latency
+make m1_boot                                    # boots real game code
+make m1_boot WATCH_PAGE=0xC0                    # ...with one page traced in detail
+```
+
+`m1_boot` needs a ROM image, which is not in the repository and never will be:
+
+```
+python3 tools/build_rom_image.py vr ~/roms/vr.zip -o build/rom
+```
+
 `make area` uses generic 6-LUT mapping with no DSP inference and no device model. It is
 useful for tracking relative change between edits. It does **not** settle the M0 gate.
 
-### M0 spike — real device numbers
+### Real device numbers
 
 Synthesis-only project against `5CSEBA6U23I7`. Not a MiSTer core project: no `sys/`
 framework, no pin assignments, no `.rbf`. All ports are virtual-pinned, since a spike has
@@ -187,10 +245,11 @@ Adding a module to the spike flow means adding one `SRCS_<module>` line to the M
 
 ### Core build
 
-Does not exist yet. There is no top level until M1. When it does: fork
-`MiSTer-devel/Template_MiSTer`, place RTL alongside `sys/`, and the template's post-module
-script emits a dated `.rbf` into `releases/`. Headless that is
-`quartus_sh --flow compile Model1.qpf`.
+Does not exist yet: no `emu.sv`, no MRA, no `sys/` in the project. `make quartus
+MOD=m1_integrated` is the closest thing and is a measurement vehicle rather than a
+core. When the top level lands: fork `MiSTer-devel/Template_MiSTer`, place RTL
+alongside `sys/`, and the template's post-module script emits a dated `.rbf` into
+`releases/`. Headless that is `quartus_sh --flow compile Model1.qpf`.
 
 ## Bootstrap
 
@@ -217,7 +276,7 @@ Recorded as decision D7.
 `frangarcj/geometrizer` has **no licence file**: all rights reserved. Run it as an
 external oracle, read it as a reference, copy nothing from it.
 
-Full component breakdown in `THIRD_PARTY.md`. `tools/bootstrap.sh` prints a summary on
+Full component breakdown in `THIRD-PARTY.md`. `tools/bootstrap.sh` prints a summary on
 every run.
 
 ## Ground truth
@@ -225,7 +284,10 @@ every run.
 - MAME `src/devices/cpu/mb86233/mb86233.cpp` — MB86233 behavioural model
 - MAME `src/mame/sega/model1.cpp` — board layout, chip identification, clocks
 - `frangarcj/geometrizer` — V60 and MB86233 validated against MAME by lockstep trace
-  diffing and per-opcode fuzzing. Port this harness rather than rebuilding it.
+  diffing and per-opcode fuzzing. **No licence file, so all rights are reserved**: run
+  it as an external oracle and read it for understanding, but copy nothing from it,
+  its test harness included. The harnesses here are built from MAME's BSD-3-Clause
+  device model instead. This is hard rule 1 in `CLAUDE.md`.
 - CAPS0ff — decapped MB86233 microcode ROMs
 
 Pull current MAME ROM definitions. The 315-5711 copro dump carried two single-bit

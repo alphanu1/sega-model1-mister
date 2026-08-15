@@ -102,7 +102,7 @@ name the source:
 ```
 
 Every file gets an SPDX header. Files transcribing anything from MAME additionally carry
-the BSD-3-Clause attribution to Olivier Galibert. See `THIRD_PARTY.md`.
+the BSD-3-Clause attribution to Olivier Galibert. See `THIRD-PARTY.md`.
 
 ---
 

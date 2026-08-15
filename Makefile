@@ -346,8 +346,6 @@ QUARTUS_TIMEOUT ?= 1200
 
 QDEFS ?=
 
-# V60 cycles-per-instruction against memory latency. Not part of `make test`:
-# it builds the CPU a dozen times and takes minutes.
 # V60 executing out of SDRAM through the loader, decode and controller. Not in
 # `make test`: it builds the CPU twice and takes a couple of minutes.
 m1_main:
@@ -356,6 +354,11 @@ m1_main:
 # Boots real game code. Needs a ROM image, which is not in the repository:
 #   python3 tools/build_rom_image.py vr ~/roms/vr.zip -o build/rom
 # Not part of `make test` for that reason.
+#
+# WATCH_PAGE selects the address page the trace reports in detail — per-address
+# read counts, and writes in order with their data. That trace is the tool that
+# has found every boot blocker so far, so it is a variable rather than an edit:
+#   make m1_boot WATCH_PAGE=0xC0    # the I/O board
 m1_boot:
 	@test -f build/rom/vr_v60.hex || { \
 	  echo "build/rom/vr_v60.hex missing — run:"; \
@@ -365,14 +368,18 @@ m1_boot:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
+	  -GWATCH_PAGE=$(WATCH_PAGE) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
-	  rtl/io/m1_glue.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv \
-	  rtl/m1_main.sv sim/top/tb_m1_boot.sv
+	  rtl/io/m1_glue.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
 
 BOOT_CYCLES ?= 20000000
+WATCH_PAGE  ?= 0xC0
 
+# V60 cycles-per-instruction against memory latency. Not part of `make test`:
+# it builds the CPU a dozen times and takes minutes.
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh
 
