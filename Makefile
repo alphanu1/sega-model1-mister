@@ -417,7 +417,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf verify_mra
+.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -511,6 +511,13 @@ FRAME_CYCLES ?= 120000000
 # which is never in the repository.
 #
 #   make verify_mra ROMZIP=~/roms/vr.zip
+# Regenerate every MRA from MAME's ROM definitions. The sets do not share a
+# layout — swa has one 512 KB image where vr has two 128 KB, netmerc has no
+# program pair at all — so these are generated rather than copied from each
+# other. Reports which files are missing from any local ROM set as it goes.
+mra:
+	python3 tools/gen_mra.py
+
 ROMZIP ?= $(HOME)/roms/vr.zip
 verify_mra:
 	@test -f "$(ROMZIP)" || { echo "set ROMZIP=<path to vr.zip>"; exit 1; }

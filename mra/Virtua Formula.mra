@@ -1,9 +1,9 @@
 <misterromdescription>
-    <name>Virtua Racing</name>
-    <setname>vr</setname>
+    <name>Virtua Formula</name>
+    <setname>vformula</setname>
     <rbf>Model1</rbf>
     <mameversion>0261</mameversion>
-    <year>1992</year>
+    <year>1993</year>
     <manufacturer>Sega</manufacturer>
     <category>Driving</category>
 
@@ -15,8 +15,11 @@
       layout completely. A misplaced region does not fail at load — it fails as
       a checksum error much later, looking like a CPU bug.
 
-      tools/verify_mra.py diffs this against build_rom_image.py's
-      independently written packing, so the layout has a second source.
+      NOT CROSS-CHECKED. Generated from MAME's ROM definitions, and every
+      file is confirmed present at the size MAME states — but there is no
+      second description of this set's layout to diff against, and the game
+      has never been run. Treat a bad screen here as this file's fault
+      before the core's.
 
       The V60 address space is sparse; rtl/io/m1_decode.sv maps it packed:
         V60 0x200000-0x2fffff  ROMX, the program     -> stream 0x000000
@@ -27,22 +30,22 @@
       sound board. Those blocks do not exist in the core, so sending them would
       only slow the load. They belong here as M2 and M4 land.
     -->
-    <rom index="0" zip="vr.zip" md5="none">
+    <rom index="0" zip="vformula.zip" md5="none">
         <!-- stream 0x000000, ROM_LOAD16_BYTE -->
         <interleave output="16">
-            <part name="epr-14882.14" map="01"/>
-            <part name="epr-14883.15" map="10"/>
+            <part name="epr-15638.14" map="01"/>
+            <part name="epr-15639.15" map="10"/>
         </interleave>
         <!-- stream 0x100000: 262144 bytes unpopulated -->
         <part repeat="262144">FF</part>
         <!-- stream 0x140000 -->
-        <part name="epr-14878a.4"/>
+        <part name="epr-15623.4"/>
         <!-- stream 0x160000 -->
-        <part name="epr-14879a.5"/>
+        <part name="epr-15622.5"/>
         <!-- stream 0x180000, ROM_LOAD16_BYTE -->
         <interleave output="16">
-            <part name="mpr-14880.6" map="01"/>
-            <part name="mpr-14881.7" map="10"/>
+            <part name="epr-15641.6" map="01"/>
+            <part name="epr-15640.7" map="10"/>
         </interleave>
         <!-- stream 0x280000, ROM_LOAD16_BYTE -->
         <interleave output="16">
