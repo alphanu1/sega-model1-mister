@@ -28,6 +28,7 @@ SRCS_bw_monitor := rtl/mem/bw_monitor.sv
 SRCS_sdram_model := sim/mem/sdram_model.sv
 SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_cdc_port := rtl/mem/m1_cdc_port.sv
+SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
@@ -38,7 +39,8 @@ SRCS_m1_mainram := rtl/m1_mainram.sv
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
-  rtl/io/m1_ioboard.sv rtl/mem/bw_monitor.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
+  rtl/io/m1_ioboard.sv rtl/mem/bw_monitor.sv \
+  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
@@ -62,7 +64,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -84,6 +86,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_sdram_model) --top-module sdram_model
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_sdram) --top-module m1_sdram
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_cdc_port) --top-module m1_cdc_port
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_cdc_pulse) --top-module m1_cdc_pulse
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_fetch_bridge) --top-module m1_fetch_bridge
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_rom_loader) --top-module m1_rom_loader
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_decode) --top-module m1_decode
@@ -114,7 +117,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -233,6 +236,14 @@ test_cdc_port:
 	  $(SRCS_m1_cdc_port) sim/mem/tb_m1_cdc_port.cpp -o tb_cdc --Mdir obj_cdc
 	./obj_cdc/tb_cdc
 
+# vblank is one clk_sys cycle — 10 ns at 96 MHz against a 42 ns slow clock, so
+# it can fall between two destination edges and vanish. The property is exact
+# conservation, and the documented merging limit is asserted rather than avoided.
+test_cdc_pulse:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_cdc_pulse \
+	  $(SRCS_m1_cdc_pulse) sim/mem/tb_m1_cdc_pulse.cpp -o tb_pulse --Mdir obj_pulse
+	./obj_pulse/tb_pulse
+
 # The V60 side is a held level and the memory side is an edge, and the line has
 # to be rotated to the byte the core asked for. Both endpoints are modelled the
 # way the real ones behave; a pulsed ack is invisible to a clock-enabled core and
@@ -320,7 +331,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor m1_sdram m1_cdc_port m1_fetch_bridge m1_rom_loader m1_decode m1_glue m1_ioboard m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_sdram m1_cdc_port m1_cdc_pulse m1_fetch_bridge m1_rom_loader m1_decode m1_glue m1_ioboard m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -424,6 +435,7 @@ m1_boot:
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
 

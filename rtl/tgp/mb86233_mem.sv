@@ -11,7 +11,7 @@
 // Behaviour transcribed from MAME's Model 1 driver:
 //
 //   src/mame/sega/model1_m.cpp   (copro_data_map)
-//   BSD-3-Clause / GPL-2.0 mixed — see THIRD_PARTY.md
+//   BSD-3-Clause / GPL-2.0 mixed — see THIRD-PARTY.md
 //
 // Fujitsu MB86233 "TGP" — data-space memory subsystem
 //

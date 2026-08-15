@@ -14,7 +14,7 @@
 //   SPDX-License-Identifier: BSD-3-Clause
 //   Copyright-holders: Olivier Galibert
 //
-// That BSD-3-Clause attribution must be retained. See THIRD_PARTY.md.
+// That BSD-3-Clause attribution must be retained. See THIRD-PARTY.md.
 //
 // MB86233 reference model — a whole-CPU execute_run, for lockstep.
 //

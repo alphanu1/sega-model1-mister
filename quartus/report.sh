@@ -56,13 +56,36 @@ elif [ -f "$sta" ]; then
   awk '
     /^; Slow .* Model Fmax Summary/ { inblk = 1; saw_blk = 1; next }
     inblk && /^; *[0-9.]+ MHz/ {
-      line = $0; sub(/^; */, "", line); split(line, a, " ");
-      v = a[1] + 0;
-      if (best == "" || v < best) best = v;
+      # The row is "; <fmax> ; <restricted> ; <clock> ;" — split on the
+      # separator, not on whitespace, or the clock name lands in whichever
+      # field the column padding happens to put it.
+      split($0, f, ";");
+      fm = f[2]; ck = f[4];
+      gsub(/^[ \t]+|[ \t]+$/, "", fm);
+      gsub(/^[ \t]+|[ \t]+$/, "", ck);
+      sub(/ MHz$/, "", fm);
+      v = fm + 0;
+      # Column 4 is the clock name. PER CLOCK, and worst corner within each:
+      # collapsing a multi-clock design to one number reports the slowest clock
+      # as if it were the whole design. m1_integrated runs its video side at
+      # 119 MHz and its CPU at 25, and "24.46 MHz" was the entire answer this
+      # printed — which is the number that decides whether the video path is
+      # viable, reported as though it were not.
+      if (!(ck in best) || v < best[ck]) best[ck] = v;
+      order[++n] = ck;
     }
     inblk && /^This panel reports FMAX/ { inblk = 0 }
     END {
-      if (best != "")   printf "  %-24s %.2f MHz\n", "Fmax (worst corner)", best;
+      if (n > 0) {
+        seen_count = 0;
+        for (i = 1; i <= n; i++) {
+          ck = order[i];
+          if (ck in printed) continue;
+          printed[ck] = 1;
+          seen_count++;
+          printf "  %-24s %.2f MHz\n", "Fmax " ck, best[ck];
+        }
+      }
       else if (saw_blk) printf "  %-24s %s\n", "Fmax", "n/a (no register-to-register paths)";
       else              printf "  %-24s %s\n", "Fmax", "NOT FOUND - check STA section names";
     }

@@ -47,12 +47,36 @@ module tb_m1_boot #(
 // too, so preloading only the program leaves that sweep reading zeros.
 localparam integer PRELOAD_WORDS = 32'h300000;
 
-reg clk = 0, rst_n = 0;
-always #5 clk = ~clk;
+// TWO CLOCK DOMAINS, which is what the core actually has: memory and video on
+// the fast clock, the V60 on the slow one. 100/25 MHz here rather than the
+// design's 96/24 because a 5 ns half-period keeps the trace arithmetic round;
+// the ratio is the same 4:1 and that is what the crossings care about.
+//
+// This testbench is where the two-domain design gets its only functional test.
+// The individual crossings are verified in isolation; boot is what proves they
+// work together, in a design where a lost transaction shows up as a CPU that
+// stops rather than as an assertion.
+reg clk = 0, clk_cpu = 0, rst_n = 0;
+always #5  clk     = ~clk;        // 100 MHz, memory and video
+always #20 clk_cpu = ~clk_cpu;    // 25 MHz, the V60
 
-reg [1:0] cediv = 0;
-wire ce = (cediv == 0);
-always @(posedge clk) cediv <= (cediv == 2) ? 2'd0 : cediv + 2'd1;
+// The V60 gets every slow edge. At 25 MHz that is above the ~17 MHz the CPI
+// analysis says is needed to match a 16 MHz part, and under the 24.62 MHz the
+// core closes at.
+wire ce = 1'b1;
+
+// Reset released separately into each domain.
+reg [1:0] rs_sys = 0, rs_cpu = 0;
+wire rst_n_sys = rs_sys[1];
+wire rst_n_cpu = rs_cpu[1];
+always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys <= {rs_sys[0], 1'b1};
+always @(posedge clk_cpu or negedge rst_n) if (!rst_n) rs_cpu <= 0; else rs_cpu <= {rs_cpu[0], 1'b1};
+
+// rom_loaded crosses fast to slow; it only ever rises once, before the CPU runs.
+reg [1:0] mem_ready_cpu = 0;
+always @(posedge clk_cpu or negedge rst_n_cpu)
+    if (!rst_n_cpu) mem_ready_cpu <= 0;
+    else            mem_ready_cpu <= {mem_ready_cpu[0], mem_ready};
 
 wire        sdr_req, sdr_we;
 wire [24:1] sdr_addr;
@@ -69,7 +93,7 @@ wire [15:0] dbg_io_replies;
 wire        mem_ready;
 
 m1_main main (
-    .clk(clk), .ce(ce), .rst_n(rst_n), .rom_loaded(mem_ready),
+    .clk(clk_cpu), .ce(ce), .rst_n(rst_n_cpu), .rom_loaded(mem_ready_cpu[1]),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
     .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),
@@ -85,15 +109,22 @@ m1_main main (
 // and this runs at 100 MHz, so a frame is 656*424*100/16 core cycles.
 localparam integer FRAME_CYCLES = 656*424*100/16;
 integer vbl_cnt = 0;
-reg vblank_pulse = 0;
+reg vblank_sys = 0;
+wire vblank_pulse;
 always @(posedge clk) begin
-    if (!rst_n) begin vbl_cnt <= 0; vblank_pulse <= 0; end
+    if (!rst_n_sys) begin vbl_cnt <= 0; vblank_sys <= 0; end
     else begin
-        vblank_pulse <= 0;
-        if (vbl_cnt == FRAME_CYCLES-1) begin vbl_cnt <= 0; vblank_pulse <= 1; end
+        vblank_sys <= 0;
+        if (vbl_cnt == FRAME_CYCLES-1) begin vbl_cnt <= 0; vblank_sys <= 1; end
         else vbl_cnt <= vbl_cnt + 1;
     end
 end
+
+// One fast cycle wide, and the interrupt controller is in the slow domain.
+m1_cdc_pulse vblank_cdc (
+    .a_clk(clk), .a_rst_n(rst_n_sys), .a_pulse(vblank_sys),
+    .b_clk(clk_cpu), .b_rst_n(rst_n_cpu), .b_pulse(vblank_pulse)
+);
 
 wire [4:0]       p_req, p_we, p_ack;
 wire [4:0][24:1] p_addr;
@@ -101,15 +132,30 @@ wire [4:0][15:0] p_din;
 wire [4:0][1:0]  p_be;
 wire [4:0][63:0] p_dout;
 
-reg        ifp_req = 0;
-reg [24:1] ifp_addr = 0;
-assign p_req  = {2'b00, ifp_req, 1'b0, sdr_req};
-assign p_we   = {4'b0000, sdr_we};
-assign p_addr = {24'd0, 24'd0, ifp_addr, 24'd0, sdr_addr};
-assign p_din  = {16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-assign p_be   = {2'd0, 2'd0, 2'd0, 2'd0, sdr_be};
-assign sdr_dout = p_dout[0][15:0];
-assign sdr_ack  = p_ack[0];
+wire        ifp_req;
+wire [24:1] ifp_addr;
+assign p_req  = {2'b00, ifp_req, 1'b0, m_sdr_req};
+assign p_we   = {4'b0000, m_sdr_we};
+assign p_addr = {24'd0, 24'd0, ifp_addr, 24'd0, m_sdr_addr};
+assign p_din  = {16'd0, 16'd0, 16'd0, 16'd0, m_sdr_din};
+assign p_be   = {2'd0, 2'd0, 2'd0, 2'd0, m_sdr_be};
+// The V60's data port crosses here rather than being wired straight to the
+// controller, which is the whole point of this configuration.
+wire        m_sdr_req, m_sdr_we, m_sdr_ack, m_sdr_busy;
+wire [24:1] m_sdr_addr;
+wire [15:0] m_sdr_din;
+wire  [1:0] m_sdr_be;
+
+m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) data_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
+    .a_req(sdr_req), .a_we(sdr_we), .a_addr(sdr_addr),
+    .a_din(sdr_din), .a_be(sdr_be),
+    .a_dout(sdr_dout), .a_ack(sdr_ack), .a_busy(m_sdr_busy),
+    .b_clk(clk), .b_rst_n(rst_n_sys),
+    .b_req(m_sdr_req), .b_we(m_sdr_we), .b_addr(m_sdr_addr),
+    .b_din(m_sdr_din), .b_be(m_sdr_be),
+    .b_dout(p_dout[0][15:0]), .b_ack(p_ack[0])
+);
 
 wire        cke, cs_n, ras_n, cas_n, we_n;
 wire [1:0]  ba, dqm;
@@ -120,7 +166,7 @@ wire [4:0]  dbg_req_v, dbg_grant_v;
 wire [15:0] v_flags;
 
 m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
-    .clk(clk), .rst_n(rst_n), .ready(mem_ready),
+    .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
     .sd_we_n(we_n), .sd_ba(ba), .sd_a(a), .sd_dqm(dqm),
     .sd_dq_o(dq_c2m), .sd_dq_oe(dq_oe_c), .sd_dq_i(dq_m2c),
@@ -137,30 +183,33 @@ sdram_model #(.COL_BITS(9)) device (
     .violations(), .v_flags(v_flags), .reads_served(), .writes_served()
 );
 
-// Instruction fetch bridge: one 4-word burst per 8-byte line, acknowledged on
-// the rising edge while our own request is outstanding.
-reg [2:0] if_foff = 0;
-reg       if_pending = 0, p2_ack_d = 0, if_served = 0;
-reg [63:0] if_data_r = 0;
-assign if_ack  = if_served;
-assign if_data = if_data_r;
+// Instruction fetch now goes through the real module rather than a copy of it
+// living here. That copy WAS the implementation for a while — every consumer
+// wrote its own and none was tested — and replacing it is half the point of
+// this configuration: boot is what proves m1_fetch_bridge works in a design,
+// across two clocks, where a lost line shows up as a CPU that stops.
 integer if_lines = 0;
 
+m1_fetch_bridge fetch (
+    .cpu_clk(clk_cpu), .cpu_rst_n(rst_n_cpu),
+    .if_req(if_req), .if_off(if_addr[2:0]), .if_sdram_addr(if_sdram_addr),
+    .if_data(if_data), .if_ack(if_ack),
+    .mem_clk(clk), .mem_rst_n(rst_n_sys),
+    .p_req(ifp_req), .p_addr(ifp_addr),
+    .p_dout(p_dout[2]), .p_ack(p_ack[2])
+);
+
+// Count served lines the same way the old inline bridge did, so the figure
+// stays comparable across this change.
+reg p2_ack_d = 0, ifp_busy = 0;
 always @(posedge clk) begin
-    if (!rst_n) begin
-        ifp_req <= 0; if_served <= 0; if_pending <= 0; p2_ack_d <= 0;
-    end else begin
-        ifp_req  <= 0;
+    if (!rst_n_sys) begin p2_ack_d <= 0; ifp_busy <= 0; end
+    else begin
         p2_ack_d <= p_ack[2];
-        if (!if_req) begin if_served <= 0; if_pending <= 0; end
-        else if (!if_served && !if_pending) begin
-            ifp_addr <= if_sdram_addr; if_foff <= if_addr[2:0];
-            ifp_req  <= 1'b1; if_pending <= 1'b1;
-        end else if (if_pending && p_ack[2] && !p2_ack_d) begin
-            if_pending <= 1'b0;
-            if_data_r  <= p_dout[2] >> {if_foff, 3'b000};
-            if_served  <= 1'b1;
-            if_lines    = if_lines + 1;
+        if (ifp_req) ifp_busy <= 1'b1;
+        else if (ifp_busy && p_ack[2] && !p2_ack_d) begin
+            ifp_busy <= 1'b0;
+            if_lines  = if_lines + 1;
         end
     end
 end
@@ -273,6 +322,26 @@ end
 // ------------------------------------------------------------------- run
 integer cycles, ce_cycles, last_pc, stuck, pcmin, pcmax, distinct;
 integer instrs;
+
+// Instruction counting belongs in the CPU's own domain now. Sampling dbg_pc on
+// the fast clock counts each retire up to four times over and turns the CPI
+// figure into fast-clock-cycles per instruction, which is not a number anyone
+// wants.
+always @(posedge clk_cpu) begin
+    if (!rst_n_cpu) begin
+        ce_cycles = 0; instrs = 0; last_pc = -1;
+        pcmin = 32'h7fffffff; pcmax = 0; stuck = 0;
+    end else begin
+        if (ce) ce_cycles = ce_cycles + 1;
+        if (dbg_pc != last_pc) begin
+            instrs  = instrs + 1;
+            last_pc = dbg_pc;
+            stuck   = 0;
+            if (dbg_pc < pcmin) pcmin = dbg_pc;
+            if (dbg_pc > pcmax) pcmax = dbg_pc;
+        end else stuck = stuck + 1;
+    end
+end
 reg [23:0] seen_hi;
 initial begin
     repeat (8) @(posedge clk);
@@ -280,22 +349,11 @@ initial begin
     while (!mem_ready) @(posedge clk);
     $display("SDRAM ready, releasing V60 at the reset vector");
 
-    cycles = 0; ce_cycles = 0; last_pc = -1; stuck = 0; instrs = 0;
+    cycles = 0; last_pc = -1; stuck = 0; instrs = 0;
     pcmin = 32'h7fffffff; pcmax = 0;
     while (cycles < RUN_CYCLES && !dbg_halted) begin
         @(posedge clk);
         cycles = cycles + 1;
-        if (ce) ce_cycles = ce_cycles + 1;
-        if (dbg_pc != last_pc) begin
-            // dbg_pc advances once per retired instruction, so counting the
-            // changes gives an instruction count and therefore real-code CPI —
-            // the figure tb_v60_cpi's twelve-byte loop cannot provide.
-            instrs = instrs + 1;
-            last_pc = dbg_pc;
-            stuck = 0;
-            if (dbg_pc < pcmin) pcmin = dbg_pc;
-            if (dbg_pc > pcmax) pcmax = dbg_pc;
-        end else stuck = stuck + 1;
     end
 
     $display("");
@@ -315,7 +373,7 @@ initial begin
     // right measure over ordinary code and the label stops it being quoted as
     // if it were.
     if (instrs > 0)
-        $display("BOOT: %0d instructions over %0d CPU cycles = %0d.%02d avg (INCLUDES block instructions)",
+        $display("BOOT: %0d instructions over %0d CPU-clock cycles = %0d.%02d avg (INCLUDES block instructions)",
                  instrs, ce_cycles, ce_cycles/instrs,
                  ((ce_cycles % instrs) * 100) / instrs);
     $display("BOOT: io handshake replies=%0d (answered in RTL by m1_ioboard)",

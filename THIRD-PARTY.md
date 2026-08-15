@@ -6,6 +6,14 @@ this file records what each dependency is and what its licence obliges.
 
 `third_party/` is not in the repository. It is populated by `tools/bootstrap.sh`.
 
+**Merged 2026-08-15 from a duplicate.** This file and a `THIRD_PARTY.md` with an
+underscore existed side by side for a day, with different content — the second
+was added as a new file rather than an edit of the first, and a later change
+repointed every reference at this one without noticing the other was still
+there. The underscore version is gone and its unique material is below: the
+relicensing path, the per-file SPDX warning about MAME, what is original here,
+and the release checklist.
+
 ## In use
 
 ### meathax/s32 — GPL-3.0
@@ -36,9 +44,27 @@ function: where MAME made a decomposition choice that alternatives existed for,
 mirroring it is a different question from reproducing what the chip does.
 
 ### MiSTer template / sys — GPL-2.0-or-later
-Framework, HPS I/O and scaler. GPL-2-or-later upgrades to GPL-3, so the
-combination is lawful. This is the direction that makes D7 necessary: code
-flows in from GPL-2-or-later cores, and cannot flow back out to them.
+Framework, HPS I/O and scaler. The repository LICENSE carries the GPLv2 text,
+but every source file header reads "either version 2 of the License, or (at your
+option) any later version". That or-later clause is the only reason this
+combination is lawful: it permits upgrading `sys/` to GPL-3.
+
+This is the direction that makes D7 necessary: code flows in from
+GPL-2-or-later cores, and cannot flow back out to them.
+
+**To relicense this repo as GPL-2-or-later**, the s32 V60 would have to be
+removed and replaced with an independently written one, or meathax would have to
+agree to dual-license. Nothing else in the tree blocks it.
+
+### A warning about reading MAME
+MAME is GPL-2.0 **as a whole**, and individual files carry their own SPDX
+headers — many are BSD-3-Clause, and the ones this project depends on are.
+Check the header of every file you read. Do not rely on the repository-level
+licence in either direction.
+
+Two files are flagged for use but not yet verified: `mb8421.*` (the dual-port
+RAM the I/O board reaches through) and `multipcm.*` (M4 sound). Check their
+headers before either is used as a reference.
 
 ## Evaluated for the I/O board, 2026-08-15
 
@@ -65,8 +91,30 @@ adapt**. Hard rule 1. It may be run as an external oracle and read for
 understanding. Porting its C to SystemVerilog would be an infringing derivative
 — translation and restructuring are what "adapt" means, not a way around it.
 
+## Originally written here
+
+Everything under `rtl/`, `sim/`, `tools/`, `quartus/` and `docs/` except where a
+file header says otherwise. GPL-3.0-or-later.
+
+Files that transcribe from MAME carry the BSD-3-Clause attribution to Olivier
+Galibert in their own headers: `rtl/tgp/mb86233_pkg.sv` for opcode numbering,
+status flag positions and the exponent/mantissa accessors, and the video and
+rasterizer modules for the behaviour they reproduce.
+
 ## ROM images
 
 Never committed, nor anything derived from them, including extracted microcode
 baked into source (hard rule 2). `tools/build_rom_image.py` reads from a path
 given on the command line and writes only under `build/`, which is gitignored.
+
+## Release checklist
+
+Before publishing a build:
+
+- [ ] `LICENSE` present and unmodified
+- [ ] SPDX header on every source file
+- [ ] This file lists every vendored component actually used
+- [ ] `deps.lock` pins the exact upstream revisions built against
+- [ ] Olivier Galibert's BSD-3-Clause notice retained wherever MAME-derived
+- [ ] No `geometrizer` code present anywhere in the tree
+- [ ] ROM images are not distributed. Ever.
