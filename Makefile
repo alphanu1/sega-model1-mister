@@ -30,6 +30,15 @@ SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
 SRCS_m1_glue := rtl/io/m1_glue.sv
+SRCS_m1_mainram := rtl/m1_mainram.sv
+# Everything built so far as one design, for an integrated area figure. Not the
+# core: no framework, no clocking, no I/O board, no TGP.
+SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
+  rtl/mem/bw_monitor.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
+  rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
+  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_main.sv \
+  rtl/m1_integrated.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
 SRCS_m1_tile_mixer := rtl/video/m1_tile_mixer.sv
 SRCS_m1_tile_fetch := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv
@@ -263,7 +272,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_glue m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_glue m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -324,6 +333,17 @@ QOPT ?= Aggressive Performance
 
 # Preprocessor defines passed to synthesis, e.g. QDEFS=S32_V60_NO_FP=1 to build
 # the V60 without its floating-point group.
+# Time limit on synthesis. A design whose memories fail to infer as block RAM
+# does not error — Quartus builds them from flip-flops and keeps going, and a
+# few megabits of that consumes every byte of RAM in the machine and never
+# finishes. That happened twice here. A timeout bounds it so the mistake costs
+# a failed build rather than the workstation.
+#
+# Deliberately NOT `ulimit -v`: Quartus reserves far more virtual address space
+# than it uses, so a virtual-memory cap kills healthy builds during
+# elaboration. Watch RSS if a build looks wrong; cap wall clock, not VA.
+QUARTUS_TIMEOUT ?= 1200
+
 QDEFS ?=
 
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
@@ -376,7 +396,10 @@ quartus:
 	  sed -e 's/@MODULE@/$(MOD)/g' -e 's|@QOPT@|$(QOPT)|' -e "s|@DEFS@|$$defs|" -e "s|@SRCS@|$$srcs|" quartus/spike.qsf.in > $(QDIR)/$(MOD).qsf
 	@cp quartus/spike.sdc $(QDIR)/spike.sdc
 	@echo "PROJECT_REVISION = \"$(MOD)\"" > $(QDIR)/$(MOD).qpf
-	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c 'quartus_map $(MOD) && quartus_fit $(MOD) && quartus_sta $(MOD)'
+	cd $(QDIR) && PATH="$(QUARTUS_BIN):$$PATH" sh -c \
+	   'timeout $(QUARTUS_TIMEOUT) quartus_map $(MOD) && \
+	    timeout $(QUARTUS_TIMEOUT) quartus_fit $(MOD) && \
+	    timeout $(QUARTUS_TIMEOUT) quartus_sta $(MOD)'
 
 # Where the critical path actually is. The STA summary reports slack and not
 # endpoints, so this is what makes a retime targeted rather than speculative.

@@ -199,60 +199,24 @@ module m1_main #(
   // check. The failure is silent in the worst way — the CPU is executing
   // correctly, it just never gets past its own self-test — so these exist
   // before real ROM code is run rather than after it has been debugged.
-  logic [15:0] tram  [32768];   // SCR  0x700000-0x70ffff
-  logic [15:0] pram  [8192];    // COL  0x900000-0x903fff
-  logic [15:0] dl0   [32768];   // TGP  0x600000-0x60ffff
-  logic [15:0] dl1   [32768];   // TGP  0x610000-0x61ffff
-  logic [15:0] cxlat [24576];   // COL  0x910000-0x91bfff
-  logic [15:0] dpram [2048];    // I/O  0xc00000-0xc00fff
-
+  // ------------------------------------------------------------ on-chip RAM
+  // Extracted into m1_mainram so the block-RAM inference can be synthesised
+  // and checked on its own. Verifying it inside the full design meant a
+  // half-hour Quartus run and 14 GB of memory to answer a question about six
+  // arrays; on its own it is a couple of minutes.
   logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q;
 
-  always_ff @(posedge clk) begin
-    if (m_req && m_we && sel_tileram) begin
-      if (m_be[0]) tram[m_addr[15:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) tram[m_addr[15:1]][15:8] <= m_wdata[15:8];
-    end
-    tram_q        <= tram[m_addr[15:1]];
-    vid_tram_data <= tram[vid_tram_addr];
-  end
-
-  always_ff @(posedge clk) begin
-    if (m_req && m_we && sel_palette) begin
-      if (m_be[0]) pram[m_addr[13:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) pram[m_addr[13:1]][15:8] <= m_wdata[15:8];
-    end
-    pram_q       <= pram[m_addr[13:1]];
-    vid_pal_data <= pram[{1'b0, vid_pal_addr}];
-  end
-
-  // Byte-enabled like the rest: the V60 writes bytes as well as words, and a
-  // region that only takes 16-bit writes corrupts every byte store to it.
-  always_ff @(posedge clk) begin
-    if (m_req && m_we && sel_dlist0) begin
-      if (m_be[0]) dl0[m_addr[15:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) dl0[m_addr[15:1]][15:8] <= m_wdata[15:8];
-    end
-    dl0_q <= dl0[m_addr[15:1]];
-
-    if (m_req && m_we && sel_dlist1) begin
-      if (m_be[0]) dl1[m_addr[15:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) dl1[m_addr[15:1]][15:8] <= m_wdata[15:8];
-    end
-    dl1_q <= dl1[m_addr[15:1]];
-
-    if (m_req && m_we && sel_colxlat && (m_addr[15:1] < 15'd24576)) begin
-      if (m_be[0]) cxlat[m_addr[14:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) cxlat[m_addr[14:1]][15:8] <= m_wdata[15:8];
-    end
-    cxlat_q <= cxlat[m_addr[14:1]];
-
-    if (m_req && m_we && sel_dpram) begin
-      if (m_be[0]) dpram[m_addr[11:1]][7:0]  <= m_wdata[7:0];
-      if (m_be[1]) dpram[m_addr[11:1]][15:8] <= m_wdata[15:8];
-    end
-    dpram_q <= dpram[m_addr[11:1]];
-  end
+  m1_mainram rams (
+    .clk(clk),
+    .we(m_req && m_we), .be(m_be), .addr(m_addr), .wdata(m_wdata),
+    .sel_tileram(sel_tileram), .sel_palette(sel_palette),
+    .sel_dlist0(sel_dlist0), .sel_dlist1(sel_dlist1),
+    .sel_colxlat(sel_colxlat), .sel_dpram(sel_dpram),
+    .tram_q(tram_q), .pram_q(pram_q), .dl0_q(dl0_q), .dl1_q(dl1_q),
+    .cxlat_q(cxlat_q), .dpram_q(dpram_q),
+    .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
+    .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data)
+  );
 
   // ---------------------------------------------------------- GLUE regs
   // Extracted into m1_glue so the interrupt semantics can be tested directly.

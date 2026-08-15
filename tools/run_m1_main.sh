@@ -15,7 +15,7 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VF="--binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH +define+SIMULATION"
-SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
+SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
 
 # Third configuration: no FP group. Whether Model 1 code executes V60
 # floating point decides a ~2,000 ALM and near-doubled-Fmax build option, and a
