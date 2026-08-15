@@ -27,6 +27,45 @@ each site. It belongs in **our** copy once the V60 is imported into `rtl/`,
 because `third_party/` is gitignored and re-cloned by `bootstrap.sh`, so a
 patch there would not survive.
 
+#### Does Model 1 use V60 floating point? — evidence, 2026-08-15
+
+Enabling `S32_V60_NO_FP` is worth ~2,000 ALM and takes Fmax from 24.6 to 45.5
+MHz, and the only thing blocking it is whether any game executes a V60 FP
+instruction. Two lines of evidence, neither conclusive alone.
+
+**Static.** The FP group is two opcodes, 0x5C and 0x5F, each followed by a byte
+whose low five bits must be a valid sub-opcode. Scanning the V60 program ROMs
+for those pairs, against a baseline computed from each image's own byte
+distribution rather than assuming uniform bytes:
+
+| | valid-subop rate | expected for that image |
+|---|---|---|
+| vr, 0x5C | 14.4% | 40.6% |
+| vr, 0x5F | 42.4% | 38.8% |
+| vf, 0x5C | 14.9% | 31.2% |
+| vf, 0x5F | 5.3% | 16.2% |
+
+Every figure is at or below chance for that image; a real FP instruction stream
+would show an excess. (A first pass using a uniform-random baseline looked
+alarming for `vr` 0x5F purely because that image is 29% zero-fill, which
+inflates any `xx 0x00` pairing.)
+
+This cannot prove absence. It is a byte scan, not a disassembly: it cannot tell
+code from data, cannot establish reachability, and only `vr` and `vf` program
+ROM layouts were mapped.
+
+**Dynamic, and this is the one that settles it.** The core now raises a sticky
+`dbg_fp_trap` when a build without the FP group meets an FP opcode, and
+`make m1_main` fails on it. Silence across real code means the build is safe;
+one assertion names the PC. The same target runs a fourth configuration with an
+FP opcode planted in the test program, which must trap — because a detector
+that has never fired is indistinguishable from one wired to nothing.
+
+Remaining work: run it against real game code once boot exists. Until then the
+option is evidenced but not taken.
+
+---
+
 #### V60 without the FP group, measured 2026-08-15
 
 The M1 work list already says to "strip the System 32 profile down to what

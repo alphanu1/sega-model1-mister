@@ -25,7 +25,11 @@
 //============================================================================
 `timescale 1ns/1ps
 
-module tb_m1_main #(parameter integer FASTIF = 1);
+// INJFP=1 replaces the first instruction with a floating-point opcode, so the
+// run is expected to trap rather than complete. Without it, fp_trap reading
+// zero says nothing — the program has no FP in it, so a detector wired to
+// nothing would look identical to a detector that works.
+module tb_m1_main #(parameter integer FASTIF = 1, parameter integer INJFP = 0);
 
 localparam integer ITERATIONS = 64;
 localparam [31:0]  PROG_PC    = 32'h00FC0000;
@@ -81,6 +85,7 @@ wire        if_ack;
 
 wire [23:0] dbg_pc;
 wire        dbg_halted;
+wire        dbg_fp_trap;
 
 m1_main #(.START_PC(PROG_PC), .FAST_IFETCH(FASTIF[0])) main (
     .clk(clk), .ce(ce), .rst_n(rst_n), .rom_loaded(rom_loaded),
@@ -91,7 +96,8 @@ m1_main #(.START_PC(PROG_PC), .FAST_IFETCH(FASTIF[0])) main (
     .vid_tram_addr(15'd0), .vid_tram_data(),
     .vid_pal_addr(12'd0),  .vid_pal_data(),
     .vblank_irq(1'b0),
-    .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .rom_bank()
+    .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
+    .rom_bank()
 );
 
 // ---------------------------------------------------------------- SDRAM
@@ -202,6 +208,12 @@ integer i, k;
 initial begin : build
     for (i = 0; i < 32; i = i + 1) prog[i] = 8'h00;
     k = 0;
+    if (INJFP != 0) begin
+        // ADDFS: opcode 0x5c, subop 0x18. A build with the FP group executes
+        // it; a build without takes the reserved-instruction vector.
+        prog[k]=8'h5C; k=k+1; prog[k]=8'h18; k=k+1;
+        prog[k]=8'h00; k=k+1; prog[k]=8'h00; k=k+1;
+    end
     // MOVW #ITERATIONS, R0
     prog[k]=8'h2D; k=k+1; prog[k]=8'h20; k=k+1; prog[k]=8'hF4; k=k+1;
     prog[k]=ITERATIONS[7:0]; k=k+1; prog[k]=ITERATIONS[15:8]; k=k+1;
@@ -245,7 +257,7 @@ initial begin
     $display("rom_loaded, releasing the CPU at PC=%08h", PROG_PC);
 
     cycles = 0;
-    while (!dbg_halted && cycles < 2000000) begin
+    while (!dbg_halted && !(INJFP != 0 && dbg_fp_trap) && cycles < 2000000) begin
         @(posedge clk);
         cycles = cycles + 1;
     end
@@ -253,10 +265,16 @@ initial begin
     if (ldr_overflow) begin
         $display("  FAIL loader overflowed"); fails = fails + 1;
     end
-    if (!dbg_halted) begin
+    if (INJFP != 0) begin
+        // The only thing being asked here is whether the detector fires.
+        if (!dbg_fp_trap) begin
+            $display("  FAIL an FP opcode executed without raising dbg_fp_trap");
+            fails = fails + 1;
+        end
+    end else if (!dbg_halted) begin
         $display("  FAIL never halted after %0d cycles (pc=%06h)", cycles, dbg_pc);
         fails = fails + 1;
-    end else begin
+    end else if (INJFP == 0) begin
         if (main.cpu.r[0] !== 32'd0) begin
             $display("  FAIL r0=%08h expected 0", main.cpu.r[0]); fails = fails + 1;
         end
@@ -265,13 +283,20 @@ initial begin
             fails = fails + 1;
         end
     end
+    // A build without the FP group must never meet an FP opcode. This is the
+    // check that turns "the ROM scan found nothing" into something a run can
+    // actually answer.
+    if (dbg_fp_trap && INJFP == 0) begin
+        $display("  FAIL V60 took the reserved-instruction vector for an FP opcode");
+        fails = fails + 1;
+    end
     if (v_flags != 0) begin
         $display("  FAIL SDRAM protocol violations, flags=%04h", v_flags);
         fails = fails + 1;
     end
 
-    $display("M1 MAIN: cycles=%0d halted=%0d r0=%08h r1=%08h ifetch_lines=%0d",
-             cycles, dbg_halted, main.cpu.r[0], main.cpu.r[1], if_lines);
+    $display("M1 MAIN: cycles=%0d halted=%0d r0=%08h r1=%08h ifetch_lines=%0d fp_trap=%0d",
+             cycles, dbg_halted, main.cpu.r[0], main.cpu.r[1], if_lines, dbg_fp_trap);
     if (fails == 0) $display("M1 MAIN PASS");
     else            $display("M1 MAIN FAIL (%0d)", fails);
     $finish;

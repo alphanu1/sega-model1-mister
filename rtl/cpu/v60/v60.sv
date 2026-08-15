@@ -74,7 +74,23 @@ module s32_v60 #(
 
     // debug/trace
     output reg [31:0] dbg_pc,
-    output            dbg_halted
+    output            dbg_halted,
+
+    // Sticky: set the first time the S32_V60_NO_FP build takes the
+    // reserved-instruction vector for a floating-point opcode, and never
+    // cleared except by reset.
+    //
+    // Whether Model 1 code executes V60 FP is the open question behind
+    // building without the FP group, which is worth ~2,000 ALM and nearly
+    // doubles Fmax. Scanning the ROMs statically found no excess of FP-shaped
+    // byte pairs above what each image's own byte distribution predicts, but a
+    // byte scan cannot tell code from data or prove reachability. This turns
+    // it into something a run can answer: silent means the build is safe,
+    // asserted means it is not, and dbg_pc at that moment says where.
+    //
+    // Always present so the port list does not change with the define; in a
+    // build with the FP group it simply never fires.
+    output reg        dbg_fp_trap
 );
 
 // ---------------------------------------------------------------------------
@@ -674,6 +690,7 @@ if (rst) begin
     dbus_addr <= 0; dbus_size <= 0; dbus_wdata <= 0;
     halted <= 0;
     dbg_pc <= START_PC;
+    dbg_fp_trap <= 1'b0;
     nmi_seen <= 0;
     nmi_r <= 0;
     xdiv_active <= 0;
@@ -1149,6 +1166,7 @@ else if (ce) begin
             exc_vector <= 8'd8;
             exc_pushval <= psw;
             st <= S_EXC_PUSH1;
+            dbg_fp_trap <= 1'b1;
             // synthesis translate_off
             $display("V60: reserved FP opcode %02x at %08x", opcode, pc);
             // synthesis translate_on

@@ -99,6 +99,9 @@ module m1_main #(
 
   output logic [23:0] dbg_pc,
   output logic        dbg_halted,
+  // Sticky. Set if a build without the FP group ever meets an FP opcode; see
+  // the note on the port in v60.sv.
+  output logic        dbg_fp_trap,
   output logic [2:0]  rom_bank
 );
 
@@ -124,7 +127,7 @@ module m1_main #(
     .bus_req(c_req), .bus_we(c_we), .bus_addr(c_addr), .bus_size(c_size),
     .bus_wdata(c_wdata), .bus_rdata(c_rdata), .bus_ack(c_ack),
     .irq_n(irq_n), .irq_vector(8'h00), .irq_ack(), .nmi_n(1'b1),
-    .dbg_pc(pc32), .dbg_halted(dbg_halted)
+    .dbg_pc(pc32), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap)
   );
   assign dbg_pc = pc32[23:0];
 
