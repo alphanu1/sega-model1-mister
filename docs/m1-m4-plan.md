@@ -454,6 +454,54 @@ amount of reasoning about the memory map would have produced.
 
 ---
 
+### The I/O board, investigated 2026-08-15
+
+Boot stops polling one byte, and this is what stands behind it.
+
+**What the V60 does.** Writes four bytes at DPRAM 0x1a-0x1d (V60 0xc00034-3a),
+then reads DPRAM 0x20 (V60 0xc00040) 3,791,843 times and nothing else. A
+command/response handshake with a single status byte.
+
+**What produces the response.** A Z80 at 4 MHz running `epr-14869` (16 KB
+mapped of a 64 KB device), with an MB8464 SRAM, a 93C46 EEPROM, an MSM6253 ADC
+and a Sega 315-5338A. The Z80's own memory map has NO dual-port RAM in it:
+model1io.cpp maps ROM at 0x0000, RAM at 0x4000, the 315-5338A at 0x8000 and the
+ADC at 0xc000. It reaches the DPRAM **through the 315-5338A**, whose read and
+write callbacks model1.cpp wires to the DPRAM's left port.
+
+**What is not available.** The 315-5338A source is not in the sparse MAME
+checkout, and the DPRAM layout is documented nowhere else. The single layout
+fact `model1.cpp` exposes is netmerc writing pose data at 0x80-0x8b.
+
+#### Both options cost more than first estimated
+
+- **HLE** (~300 ALM) needs the protocol, which exists only inside the Z80 ROM.
+  That means disassembling it, not inferring it.
+- **LLE** (~2,000 ALM) needs a Z80 *and* the 315-5338A, since the DPRAM is
+  reached through the custom chip. It is not "wire a core and load a ROM".
+
+Correcting two earlier claims in this plan: HLE was described as needing repeat
+work for three BIOS revisions plus model1io2. The three revisions
+(epr-14869/B/C) are firmware updates of one board selected by
+ROM_DEFAULT_BIOS, so they need one implementation, not three; and model1io2 is
+a genuinely different board used by only two later machine configs, neither of
+them the D5 bring-up title. For M1 the requirement is one protocol.
+
+#### Recommended next step: extend by observation, not by guessing
+
+The same method that found the missing on-chip RAMs and the single-cycle m_ack
+applies here. Implement the minimum that could satisfy the handshake, run the
+boot, and read the trace: it names exactly which address stalls next, and each
+answer is evidence rather than a guess. That is how the last three blockers
+were cleared, and it does not require committing to HLE or LLE up front —
+whatever is learned about the layout serves both.
+
+What it does require first is deciding whether the 315-5338A and a Verilog Z80
+enter `third_party/` via bootstrap, with a licence check, since both paths
+eventually want at least one of them.
+
+---
+
 ### Integrated area, measured 2026-08-15
 
 `make quartus MOD=m1_integrated` builds the V60 side and the 2D video side as
