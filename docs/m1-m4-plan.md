@@ -647,8 +647,10 @@ uncertainty of anything left and is the one block nothing is known about.
 
 **Work**
 
-- Instantiate 315-5571 and 315-5572 geometrizers plus the game copro, starting with
-  315-5573 (Virtua Racing). Load the decapped microcode.
+- Instantiate the game copro, starting with 315-5573 (Virtua Racing), and load its
+  decapped microcode. **One instance, not three** — D4 was reversed on 2026-08-15:
+  MAME loads the 315-5571 and 315-5572 geometrizer ROMs and never executes them, and
+  MAME is the oracle. That entry states what it gives up.
 - MB8421 dual-port mailboxes. 315-5464 copro/TGP glue. Command and result FIFOs,
   including the output FIFO at 0x400 that the +0x200 EA adder reaches.
 - Terminate the output FIFO into a capture stub that DMAs polygon lists to the HPS.
@@ -657,6 +659,9 @@ uncertainty of anything left and is the one block nothing is known about.
 
 - Captured polygon list stream matches MAME's, frame for frame, across a Virtua Racing
   cold boot into attract.
+- **Count the quads per frame while that capture runs.** The rasterizer's sorting
+  structure and D3's "binning is close to free" both hang off that number, and it
+  costs nothing to record here. See `docs/m3-rasterizer-spec.md`.
 
 **Discipline:** do not start the rasterizer until that diff is clean. Every rasterizer
 bug chased before this point will turn out to be a geometry bug wearing a disguise.
@@ -667,10 +672,18 @@ bug chased before this point will turn out to be a geometry bug wearing a disgui
 
 **Work**
 
-- Band binning pass over the TGP's already-sorted polygon list.
-- Edge-walking span filler, flat shaded, into a 64-line M10K band buffer.
-  No Z-buffer: Model 1 depth-sorts in the TGP and paints back to front. That omission
-  is what makes the fit possible at all.
+Fill rules transcribed from MAME in `docs/m3-rasterizer-spec.md`, 2026-08-15.
+Read that before writing any of this; two items below are stated there more
+precisely, and one of them is wrong here.
+
+- Depth sort, then a band binning pass over the sorted list. MAME sorts in the
+  rasterizer stage — z descending, ties by submission order — rather than
+  receiving a sorted list from the TGP, which is what D3 assumes. The quad count
+  per frame decides what that sort costs; M2's capture is where it comes from.
+- Edge-walking span filler in 16.16 fixed point, flat shaded, quads throughout
+  (triangles arrive as quads with a repeated vertex), into a 64-line M10K band
+  buffer. No Z-buffer: Model 1 paints back to front. That omission is what makes
+  the fit possible at all.
 - Band writeback and scanout. Framebuffer in SDRAM per D3; f2h DDR3 is the documented
   fallback.
 - 496x384 at 24 kHz out the analog path, plus the scaler chain for HDMI.

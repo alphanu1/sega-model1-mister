@@ -79,11 +79,24 @@ commit.
 ## What to do next
 
 **1. Size the rasterizer.** This is the outstanding measurement and nothing is
-blocked behind it. Build a flat-shaded triangle path far enough to synthesise —
-setup, edge functions, span fill into the band buffer — and run `make quartus`
-on it. It closes a ±3,000 ALM uncertainty, decides whether `NO_FP` needs
-spending, and tests whether D3's band-buffer arithmetic survives an
+blocked behind it. Build the fill path far enough to synthesise and run `make
+quartus` on it. It closes a ±3,000 ALM uncertainty, decides whether `NO_FP`
+needs spending, and tests whether D3's band-buffer arithmetic survives an
 implementation. Not throwaway: the datapath is the real one.
+
+`docs/m3-rasterizer-spec.md` has the fill rules transcribed from MAME, written
+2026-08-15. It corrects what this section used to say. The primitive is a
+**quad**, always four vertices — the frustum clipper emits triangles as quads
+with a repeated vertex, so there is no triangle path and no primitive decode.
+The filler is an **edge-walking DDA** in 16.16 fixed point, not an
+edge-function rasterizer: the cost is an integer divide per edge event and two
+adds per scanline, with no per-pixel arithmetic at all. So the area question is
+dividers and band buffer, not a fill ALU.
+
+The same read turned up that MAME performs the depth sort in the rasterizer
+stage rather than receiving a sorted list, which is D3's premise. That is not a
+measurement meeting D3's reversal condition, so the decision stands as written;
+the quad count per frame from the M2 capture is what settles it.
 
 **2. `emu.sv` + MRA.** There is still no top level. Everything beneath it is
 built and tested; this is what puts the core on a DE10-Nano.
