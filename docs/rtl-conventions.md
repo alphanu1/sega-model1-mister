@@ -162,6 +162,8 @@ Known baseline, yosys 0.66 generic 6-LUT mapping, `synth -lut 6 -flatten`:
 | `mb86233_seq` | 163 | 106 | PC, 4-deep stack, counters |
 | `fp_div` | 241 | 102 | iterative, 29-cycle |
 | `mb86233_regs` | 1063 | 781 | register space + 16-entry file |
+| `m1_raster_div` | 298 | 173 | signed restoring divide, 32-cycle |
+| `m1_raster_fill` | 3636 | 1055 | includes `m1_raster_div`; 32-bit datapath |
 
 Record the yosys version with the numbers. The first two were previously logged as
 1362/747 under an older yosys; the flop counts were identical and only the LUT

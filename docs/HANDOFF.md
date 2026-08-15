@@ -36,6 +36,7 @@ Built, tested and area-measured:
 | `m1_rom_loader` / `m1_decode` | 319 | 1,675 / 466,714 checks |
 | `bw_monitor` | 381 | 2M checks, mutation-tested |
 | `mb86233_core` (TGP, not yet wired) | 2,554 | ~16.7M fuzz + lockstep |
+| `m1_raster_fill` + `m1_raster_div` | 2,113 | 152,025 quads / 31.6M spans vs MAME |
 
 **Integrated** (`make quartus MOD=m1_integrated`): 21,796 ALM, 332/553 M10K,
 24.62 MHz — Fmax is the V60's, which is the critical path in context too.
@@ -78,25 +79,27 @@ commit.
 
 ## What to do next
 
-**1. Size the rasterizer.** This is the outstanding measurement and nothing is
-blocked behind it. Build the fill path far enough to synthesise and run `make
-quartus` on it. It closes a ±3,000 ALM uncertainty, decides whether `NO_FP`
-needs spending, and tests whether D3's band-buffer arithmetic survives an
-implementation. Not throwaway: the datapath is the real one.
+**1. Size the rasterizer — the fill path is done and measured.**
+`rtl/video/m1_raster_fill.sv` + `rtl/video/m1_raster_div.sv`, verified against a
+C transcription of MAME's `fill_quad` over 152,025 quads and 31.6 M spans, zero
+mismatches. **2,113 ALM, 2 DSP, 0 M10K, 63.67 MHz.**
 
-`docs/m3-rasterizer-spec.md` has the fill rules transcribed from MAME, written
-2026-08-15. It corrects what this section used to say. The primitive is a
-**quad**, always four vertices — the frustum clipper emits triangles as quads
-with a repeated vertex, so there is no triangle path and no primitive decode.
-The filler is an **edge-walking DDA** in 16.16 fixed point, not an
-edge-function rasterizer: the cost is an integer divide per edge event and two
-adds per scanline, with no per-pixel arithmetic at all. So the area question is
-dividers and band buffer, not a fill ALU.
+That is the fill path only. Band binning, the band buffer, writeback and scanout
+are still unbuilt, against a 3,000-6,000 estimate for the whole rasterizer — so
+the estimate is not broken but its comfortable end is gone. See
+`docs/m3-rasterizer-spec.md` for the rules, the measurement and the two unspent
+levers (a 32-bit datapath that is only that wide because MAME's is, and 2 DSP
+blocks that exist solely for the off-screen skip).
 
-The same read turned up that MAME performs the depth sort in the rasterizer
-stage rather than receiving a sorted list, which is D3's premise. That is not a
-measurement meeting D3's reversal condition, so the decision stands as written;
-the quad count per frame from the M2 capture is what settles it.
+What is left of this item: **the band buffer and the binning pass**, which is
+where D3 gets tested and where the M10K goes. 332 of 553 M10K are already spent
+and D3's band buffer wants ~51 more.
+
+The read that preceded it also turned up that MAME performs the depth sort in
+the rasterizer stage rather than receiving a sorted list, which is D3's premise.
+That is not a measurement meeting D3's reversal condition, so the decision
+stands as written; the quad count per frame from the M2 capture is what settles
+it.
 
 **2. `emu.sv` + MRA.** There is still no top level. Everything beneath it is
 built and tested; this is what puts the core on a DE10-Nano.
@@ -126,9 +129,14 @@ the harness coverage before that is settled.
 
 ## Budget
 
-25,287 ALM built of 41,910. **16,623 left** against 12,500-19,500 still to
-build (MiSTer `sys/`, sound, I/O board, rasterizer). It fits, with the
-pessimistic end uncomfortably close.
+27,400 ALM built of 41,910 — 25,287 plus the 2,113 of fill path measured on
+2026-08-15. **14,510 left.**
+
+Still to build: MiSTer `sys/` 3,000-4,000, sound 5,000-7,000, I/O board
+2,500-3,000, and the rest of the rasterizer. That last number is the one that
+moved: the estimate was 3,000-6,000 for the whole thing and the fill path alone
+took 2,113, so what remains of it — binning, band buffer, writeback, scanout —
+is now the widest uncertainty in the budget rather than a comfortable margin.
 
 M10K is now a constraint too: 332 of 553 before the band buffer, sound or
 sprites.

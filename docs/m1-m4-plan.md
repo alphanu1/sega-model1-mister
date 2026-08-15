@@ -588,6 +588,9 @@ effectively unlimited; that is no longer true.
 Built and measured: 21,796 (this) + 2,554 (one TGP, D4 as reversed) + 937
 (m1_sdram) = **25,287 ALM. 16,623 left.**
 
+Updated 2026-08-15: plus 2,113 for the quad filler (`m1_raster_fill`, built
+early to size M3) = **27,400 ALM, 14,510 left.**
+
 D4 originally called for three TGP instances. It was reversed on 2026-08-15
 after finding that MAME instantiates one MB86233 and never executes the two
 Geometrizer ROMs it loads — see that entry. That frees 5,108 ALM.

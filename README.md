@@ -20,7 +20,7 @@ NetMerc.
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
 | M1 — V60, bus, 2D, boot | **boots real game code** — top level, rasterizer sizing and I/O board left |
 | M2 — geometry pipeline | not started |
-| M3 — rasterizer and video | not started |
+| M3 — rasterizer and video | fill path built and measured, early, to size it |
 | M4 — sound, inputs, full set | not started |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
@@ -42,15 +42,23 @@ fetches, zero SDRAM protocol violations, `dbg_fp_trap` never asserted.
 | `m1_video` — the whole 2D path | 287 | 380,929 checks against MAME |
 | `m1_rom_loader` / `m1_decode` | 319 | 1,675 / 466,714 checks |
 | `bw_monitor` | 381 | 2 M checks, mutation-tested |
+| `m1_raster_fill` + `m1_raster_div` (M3, early) | 2,113 | 152,025 quads / 31.6 M spans vs MAME |
 
 `make quartus MOD=m1_integrated` builds the V60 side and the 2D side as one
 design: **21,796 ALM, 332/553 M10K, 24.62 MHz**. Fmax is exactly the V60's
 standalone figure, so the V60 is the critical path in context as well as alone.
 
-**Budget: 25,287 ALM built of 41,910**, against 12,500-19,500 still to build
-(MiSTer `sys/`, sound, I/O board, rasterizer). It fits, with the pessimistic end
+**Budget: 27,400 ALM built of 41,910**, against MiSTer `sys/`, sound, the I/O
+board and the rest of the rasterizer. It fits, with the pessimistic end
 uncomfortably close. One lever is measured and unspent — the V60 without its FP
 group, worth -1,987 ALM and Fmax 24.62 -> 45.54.
+
+The quad filler was built out of M3 order because it was the widest unknown in
+that budget: the fill path alone measures **2,113 ALM, 2 DSP, 0 M10K, 63.67
+MHz** against a 3,000-6,000 estimate for the entire rasterizer, so binning, the
+band buffer and scanout now carry the remaining uncertainty.
+`docs/m3-rasterizer-spec.md` has the fill rules transcribed from MAME and the
+two levers the measurement exposes.
 
 ### M0 progress
 

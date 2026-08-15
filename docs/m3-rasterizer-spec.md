@@ -181,16 +181,71 @@ one. The existing 2D path carries RGB888 out of `m1_palette`, and the source
 palette entries are xBGR-555, so 16bpp in the band buffer costs nothing in
 fidelity.
 
-## What the spike measures
+## What it costs — measured, Quartus 17.0.0 Lite, 5CSEBA6U23I7
 
-1. ALM and Fmax for setup + span walk, with the divider structure varied.
-2. M10K for the band buffer at the chosen pixel format, on top of the 332 spent.
-3. Whether the `S32_V60_NO_FP` lever has to be spent — the budget question this
-   whole exercise exists to answer.
+| Module | ALM | Registers | DSP | M10K | Fmax |
+|---|---|---|---|---|---|
+| `m1_raster_div` | 232 | 173 | 0 | 0 | — |
+| **`m1_raster_fill`** (includes the divider) | **2,113** | 1,110 | **2** | **0** | **63.67 MHz** |
 
-Ship the testbench in the same change (hard rule 5): drive quads, compare emitted
-spans against a C model transcribed from `fill_quad`, in the shape of
-`sim/video/tb_m1_video.cpp`.
+**The fill path alone is 2,113 ALM against a 3,000-6,000 estimate for the whole
+rasterizer**, and the band binning, the band buffer, the writeback and the
+scanout are all still to come. The estimate is not yet broken, but the
+comfortable end of it is gone.
+
+**The divider is not where the area is.** It is 232 ALM, 11% of the total; the
+other 1,881 is the FSM — four 32-bit vertex pairs held for the whole primitive,
+two 16.16 accumulators, two slopes, the skip multiplier, and the comparison
+tree that finds the top and bottom vertices. That is worth knowing before
+optimising: a faster divider buys cycles, not ALM.
+
+Fmax 63.67 MHz clears a 50 MHz fabric with 27% margin and is not the concern.
+Area is.
+
+Two levers are visible in the measurement and neither has been spent:
+
+- **The datapath is 32 bits because MAME's is.** `spoint_t` is `int32_t`, so the
+  16.16 accumulator, the divider and the multiplier are all full width. Screen x
+  needs 10 bits and y 9; the only thing the top half buys is bit-exact agreement
+  on coordinates far off screen, where the `<<16` wrap is the observable
+  behaviour. Narrowing is the single biggest saving available here and it costs
+  exactness on garbage input — measure it before deciding, and be aware the fuzz
+  harness will fail on the wild regime by construction if it is taken.
+- **2 DSP blocks exist only for the off-screen skip.** `fill_slope` advances an
+  edge by `delta * slope` in one step when a segment starts above the viewport.
+  Iterating the addition instead is bit-identical (that is why the comment in the
+  RTL says so) and costs cycles only on quads that are mostly off screen. Two
+  DSPs out of 112 is not a constraint today; the ALM that comes with them is
+  worth re-measuring if the budget tightens.
+
+Verification shipped in the same change per hard rule 5:
+`sim/video/tb_m1_raster_fill.cpp`, 152,025 quads and 31.6 M spans against a C
+transcription of `fill_quad`, zero mismatches.
+
+## As built, 2026-08-15
+
+`rtl/video/m1_raster_fill.sv` and `rtl/video/m1_raster_div.sv`, verified by
+`sim/video/tb_m1_raster_fill.cpp`: 152,025 quads, 31.6 M spans compared against
+a transcription of `fill_quad` in C, zero mismatches.
+
+**The setup/walk split in the diagram above is not a module boundary.** Slopes
+are recomputed at each vertex event *during* the walk, so a "setup" stage that
+precomputes all four slopes would have to be re-entered mid-primitive. What
+exists instead is one FSM owning the chain state, calling out to a shared
+divider — which is also why the divider is a separate file rather than inlined.
+
+Spans are compared as an ordered stream rather than as a painted bitmap. That
+matters more than it sounds: an extra or duplicated span paints identical pixels
+on an opaque fill and is only visible through the MOIRE stipple, so a bitmap
+comparison would pass the two bugs most likely to be written here — an inclusive
+segment range, and a left/right decision taken per scanline instead of per
+segment. Both were mutation-tested and produce six-figure failure counts.
+
+The interface property worth knowing: `quad_done` can be asserted in the same
+cycle as the quad's last span, and `in_ready` can rise with that span still in
+flight. `span_valid` is the only authority on delivery. A consumer that stops
+listening at `quad_done` loses the last scanline of every quad, which is exactly
+the bug the first version of the testbench had.
 
 ## Open questions this document does not settle
 
