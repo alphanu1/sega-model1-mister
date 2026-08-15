@@ -2809,7 +2809,7 @@ else if (ce) begin
             else begin
                 // advance dst to the next byte and reload it (src too when
                 // its boundary coincided — bs_ph 1 routes through MOVS)
-                str_dst <= st_t'(subop[0] ? str_dst - 1 : str_dst + 1);
+                str_dst <= subop[0] ? str_dst - 1 : str_dst + 1;
                 bs_doff <= subop[0] ? 3'd7 : 3'd0;
                 if (bs_ph == 2'd1) st <= S_BS_MOVS;
                 else               st <= S_BS_MOVD;

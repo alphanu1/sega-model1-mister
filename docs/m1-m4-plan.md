@@ -74,6 +74,29 @@ st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL); // after
 Both toolchains now compile it; `make lint` runs Verilator **and** Icarus over
 the V60 on every invocation, so this cannot silently regress.
 
+**Full suite against the imported copy: 28 passed, 0 failed** — two better than
+the recorded baseline of 26, because the six Icarus white-box tests now run
+here at all.
+
+That result took two attempts, and the first one is worth recording. The
+initial cast pass used a regex without a word boundary, so `st` matched the
+start of `str_dst` and wrapped a 32-bit string-destination pointer in
+`st_t'(...)`, truncating it to the state enum:
+
+```
+str_dst <= st_t'(subop[0] ? str_dst - 1 : str_dst + 1);   // WRONG
+```
+
+Verilator and Icarus both compiled that happily. The only thing that caught it
+was `tb_v60_bits` failing `MOVBSD got=0000 want=00fb` — a test that had passed
+before the import. Restoring the pristine file and re-running proved the
+regression was mine rather than pre-existing.
+
+The lesson is the one this project keeps relearning: a mechanical edit across
+4,500 lines of unfamiliar code needs its diff read line by line, and needs a
+test suite that was green beforehand to compare against. Both were available
+and only the second one caught it.
+
 **BLKSEQ suppressed, not fixed — flagged for review.** The source uses blocking
 assignments for default-then-override signals inside `always_ff` blocks that
 also use non-blocking for state, e.g. `rf_we0 = 1'b0;` alongside
