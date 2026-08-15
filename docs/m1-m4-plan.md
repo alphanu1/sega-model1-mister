@@ -400,6 +400,60 @@ rather than being rediscovered in M3.
 
 ---
 
+### Real Virtua Racing boot, measured 2026-08-15
+
+`make m1_boot` runs Sega's actual ROM: reset vector at 0xfffffff0, fetch through
+m1_decode's packed mapping, real startup code. 200M core cycles / 66.7M CPU
+cycles.
+
+**Real-code cycles per instruction: 8.56.** 7,786,593 instructions. This is the
+number the timing argument needed and could not get from a twelve-byte loop.
+Matching a 16 MHz part requires `F >= 16 * 8.56 / CPI_real`:
+
+| real V60 CPI | Fmax needed | with FP (24.62) | without FP (45.54) |
+|---|---|---|---|
+| 8 (MAME's placeholder) | 17.1 MHz | fits | fits |
+| 12 | 11.4 MHz | fits | fits |
+
+**V60 timing is closed.** Even against MAME's disclaimed flat-8, and even with
+the FP group left in, there is margin. The `NO_FP` option is now purely an area
+and headroom decision rather than a timing one.
+
+Caveat kept in the output: the average includes the V60's block group
+(MOVC/CMPC), one instruction that runs for as long as the block. Over 7.8M
+instructions those are a small fraction, unlike the first run where a single
+block instruction checksumming ROM produced an apparent 199.
+
+**No FP opcode in 7.8M instructions.** `dbg_fp_trap` never asserted. Combined
+with the ROM scan finding no excess of FP-shaped byte pairs, that is good
+evidence for building without the FP group — worth ~2,000 ALM and taking Fmax
+to 45.54 MHz. Not conclusive until attract mode and gameplay run too.
+
+**No SDRAM protocol violations** across the whole run.
+
+#### Where boot stops, and what it wants next
+
+Bus accesses by region, busiest first:
+
+| region | accesses | what |
+|---|---|---|
+| 0xc00000 | 3,791,847 | **I/O board dual-port RAM** |
+| 0x100000-0x130000 | ~146,000 | banked data ROM checksum |
+| 0x700000, 0x780000-0x7d0000 | ~215,000 | tile and character RAM |
+| 0x910000 | 40,960 | colour translation table |
+| 0x400000-0x530000 | ~161,000 | NVRAM and work RAM tests |
+
+The memory test and the ROM checksum both complete — the PC range widens from a
+single stuck loop to 0xfc3b49..0xfffff0 once the data ROMs are preloaded, which
+is what a passing checksum looks like. It then polls 0xc00000 nearly four
+million times.
+
+**So the next thing boot needs is the 315-5338A I/O board**, not the framework,
+not the video path, and not more CPU work. That is a precise answer that no
+amount of reasoning about the memory map would have produced.
+
+---
+
 ## M1 — V60, bus, 2D subsystem, boot
 
 **Work**
