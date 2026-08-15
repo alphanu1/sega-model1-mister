@@ -197,8 +197,14 @@ always @(posedge clk) begin
     if (!rst_n) begin io_pending <= 0; io_wait <= 0; end
     else begin
         // Request: the V60 wrote 1 to DPRAM 0x20.
+        // Any NON-ZERO write to the flag is a request. Matching only the
+        // literal 0x01 answered the first handshake and missed the second: the
+        // V60 goes on to write a larger "SEGA" block at DPRAM 0x100 and raises
+        // the same flag again, evidently with a different code. The rule the
+        // protocol actually follows is "the V60 sets it, the responder clears
+        // it", so match that rather than one observed value.
         if (main.m_req && main.m_we && main.sel_dpram &&
-            main.m_addr[11:1] == 11'h20 && main.m_wdata[7:0] == 8'h01) begin
+            main.m_addr[11:1] == 11'h20 && main.m_wdata[7:0] != 8'h00) begin
             io_pending <= 1'b1;
             io_wait    <= 0;
         end else if (io_pending) begin
