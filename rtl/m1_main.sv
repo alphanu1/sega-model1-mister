@@ -212,36 +212,18 @@ module m1_main #(
   end
 
   // ---------------------------------------------------------- GLUE regs
-  // 0xe00000 irq control, 0xe00002 irq mask, 0xe00004 bank,
-  // 0xe00006 timer mode, 0xe00008-b timer period, 0xe0000c-f timer.
-  logic [7:0] irq_status, irq_mask;
-  logic       vbl_d;
+  // Extracted into m1_glue so the interrupt semantics can be tested directly.
+  // They are subtle enough to have already been wrong here once — see that
+  // file's header on the mask polarity.
+  logic [15:0] glue_rdata;
 
-  assign irq_n = ~(|(irq_status & irq_mask));
-
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      irq_status <= '0; irq_mask <= '0; rom_bank <= '0; vbl_d <= 1'b0;
-    end else begin
-      vbl_d <= vblank_irq;
-      if (vblank_irq && !vbl_d) irq_status[1] <= 1'b1;   // vblank is IRQ 1
-
-      if (m_req && m_we && sel_glue) begin
-        case (m_addr[3:1])
-          // MAME irq_control_w: 0x10 clears everything, 0x20 clears the last.
-          3'd0: if (m_be[0]) begin
-                  if (m_wdata[7:0] == 8'h10) irq_status <= '0;
-                end
-          3'd1: if (m_be[0]) irq_mask <= m_wdata[7:0];
-          // bank_w: the low nibble selects which window, bits 7:4 the bank.
-          // Only selector 1 — the 0x100000-0x1fffff data ROM window — is used
-          // by any dumped game.
-          3'd2: if (m_be[0] && (m_wdata[3:0] == 4'h1)) rom_bank <= m_wdata[6:4];
-          default: ;
-        endcase
-      end
-    end
-  end
+  m1_glue glue (
+    .clk(clk), .ce(ce), .rst_n(rst_n),
+    .sel(sel_glue), .we(m_req && m_we), .a(m_addr[3:1]),
+    .be(m_be), .wdata(m_wdata), .rdata(glue_rdata),
+    .vblank(vblank_irq),
+    .irq_n(irq_n), .rom_bank(rom_bank)
+  );
 
   // --------------------------------------------------------- bus routing
   typedef enum logic [1:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK } bstate_t;
@@ -293,7 +275,7 @@ module m1_main #(
         B_LOCAL: begin
           if      (sel_tileram) rdata_r <= tram_q;
           else if (sel_palette) rdata_r <= pram_q;
-          else if (sel_glue)    rdata_r <= 16'h0000;
+          else if (sel_glue)    rdata_r <= glue_rdata;
           // Everything the board does not decode, plus the regions this does
           // not implement yet: acknowledge and read as an unpulled bus.
           else                  rdata_r <= 16'hFFFF;

@@ -29,6 +29,7 @@ SRCS_sdram_model := sim/mem/sdram_model.sv
 SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
+SRCS_m1_glue := rtl/io/m1_glue.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
 SRCS_m1_tile_mixer := rtl/video/m1_tile_mixer.sv
 SRCS_m1_tile_fetch := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv
@@ -47,7 +48,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -70,6 +71,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_sdram) --top-module m1_sdram
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_rom_loader) --top-module m1_rom_loader
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_decode) --top-module m1_decode
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_glue) --top-module m1_glue
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_decode) --top-module m1_tile_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_mixer) --top-module m1_tile_mixer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_fetch) --top-module m1_tile_fetch
@@ -93,7 +95,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_rom_loader test_decode test_glue test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_video test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -171,6 +173,13 @@ test_tile_decode:
 	  $(SRCS_m1_tile_decode) sim/video/tb_m1_tile_decode.cpp \
 	  -o tb_tiledec --Mdir obj_tiledec
 	./obj_tiledec/tb_tiledec
+
+# The interrupt mask was implemented as an enable once and nothing caught it:
+# the integration program never enables an interrupt.
+test_glue:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_glue \
+	  $(SRCS_m1_glue) sim/io/tb_m1_glue.cpp -o tb_glue --Mdir obj_glue
+	./obj_glue/tb_glue
 
 test_decode:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_decode \
@@ -254,7 +263,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_sdram m1_rom_loader m1_decode m1_glue m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
