@@ -56,6 +56,34 @@ number at all but whether the V60 sustains the game's real-time workload —
 which is exactly what M1's bandwidth telemetry is for, and what the M0 TGP
 result was framed as (9.83 cycles/instruction, 52.1 MHz needed, 1.38x headroom).
 
+#### V60 imported, 2026-08-14
+
+`rtl/cpu/v60/v60.sv` and `v60_bus.sv`, from `third_party/s32/rtl/cpu/v60/`.
+Verified **identical to upstream modulo the casts below** — the import changed
+nothing else.
+
+**Icarus fix.** 14 sites assigned a ternary of enum members to an `st_t`
+variable, which Icarus 13.0 refuses without an explicit cast and Verilator
+accepts silently:
+
+```
+st <= ea_want_addr ? S_EA_DONE : S_EA_VAL;        // before
+st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL); // after
+```
+
+Both toolchains now compile it; `make lint` runs Verilator **and** Icarus over
+the V60 on every invocation, so this cannot silently regress.
+
+**BLKSEQ suppressed, not fixed — flagged for review.** The source uses blocking
+assignments for default-then-override signals inside `always_ff` blocks that
+also use non-blocking for state, e.g. `rf_we0 = 1'b0;` alongside
+`bus_owner <= OWN_NONE;`. Mixing the two in one sequential block is a genuine
+footgun and `docs/rtl-conventions.md` would normally reject it. It is accepted
+here because the code carries 22 passing directed tests plus a differential
+harness against a Python reference, so rewriting 4,500 lines to satisfy a lint
+flag risks far more than it fixes. **Revisit before the V60 is integrated**, and
+treat any unexplained behaviour in that area as a prime suspect.
+
 **The real M1 risk is timing, not correctness.** s32's own baseline records:
 
 | | s32 V60 | MAME |

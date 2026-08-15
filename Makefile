@@ -31,7 +31,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 test test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -49,6 +49,22 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_dec) --top-module mb86233_dec
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_xfer) --top-module mb86233_xfer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_mb86233_core) --top-module mb86233_core
+	$(MAKE) --no-print-directory lint_v60
+
+# The V60 is imported from meathax/s32 and lints under a relaxed flag set.
+#
+# BLKSEQ is suppressed, not fixed: the source uses blocking assignments for
+# default-then-override signals inside always_ff blocks that also use
+# non-blocking for state. Mixing the two in one sequential block is a real
+# footgun, but this code carries 22 passing directed tests and a differential
+# harness against a Python reference, so rewriting 4,500 lines to satisfy a
+# lint flag would risk far more than it fixes. Flagged for review before M1
+# integration rather than silently accepted — see docs/m1-m4-plan.md.
+lint_v60:
+	verilator --lint-only -Wall $(VFLAGS) -Wno-DECLFILENAME -Wno-VARHIDDEN \
+	  -Wno-BLKSEQ -Wno-CASEINCOMPLETE -Wno-SYNCASYNCNET \
+	  rtl/cpu/v60/v60.sv --top-module s32_v60
+	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
 test: test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
