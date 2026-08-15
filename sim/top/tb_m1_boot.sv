@@ -32,7 +32,10 @@
 
 module tb_m1_boot #(
     parameter integer RUN_CYCLES = 3000000,
-    parameter string  ROMHEX     = "build/rom/vr_v60.hex"
+    parameter string  ROMHEX     = "build/rom/vr_v60.hex",
+    // Page whose individual addresses are logged. Defaults to the I/O board's
+    // dual-port RAM, which is where boot currently stops.
+    parameter [7:0]   WATCH_PAGE = 8'hC0
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
@@ -174,8 +177,9 @@ end
 // and that is answered by which addresses it keeps reading. A histogram by
 // 64 KB page names the region; the exact address names the register.
 integer hist [0:255];
-integer exact_addr [0:15];
-integer exact_cnt  [0:15];
+integer exact_addr [0:31];
+integer exact_cnt  [0:31];
+integer exact_wr   [0:31];
 integer nexact = 0;
 integer hi, j, found;
 reg [23:1] last_addr_seen = 0;
@@ -184,21 +188,28 @@ reg        m_req_d = 0;
 always @(posedge clk) begin
     if (!rst_n) begin
         for (hi = 0; hi < 256; hi = hi + 1) hist[hi] = 0;
-        for (hi = 0; hi < 16; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; end
+        for (hi = 0; hi < 32; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; exact_wr[hi]=0; end
         nexact = 0;
     end else begin
         m_req_d <= main.m_req;
         if (main.m_req && !m_req_d) begin
             hist[main.m_addr[23:16]] = hist[main.m_addr[23:16]] + 1;
-            found = 0;
-            for (j = 0; j < nexact; j = j + 1)
-                if (exact_addr[j] == {main.m_addr, 1'b0}) begin
-                    exact_cnt[j] = exact_cnt[j] + 1; found = 1;
+            // Exact addresses within one page of interest. A page histogram
+            // says which device the CPU is talking to; this says which
+            // register, which is what a high-level implementation of that
+            // device has to get right.
+            if (main.m_addr[23:16] == WATCH_PAGE) begin
+                found = 0;
+                for (j = 0; j < nexact; j = j + 1)
+                    if (exact_addr[j] == {main.m_addr, 1'b0}) begin
+                        exact_cnt[j] = exact_cnt[j] + 1; found = 1;
+                    end
+                if (!found && nexact < 32) begin
+                    exact_addr[nexact] = {main.m_addr, 1'b0};
+                    exact_cnt[nexact]  = 1;
+                    exact_wr[nexact]   = main.m_we;
+                    nexact = nexact + 1;
                 end
-            if (!found && nexact < 16) begin
-                exact_addr[nexact] = {main.m_addr, 1'b0};
-                exact_cnt[nexact]  = 1;
-                nexact = nexact + 1;
             end
         end
     end
@@ -257,9 +268,11 @@ initial begin
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)
             $display("        %02h0000  %0d", i, hist[i]);
-    $display("BOOT: distinct addresses touched (first %0d):", nexact);
+    $display("BOOT: addresses touched in page %02h0000 (%0d distinct):",
+             WATCH_PAGE, nexact);
     for (i = 0; i < nexact; i = i + 1)
-        $display("        %06h  %0d", exact_addr[i], exact_cnt[i]);
+        $display("        %06h  %-9d %s", exact_addr[i], exact_cnt[i],
+                 exact_wr[i] ? "(write seen)" : "(read only)");
     if (dbg_fp_trap)
         $display("BOOT: *** FP opcode executed — S32_V60_NO_FP is NOT safe ***");
     $finish;
