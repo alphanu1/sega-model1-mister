@@ -134,7 +134,8 @@ module m1_main #(
     .if_req(if_req), .if_addr(if_addr), .if_data(if_data), .if_ack(if_ack),
     .bus_req(c_req), .bus_we(c_we), .bus_addr(c_addr), .bus_size(c_size),
     .bus_wdata(c_wdata), .bus_rdata(c_rdata), .bus_ack(c_ack),
-    .irq_n(irq_n), .irq_vector(8'h00), .irq_ack(), .nmi_n(1'b1),
+    .irq_n(irq_n), .irq_vector({5'd0, glue_irq_vec}),
+    .irq_ack(cpu_irq_ack), .nmi_n(1'b1),
     .dbg_pc(pc32), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap)
   );
   assign dbg_pc = pc32[23:0];
@@ -262,13 +263,16 @@ module m1_main #(
   // They are subtle enough to have already been wrong here once — see that
   // file's header on the mask polarity.
   logic [15:0] glue_rdata;
+  logic [2:0]  glue_irq_vec;
+  logic        cpu_irq_ack;
 
   m1_glue glue (
     .clk(clk), .ce(ce), .rst_n(rst_n),
     .sel(sel_glue), .we(m_req && m_we), .a(m_addr[3:1]),
     .be(m_be), .wdata(m_wdata), .rdata(glue_rdata),
     .vblank(vblank_irq),
-    .irq_n(irq_n), .rom_bank(rom_bank)
+    .irq_n(irq_n), .irq_vec(glue_irq_vec), .irq_ack(cpu_irq_ack),
+    .rom_bank(rom_bank)
   );
 
   // --------------------------------------------------------- bus routing

@@ -84,7 +84,14 @@ wire [4:0][63:0] p_dout;
 
 assign p_req  = {2'b00, ifp_req, char_req,          sdr_req};
 assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
-assign p_addr = {24'd0, 24'd0, ifp_addr, {6'd0, char_addr}, sdr_addr};
+// Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
+// CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
+// region, so the base has to be added here — without it the tilemap fetches
+// from word 0, which is V60 program ROM, and every glyph decodes from the same
+// wrong data. 31 distinct tile numbers then render identically and the screen
+// is a uniform pattern that looks like a video bug rather than an address one.
+assign p_addr = {24'd0, 24'd0, ifp_addr,
+                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
 assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
 
@@ -210,7 +217,9 @@ end
 integer pal_seen [0:65535];
 integer tram_seen [0:65535];
 integer npal = 0, ntram = 0, probe_on = 0;
-integer pv, tv;
+integer paddr_seen [0:4095];
+integer npaddr = 0;
+integer pv, tv, pa;
 
 always @(posedge clk) begin
     if (probe_on && ce_pix) begin
@@ -219,11 +228,34 @@ always @(posedge clk) begin
             pal_seen[pv] = 1;
             npal = npal + 1;
         end
+        // The index, not just the data: nine distinct palette words read over
+        // 120 frames means the renderer is looking at almost the same place
+        // every pixel, and that is an index problem rather than a data one.
+        pa = core.vid_pal_addr;
+        if (paddr_seen[pa] == 0) begin
+            paddr_seen[pa] = 1;
+            npaddr = npaddr + 1;
+        end
         tv = core.vid_tram_data;
         if (tram_seen[tv] == 0) begin
             tram_seen[tv] = 1;
             ntram = ntram + 1;
         end
+    end
+end
+
+// ------------------------------------------------- raw scanout sample
+// 31 tile words of ASCII text should not render as a uniform stripe. Before
+// blaming the core, look at what it actually emits per ce_pix — if the pixels
+// are there and the capture is dropping them, that is a testbench bug and the
+// image is lying about the design.
+integer raw_n = 0;
+reg raw_arm = 0;
+always @(posedge clk) begin
+    if (raw_arm && ce_pix && !vid_hb && !vid_vb && raw_n < 48) begin
+        $display("   raw[%0d] rgb=%02h%02h%02h hb=%0d vb=%0d",
+                 raw_n, vid_r, vid_g, vid_b, vid_hb, vid_vb);
+        raw_n = raw_n + 1;
     end
 end
 
@@ -240,6 +272,7 @@ initial begin
     $display("SDRAM ready, releasing the V60");
 
     for (i = 0; i < 65536; i = i + 1) begin pal_seen[i] = 0; tram_seen[i] = 0; end
+    for (i = 0; i < 4096; i = i + 1) paddr_seen[i] = 0;
     cycles = 0;
     probe_on = 1;
     while (cycles < RUN_CYCLES && !dbg_halted) begin
@@ -247,6 +280,7 @@ initial begin
         cycles = cycles + 1;
         // Progress, because this run is long enough that silence is
         // indistinguishable from a hang.
+        if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
         if (cycles % 20000000 == 0)
             $display("  %0d M cycles: pc=%06h frames=%0d painted=%0d nonblack=%0d",
                      cycles/1000000, dbg_pc, frames, painted, nonblack);
@@ -258,8 +292,14 @@ initial begin
              dbg_pc, dbg_io_replies, v_flags);
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
-    $display("PROBE: %0d distinct palette words, %0d distinct tile words seen by the renderer",
-             npal, ntram);
+    $display("PROBE: %0d distinct palette words, %0d distinct tile words, %0d distinct palette INDICES",
+             npal, ntram, npaddr);
+    tv = 0;
+    for (i = 0; i < 4096; i = i + 1)
+        if (paddr_seen[i] != 0 && tv < 16) begin
+            $display("   pal_addr %03h", i[11:0]);
+            tv = tv + 1;
+        end
     for (i = 0; i < 65536; i = i + 1)
         if (pal_seen[i] != 0 && npal < 40) $display("   pal %04h", i[15:0]);
     $display("PROBE: sample tile words:");

@@ -319,6 +319,41 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------------------------------- interrupt probe
+// The CPU is spinning on a work-RAM flag. If that flag is set by an interrupt
+// service routine, then no interrupt means no flag means this loop forever —
+// so the question is whether vblank reaches GLUE, whether GLUE raises the
+// line, and whether the CPU ever vectors. Three counters separate those.
+integer vbl_to_glue = 0, irq_asserted = 0, irq_edges = 0;
+reg irq_n_d = 1;
+
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu) begin
+        if (main.vblank_irq) vbl_to_glue = vbl_to_glue + 1;
+        if (!main.irq_n) irq_asserted = irq_asserted + 1;
+        if (!main.irq_n && irq_n_d) irq_edges = irq_edges + 1;
+        irq_n_d <= main.irq_n;
+    end
+end
+
+// --------------------------------------------------------------- PC trace
+// Where is it spinning? A page histogram says which region, and the watched
+// page says which address, but neither says what the CPU is DOING. A rolling
+// buffer of the last distinct PCs prints the loop body itself, which is the
+// thing that identifies a wait — and whether it is waiting on memory, on an
+// interrupt, or on a device that does not exist.
+localparam integer PCBUF = 128;
+integer pcbuf [0:PCBUF-1];
+integer pcw = 0, pclast = -1;
+
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && dbg_pc != pclast) begin
+        pcbuf[pcw % PCBUF] = dbg_pc;
+        pcw = pcw + 1;
+        pclast = dbg_pc;
+    end
+end
+
 // ------------------------------------------------------------------- run
 integer cycles, ce_cycles, last_pc, stuck, pcmin, pcmax, distinct;
 integer instrs;
@@ -397,6 +432,15 @@ initial begin
     for (i = 0; i < nexact; i = i + 1)
         $display("        %06h  %-9d %s", exact_addr[i], exact_cnt[i],
                  exact_wr[i] ? "(write seen)" : "(read only)");
+    $display("BOOT: vblank pulses into GLUE=%0d, irq_n asserted cycles=%0d, irq_n falling edges=%0d",
+             vbl_to_glue, irq_asserted, irq_edges);
+    $display("BOOT: glue irq_status=%02h irq_mask=%02h",
+             main.glue.irq_status, main.glue.irq_mask);
+    $display("BOOT: last %0d distinct PCs, oldest first:", PCBUF);
+    for (i = 0; i < PCBUF; i = i + 1)
+        $write("%06h ", pcbuf[(pcw + i) % PCBUF]);
+    $display("");
+
     if (dbg_fp_trap)
         $display("BOOT: *** FP opcode executed — S32_V60_NO_FP is NOT safe ***");
     $finish;

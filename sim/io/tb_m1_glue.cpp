@@ -32,6 +32,7 @@ struct Glue {
     d = new Vm1_glue;
     d->clk = 0; d->ce = 1; d->rst_n = 0;
     d->sel = 0; d->we = 0; d->a = 0; d->be = 3; d->wdata = 0; d->vblank = 0;
+    d->irq_ack = 0;
     d->eval();
     for (int i = 0; i < 4; i++) tick();
     d->rst_n = 1;
@@ -44,6 +45,8 @@ struct Glue {
   }
   uint16_t rd(int addr) { d->a = addr; d->eval(); return d->rdata; }
   void pulse_vblank() { d->vblank = 1; tick(); d->vblank = 0; tick(); }
+  // The CPU consuming the vector, which is when MAME's irq_callback runs.
+  void ack() { d->irq_ack = 1; tick(); d->irq_ack = 0; tick(); }
 };
 
 static long checks = 0, fails = 0;
@@ -118,6 +121,48 @@ int main(int argc, char** argv) {
     for (int i = 0; i < PRESC * 4; i++) g.tick();
     chk(g.rd(6) == 0, "count stays put");
     chk(g.d->irq_n == 1, "and never raises");
+  }
+
+  // The bug this is written for cost a day of looking at a video path. The
+  // vector was hardcoded to 0 in m1_main while GLUE computed it internally and
+  // never exposed it, so every interrupt dispatched as IRQ 0 — vblank ran the
+  // timer's handler, the game's frame flag was never set, and the CPU sat in a
+  // three-instruction poll loop that looked exactly like a hung core.
+  printf("test: the vector is the lowest set status bit, MAME's irq_callback\n");
+  {
+    Glue g;
+    g.pulse_vblank();                       // IRQ 1
+    chk(g.d->irq_n == 0, "vblank pending");
+    chk(g.d->irq_vec == 1, "vector is 1 for vblank alone");
+
+    g.wr(4, 1);                             // timer 0 period 1 -> IRQ 0
+    for (int i = 0; i < PRESC * 3 + 8; i++) g.tick();
+    // Both pending now. MAME scans from bit 0 and returns the FIRST set, so
+    // the timer outranks vblank regardless of which was raised last.
+    chk(g.d->irq_vec == 0, "with 0 and 1 pending the vector is 0, not the last raised");
+
+    g.wr(0, 0x10);                          // clear all
+    chk(g.d->irq_n == 1, "cleared");
+    g.pulse_vblank();
+    chk(g.d->irq_vec == 1, "vector follows status back to 1");
+  }
+
+  printf("test: 0x20 clears the source that was acknowledged\n");
+  {
+    Glue g;
+    g.wr(4, 1);
+    for (int i = 0; i < PRESC * 3 + 8; i++) g.tick();   // IRQ 0 pending
+    g.pulse_vblank();                                   // IRQ 1 pending too
+    chk(g.d->irq_vec == 0, "vector 0 with both pending");
+
+    g.ack();                 // CPU takes vector 0; last_irq must latch 0
+    g.wr(0, 0x20);           // clear the acknowledged one
+    chk(g.d->irq_n == 0, "still pending: vblank was not the acknowledged source");
+    chk(g.d->irq_vec == 1, "vector now 1, the timer having been cleared");
+
+    g.ack();                 // CPU takes vector 1
+    g.wr(0, 0x20);
+    chk(g.d->irq_n == 1, "both sources now cleared");
   }
 
   printf("test: the timers are independent\n");

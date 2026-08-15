@@ -161,7 +161,14 @@ module emu
   // p2 instruction fetch. p3 and p4 are sound, unbuilt.
   assign p_req  = {2'b00, ifp_req,  char_req,           sdr_req};
   assign p_we   = {2'b00, 1'b0,     1'b0,               sdr_we};
-  assign p_addr = {24'd0, 24'd0, ifp_addr, {6'd0, char_addr}, sdr_addr};
+  // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
+// CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
+// region, so the base has to be added here — without it the tilemap fetches
+// from word 0, which is V60 program ROM, and every glyph decodes from the same
+// wrong data. 31 distinct tile numbers then render identically and the screen
+// is a uniform pattern that looks like a video bug rather than an address one.
+assign p_addr = {24'd0, 24'd0, ifp_addr,
+                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
   assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
 

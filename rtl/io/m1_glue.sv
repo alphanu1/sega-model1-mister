@@ -60,6 +60,16 @@ module m1_glue (
   input  logic        vblank,    // pulse at the start of vertical blanking
 
   output logic        irq_n,     // active low, to the V60
+  // The vector the CPU takes, and the pulse telling us it took it. MAME's
+  // irq_callback scans irq_status from bit 0 and returns the FIRST SET BIT,
+  // storing it as m_last_irq at that moment — so the vector is computed at
+  // acknowledge, not at raise. Getting this wrong is not subtle in effect and
+  // is completely silent in appearance: with a fixed vector every interrupt
+  // dispatches to the same handler, so vblank runs the timer's routine, the
+  // game's frame flag is never set, and it sits in a three-instruction poll
+  // loop forever looking exactly like a hung CPU.
+  output logic [2:0]  irq_vec,
+  input  logic        irq_ack,
   output logic [2:0]  rom_bank
 );
 
@@ -74,6 +84,14 @@ module m1_glue (
 
   assign irq_n = ~(|irq_status);
 
+  // Lowest set bit, written as an overwriting loop from the top down because
+  // yosys rejects a loop with a break — docs/rtl-conventions.md.
+  always_comb begin
+    irq_vec = 3'd0;
+    for (int i = 7; i >= 0; i--)
+      if (irq_status[i]) irq_vec = 3'(i);
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       irq_status <= '0; irq_mask <= '0; rom_bank <= '0; vbl_d <= 1'b0;
@@ -85,8 +103,13 @@ module m1_glue (
       vbl_d <= vblank;
       if (vblank && !vbl_d && !irq_mask[1]) begin
         irq_status[1] <= 1'b1;
-        last_irq      <= 3'd1;
       end
+
+      // MAME stores the vector inside irq_callback, i.e. when the CPU consumes
+      // it. `last_irq` is what the 0x20 control write clears, so latching it at
+      // raise time would clear whichever source raised most recently rather
+      // than the one just serviced.
+      if (irq_ack) last_irq <= irq_vec;
 
       if (ce) begin
         for (int t = 0; t < 2; t++) begin
@@ -97,7 +120,6 @@ module m1_glue (
                 timer_count[t] <= timer_period[t];   // MAME re-arms on expiry
                 if (!irq_mask[0]) begin
                   irq_status[0] <= 1'b1;
-                  last_irq      <= 3'd0;
                 end
               end else begin
                 timer_count[t] <= timer_count[t] - 16'd1;
