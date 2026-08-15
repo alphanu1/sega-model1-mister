@@ -72,22 +72,36 @@ EOF
 # fails timing on them or wastes effort avoiding a problem that is not real.
 cat > "$stage/Model1.sdc" <<'EOF'
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Sega Model 1 core for MiSTer FPGA — Copyright (C) 2026 alphanu1
+# Sega Model 1 core for MiSTer FPGA - Copyright (C) 2026 alphanu1
+#
+# sys_top.sdc already puts every core PLL output into ONE group, decoupled from
+# the framework's audio and HDMI PLLs:
+#
+#     -group [get_clocks { *|pll|pll_inst|altera_pll_i|*[*].*|divclk}]
+#
+# which is why rtl/m1_pll.sv's instance names have to be exactly pll / pll_inst /
+# altera_pll_i. They were not, once, and the core's clocks fell outside every
+# group and got timed against the audio PLL: -87 ns of setup slack, a clean
+# build, and nothing running on hardware.
+#
+# Being in one group means clk_sys and clk_cpu are timed against EACH OTHER,
+# which is also wrong. They are asynchronous by construction - everything that
+# crosses goes through m1_cdc_port, m1_fetch_bridge, m1_cdc_pulse or a
+# dual-clock RAM - so they are cut here, by their real names.
+#
+# The names are checked rather than assumed: an empty get_clocks silently makes
+# set_clock_groups a no-op, which is exactly how this went wrong the first time.
 
-set core_pll "*|m1_pll:pll|altera_pll:pll_inst|*"
+set sys_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
+set cpu_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[1].*|divclk}]
 
-set clk_sys [get_clocks -nowarn "${core_pll}outclk\[0\]"]
-set clk_cpu [get_clocks -nowarn "${core_pll}outclk\[1\]"]
-
-if {[llength $clk_sys] > 0 && [llength $clk_cpu] > 0} {
-    set_clock_groups -asynchronous -group $clk_sys -group $clk_cpu
+if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
+    set_clock_groups -asynchronous -group $sys_clk -group $cpu_clk
+    post_message "Model1: clk_sys and clk_cpu cut from each other"
+} else {
+    post_message -type error \
+        "Model1: core PLL clocks not found - check the pll/pll_inst/altera_pll_i names"
 }
-
-# The SDRAM clock leaves the chip and comes back through the module; sys_top's
-# own constraints cover the board-level paths, and the controller is
-# source-synchronous on the falling edge.
-set_false_path -from [get_ports {SDRAM_DQ[*]}] -to [all_registers]
-set_false_path -from [all_registers] -to [get_ports {SDRAM_*}]
 EOF
 
 # Project settings: the template's, with the entity and the file list swapped.

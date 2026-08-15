@@ -125,12 +125,14 @@ module emu
   // is the part that has to be per-clock.
   wire rst_n = pll_locked & ~(RESET | status[0] | buttons[1]);
 
-  // 96 MHz to the 16 MHz dot clock the board runs at.
+  // 80 MHz to the 16 MHz dot clock the board runs at. Exactly /5 — the dot
+  // clock sets the refresh rate, so an inexact divider would show up as the
+  // wrong frame rate rather than as anything obviously broken.
   reg [2:0] pixdiv = 0;
   reg       ce_pix = 0;
   always @(posedge clk_sys) begin
-    ce_pix <= (pixdiv == 3'd5);
-    pixdiv <= (pixdiv == 3'd5) ? 3'd0 : pixdiv + 3'd1;
+    ce_pix <= (pixdiv == 3'd4);
+    pixdiv <= (pixdiv == 3'd4) ? 3'd0 : pixdiv + 3'd1;
   end
 
   // ------------------------------------------------------------------ SDRAM

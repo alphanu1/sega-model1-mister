@@ -12,7 +12,7 @@
       regenerate, so the layout keeps one source.
 
       m1_rom_loader does no base-address arithmetic, so this file owns the ROM
-      layout completely. A misplaced region does not fail at load — it fails as
+      layout completely. A misplaced region does not fail at load - it fails as
       a checksum error much later, looking like a CPU bug.
 
       tools/verify_mra.py diffs this against build_rom_image.py's

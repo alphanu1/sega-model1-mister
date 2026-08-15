@@ -152,7 +152,7 @@ def emit(setname, chunks, cross_checked):
             "      independently written packing, so the layout has a second source."
             if cross_checked else
             "NOT CROSS-CHECKED. Generated from MAME's ROM definitions, and every\n"
-            "      file is confirmed present at the size MAME states — but there is no\n"
+            "      file is confirmed present at the size MAME states, but there is no\n"
             "      second description of this set's layout to diff against, and the game\n"
             "      has never been run. Treat a bad screen here as this file's fault\n"
             "      before the core's.")
@@ -172,7 +172,7 @@ def emit(setname, chunks, cross_checked):
         '      regenerate, so the layout keeps one source.',
         '',
         '      m1_rom_loader does no base-address arithmetic, so this file owns the ROM',
-        '      layout completely. A misplaced region does not fail at load — it fails as',
+        '      layout completely. A misplaced region does not fail at load - it fails as',
         '      a checksum error much later, looking like a CPU bug.',
         '',
         f'      {note}',

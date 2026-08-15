@@ -29,7 +29,7 @@ if {[llength [get_ports -nowarn {clk}]] > 0} {
 # the domains. Those paths are handled by the synchronisers in m1_cdc_port,
 # m1_cdc_pulse and the dual-clock RAMs, and must not be timed as if synchronous.
 if {[llength [get_ports -nowarn {clk_sys}]] > 0} {
-    create_clock -name clk_sys -period 10.417 [get_ports {clk_sys}]
+    create_clock -name clk_sys -period 12.500 [get_ports {clk_sys}]
 }
 if {[llength [get_ports -nowarn {clk_cpu}]] > 0} {
     create_clock -name clk_cpu -period 52.083 [get_ports {clk_cpu}]
