@@ -417,7 +417,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf
+.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -500,6 +500,21 @@ m1_frame:
 	./build/m1frame/m1frame
 
 FRAME_CYCLES ?= 120000000
+
+# The MRA owns the ROM layout completely, because m1_rom_loader deliberately
+# does no base-address arithmetic. That makes a misplaced region impossible to
+# cause in RTL and easy to cause in XML — and it does not fail at load time, it
+# fails as a checksum error much later on hardware, looking like a CPU bug.
+#
+# So it is checked rather than trusted: expand the MRA and diff it against the
+# packed stream the boot and frame tests actually run against. Needs a ROM set,
+# which is never in the repository.
+#
+#   make verify_mra ROMZIP=~/roms/vr.zip
+ROMZIP ?= $(HOME)/roms/vr.zip
+verify_mra:
+	@test -f "$(ROMZIP)" || { echo "set ROMZIP=<path to vr.zip>"; exit 1; }
+	python3 tools/verify_mra.py "mra/Virtua Racing.mra" "$(ROMZIP)" vr
 
 # The real core: sys_top plus emu, compiled to a .rbf for the DE10-Nano.
 #

@@ -1,0 +1,82 @@
+<misterromdescription>
+    <name>Virtua Racing</name>
+    <setname>vr</setname>
+    <rbf>Model1</rbf>
+    <mameversion>0261</mameversion>
+    <year>1992</year>
+    <manufacturer>Sega</manufacturer>
+    <category>Driving</category>
+
+    <!--
+      The ROM stream m1_rom_loader expects.
+
+      The loader does NO base-address arithmetic on purpose: this file owns the
+      layout completely, so a region can only be misplaced by editing this file
+      rather than by two offsets computed from each other drifting apart. The
+      cost of that decision is that a mistake here does not fail at load time —
+      it fails as a ROM checksum error much later, looking like a CPU bug.
+
+      So this is checked rather than trusted. tools/verify_mra.py expands it and
+      diffs the result against tools/build_rom_image.py's packed stream, which
+      is the same layout the boot test and the frame test run against.
+
+      The V60's address space is sparse — MAME's maincpu spans 19.5 MB holding
+      5.5 MB — and rtl/io/m1_decode.sv maps it onto the packed layout below:
+
+        V60 0x200000-0x2fffff  ROMX, the program      -> stream 0x000000
+        V60 0xf80000-0xffffff  ROM0, the boot vector  -> stream 0x100000
+        V60 0x100000-0x1fffff  banked data, +bank     -> stream 0x180000
+
+      NOT INCLUDED YET, deliberately: the TGP program ROM (vr-tgp.bin, which the
+      loader routes to TGP program memory from stream offset 0x1F00000), the
+      polygon and TGP data ROMs, and the sound board's 68000 and MultiPCM
+      samples. None of those hardware blocks exists in the core yet, so sending
+      them would only slow the load. They belong here as M2 and M4 land.
+    -->
+    <rom index="0" zip="vr.zip" md5="none">
+
+        <!-- stream 0x000000, 1 MB: ROMX, the V60 program.
+             ROM_LOAD16_BYTE, so the .14 half supplies even bytes. -->
+        <interleave output="16">
+            <part name="epr-14882.14" map="01"/>
+            <part name="epr-14883.15" map="10"/>
+        </interleave>
+
+        <!-- stream 0x100000: ROM0 is a 512 KB window holding two 128 KB images
+             at its top, so the first 256 KB of it is genuinely empty. The gap
+             is explicit rather than implied — the loader writes what it is
+             sent, and a missing pad would slide the boot vector. -->
+        <part repeat="262144">FF</part>
+        <part name="epr-14878a.4"/>
+        <part name="epr-14879a.5"/>
+
+        <!-- stream 0x180000, 4 MB: the banked data ROMs, one bank per 1 MB.
+             The boot ROM checksums these, so they are needed even though
+             nothing reads them until the game runs. -->
+        <interleave output="16">
+            <part name="mpr-14880.6" map="01"/>
+            <part name="mpr-14881.7" map="10"/>
+        </interleave>
+        <interleave output="16">
+            <part name="mpr-14884.8" map="01"/>
+            <part name="mpr-14885.9" map="10"/>
+        </interleave>
+        <interleave output="16">
+            <part name="mpr-14886.10" map="01"/>
+            <part name="mpr-14887.11" map="10"/>
+        </interleave>
+        <interleave output="16">
+            <part name="mpr-14888.12" map="01"/>
+            <part name="mpr-14889.13" map="10"/>
+        </interleave>
+
+        <!-- stream 0x580000, 512 KB: the tail of the banked window. Empty on
+             this set, and sent so the region reads as an unpopulated ROM
+             rather than as whatever the SDRAM powered up holding. -->
+        <part repeat="524288">FF</part>
+    </rom>
+
+    <nvram index="255" size="256"/>
+
+    <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>
+</misterromdescription>

@@ -56,21 +56,15 @@ def load(zf, name):
                 return zf.read(n)
         raise SystemExit(f"missing {name} in the archive")
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('game', choices=sorted(SETS))
-    ap.add_argument('zip')
-    ap.add_argument('-o', '--out', default='build/rom')
-    ap.add_argument('-w', '--words', type=lambda x: int(x,0), default=0x300000,
-                    help='16-bit words of the packed image to emit; the default '
-                         'covers ROMX, ROM0 and the banked data ROMs, which the '
-                         'boot ROM checksums')
-    args = ap.parse_args()
+def pack_stream(zip_path, game):
+    """The packed ioctl stream, exactly as m1_rom_loader expects to receive it.
 
-    # maincpu as MAME lays it out, sparse, then packed below.
+    One definition, used by both the simulation preload and tools/verify_mra.py.
+    If the MRA and this ever disagree the core boots in simulation and not on
+    the board, which is the worst way to find out."""
     maincpu = bytearray(b'\xff' * 0x1400000)
-    with zipfile.ZipFile(args.zip) as zf:
-        for names, off in SETS[args.game]:
+    with zipfile.ZipFile(zip_path) as zf:
+        for names, off in SETS[game]:
             if len(names) == 2:
                 a, b = load(zf, names[0]), load(zf, names[1])
                 inter = bytearray(len(a) * 2)
@@ -88,6 +82,21 @@ def main():
         src = 0x1000000 + bank * 0x100000
         dst = 0x180000  + bank * 0x100000
         stream[dst:dst+0x100000] = maincpu[src:src+0x100000]
+    return stream
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('game', choices=sorted(SETS))
+    ap.add_argument('zip')
+    ap.add_argument('-o', '--out', default='build/rom')
+    ap.add_argument('-w', '--words', type=lambda x: int(x,0), default=0x300000,
+                    help='16-bit words of the packed image to emit; the default '
+                         'covers ROMX, ROM0 and the banked data ROMs, which the '
+                         'boot ROM checksums')
+    args = ap.parse_args()
+
+    stream = pack_stream(args.zip, args.game)
 
     os.makedirs(args.out, exist_ok=True)
     # Simulation preload. Only ROMX and ROM0 by default — the program and the
@@ -105,4 +114,6 @@ def main():
     print("reset vector 0xfffffff0 -> stream 0x%06x -> bytes %s" %
           (vec, ' '.join('%02x' % b for b in stream[vec:vec+8])))
 
-main()
+# Guarded so tools/verify_mra.py can import pack_stream without running the CLI.
+if __name__ == '__main__':
+    main()
