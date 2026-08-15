@@ -15,7 +15,14 @@ if {[llength [get_ports -nowarn {clk}]] > 0} {
 }
 
 # The integrated design has two clocks and they are genuinely asynchronous:
-# 96 MHz for memory, ROM loading and video, 24 MHz for the V60. Constraining
+# 96 MHz for memory, ROM loading and video, and 19.2 MHz for the V60.
+#
+# 19.2 rather than 24 because the design measured 23.81 MHz on clk_cpu once it
+# was actually constrained, so 24 misses — by under 1%, but it misses. 96/5 is
+# a clean divide from the same VCO, sits well clear of that ceiling, and is
+# still above the ~17.1 MHz the CPI analysis says is needed to match a 16 MHz
+# part. Spending S32_V60_NO_FP would move the ceiling to ~45 MHz and make this
+# a non-question; it is not spent yet. Constraining
 # only a port called "clk" left this design with NO clock constraint at all —
 # the Fmax summary still reports per-clock figures, so the numbers were real,
 # but nothing told the fitter what to aim for and nothing cut the paths between
@@ -25,7 +32,7 @@ if {[llength [get_ports -nowarn {clk_sys}]] > 0} {
     create_clock -name clk_sys -period 10.417 [get_ports {clk_sys}]
 }
 if {[llength [get_ports -nowarn {clk_cpu}]] > 0} {
-    create_clock -name clk_cpu -period 41.667 [get_ports {clk_cpu}]
+    create_clock -name clk_cpu -period 52.083 [get_ports {clk_cpu}]
 }
 if {[llength [get_clocks -nowarn {clk_sys}]] > 0 && [llength [get_clocks -nowarn {clk_cpu}]] > 0} {
     set_clock_groups -asynchronous -group {clk_sys} -group {clk_cpu}
