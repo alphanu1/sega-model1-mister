@@ -40,7 +40,27 @@
 module tb_m1_frame #(
     parameter integer RUN_CYCLES = 120000000,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
-    parameter string  PPMOUT     = "build/frame.ppm"
+    parameter string  PPMOUT     = "build/frame.ppm",
+
+    // HOW THE ROM GETS INTO MEMORY, WHICH IS NOT A DETAIL
+    //
+    // DOWNLOAD=0 pokes the image straight into the SDRAM model before the run.
+    // That is fast and it isolates the CPU and video path, but it means the
+    // memory is already correct at the instant the V60 is released — a
+    // condition hardware never provides.
+    //
+    // DOWNLOAD=1 streams the same image through ioctl into m1_rom_loader,
+    // which writes it to SDRAM through the controller's download port, exactly
+    // as MiSTer does. Everything unwritten reads 0xFFFF rather than zero, so a
+    // CPU that starts early reads what an empty SDRAM really looks like
+    // instead of a convenient field of zeros.
+    parameter bit     DOWNLOAD   = 1,
+
+    // Which signal releases the V60. HOLD_CPU=1 is m1_rom_loader's own
+    // rom_loaded — asserted when the stream has ended AND the write buffer has
+    // drained. HOLD_CPU=0 is the SDRAM controller's `ready`, which only means
+    // JEDEC bring-up finished and is true long before any ROM has arrived.
+    parameter bit     HOLD_CPU   = 1
 );
 
 localparam integer PRELOAD_WORDS = 32'h300000;
@@ -95,6 +115,17 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
 assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
 assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
 
+// ROM download, wired exactly as Model1.sv wires it.
+wire        ioctl_wait;
+reg         ioctl_download = 0, ioctl_wr = 0;
+reg  [26:0] ioctl_addr = 0;
+reg  [15:0] ioctl_dout = 0;
+wire        ldr_wr_req, ldr_wr_ack;
+wire [24:1] ldr_wr_addr;
+wire [15:0] ldr_wr_din;
+wire  [1:0] ldr_wr_be;
+wire        loader_done;
+
 wire        cke, cs_n, ras_n, cas_n, we_n;
 wire [1:0]  ba, dqm;
 wire [12:0] a;
@@ -108,13 +139,18 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
     .sd_we_n(we_n), .sd_ba(ba), .sd_a(a), .sd_dqm(dqm),
     .sd_dq_o(dq_c2m), .sd_dq_oe(dq_oe_c), .sd_dq_i(dq_m2c),
-    .wr_req(1'b0), .wr_addr(24'd0), .wr_din(16'd0), .wr_be(2'b11), .wr_ack(),
+    .wr_req(ldr_wr_req), .wr_addr(ldr_wr_addr), .wr_din(ldr_wr_din),
+    .wr_be(ldr_wr_be), .wr_ack(ldr_wr_ack),
     .p_req(p_req), .p_we(p_we), .p_addr(p_addr), .p_din(p_din), .p_be(p_be),
     .p_dout(p_dout), .p_ack(p_ack),
     .dbg_req(), .dbg_grant()
 );
 
-sdram_model #(.COL_BITS(9)) device (
+// Unwritten memory reads all ones when the ROM has to arrive over ioctl, which
+// is what an SDRAM the loader has not reached actually looks like. With a
+// preloaded image every location is written before the run, so the default
+// never shows.
+sdram_model #(.COL_BITS(9), .DEFAULT_DATA(DOWNLOAD ? 16'hFFFF : 16'h0000)) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
     .we_n(we_n), .ba(ba), .a(a), .dqm(dqm),
     .dq_i(dq_c2m), .dq_oe_i(dq_oe_c), .dq_o(dq_m2c), .dq_oe_o(dq_oe_m),
@@ -128,10 +164,17 @@ wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 
+// mem_rst_n is the memory subsystem's own reset and must not follow the game
+// reset: the loader holds ioctl_wait until SDRAM is ready, so a loader held in
+// reset stalls the host that would release it. Model1.sv splits them for the
+// same reason.
+wire cpu_release = DOWNLOAD ? (HOLD_CPU ? (mem_ready & loader_done) : mem_ready)
+                            : mem_ready;
+
 m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
-    .rst_n(rst_n), .rom_loaded(mem_ready),
+    .rst_n(rst_n), .mem_rst_n(rst_n), .rom_loaded(cpu_release),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -143,10 +186,10 @@ m1_integrated core (
     .char_req(char_req), .char_addr(char_addr),
     .char_data(p_dout[1][31:0]), .char_ack(p_ack[1]),
 
-    .ioctl_download(1'b0), .ioctl_index(16'd0), .ioctl_wr(1'b0),
-    .ioctl_addr(27'd0), .ioctl_dout(16'd0), .ioctl_wait(),
-    .ldr_wr_req(), .ldr_wr_addr(), .ldr_wr_din(), .ldr_wr_be(),
-    .ldr_wr_ack(1'b0),
+    .ioctl_download(ioctl_download), .ioctl_index(16'd0), .ioctl_wr(ioctl_wr),
+    .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout), .ioctl_wait(ioctl_wait),
+    .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
+    .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
     .tgp_wr(), .tgp_addr(), .tgp_din(),
 
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
@@ -158,17 +201,55 @@ m1_integrated core (
 
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
-    .rom_loaded_o(), .dbg_fetches()
+    .rom_loaded_o(loader_done), .dbg_fetches()
 );
 
-// ----------------------------------------------------------------- preload
+// ----------------------------------------------------- getting the ROM in
 reg [15:0] rom [0:PRELOAD_WORDS-1];
 integer i;
 initial begin
     $readmemh(ROMHEX, rom);
-    for (i = 0; i < PRELOAD_WORDS; i = i + 1) device.mem[i] = rom[i];
-    $display("preloaded %0d words", PRELOAD_WORDS);
+    if (!DOWNLOAD) begin
+        for (i = 0; i < PRELOAD_WORDS; i = i + 1) device.mem[i] = rom[i];
+        $display("preloaded %0d words", PRELOAD_WORDS);
+    end else begin
+        // Nothing to do: the model's storage is sparse and DEFAULT_DATA above
+        // already makes every location the loader has not reached read as all
+        // ones.
+        $display("ROM will arrive over ioctl; unwritten SDRAM reads FFFF");
+    end
 end
+
+// The HPS side of the download. hps_io is built WIDE, so this is one 16-bit
+// word per write with ioctl_addr counting bytes.
+//
+// ioctl_wait IS OBSERVED, and that is the point of streaming it here rather
+// than poking memory: the loader's flow control, the write port's one-at-a-time
+// contract and the arbiter that the video path is also using are all in the
+// path, at the same time, exactly as on hardware.
+integer dl_words = 0;
+task automatic run_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < PRELOAD_WORDS; w = w + 1) begin
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= rom[w];
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            dl_words    = dl_words + 1;
+            // The host does not issue back to back; one idle cycle between
+            // words is the closest simple model of it.
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        $display("download: %0d words streamed", dl_words);
+    end
+endtask
 
 // ------------------------------------------------------------ frame capture
 localparam integer W = 496;
@@ -269,7 +350,17 @@ initial begin
     repeat (8) @(posedge clk);
     rst_n = 1;
     while (!mem_ready) @(posedge clk);
-    $display("SDRAM ready, releasing the V60");
+    $display("SDRAM ready (mem_ready), HOLD_CPU=%0d", HOLD_CPU);
+
+    if (DOWNLOAD) begin
+        run_download();
+        while (!loader_done) @(posedge clk);
+        $display("loader reports the ROM is in memory");
+        // With HOLD_CPU=0 the V60 came out of reset back at mem_ready and has
+        // been executing an SDRAM full of FFFF for the whole download. Nothing
+        // resets it now, which is the point of the experiment.
+        $display("V60 pc at end of download: %06h", dbg_pc);
+    end
 
     for (i = 0; i < 65536; i = i + 1) begin pal_seen[i] = 0; tram_seen[i] = 0; end
     for (i = 0; i < 4096; i = i + 1) paddr_seen[i] = 0;

@@ -75,7 +75,17 @@ module sdram_model #(
   parameter int unsigned REFI_SLACK = 9,
 
   parameter bit CHECK_REFRESH = 1'b1,
-  parameter int unsigned MAX_REPORT = 20
+  parameter int unsigned MAX_REPORT = 20,
+
+  // What a location nobody has written reads back as.
+  //
+  // Zero is the convenient answer and the misleading one: zero is a legal
+  // instruction, a legal tile number and a black palette entry, so a core let
+  // loose on empty memory looks far healthier here than it does on a board.
+  // Storage is sparse and cannot be pre-filled cheaply, so the default comes
+  // from a parameter instead. Left at zero so every existing harness keeps the
+  // numbers it was baselined with.
+  parameter logic [DQ_BITS-1:0] DEFAULT_DATA = '0
 ) (
   input  logic                clk,
   input  logic                cke,
@@ -294,10 +304,10 @@ module sdram_model #(
               // exact off-by-one has cost this project five debugging sessions
               // already and it always looks like broken hardware.
               rd_v[CL-1] <= 1'b1;
-              rd_d[CL-1] <= mem.exists(adr) ? mem[adr] : {DQ_BITS{1'b0}};
+              rd_d[CL-1] <= mem.exists(adr) ? mem[adr] : DEFAULT_DATA;
               reads_served <= reads_served + 1;
             end else begin
-              cur = mem.exists(adr) ? mem[adr] : {DQ_BITS{1'b0}};
+              cur = mem.exists(adr) ? mem[adr] : DEFAULT_DATA;
               // DQM is active-high mask: a set bit suppresses that byte.
               if (!dqm[0]) cur[7:0]  = dq_i[7:0];
               if (!dqm[1]) cur[15:8] = dq_i[15:8];
