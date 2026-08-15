@@ -55,7 +55,19 @@ module m1_mainram (
   input  logic        sel_dlist1, sel_colxlat, sel_dpram,
   output logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q,
 
-  // Video side
+  // Video side. Its own clock: the video path runs in the fast domain and the
+  // CPU in the slow one, and these two arrays are where the domains meet.
+  // Written by the CPU, read by the renderer, never the other way, so the
+  // crossing needs no handshake — the renderer sees whatever the CPU last
+  // wrote, which is exactly what a tilemap read off a shared bus does on the
+  // real board.
+  //
+  // Dual-clock inference measured before it was used: 32768x8 written on one
+  // clock and read on another gives 32 M10K and 37 ALM standalone. Two
+  // always_ff blocks are REQUIRED here — one per clock — which is the opposite
+  // of the rule for the dpram below, where two blocks on one array killed
+  // inference. The difference is one write port versus two.
+  input  logic        vid_clk,
   input  logic [14:0] vid_tram_addr,
   output logic [15:0] vid_tram_data,
   input  logic [11:0] vid_pal_addr,
@@ -86,12 +98,14 @@ module m1_mainram (
     tram_q <= {tram_c_hi[addr[15:1]], tram_c_lo[addr[15:1]]};
   end
 
-  //                        video side
+  //                        video side, read in the video clock domain
   (* ramstyle = "M10K" *) logic [7:0] tram_v_lo [32768];
   (* ramstyle = "M10K" *) logic [7:0] tram_v_hi [32768];
   always_ff @(posedge clk) begin
     if (tram_we && be[0]) tram_v_lo[addr[15:1]] <= wdata[7:0];
     if (tram_we && be[1]) tram_v_hi[addr[15:1]] <= wdata[15:8];
+  end
+  always_ff @(posedge vid_clk) begin
     vid_tram_data <= {tram_v_hi[vid_tram_addr], tram_v_lo[vid_tram_addr]};
   end
 
@@ -104,12 +118,14 @@ module m1_mainram (
     pram_q <= {pram_c_hi[addr[13:1]], pram_c_lo[addr[13:1]]};
   end
 
-  //                        video side
+  //                        video side, read in the video clock domain
   (* ramstyle = "M10K" *) logic [7:0] pram_v_lo [8192];
   (* ramstyle = "M10K" *) logic [7:0] pram_v_hi [8192];
   always_ff @(posedge clk) begin
     if (pram_we && be[0]) pram_v_lo[addr[13:1]] <= wdata[7:0];
     if (pram_we && be[1]) pram_v_hi[addr[13:1]] <= wdata[15:8];
+  end
+  always_ff @(posedge vid_clk) begin
     vid_pal_data <= {pram_v_hi[{1'b0, vid_pal_addr}], pram_v_lo[{1'b0, vid_pal_addr}]};
   end
 

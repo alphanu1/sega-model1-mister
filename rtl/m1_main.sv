@@ -92,7 +92,9 @@ module m1_main #(
   input  logic [63:0] if_data,
   input  logic        if_ack,
 
-  // Tile RAM, second port for the video renderer.
+  // Tile RAM and palette, second ports for the video renderer. These run on the
+  // video clock; see m1_mainram.sv for why the crossing needs no handshake.
+  input  logic        vid_clk,
   input  logic [14:0] vid_tram_addr,
   output logic [15:0] vid_tram_data,
 
@@ -226,6 +228,7 @@ module m1_main #(
     .sel_colxlat(sel_colxlat), .sel_dpram(sel_dpram),
     .tram_q(tram_q), .pram_q(pram_q), .dl0_q(dl0_q), .dl1_q(dl1_q),
     .cxlat_q(cxlat_q), .dpram_q(dpram_q),
+    .vid_clk(vid_clk),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
     .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack)

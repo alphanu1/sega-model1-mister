@@ -106,7 +106,7 @@ module m1_integrated (
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
     .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),
     .if_data(if_data), .if_ack(if_ack),
-    .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
+    .vid_clk(clk), .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
     .vblank_irq(vblank_irq),
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
