@@ -505,6 +505,28 @@ The responder lives in the boot testbench, deliberately, as an experiment
 rather than an implementation. What it establishes is what the RTL has to do;
 building it properly comes after the trace says what the V60 asks for next.
 
+#### What the V60 actually reads back, 2026-08-15
+
+With the handshake answered, the trace was pointed at reads rather than writes.
+Across the whole run the V60 reads exactly one I/O address more than twice:
+0xc00040, the status flag, forty times. Nothing else in the region is touched
+meaningfully.
+
+**It is not consuming input data.** For the boot phase reached so far the
+handshake is the entire interface, so a small responder in RTL covers it and
+the 315-5338A is not needed yet.
+
+That is a bounded claim, not a conclusion about the I/O board. Execution is at
+fe143d and has not reached attract mode or the service menu, which are exactly
+where controls, coin, service and DIP switches get read. What the evidence
+supports is deferring the tv80-versus-HLE decision again, on the grounds that
+nothing yet needs the Z80 — not that nothing will.
+
+The next observation that would move it: run far enough to reach attract mode
+and re-read this trace. If input offsets start being polled, their addresses
+name what the responder has to supply, and whether that is small enough to
+write directly or large enough to want the real chip.
+
 #### Both options cost more than first estimated
 
 - **HLE** (~300 ALM) needs the protocol, which exists only inside the Z80 ROM.

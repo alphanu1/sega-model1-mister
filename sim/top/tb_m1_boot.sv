@@ -236,6 +236,9 @@ integer wr_data [0:23];
 integer wr_be   [0:23];
 integer wr_cyc  [0:23];
 integer nwr = 0;
+integer rd_addr [0:31];
+integer rd_cnt  [0:31];
+integer nrd = 0;
 integer nexact = 0;
 integer hi, j, found;
 reg [23:1] last_addr_seen = 0;
@@ -245,7 +248,8 @@ always @(posedge clk) begin
     if (!rst_n) begin
         for (hi = 0; hi < 256; hi = hi + 1) hist[hi] = 0;
         for (hi = 0; hi < 32; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; exact_wr[hi]=0; end
-        nwr = 0;
+        nwr = 0; nrd = 0;
+        for (hi = 0; hi < 32; hi = hi + 1) begin rd_addr[hi]=0; rd_cnt[hi]=0; end
         nexact = 0;
     end else begin
         m_req_d <= main.m_req;
@@ -260,6 +264,23 @@ always @(posedge clk) begin
             // polls one status byte; the command's CONTENT is what says what it
             // is asking for, and guessing a reply without reading the request
             // would be exactly the poking-until-it-boots this project avoids.
+            // Reads matter now too. Once the handshake stops blocking, the
+            // question is what the V60 READS out of the I/O board — controls,
+            // DIP switches, coin and service inputs — because that decides
+            // whether a small responder covers M1 or whether the real
+            // 315-5338A has to exist behind it.
+            if (main.m_addr[23:16] == WATCH_PAGE && !main.m_we && nrd < 32) begin
+                found = 0;
+                for (j = 0; j < nrd; j = j + 1)
+                    if (rd_addr[j] == {main.m_addr, 1'b0}) begin
+                        rd_cnt[j] = rd_cnt[j] + 1; found = 1;
+                    end
+                if (!found) begin
+                    rd_addr[nrd] = {main.m_addr, 1'b0};
+                    rd_cnt[nrd]  = 1;
+                    nrd = nrd + 1;
+                end
+            end
             if (main.m_addr[23:16] == WATCH_PAGE && main.m_we && nwr < 24) begin
                 wr_addr[nwr] = {main.m_addr, 1'b0};
                 wr_data[nwr] = main.m_wdata;
@@ -339,6 +360,11 @@ initial begin
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)
             $display("        %02h0000  %0d", i, hist[i]);
+    $display("BOOT: reads from page %02h0000 (%0d distinct), busiest first:",
+             WATCH_PAGE, nrd);
+    for (i = 0; i < nrd; i = i + 1)
+        if (rd_cnt[i] > 2)
+            $display("        %06h  %0d", rd_addr[i], rd_cnt[i]);
     $display("BOOT: writes to page %02h0000, in order:", WATCH_PAGE);
     for (i = 0; i < nwr; i = i + 1)
         $display("        cyc %-10d %06h  be=%b  data=%04h", wr_cyc[i],
