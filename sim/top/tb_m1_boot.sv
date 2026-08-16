@@ -262,6 +262,15 @@ integer nwr = 0;
 integer rd_addr [0:31];
 integer rd_cnt  [0:31];
 integer nrd = 0;
+integer nrdlog = 0;
+reg        pend_rd = 0;
+reg [23:0] pend_addr = 0;
+reg  [1:0] pend_be = 0;
+reg  [1:0] rdlog_be [0:39];
+integer    rdlog_cyc [0:39];
+reg [23:0] rdlog_addr [0:39];
+reg  [7:0] rdlog_data [0:39];
+reg [23:0] rdlog_pc   [0:39];
 integer nexact = 0;
 integer hi, j, found;
 reg [23:1] last_addr_seen = 0;
@@ -276,7 +285,43 @@ always @(posedge clk) begin
         nexact = 0;
     end else begin
         m_req_d <= main.m_req;
+
+        // WHAT CAME BACK, AND WHO ASKED.
+        //
+        // Counting reads says the V60 polls the flag 74 times and the window
+        // three; it does not say what value came back, which is the actual
+        // question — a program polling a byte that never changes is waiting to
+        // be told something.
+        //
+        // The address is only valid at the REQUEST edge and the data only at
+        // the ACKNOWLEDGE, which is the whole point of v60_bus.sv's handshake:
+        // qualifying both on the same instant logs nothing at all, which is
+        // what the first version of this probe did.
+        if (pend_rd && main.m_ack) begin
+            if (nrdlog < 40) begin
+                // THE LANE MATTERS. v60_bus.sv works in 16-bit cycles and m_be
+                // says which half carries the byte: an access on the high lane
+                // returns m_rdata[15:8], and the byte address is odd. Logging
+                // [7:0] with bit 0 forced to zero — which the first version did
+                // — reports the wrong address AND the wrong half, and every
+                // high-lane read reads as 00.
+                rdlog_addr[nrdlog] = {pend_addr[23:1], pend_be[1] & ~pend_be[0]};
+                rdlog_data[nrdlog] = pend_be[0] ? main.m_rdata[7:0]
+                                                : main.m_rdata[15:8];
+                rdlog_be[nrdlog]   = pend_be;
+                rdlog_cyc[nrdlog]  = cycles;
+                rdlog_pc[nrdlog]   = dbg_pc;
+                nrdlog = nrdlog + 1;
+            end
+            pend_rd <= 1'b0;
+        end
+
         if (main.m_req && !m_req_d) begin
+            if (main.m_addr[23:16] == WATCH_PAGE && !main.m_we) begin
+                pend_rd   <= 1'b1;
+                pend_addr <= {main.m_addr, 1'b0};
+                pend_be   <= main.m_be;
+            end
             hist[main.m_addr[23:16]] = hist[main.m_addr[23:16]] + 1;
             // Exact addresses within one page of interest. A page histogram
             // says which device the CPU is talking to; this says which
@@ -427,6 +472,13 @@ initial begin
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)
             $display("        %02h0000  %0d", i, hist[i]);
+    $display("BOOT: first %0d reads in page %02h0000, with data and PC:",
+             nrdlog, WATCH_PAGE);
+    for (i = 0; i < nrdlog; i = i + 1)
+        $display("        cyc %9d  %06h -> %02h  be=%02b  pc=%06h",
+                 rdlog_cyc[i], rdlog_addr[i], rdlog_data[i],
+                 rdlog_be[i], rdlog_pc[i]);
+
     $display("BOOT: reads from page %02h0000 (%0d distinct), busiest first:",
              WATCH_PAGE, nrd);
     for (i = 0; i < nrd; i = i + 1)

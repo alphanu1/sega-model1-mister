@@ -252,6 +252,20 @@ buffer wants about 51 of them.
 
 ### 1. M2 — put the TGP in the design
 
+**The core is done; the integration has not started.** Worth stating precisely,
+because "the TGP is not done" reads as though the files are missing and they are
+not. `rtl/tgp/` holds twelve modules — ALU, AGU, sequencer, register file,
+memory, decoder, transfer unit and three FP units — fuzz-verified against MAME at
+millions of cases per unit and area-measured at 2,554 ALM / 72 MHz.
+
+What is missing is everything around it: `grep` finds `mb86233_core` referenced
+only by its own file. No mailboxes, no copro glue, no command or result FIFOs, no
+microcode load, no polygon capture. The engine is built and on the bench, never
+bolted into the car.
+
+Note also that M0's exit criterion 2 is still owed: the lockstep that exists runs
+*generated* instructions against a reference, not real microcode.
+
 The MB86233 is built, fuzz-verified against MAME and area-measured, and it is
 **instantiated nowhere**. Nothing renders in 3D until it is, and the rasterizer
 has nothing to draw until geometry exists.
@@ -263,7 +277,35 @@ while the blocks do not exist), and the polygon list captured off the output
 FIFO to diff against MAME frame by frame — the verification model in `CLAUDE.md`
 names that as the geometry oracle.
 
-### 2. The I/O board — make it playable
+### 2. The I/O board — make it playable  (IN PROGRESS)
+
+**Status, 2026-08-16.** The controls are wired, the publisher works, and the
+game still does not see a button. `docs/io-board.md` has the full trail; the
+short version:
+
+- All twelve Virtua Racing controls come off `hps_io` now, with test and service
+  also on OSD switches. Bit order is MAME's `INPUT_PORTS( vr )`.
+- `m1_ioboard` sweeps eight control bytes into the shared RAM the way the board
+  does, at roughly the board's own rate, and no longer regresses anything —
+  `pc=fe143d`, 62 handshake replies, the menu identical to baseline.
+- **The game reads none of it.** Over 150 M cycles the V60 touches 32 DPRAM
+  addresses and not one is where the sweep writes.
+
+What the tracing established instead is that this game uses a **mailbox**: the
+V60 leaves a request at DPRAM `0x100`, raises a flag at `0x20`, and expects an
+answer in the same window. We clear the flag and write no answer, so 74 flag
+polls produce three empty sweeps.
+
+`tools/z80dasm.py` exists for this — a table-driven Z80 disassembler with a
+27-case self-test, no dependencies. It found the board's access primitives and
+its addressing convention (BC holds the DPRAM address, B low, C high).
+
+**What is owed is the content**, not the mechanism: decode the request payload
+and the response the Z80 builds for it, then write that response. Three
+experiments have each disproved a plausible layout, so prefer the experiment
+that can falsify the next guess.
+
+
 
 **Nothing the player does reaches the core.** Two separate gaps, and the first
 is trivial:

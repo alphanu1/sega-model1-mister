@@ -267,6 +267,56 @@ doorbell in both directions.
 The sweep stays enabled. It costs nothing, it is what the board does, and
 attract mode may yet read it.
 
+## Experiment 3: it is a mailbox, and we never answer it
+
+Instrumenting the V60's reads — data and PC, with the byte lane the bus actually
+used — makes the exchange legible. `v60_bus.sv` is the thing to read first here:
+the address is valid at the request edge and the data only at the acknowledge,
+and qualifying both on the same instant logs nothing at all, which is what the
+first two versions of this probe did.
+
+    cyc 38203089   c00040 -> 00  be=01  pc=fe022c     poll the flag
+    cyc 38205425   c00200 -> 00  be=11  pc=fe08f2     block-read the window
+    ...            (64+ bytes, every one from that same PC)
+    cyc 38347601   c00200 <- 53                       write "SEGA" + payload
+
+Three things this settles:
+
+- **The window read is one instruction.** Every read carries the same PC, so it
+  is a block move sweeping 64+ bytes, not a poll. "Three reads each" in the
+  address histogram is three *passes*.
+- **Reading zeros is correct, not a fault.** The read at cyc 38.2 M precedes the
+  write at cyc 38.3 M by 142,000 cycles. The V60 checks the window for an answer
+  *before* leaving its request. There is no DPRAM bug.
+- **Accesses are 16-bit, `be=11`.** Not the byte lanes a 2k x 8 MB8421 would
+  suggest, which is worth knowing before assuming a layout.
+
+So the shape is a **mailbox**: the V60 leaves a request in the window, raises the
+flag at `0x20`, and expects an answer left in the same place. `m1_ioboard` clears
+the doorbell and writes no answer, which is exactly why 74 flag polls yield only
+three sweeps.
+
+### The board's own side of it
+
+From the ROM, the Z80's reads of the shared RAM are at `0x14`, `0x15`, and
+`0x1a`-`0x1c`. `0x1a`-`0x1d` is where the V60 writes `"SEGA"`, so the board is
+polling for the V60's signature — the handshake seen from the other end. The
+exchange therefore lives around `0x14`-`0x20` as well as the `0x100` window, and
+the low-DPRAM sweep is a third, separate thing.
+
+### What is owed
+
+Decode the request payload the trace captured — `1c 82 01 00 3e 9d ff 00 ...` at
+`0x100` — and the response the Z80 builds for it, then write that response from
+`m1_ioboard`. The primitives are known, the addressing convention is known
+(BC holds the DPRAM address, B low and C high), and the call sites are
+enumerated. What is not known is the *content*.
+
+**Three experiments have now each disproved a plausible layout.** The pattern is
+that reading the ROM says what the Z80 does, and the trace says what the V60
+does, and only where they agree is anything established. Prefer the experiment
+that can falsify the next guess over the one that would confirm it.
+
 ## Revisit the LLE when the resource count is final
 
 D9 chose the HLE against a budget that is still estimates — sound at 5,000-7,000
