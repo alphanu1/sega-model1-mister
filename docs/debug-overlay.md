@@ -57,8 +57,23 @@ value, most significant first.
 | `0A` | Fetch 5 data | `FFEFB2` on a healthy boot. |
 | `0B` | Flags and I/O replies | Top byte after the tag: bit 5 loader overflow, bit 4 CPU halted, bit 3 FP trap, bit 2 ROM ready, bit 1 memory ready, bit 0 downloading. Low four digits are the I/O board's reply count, which should climb. |
 | `0C` | Fetch deadline misses, then last line's worst-layer fetch count | Misses are cumulative, **not a rate** — reading them as one is a mistake this project has already made. Watch whether the number is still moving. |
-| `0D` | Frames per ten seconds, BCD | `0575` reads as **57.5 Hz**, which is what MAME's timing gives. |
-| `0E` | Frame period in `clk_sys` cycles | Nominally `153A40` = 1,390,720: 656 x 424 dots at five cycles a dot. Updates every frame, so a drifting rate or a wrong-length frame shows immediately instead of being averaged away. |
+| `0D` | Frames per ten seconds, **BCD** | Read the digits as decimal and move the point one place: `0576` is **57.6 Hz**. |
+| `0E` | Frame period in `clk_sys` cycles, **hex** | `80000000 / value` = Hz. `15387F` = 1,390,719 → **57.52 Hz**. Nominal is `153A40` = 1,390,720: 656 x 424 dots at five cycles a dot. |
+
+### Working out the frame rate
+
+The two rows answer the same question at different precisions, and they are read
+differently — `0D` is BCD and `0E` is hex.
+
+```
+0D 000576   ->  576 frames in ten seconds  ->  57.6 Hz
+0E 15387F   ->  0x15387F = 1390719 cycles  ->  80e6 / 1390719 = 57.52 Hz
+```
+
+`0D` counts whole frames, so 575.2 shows as 575 or 576 and jitters by one; it is
+the number to read at a glance. `0E` is exact and updates every frame, so it is
+the one to use when the answer matters — a frame one cycle short of nominal is
+the vsync edge falling either side of the count, not drift.
 
 Rows `06`–`0A` are a trace of the CPU's first few instruction fetches, captured
 once and held. They exist because a CPU that dies does so in the first handful

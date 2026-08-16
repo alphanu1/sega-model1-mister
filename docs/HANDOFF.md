@@ -225,40 +225,82 @@ commit.
 
 ## What to do next
 
-**1. Size the rasterizer — the fill path is done and measured.**
-`rtl/video/m1_raster_fill.sv` + `rtl/video/m1_raster_div.sv`, verified against a
-C transcription of MAME's `fill_quad` over 152,025 quads and 31.6 M spans, zero
-mismatches. **2,113 ALM, 2 DSP, 0 M10K, 63.67 MHz.**
+**M1 is complete and running on hardware.** The core boots, loads its ROM,
+executes real Virtua Racing code and renders correctly on a DE10-Nano: zero
+fetch deadline misses, 57.52 Hz measured from the core's own vsync, and the
+picture pixel-identical to the reference. Three of the four items that used to
+be in this section are done — the top level and MRA exist, the tilemap fetch is
+pipelined, and the I/O responder is RTL rather than a testbench experiment.
 
-That is the fill path only. Band binning, the band buffer, writeback and scanout
-are still unbuilt, against a 3,000-6,000 estimate for the whole rasterizer — so
-the estimate is not broken but its comfortable end is gone. See
-`docs/m3-rasterizer-spec.md` for the rules, the measurement and the two unspent
-levers (a 32-bit datapath that is only that wide because MAME's is, and 2 DSP
-blocks that exist solely for the off-screen skip).
+Resource state after all of it, Quartus 17.0 on 5CSEBA6U23I7:
 
-What is left of this item: **the band buffer and the binning pass**, which is
-where D3 gets tested and where the M10K goes. 332 of 553 M10K are already spent
-and D3's band buffer wants ~51 more.
+| | used | of | |
+|---|---|---|---|
+| ALM | 26,469 | 41,910 | 63% |
+| M10K | 409 | 553 | 74% |
+| DSP | 49 | 112 | 44% |
 
-The read that preceded it also turned up that MAME performs the depth sort in
-the rasterizer stage rather than receiving a sorted list, which is D3's premise.
-That is not a measurement meeting D3's reversal condition, so the decision
-stands as written; the quad count per frame from the M2 capture is what settles
-it.
+**M10K is now the binding resource, not ALM.** 144 blocks remain and D3's band
+buffer wants about 51 of them.
 
-**2. `emu.sv` + MRA.** There is still no top level. Everything beneath it is
-built and tested; this is what puts the core on a DE10-Nano.
+---
 
-**2a. Pipeline the tilemap fetch.** Four dense tilemap layers do not fit a
-scanline and cannot be made to by any reachable clock — the engine is 69% idle
-waiting on serialized fetches, so the fix is prefetching two or three columns
-ahead, not more MHz. Numbers and working in `docs/m1-m4-plan.md`, "Where the
-1,614 cycles go", and in `rtl/video/m1_tile_fetch.sv`'s header. Text and menu
-screens fit today, so this blocks nothing immediately and will block M3.
+### 1. M2 — put the TGP in the design
 
-**3. The I/O responder as RTL.** It currently lives in `sim/top/tb_m1_boot.sv`
-as an experiment, not an implementation.
+The MB86233 is built, fuzz-verified against MAME and area-measured, and it is
+**instantiated nowhere**. Nothing renders in 3D until it is, and the rasterizer
+has nothing to draw until geometry exists.
+
+This is the next milestone and the largest single piece of work left. It needs
+the TGP wired to the main board, its program and data ROMs added to the MRA
+(`tools/gen_mra.py` already documents where they go and deliberately omits them
+while the blocks do not exist), and the polygon list captured off the output
+FIFO to diff against MAME frame by frame — the verification model in `CLAUDE.md`
+names that as the geometry oracle.
+
+### 2. Finish the rasterizer — the band buffer and binning
+
+The fill path is done and measured: 2,113 ALM, 2 DSP, 0 M10K, 63.67 MHz, checked
+against a C transcription of MAME's `fill_quad` over 152,025 quads and 31.6 M
+spans with zero mismatches.
+
+What is left is **the band buffer, the binning pass, writeback and scanout** —
+which is where D3 actually gets tested and where the M10K goes. See
+`docs/m3-rasterizer-spec.md` for the rules and the two unspent levers. Note the
+read that preceded it found MAME performs the depth sort in the rasterizer
+rather than receiving a sorted list, which is D3's premise; that is not a
+measurement meeting D3's reversal condition, and the quad count per frame from
+the M2 capture is what settles it.
+
+### 3. Close the SDRAM interface properly
+
+**This works but is unverified, and it is the one part of the design nothing has
+ever constrained.** `SDRAM_CLK` is a fabric inversion of `clk_sys`; there is no
+`create_generated_clock`, no `set_input_delay`, no `set_output_delay`. The
+fitter is free to skew the clock pin against data and address, and it may do so
+differently on every build.
+
+The read capture phase that makes the board work — CL+2, selectable from the OSD
+— was found **empirically, from observing every burst return one 16-bit word
+late**. It was not derived from a timing analysis, and it is one cycle away from
+the value the simulation model needs. That is a working core resting on a number
+nobody has closed.
+
+Do this before trusting the design on a second board or a different SDRAM
+module. It is also the honest explanation for why the derivation in
+`m1_sdram`'s header is correct term by term and still gives the wrong total.
+
+### 4. Understand the 103-cycle character fetch wait
+
+Measured in the whole system, a character fetch waits an average of 103 cycles
+(240 before the line-buffer work reduced the request rate). That is far more
+than a round-robin turn between three active ports should cost, and it is not
+understood.
+
+It is **not** currently a problem — the engine keeps up with room to spare and
+misses no deadlines — so this is an efficiency question, not a bug. It will
+matter when the rasterizer joins the same controller. Find out where the time
+goes before changing `m1_sdram`, which is verified at 80,009 checks.
 
 ## What is owed
 
