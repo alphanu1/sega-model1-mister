@@ -304,6 +304,58 @@ polling for the V60's signature — the handshake seen from the other end. The
 exchange therefore lives around `0x14`-`0x20` as well as the `0x100` window, and
 the low-DPRAM sweep is a third, separate thing.
 
+## The transport, recovered in full
+
+The flag at `0x20` is a **command code**, not a doorbell. The board's main loop
+reads it and branches:
+
+| Flag | Board's action |
+|---|---|
+| `1` | write `0` back — acknowledge, nothing else |
+| `2` | copy 128 bytes from DPRAM `0x100`-`0x17f` into its own RAM at `0x4000`-`0x407f`, clear the state byte at `0x4080`, then clear the flag |
+| `3` | clear the flag and restart the exchange |
+
+And independently of any command, the board **pushes** the same 128 bytes the
+other way: it walks its RAM `0x4000`-`0x407f` and writes each byte out to DPRAM
+`0x100`-`0x17f`, having set the state byte at `0x4080` to `0x40` first. It also
+maintains a status byte at DPRAM `0x21` from that same state byte.
+
+So the window is **bidirectional**, and is the same 128-byte block in both
+directions. That resolves what did not add up: the V60's block-read of `0x100`
+is not reading back its own leftovers, it is reading **the board's uploaded
+block**, which is empty here because nothing pushes one.
+
+It also explains why the V60 never touches `0x08`-`0x0e`, where the low-DPRAM
+sweep writes. It is still in this setup exchange; the sweep matters later.
+
+### What m1_ioboard has to do
+
+All of this is evidence-backed rather than inferred:
+
+1. hold a 128-byte block mirroring the board's `0x4000`-`0x407f`
+2. push it continuously to DPRAM `0x100`-`0x17f`
+3. on flag `= 2`, copy the window in to that block, clear the state byte, clear
+   the flag
+4. on flag `= 3`, clear the flag and restart
+5. keep the `0x08`-`0x0e` sweep for when the game starts reading controls
+6. maintain the status byte at `0x21`
+
+Today's responder does one thing — clear the flag on any non-zero write. That is
+correct for command 1, which is why boot gets as far as it does, and silently
+wrong for 2 and 3, and it never pushes a block at all. Hence an inert service
+menu.
+
+### The remaining unknown, and why MAME cannot answer it
+
+What the 128 bytes should *contain*. The board fills that RAM from its own
+state, and where it does so has not been traced yet.
+
+**MAME cannot supply this.** `model1io.cpp` is LLE — it instantiates a real Z80
+and runs `EPR-14869`, so it reproduces the behaviour by executing it and its
+source never describes the protocol. Hard rule 3 is intact; this is simply a
+device whose oracle answers by running rather than by telling. The two routes
+are therefore unchanged: keep reading the ROM, or run it.
+
 ### What is owed
 
 Decode the request payload the trace captured — `1c 82 01 00 3e 9d ff 00 ...` at
