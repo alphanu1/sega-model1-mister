@@ -285,6 +285,13 @@ window at the same place, so that is a command/response buffer and the response
 is where input state must appear. It does **not** poll a fixed input offset,
 which is why the layout cannot be guessed from the trace alone.
 
+An input publisher was tried and is **off by default**: it starves the
+handshake, and a control run at an address nothing reads gave byte-identical
+results, so the fault is the mechanism rather than the data. Do not fix its
+arbitration — the trace says request/response, not background refresh, and a
+burst triggered by the handshake would not contend for the port at all. See
+`docs/io-board.md`.
+
 D9 has since settled tv80 versus HLE in favour of the HLE, so what remains is
 recovering the response format — either by disassembling `EPR-14869` (it is in
 `vr.zip`) or by running it against a model of the 315-5338A, whose register

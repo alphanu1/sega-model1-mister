@@ -155,9 +155,35 @@ trusting the next one: there the write port always acknowledges, while in the
 system `io_ack` is denied whenever the V60 is writing. The round-robin has to
 yield the port properly, not merely take it when it happens to be free.
 
-`PUBLISH_INPUTS` therefore defaults to **0**. The mechanism and its 23 checks
-are kept because the HLE needs them; what is owed is the arbitration fix, and
-then re-running this experiment.
+`PUBLISH_INPUTS` therefore defaults to **0**.
+
+### Do not fix the arbitration yet — the shape is probably wrong
+
+The obvious follow-up is to make the round-robin yield the port properly. That
+is likely work on a mechanism this board does not want.
+
+Continuous refresh was inferred from the 315-5338A's fast write to bytes 0-7.
+But that path is the **Z80's** convenience for reaching the shared RAM through
+the custom chip; it says something about how the Z80 talks to the chip, not
+about how the V60 reads inputs. Those bytes may be status or DIP state.
+
+What the trace shows points elsewhere. The V60 writes a command block, raises
+the flag, and reads a 27-byte window **three times across an entire run, with no
+polling loop**. That is request/response, not a mailbox somebody refreshes in
+the background. If that is the shape, the responder should:
+
+1. see the flag raised
+2. read the command block
+3. write a response — input state included — into the window
+4. clear the flag
+
+which is a burst triggered by the handshake, at a moment when the V60 is sitting
+in a polling loop rather than driving the bus. **It would not contend for the
+port at all**, and the starvation this experiment hit would not exist to fix.
+
+So the mechanism and its 23 checks stay as scaffolding, off by default, and the
+next move is to establish the protocol shape rather than to polish a refresh
+loop that may be answering the wrong question.
 
 What was NOT learned: where the inputs live. That question is untouched by this
 result.
