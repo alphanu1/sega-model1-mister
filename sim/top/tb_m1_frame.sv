@@ -68,11 +68,21 @@ module tb_m1_frame #(
 
 localparam integer PRELOAD_WORDS = 32'h300000;
 
-// 100/25 MHz rather than the design's 96/19.2: the ratio is what the crossings
-// care about and round half-periods keep the cycle arithmetic readable.
+// THE CLOCKS ARE THE BOARD'S, NOT ROUND NUMBERS.
+//
+// This used to run 100/25 MHz on the reasoning that "the ratio is what the
+// crossings care about". That reasoning is untested: the two domains are cut
+// with set_clock_groups -asynchronous, so nothing in the fitter ever times a
+// path between them, and a crossing that depends on the ratio would pass every
+// simulation at 4.000 and fail on hardware at 4.167.
+//
+// 80 MHz is 12.5 ns and 19.2 MHz is 52.0833... ns, which does not land on the
+// 1 ns timescale — so the CPU half period is 26 ns, giving 19.23 MHz. The error
+// is 0.16%, and what matters is that the edges drift against each other the way
+// the real ones do instead of lining up every fourth cycle forever.
 reg clk = 0, clk_cpu = 0, rst_n = 0;
-always #5  clk     = ~clk;
-always #20 clk_cpu = ~clk_cpu;
+always #6.25 clk     = ~clk;      // 80 MHz
+always #26   clk_cpu = ~clk_cpu;  // 19.23 MHz
 
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
@@ -80,13 +90,12 @@ wire rst_n_cpu = rs_cpu[1];
 always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys <= {rs_sys[0], 1'b1};
 always @(posedge clk_cpu or negedge rst_n) if (!rst_n) rs_cpu <= 0; else rs_cpu <= {rs_cpu[0], 1'b1};
 
-// 100 MHz to a 16 MHz dot clock is not integral; /6 gives 16.67 MHz, which is
-// close enough for a picture and keeps this identical to the real divider.
+// 80 MHz to the 16 MHz dot clock, exactly /5 — the same divider Model1.sv uses.
 reg [2:0] pixdiv = 0;
 reg       ce_pix = 0;
 always @(posedge clk) begin
-    ce_pix <= (pixdiv == 3'd5);
-    pixdiv <= (pixdiv == 3'd5) ? 3'd0 : pixdiv + 3'd1;
+    ce_pix <= (pixdiv == 3'd4);
+    pixdiv <= (pixdiv == 3'd4) ? 3'd0 : pixdiv + 3'd1;
 end
 
 // ------------------------------------------------------------------ memory
@@ -353,6 +362,27 @@ always @(posedge clk) begin
         $display("   raw[%0d] rgb=%02h%02h%02h hb=%0d vb=%0d",
                  raw_n, vid_r, vid_g, vid_b, vid_hb, vid_vb);
         raw_n = raw_n + 1;
+    end
+end
+
+// ------------------------------------------------- first instruction fetch
+//
+// The same measurement the overlay makes on hardware, so the two can be put
+// side by side. The board reports the V60's first fetch landing at SDRAM word
+// 0 rather than the boot vector; this says what it does here, on identical
+// RTL, and a difference is the divergence worth chasing.
+reg [24:1] if_addr_first;
+reg [31:0] if_data_first;
+reg        if_seen = 0, d_ifack = 0;
+always @(posedge clk) begin
+    d_ifack <= p_ack[2];
+    if (p_ack[2] && !d_ifack && !if_seen) begin
+        if_seen       <= 1'b1;
+        if_addr_first <= ifp_addr;
+        if_data_first <= p_dout[2][31:0];
+        $display("FIRST IFETCH: sdram word addr=%06h data=%08h",
+                 ifp_addr, p_dout[2][31:0]);
+        $fflush;
     end
 end
 

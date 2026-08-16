@@ -352,6 +352,30 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     end
   end
 
+  // THE FIRST INSTRUCTION THE V60 EVER FETCHES, AND WHERE FROM.
+  //
+  // The board showed the CPU halted at PC 3 having executed opcode 0x00, which
+  // means its reset fetch did not return the boot vector. That has two very
+  // different causes — SDRAM reads coming back empty, or the fetch going to the
+  // wrong address — and the only way to tell them apart is to see the first
+  // fetch itself. Latched once and held, because it happens microseconds after
+  // reset and is gone long before anyone can photograph it.
+  reg [24:1] r_if_addr;
+  reg [31:0] r_if_data;
+  reg        r_if_seen, d_if_ack;
+  always @(posedge clk_sys) begin
+    if (!mem_rst_n) begin
+      r_if_addr <= 0; r_if_data <= 0; r_if_seen <= 0; d_if_ack <= 0;
+    end else begin
+      d_if_ack <= p_ack[2];
+      if (p_ack[2] && !d_if_ack && !r_if_seen) begin
+        r_if_seen <= 1'b1;
+        r_if_addr <= ifp_addr;
+        r_if_data <= p_dout[2][31:0];
+      end
+    end
+  end
+
   assign char_data_l = r_char_data;
   assign char_addr_l = r_char_addr;
   assign ldr_words   = r_ldr_words;
@@ -378,7 +402,7 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // photograph that is cropped, rotated or partly glared out can still be
   // matched up row by row instead of counted from an edge that may not be in
   // the frame.
-  wire [31:0] dw [8];
+  wire [31:0] dw [10];
   assign dw[0] = {8'h00, pc_s2};                       // V60 program counter
   assign dw[1] = char_data_l;                          // last character data
   assign dw[2] = {8'h02, 6'd0, char_addr_l};           // ...and its address
@@ -389,6 +413,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   assign dw[7] = {8'h07, 2'd0, ldr_overflow, st_s2[17:16],
                   rom_ready, mem_ready, ioctl_download,
                   st_s2[15:0]};                        // I/O replies
+  assign dw[8] = {7'h08, r_if_seen, r_if_addr};        // first fetch address
+  assign dw[9] = r_if_data;                            // ...and what came back
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -396,11 +422,12 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // the concatenation runs bottom row first. Written with explicit indices
   // rather than as a list, because getting this backwards produces a display
   // that is perfectly legible and entirely wrong.
-  m1_diag #(.NWORDS(8)) diag (
+  m1_diag #(.NWORDS(10)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     .enable(~status[3]),
     .hb(vid_hb), .vb(vid_vb),
-    .words({dw[7], dw[6], dw[5], dw[4], dw[3], dw[2], dw[1], dw[0]}),
+    .words({dw[9], dw[8], dw[7], dw[6], dw[5], dw[4], dw[3], dw[2],
+             dw[1], dw[0]}),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
     .out_r(dg_r), .out_g(dg_g), .out_b(dg_b)
   );

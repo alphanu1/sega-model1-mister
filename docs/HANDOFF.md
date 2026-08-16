@@ -9,6 +9,55 @@ on 2026-08-15 — both still described M0 as the current milestone, and CLAUDE.m
 "expected output, exactly" block predated eight harnesses. If those three ever
 disagree again, this file is where the measurements are.
 
+## On hardware, as of 2026-08-16
+
+**The core loads and runs on a real DE10-Nano.** `.rbf` built, MRA loads, the
+ROM streams in complete and the video path drives HDMI. Four separate faults
+were found and fixed getting there, every one of them invisible to simulation
+until simulation was changed to model what hardware does:
+
+| Fault | Symptom on the board |
+|---|---|
+| `ioctl_wait` ungated, holding `HPS_BUS[37]` | core never appears to load at all |
+| memory subsystem inside the game reset | "Assembling ROM" frozen partway |
+| core clocks in no clock group (−87 ns slack) | clean build, nothing runs |
+| one port meaning both "SDRAM ready" and "ROM loaded" | "Assembling ROM" frozen at zero bytes |
+
+Plus one that reported success and corrupted data: the loader **silently
+dropped** every word the HPS sent more than 15 cycles after `ioctl_wait` rose.
+Its test swept host latency 0..6 — exactly the margin the parameter was set to,
+so it confirmed the setting rather than testing it. Buffer now 512/256, sweep to
+64, and `overflow` is brought out to the debug overlay.
+
+**`docs/mister-integration.md` is the full write-up**, framework-generic rather
+than Model 1 specific, for reuse on any future MiSTer core.
+
+### Still failing, and what is known
+
+The V60 **halts at PC 3** on hardware, having executed opcode `0x00`. The screen
+is black because the CPU never writes a tile or a palette entry; the tilemap
+engine is alive and fetching.
+
+What the on-screen debug overlay establishes, read off photographs:
+
+- The ROM arrives **intact** — words sent = words written = `0x00300000`,
+  overflow clear.
+- SDRAM reads are **correct**: the first instruction fetch returns `000d000d`,
+  which is exactly the first two words of the ROM image.
+- The first fetch lands at SDRAM word `000000`, and **simulation does the same
+  thing** — so that is normal, not a divergence.
+- `dbg_halted` set, `fp_trap` clear, `rom_ready` and `mem_ready` both set.
+
+Ruled out with evidence, not argument: ROM layout, loader flow control, SDRAM
+read timing, the reset sequencing, the first-fetch address, and the clock ratio
+— simulation now runs at the board's real 80/19.23 MHz and still boots to the
+test-mode screen over 103 frames.
+
+What remains unexamined is what simulation still cannot model: metastability and
+skew on the two asynchronous domain crossings, which are cut with
+`set_clock_groups -asynchronous` and therefore never timed by the fitter.
+`m1_cdc_port` carrying the CPU's data reads is the leading suspect.
+
 ## Where it is
 
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural
@@ -193,6 +242,11 @@ gameplay have not run. `make m1_main` runs a configuration with an FP opcode
 injected, which must trap, so the detector is known live.
 
 ## Things that bite, learned the hard way
+
+**Everything MiSTer-specific now lives in `docs/mister-integration.md`** — the
+framework deadlocks, the PLL naming requirement, the block-RAM inference table,
+how to make the screen an instrument, and how to test against a board. Written
+framework-generic so it carries to the next core.
 
 **Block RAM inference is silent when it fails.** Quartus builds memories out of
 flip-flops and keeps going. Two separate incidents: the video line buffers cost
