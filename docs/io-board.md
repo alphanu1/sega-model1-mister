@@ -386,6 +386,85 @@ V60 reads; the answer needs both. Prefer the experiment that can falsify the
 next guess over the one that would confirm it — three have each disproved a
 plausible layout already.
 
+## Experiment 4: MAME settles it — the layout is confirmed by measurement
+
+Three static readings had each been plausible and each been wrong. Running the
+real Z80 against the real ROM under MAME settled it in minutes.
+
+### Setup
+
+MAME 0.289 from the distribution's own packages, driven headless or windowed
+with an autoboot Lua script that logs **every change** to the shared RAM, so a
+key press names its own byte:
+
+    mame vr -rompath ~/roms -window -autoboot_script watch.lua
+
+Two things about the setup that cost time and are worth writing down:
+
+- **Run it from a scratch directory.** MAME creates `cfg/`, `nvram/` and `snap/`
+  wherever it is launched, and launching from the repository root drops them in
+  the tree.
+- **A Lua frame notifier stops firing if its subscription is collected.** Assign
+  the result of `emu.add_machine_frame_notifier` to a variable that outlives the
+  call, or the callback runs a few frames and then goes silent with no error at
+  all. Two scripts produced empty logs that way before this was understood.
+- Errors inside a frame notifier vanish. Wrap the body in `pcall` and log the
+  message, or a wrong field name reads as "nothing happened".
+
+An older ROM set will not run: MAME 0.289 wants the decapped copro microcode
+(`315-557x`) and an EEPROM default (`93c45`). Zero-filled placeholders let the
+machine start but **hang it** — `315-5573` is Virtua Racing's copro microcode
+and it really is executed, so the V60 waits forever on a coprocessor running
+nothing. The other two placeholders are harmless, per D4's finding that MAME
+never executes the geometrizer ROMs.
+
+### The result
+
+Holding one control at a time, every press appears at DPRAM `0x08` as a single
+bit dropping from an idle `ff` — active low, one bit per control:
+
+| `0x08` | bit | control |
+|---|---|---|
+| `fe` | 0 | Coin 1 |
+| `fb` | 2 | Test / Service Mode |
+| `f7` | 3 | Service 1 |
+| `ef` | 4 | 1P Start |
+| `df` | 5 | VR1 Red |
+| `bf` | 6 | VR2 Blue |
+| `7f` | 7 | VR3 Yellow |
+
+and at `0x09`, `fe` — bit 0 — for VR4 Green.
+
+**This is exactly MAME's `INPUT_PORTS( vr )` bit order**, and exactly what
+`Model1.sv` already wires and what `m1_ioboard`'s `INPUT_BASE = 0x008` already
+targets. Both were right; what was missing was any way to know it.
+
+### What else the capture shows
+
+- At frame 9 the board sets `0x03`-`0x0e` to `ff` in one go — the input region
+  initialising to idle-high, which is why publishing zeros presents every
+  control as held.
+- `0x00`-`0x02` change constantly during play. That fits the ROM's scanned-panel
+  bytes and is where steering and the pedals most likely land — untested.
+- `0x0f` toggles between `80`/`40`/`20`/`60` on a regular period. It looks like a
+  lamp or blink output, not a control.
+- `0x11` free-runs. Ignore it when reading a diff.
+- The window at `0x100` contains `53 45 47 41 1c 82 01 00 3e 9d ff 00 ...` —
+  **byte for byte what our own V60 writes there**, from the boot trace. Two
+  independent implementations producing the identical block is the strongest
+  confirmation yet that the V60, the bus and the DPRAM are correct.
+- Holding a control changes **nothing** in that window, which finally disproves
+  the reading that the controls arrive through it.
+
+### The correction this forces
+
+An earlier section of this file said the trace was "definitive" that inputs must
+arrive through the `0x100` window, because that is the only place the V60 reads.
+The premise was true and the conclusion wrong: the V60 does read that window,
+but what it reads there is the block exchange, not controls. Being definitive
+about *where a CPU reads* is not the same as being definitive about *what it
+reads for*.
+
 ## Revisit the LLE when the resource count is final
 
 D9 chose the HLE against a budget that is still estimates — sound at 5,000-7,000
