@@ -60,7 +60,23 @@ module m1_integrated (
   // loader on the game reset waits for SDRAM that is held in reset, while the
   // HPS waits for the loader. See Model1.sv.
   input  logic        mem_rst_n,
-  input  logic        rom_loaded,     // clk_sys domain
+
+  // SDRAM BRING-UP DONE. NOT "THE ROM IS LOADED".
+  //
+  // The loader needs this to know the controller can accept a write, and the
+  // V60 needs to know something else entirely — that a ROM has actually
+  // arrived. This port used to be called rom_loaded and served both, which
+  // reads as harmless until the top level tries to gate the CPU with it.
+  //
+  // Feeding it `mem_ready & <loader's rom_loaded>` deadlocks the machine: the
+  // loader holds ioctl_wait while ~mem_ready, mem_ready is now false until the
+  // loader finishes, and the loader cannot finish because the HPS is waiting
+  // on ioctl_wait. On screen that is "Assembling ROM" frozen at zero bytes,
+  // and in simulation it is a download that never places its first word.
+  //
+  // So the CPU's gate is derived HERE, from the loader's own output, and never
+  // routed out through the top level and back in.
+  input  logic        mem_ready,      // clk_sys domain
 
   // SDRAM data port and instruction fetch
   output logic        sdr_req,
@@ -155,13 +171,17 @@ module m1_integrated (
   always_comb rst_n_cpu = rst_sync_cpu[1];
   always_comb rst_n_mem = rst_sync_mem[1];
 
-  // rom_loaded is a level raised in the fast domain and read in the slow one:
-  // two flops, and nothing downstream cares about the two-cycle skew because it
-  // only ever goes high once, before the CPU is allowed to run.
+  // The V60's release: SDRAM up AND the loader reporting the stream ended with
+  // its buffer drained. A level raised in the fast domain and read in the slow
+  // one, so two flops — nothing downstream cares about the two-cycle skew
+  // because it only ever goes high once, before the CPU is allowed to run.
+  logic rom_present;
+  always_comb rom_present = mem_ready & rom_loaded_o;
+
   logic [1:0] rom_loaded_sync;
   always_ff @(posedge clk_cpu or negedge rst_n_cpu) begin
     if (!rst_n_cpu) rom_loaded_sync <= 2'b00;
-    else            rom_loaded_sync <= {rom_loaded_sync[0], rom_loaded};
+    else            rom_loaded_sync <= {rom_loaded_sync[0], rom_present};
   end
 
   // The frame interrupt is one clk_sys cycle wide — about 10 ns at 96 MHz,
@@ -243,7 +263,7 @@ module m1_integrated (
   );
 
   m1_rom_loader loader (
-    .clk(clk_sys), .rst(~rst_n_mem), .mem_ready(rom_loaded),
+    .clk(clk_sys), .rst(~rst_n_mem), .mem_ready(mem_ready),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
     .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
     .ioctl_wait(ioctl_wait),

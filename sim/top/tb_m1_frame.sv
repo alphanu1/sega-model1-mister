@@ -56,11 +56,14 @@ module tb_m1_frame #(
     // instead of a convenient field of zeros.
     parameter bit     DOWNLOAD   = 1,
 
-    // Which signal releases the V60. HOLD_CPU=1 is m1_rom_loader's own
-    // rom_loaded — asserted when the stream has ended AND the write buffer has
-    // drained. HOLD_CPU=0 is the SDRAM controller's `ready`, which only means
-    // JEDEC bring-up finished and is true long before any ROM has arrived.
-    parameter bit     HOLD_CPU   = 1
+    // Kept only so the deadlock this test was written to catch can still be
+    // recreated deliberately. HOLD_CPU=1 feeds the core's mem_ready with
+    // `mem_ready & <the loader's own done>`, which is the wiring that froze
+    // "Assembling ROM" at zero bytes on hardware: the loader holds ioctl_wait
+    // until SDRAM is ready, and SDRAM is not reported ready until the loader
+    // has finished. The V60's gate is derived inside m1_integrated now, so
+    // HOLD_CPU=0 is both the default and the correct wiring.
+    parameter bit     HOLD_CPU   = 0
 );
 
 localparam integer PRELOAD_WORDS = 32'h300000;
@@ -168,13 +171,12 @@ wire [15:0] dbg_io_replies;
 // reset: the loader holds ioctl_wait until SDRAM is ready, so a loader held in
 // reset stalls the host that would release it. Model1.sv splits them for the
 // same reason.
-wire cpu_release = DOWNLOAD ? (HOLD_CPU ? (mem_ready & loader_done) : mem_ready)
-                            : mem_ready;
+wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
 m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
-    .rst_n(rst_n), .mem_rst_n(rst_n), .rom_loaded(cpu_release),
+    .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -208,7 +210,16 @@ m1_integrated core (
 reg [15:0] rom [0:PRELOAD_WORDS-1];
 integer i;
 initial begin
+    // Progress, flushed. stdout is block buffered when this is redirected to a
+    // file, so a run that hangs prints nothing at all and is indistinguishable
+    // from a run that is merely slow — which cost an hour of staring at an
+    // empty log.
+    $display("tb_m1_frame: DOWNLOAD=%0d HOLD_CPU=%0d, reading %s",
+             DOWNLOAD, HOLD_CPU, ROMHEX);
+    $fflush;
     $readmemh(ROMHEX, rom);
+    $display("tb_m1_frame: ROM image read");
+    $fflush;
     if (!DOWNLOAD) begin
         for (i = 0; i < PRELOAD_WORDS; i = i + 1) device.mem[i] = rom[i];
         $display("preloaded %0d words", PRELOAD_WORDS);
@@ -242,12 +253,17 @@ task automatic run_download;
             @(posedge clk);
             ioctl_wr   <= 1'b0;
             dl_words    = dl_words + 1;
+            if ((dl_words % 262144) == 0) begin
+                $display("  download: %0d/%0d words", dl_words, PRELOAD_WORDS);
+                $fflush;
+            end
             // The host does not issue back to back; one idle cycle between
             // words is the closest simple model of it.
             @(posedge clk);
         end
         ioctl_download <= 1'b0;
         $display("download: %0d words streamed", dl_words);
+        $fflush;
     end
 endtask
 
@@ -340,6 +356,48 @@ always @(posedge clk) begin
     end
 end
 
+// -------------------------------------------------------- stall detector
+//
+// A hang here used to be a test that never returned, which says only that
+// something is wrong. This turns it into a diagnosis: if the host has been
+// unable to place a word for long enough that no legitimate backpressure
+// explains it, print every signal that could be holding the handshake and
+// stop.
+//
+// The suspects are named explicitly because the answer is always one of them:
+// the loader's buffer being full and not draining, or the controller never
+// granting the download port.
+integer stall_cnt  = 0;
+integer last_words = -1;
+always @(posedge clk) begin
+    if (ioctl_download) begin
+        if (dl_words != last_words) begin
+            last_words = dl_words;
+            stall_cnt  = 0;
+        end else begin
+            stall_cnt = stall_cnt + 1;
+        end
+        if (stall_cnt == 200000) begin
+            $display("");
+            $display("STALL: no word accepted for 200000 cycles at %0d/%0d words",
+                     dl_words, PRELOAD_WORDS);
+            $display("  loader: ioctl_wait=%0d level=%0d full=%0d overflow=%0d busy=%0d req=%0d",
+                     ioctl_wait, core.loader.level, core.loader.fifo_full,
+                     core.loader.overflow, core.loader.busy, ldr_wr_req);
+            $display("  sdram : wr_pend=%0d wr_inflight=%0d pipe_busy=%0d ref_pend=%0d state=%0d ready=%0d",
+                     sdram.wr_pend, sdram.wr_inflight, sdram.pipe_busy,
+                     sdram.ref_pend, sdram.state, mem_ready);
+            $display("  ports : p_req=%b p_ack=%b inflight=%b char_req=%0d",
+                     p_req, p_ack, sdram.inflight, char_req);
+            $fflush;
+            // Fatal, not $finish: this is the shape of a real regression and a
+            // run that stops quietly with a zero exit code is a test that
+            // reports success for a core that cannot load a ROM.
+            $fatal(1, "download stalled");
+        end
+    end
+end
+
 // ---------------------------------------------------------------- the run
 integer cycles, fd, x, y;
 initial begin
@@ -351,11 +409,13 @@ initial begin
     rst_n = 1;
     while (!mem_ready) @(posedge clk);
     $display("SDRAM ready (mem_ready), HOLD_CPU=%0d", HOLD_CPU);
+    $fflush;
 
     if (DOWNLOAD) begin
         run_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
+        $fflush;
         // With HOLD_CPU=0 the V60 came out of reset back at mem_ready and has
         // been executing an SDRAM full of FFFF for the whole download. Nothing
         // resets it now, which is the point of the experiment.
@@ -373,8 +433,11 @@ initial begin
         // indistinguishable from a hang.
         if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
         if (cycles % 20000000 == 0)
-            $display("  %0d M cycles: pc=%06h frames=%0d painted=%0d nonblack=%0d",
-                     cycles/1000000, dbg_pc, frames, painted, nonblack);
+            begin
+                $display("  %0d M cycles: pc=%06h frames=%0d painted=%0d nonblack=%0d",
+                         cycles/1000000, dbg_pc, frames, painted, nonblack);
+                $fflush;
+            end
     end
 
     $display("");

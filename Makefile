@@ -519,7 +519,7 @@ FRAME_CYCLES ?= 120000000
 # screen on hardware was traced to it. Kept as a switch so the failure can be
 # reproduced rather than only described.
 FRAME_DOWNLOAD ?= 1
-FRAME_HOLD_CPU ?= 1
+FRAME_HOLD_CPU ?= 0
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to

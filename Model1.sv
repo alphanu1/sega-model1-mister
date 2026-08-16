@@ -163,8 +163,13 @@ module emu
   // like a video fault and is a reset-sequencing one.
   //
   // The signal that does mean what is wanted is m1_rom_loader's own
-  // `rom_loaded` — the stream has ended AND the write buffer has drained — so
-  // that is what comes back out of the core and gates it here.
+  // `rom_loaded` — the stream has ended AND the write buffer has drained.
+  //
+  // It is combined with mem_ready INSIDE m1_integrated, not here. Routing it
+  // out and feeding it back in as the core's mem_ready deadlocks the download:
+  // the loader holds ioctl_wait until SDRAM is ready, and SDRAM would not be
+  // reported ready until the loader had finished. rom_ready is brought out for
+  // the overlay only.
   wire rom_ready;
 
   // ioctl_download is deliberately NOT in this reset. Holding the game side
@@ -172,7 +177,8 @@ module emu
   // asserted, VGA_DE low and no picture at all while the ROM streams — so the
   // diagnostic overlay, which is the only instrument this core has, is blank
   // for exactly the part of startup that most needs watching. The V60 is
-  // already held by rom_ready below, which is what the download needed.
+  // already held inside the core until the ROM lands, which is what was
+  // actually wanted.
   wire mem_rst_n  = pll_locked;
   wire rst_n      = pll_locked & ~(RESET | status[0] | buttons[1]);
 
@@ -263,8 +269,7 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   m1_integrated core (
     .clk_sys(clk_sys), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
-    .rst_n(rst_n), .mem_rst_n(mem_rst_n),
-    .rom_loaded(mem_ready & rom_ready),
+    .rst_n(rst_n), .mem_rst_n(mem_rst_n), .mem_ready(mem_ready),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
