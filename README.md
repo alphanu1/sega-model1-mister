@@ -18,10 +18,10 @@ NetMerc.
 | Milestone | State |
 |---|---|
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
-| M1 — V60, bus, 2D, boot | **boots real game code** — top level, rasterizer sizing and I/O board left |
-| M2 — geometry pipeline | not started |
-| M3 — rasterizer and video | fill path built and measured, early, to size it |
-| M4 — sound, inputs, full set | not started |
+| M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls; segas24 window/split-scroll mode still owed |
+| M2 — geometry pipeline | **TGP built, verified and measured — instantiated nowhere.** The engine exists; the mailboxes, FIFOs, copro RAM and microcode load around it do not |
+| M3 — rasterizer and video | fill path built and measured; band buffer, binning, writeback and scanout not built |
+| M4 — sound | not started — 68000, YM3438 and two MultiPCMs, over a UART rather than the I/O board |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
 what to do next, and the failure modes that have cost time.
@@ -55,10 +55,21 @@ any of the 3D path exists.
 design: **21,796 ALM, 332/553 M10K, 24.62 MHz**. Fmax is exactly the V60's
 standalone figure, so the V60 is the critical path in context as well as alone.
 
-**Budget: 27,400 ALM built of 41,910**, against MiSTer `sys/`, sound, the I/O
-board and the rest of the rasterizer. It fits, with the pessimistic end
-uncomfortably close. One lever is measured and unspent — the V60 without its FP
-group, worth -1,987 ALM and Fmax 24.62 -> 45.54.
+`make rbf` builds the real core — `sys_top` plus `emu` — and that is the number
+that counts: **26,459 ALM, 409/553 M10K, 49 DSP**, timing closed at +0.456 ns.
+
+**The V60 is 17,691 ALM of that — 67% of the whole design.** Everything written
+for this project totals under 1,000; `ascal` and the rest of the framework take
+about 3,600. So the V60 is the only thing where optimisation is worth spending
+time, and M10K rather than ALM is the binding resource at 74%.
+
+Against what is still to build — TGP 2,554 measured, rasterizer 3,000-6,000 and
+sound ~7,000 estimated — 15,451 free ALM fits, with the pessimistic end at the
+wall. One lever is measured and unspent: the V60 without its FP group, worth
+**-2,984 ALM** on the full core (an earlier -1,987 figure was measured on a
+smaller design). `dbg_fp_trap` has never fired, but only through boot and
+attract — `tb_m1_boot` prints an explicit warning if an FP opcode ever executes,
+and a long run under the define is what would settle it.
 
 The quad filler was built out of M3 order because it was the widest unknown in
 that budget: the fill path alone measures **2,113 ALM, 2 DSP, 0 M10K, 63.67
@@ -260,11 +271,21 @@ Adding a module to the spike flow means adding one `SRCS_<module>` line to the M
 
 ### Core build
 
-Does not exist yet: no `emu.sv`, no MRA, no `sys/` in the project. `make quartus
-MOD=m1_integrated` is the closest thing and is a measurement vehicle rather than a
-core. When the top level lands: fork `MiSTer-devel/Template_MiSTer`, place RTL
-alongside `sys/`, and the template's post-module script emits a dated `.rbf` into
-`releases/`. Headless that is `quartus_sh --flow compile Model1.qpf`.
+`make rbf` builds it. `Model1.sv` is the top level and `mra/` holds a `.mra` per
+game; `tools/mister_project.sh` stages the build in `build/mister` with `sys/`
+symlinked rather than vendored, then runs `quartus_sh --flow compile Model1`.
+The `.rbf` lands in `build/mister/output_files/`.
+
+Deploy is a copy and a command: the `.rbf` to `/media/fat/_Arcade/cores/`, the
+`.mra` to `/media/fat/_Arcade/`, then
+`echo "load_core /media/fat/_Arcade/<name>.mra" > /dev/MiSTer_cmd`. **Reboot the
+board before each load test** — a failed load leaves it stalled and every result
+after that reports the stalled state. `/tmp/CORENAME` is the reliable indicator
+of what is running; the FPGA manager state and the per-core config file are not.
+
+`make quartus MOD=m1_integrated` remains a measurement vehicle — the V60 side and
+the 2D side without the framework — and is the faster build when the question is
+resource cost rather than behaviour.
 
 ## Bootstrap
 
