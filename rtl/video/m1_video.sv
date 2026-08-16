@@ -139,7 +139,7 @@ module m1_video #(
   // a single M10K. Both banks are read every cycle at the same address and the
   // result is muxed afterwards, which costs a 14-bit mux instead of an address
   // mux and keeps the memories inferrable.
-  logic [13:0] lb_q [2][4];
+  wire [13:0] lb_q [2][4];
 
   // ---------------------------------------------------------- sequencer
   typedef enum logic [2:0] {
@@ -155,10 +155,10 @@ module m1_video #(
   logic [14:0] f_tram_addr;
   logic [7:0]  f_fetches;
 
-  logic        f_lb_we;
-  logic [8:0]  f_lb_addr;
-  logic [11:0] f_lb_pal;
-  logic        f_lb_transparent, f_lb_prio;
+  logic [3:0]       f_lb_we;
+  logic [8:0]       f_lb_addr;
+  logic [3:0][11:0] f_lb_pal;
+  logic [3:0]       f_lb_transparent, f_lb_prio;
 
   // The sequencer borrows the tile RAM port to read the scroll registers, so
   // the address is muxed rather than driven straight from the fetch engine.
@@ -266,16 +266,61 @@ module m1_video #(
   // legal SystemVerilog and Verilator takes it, but Quartus 17.0 rejects it
   // with "genvar is a reserved keyword" — the same toolchain-strictness class
   // as the yosys and Icarus issues recorded in docs/rtl-conventions.md.
-  genvar gb, gl;
+  //
+  // FOUR LANES, SO FOUR PIXELS LAND IN ONE WRITE EVEN WHEN UNALIGNED.
+  //
+  // The fetch engine now emits four pixels a cycle, and they are consecutive
+  // on screen but not aligned to four: the tile boundary moves with hscr. Each
+  // lane holds the pixels whose screen position has that value mod 4, so four
+  // consecutive positions touch each lane exactly once — with one lane pair
+  // landing in the next group along. That makes it four independent
+  // single-write memories rather than one memory needing four ports, which is
+  // the only form Quartus will infer.
+  //
+  // A per-lane byte-enable would have been the obvious alternative and Quartus
+  // 17.0 does not infer RAM from it at all — see rtl/m1_mainram.sv, where that
+  // idiom cost 28,816 ALM before it was found.
+  genvar gb, gl, gn;
   generate
     for (gb = 0; gb < 2; gb++) begin : g_bank
       for (gl = 0; gl < 4; gl++) begin : g_layer
-        logic [13:0] mem [512];
-        always_ff @(posedge clk) begin
-          if (f_lb_we && (bank == gb[0]) && (cur_layer == 2'(gl)))
-            mem[f_lb_addr] <= {f_lb_prio, f_lb_transparent, f_lb_pal};
-          lb_q[gb][gl] <= mem[hcnt[8:0]];
+        logic [13:0] lane_q [4];
+        logic [1:0]  sel_q;
+
+        for (gn = 0; gn < 4; gn++) begin : g_lane
+          logic [13:0] mem [128];
+
+          // Which incoming pixel belongs to this lane, and which group it
+          // lands in. Pixels before the base's own lane have wrapped into the
+          // next group.
+          logic [1:0] widx;
+          logic [8:0] wpos;
+          logic [6:0] waddr;
+          logic       wen;
+          assign widx  = 2'(gn[1:0] - f_lb_addr[1:0]);
+          // The screen position this lane is writing, then its group. Written
+          // as the sum rather than "base group plus a carry" because the carry
+          // form makes lane 3's comparison constant, which is true but reads
+          // as a mistake and trips -Wall.
+          assign wpos  = f_lb_addr + 9'(widx);
+          assign waddr = wpos[8:2];
+          assign wen   = f_lb_we[widx] && (bank == gb[0])
+                       && (cur_layer == 2'(gl));
+
+          always_ff @(posedge clk) begin
+            if (wen)
+              mem[waddr] <= {f_lb_prio[widx], f_lb_transparent[widx],
+                             f_lb_pal[widx]};
+            lane_q[gn] <= mem[hcnt[8:2]];
+          end
         end
+
+        // The select is registered from the same hcnt as the address, so the
+        // mux picks the lane that address fetched. Registering only the data
+        // and muxing with live hcnt would take the wrong lane for the cycles
+        // between a counter step and the read landing.
+        always_ff @(posedge clk) sel_q <= hcnt[1:0];
+        assign lb_q[gb][gl] = lane_q[sel_q];
       end
     end
   endgenerate

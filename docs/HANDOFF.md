@@ -62,52 +62,74 @@ CL+2**, and with it the core boots: Virtua Racing's TEST MODE menu renders from
 real ROM, the V60 runs at `fe1435`, the I/O board has answered 1,398 times, and
 every value the overlay reports matches simulation exactly.
 
-## The wobble, and what it is actually made of — 2026-08-16
+## The wobble: what it is NOT, and where that leaves it — 2026-08-16
 
-The picture on hardware is unstable: flashing white, jumping vertically.
-It became unstable only once the game had real tile data to draw, which is
-the tell — with tile RAM all zeros every column asked for the same
-character, every read hit the open row, and the engine kept up easily.
+The picture on hardware is unstable — flashing white, jumping vertically —
+and it became unstable only once the game had real tile data to draw.
 
-Measured, in this order, each number replacing an assumption:
+**The fetch engine is not the cause, and the evidence that said it was, was
+misread.** The deadline-miss counter is cumulative, and 6,849 misses over 103
+frames was read as a rate — "one line in six" — when it is not:
 
-| | |
-|---|---|
-| fetch deadline misses | **6849 per 103 frames** — about one line in six shown stale |
-| cost per layer, before pipelining | 1614 cycles worst case |
-| cost per layer, after pipelining | **1188** worst case, 578 text |
-| misses after pipelining | **6849** — nine fewer. Not the constraint. |
-| character fetch wait, in the whole system | **240 cycles average** over 100,372 fetches |
+```
+20 M cycles: frames=31  misses=6849
+40 M cycles: frames=46  misses=6849
+...
+120 M cycles: frames=103 misses=6849
+```
 
-The engine's own header attributes 1,118 idle cycles a layer to "one
-request outstanding at a time", and pipelining the fetch behind the emit
-is the fix that follows from that. It bought nine misses out of 6,858,
-because the premise was wrong: the unit test models char_ack returning in
-14 cycles and the real figure with the V60 competing for the same
-controller is 240. Pipelining hides eight cycles. It cannot hide 240.
+Every miss happens before frame 31 and the count never moves again. Seventy-two
+consecutive frames are clean. The misses are a boot transient: while the V60
+sweeps memory in its power-on tests it saturates the SDRAM controller, every
+line overruns, and once the game settles the engine keeps up with room to
+spare. That was already true before any of the work below.
 
-So the next lever is NOT the fetch engine. In rough numbers per line, on
-the screen measured: about 4.4 character fetches across all four layers
-(tile reuse is very effective on a text screen), so ~1,050 cycles of
-waiting, plus 4 x 496 = 1,984 cycles of emission at one pixel per cycle,
-against 3,280 available. That total sits just under the budget, which is
-exactly why 17% of lines miss rather than all of them.
+### What the engine work bought anyway
 
-Two candidates, and the second is cheaper than it looks:
+Both changes are verified and worth keeping — they are the difference between
+"keeps up" and "keeps up with margin", and the margin is what four dense layers
+will need — but neither addressed the symptom:
 
-1. **Arbitration.** The video has a hard deadline every scanline and the
-   V60 does not. 240 cycles is far more than a round-robin turn between
-   three active ports should cost, so find out where it goes before
-   changing m1_sdram — it is verified at 80,009 checks and the reason for
-   the delay is not yet established.
-2. **Wider line-buffer writes.** char_data is 32 bits — eight 4bpp pixels
-   arriving at once — and the emit side spends eight cycles writing them
-   one at a time. Writing all eight per cycle takes emission from 1,984
-   cycles to 248 for four layers, which alone puts the line comfortably
-   inside budget. It means restructuring the line buffers in m1_video as
-   62 entries of 8 pixels with an 8-way read mux on hcnt[2:0], at
-   about the same M10K cost.
+| | before | after |
+|---|---|---|
+| cost per layer, distinct tiles | 1,614 | 1,182 |
+| cost per layer, text | ~700 | **267** |
+| four text layers against 3,280 available | ~2,800 | **1,068** |
+| character fetch wait | 240 cycles | 103 |
+| deadline misses | 6,858 | 6,849 |
 
+1. **Fetch pipelined**: fetch and emit are separate state machines a column
+   apart, so a column's memory latency is paid under the emission already
+   happening. Bought nine misses, because the unit test models a 14-cycle
+   char_ack and the real figure under CPU contention was 240 — pipelining hides
+   eight cycles.
+2. **Four pixels a cycle into the line buffer**: `char_data` always delivered
+   eight 4bpp pixels at once and the emit side wrote them one at a time. The
+   line buffers are now four lanes of 128 entries, so four consecutive screen
+   positions touch each lane once and land in one write even when the tile
+   boundary is unaligned — the only form Quartus will infer, since a per-lane
+   byte enable infers nothing at all (see `rtl/m1_mainram.sv`).
+
+37,202 fetch checks and 380,929 video-against-MAME checks pass throughout.
+
+### So what is left
+
+In simulation, steady state is clean: zero deadline misses over 72 frames and a
+correct picture. On hardware it is unstable. That is the same shape of problem
+as every other fault this month — something simulation does not model — and the
+candidates have not been narrowed yet:
+
+- **Video mode.** The core emits MAME's `set_raw(16 MHz, 656, 0, 496, 424, 0,
+  384)` = 57.52 Hz. The sync POSITIONS inside blanking are "chosen, not
+  derived" — `m1_video_timing`'s header says so — and MiSTer's scaler measures
+  the frame from those edges. A jumping image is characteristic of a scaler
+  that cannot lock. **Read the OSD's reported timings first; it costs nothing.**
+- **Read-phase margin.** CL+2 is correct for the fetches checked, but it was
+  chosen from a one-word shift, not from a timing analysis, and nothing
+  constrains the SDRAM I/O.
+- **The 103-cycle character wait** is still unexplained. It is far more than a
+  round-robin turn between three ports should cost, and worth understanding on
+  its own merits even though it is not the symptom.
 ## Where it is
 
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural

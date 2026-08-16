@@ -89,11 +89,17 @@ struct Fetch {
     d->clk = 1; d->eval();
     cyc++;
 
-    if (d->lb_we) {
-      uint16_t a = d->lb_addr & 0x1ff;
-      lb_pal[a] = d->lb_pal;
-      lb_tr[a] = d->lb_transparent;
-      lb_pr[a] = d->lb_prio;
+    // Four pixels a cycle now, with lb_we a per-pixel valid mask: the group is
+    // clipped at the tile boundary and at the end of the line, so the first
+    // group of a scrolled line and the last of any line are short. Collected
+    // by screen address, so everything downstream of here is unchanged — a
+    // pixel is still checked against the reference at the position it landed.
+    for (int i = 0; i < 4; i++) {
+      if (!((d->lb_we >> i) & 1)) continue;
+      uint16_t a = (d->lb_addr + i) & 0x1ff;
+      lb_pal[a] = (d->lb_pal >> (12 * i)) & 0xfff;
+      lb_tr[a] = (d->lb_transparent >> i) & 1;
+      lb_pr[a] = (d->lb_prio >> i) & 1;
       lb_written[a] = true;
     }
   }

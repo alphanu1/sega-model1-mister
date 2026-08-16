@@ -113,12 +113,24 @@ module m1_tile_fetch #(
   input  logic [31:0] char_data,      // {word1, word0}
   input  logic        char_ack,
 
-  // Line buffer write port: eight pixels per column.
-  output logic        lb_we,
-  output logic [8:0]  lb_addr,
-  output logic [11:0] lb_pal,
-  output logic        lb_transparent,
-  output logic        lb_prio,
+  // Line buffer write port: FOUR PIXELS PER CYCLE.
+  //
+  // char_data delivers eight 4bpp pixels at once and this used to spend eight
+  // cycles writing them one at a time — 496 cycles a layer, 1,984 for four,
+  // against 3,280 in a scanline. That, not the fetch latency, is what put the
+  // line over budget: measured, the engine misses its deadline on one line in
+  // six. Four at a time takes emission to 124 cycles a layer.
+  //
+  // `lb_we` is a per-pixel valid mask rather than a single enable, because the
+  // first group of a line is short whenever hscr is not a multiple of eight,
+  // and the last one is cut off by the end of the visible region. All four
+  // pixels are always from the SAME tile — the group is clipped at the tile
+  // boundary — so one latched character row feeds them all.
+  output logic [3:0]       lb_we,
+  output logic [8:0]       lb_addr,        // screen position of pixel 0
+  output logic [3:0][11:0] lb_pal,
+  output logic [3:0]       lb_transparent,
+  output logic [3:0]       lb_prio,
 
   // Per-line telemetry: how many character fetches were actually issued. With
   // the repeat check this is well below COLUMNS on text screens, and it is the
@@ -165,10 +177,15 @@ module m1_tile_fetch #(
   logic [17:0] last_char;
   logic        tile_valid, char_valid;
 
-  // Emit side: sx is the pixel being written.
+  // Emit side: sx is the first pixel of the group being written, and rem is
+  // how many pixels of the current tile are still to come. A group is the
+  // smaller of four, what is left of the tile, and what is left of the line.
   logic [9:0]  sx;
+  logic [3:0]  rem;
   logic [15:0] tw_e;
   logic [31:0] ch_e;
+  logic [3:0]  gn;        // pixels in this group, 1..4
+  logic [9:0]  left;      // pixels left on the line
 
   logic [8:0]  map_y;
   assign map_y = line;
@@ -191,9 +208,7 @@ module m1_tile_fetch #(
   logic [11:0] f_unused_pal;
   logic  [3:0] f_unused_pixel;
   logic        f_unused_prio, f_unused_transp, f_unused_disabled;
-  logic [14:0] e_unused_tile_addr;
-  logic [17:0] e_unused_char_addr;
-  logic  [3:0] e_unused_pixel;
+
 
   m1_tile_decode dec_f (
     .x(fx[8:0]), .y(map_y), .layer(layer),
@@ -206,19 +221,35 @@ module m1_tile_fetch #(
     .transparent(f_unused_transp), .disabled(f_unused_disabled)
   );
 
-  logic [11:0] dec_pal;
-  logic        dec_prio, dec_transp, dec_disabled;
+  // FOUR EMIT DECODES, ONE PER PIXEL OF THE GROUP.
+  //
+  // The pixel, its palette index and its transparency all depend on the screen
+  // position, so four pixels a cycle needs four of them. The addressing half of
+  // each is unused and synthesis drops it; what remains is the nibble select
+  // and the palette compose, which is small. Instantiated rather than written
+  // out again so the 4bpp unpacking keeps one definition.
+  logic [3:0][11:0] dec_pal;
+  logic [3:0]       dec_prio, dec_transp, dec_disabled;
+  logic [3:0][14:0] e_un_tile;
+  logic [3:0][17:0] e_un_char;
+  logic [3:0][3:0]  e_un_pixel;
 
-  m1_tile_decode dec_e (
-    .x(sx[8:0]), .y(map_y), .layer(layer),
-    .hscr(hscr), .vscr(vscr),
-    .tile_word(tw_e),
-    .char_w0(ch_e[15:0]), .char_w1(ch_e[31:16]),
-    .tile_mask(tile_mask),
-    .tile_addr(e_unused_tile_addr), .char_addr(e_unused_char_addr),
-    .pal_index(dec_pal), .pixel(e_unused_pixel), .prio(dec_prio),
-    .transparent(dec_transp), .disabled(dec_disabled)
-  );
+  genvar gp;
+  generate
+    for (gp = 0; gp < 4; gp++) begin : g_emit
+      m1_tile_decode dec_e (
+        .x(sx[8:0] + 9'(gp)), .y(map_y), .layer(layer),
+        .hscr(hscr), .vscr(vscr),
+        .tile_word(tw_e),
+        .char_w0(ch_e[15:0]), .char_w1(ch_e[31:16]),
+        .tile_mask(tile_mask),
+        .tile_addr(e_un_tile[gp]), .char_addr(e_un_char[gp]),
+        .pal_index(dec_pal[gp]), .pixel(e_un_pixel[gp]),
+        .prio(dec_prio[gp]), .transparent(dec_transp[gp]),
+        .disabled(dec_disabled[gp])
+      );
+    end
+  endgenerate
 
   assign tram_addr = f_tile_addr;
   assign char_addr = f_char_addr;
@@ -239,6 +270,13 @@ module m1_tile_fetch #(
 
   logic consume;
   assign consume = (est == E_WAIT) && f_have;
+
+  assign left = 10'(COLUMNS * 8) - sx;
+  always_comb begin
+    gn = 4'd4;
+    if (rem  < gn)        gn = rem;
+    if (left < 10'(gn))   gn = 4'(left);
+  end
 
   // ------------------------------------------------------------- fetch side
   always_ff @(posedge clk or negedge rst_n) begin
@@ -318,11 +356,11 @@ module m1_tile_fetch #(
   // -------------------------------------------------------------- emit side
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      est <= E_IDLE; sx <= '0; tw_e <= '0; ch_e <= '0;
-      lb_we <= 1'b0; done <= 1'b0;
-      lb_addr <= '0; lb_pal <= '0; lb_transparent <= 1'b0; lb_prio <= 1'b0;
+      est <= E_IDLE; sx <= '0; rem <= '0; tw_e <= '0; ch_e <= '0;
+      lb_we <= 4'd0; done <= 1'b0;
+      lb_addr <= '0; lb_pal <= '0; lb_transparent <= '0; lb_prio <= '0;
     end else begin
-      lb_we <= 1'b0;
+      lb_we <= 4'd0;
       done  <= 1'b0;
 
       if (start) begin
@@ -339,24 +377,28 @@ module m1_tile_fetch #(
             if (f_have) begin
               tw_e <= tw_f;
               ch_e <= ch_f;
+              // Pixels of this tile still to come. Only the first tile of a
+              // line is ever short, and only when hscr is not a multiple of
+              // eight — the boundary moves with the scroll.
+              rem  <= 4'd8 - {1'b0, e_off};
               est  <= E_EMIT;
             end
           end
 
           E_EMIT: begin
-            lb_we          <= 1'b1;
+            // Valid mask, not a single enable: the group is clipped at the
+            // tile boundary and at the end of the line.
+            lb_we          <= 4'((4'd1 << gn) - 4'd1);
             lb_addr        <= sx[8:0];
             lb_pal         <= dec_pal;
             lb_transparent <= dec_transp | dec_disabled;
             lb_prio        <= dec_prio;
-            if (sx == 10'(COLUMNS * 8 - 1)) begin
-              est <= E_DONE;
-            end else begin
-              sx <= sx + 10'd1;
-              // The last pixel of a tile is where the low three bits of the
-              // MAP position wrap, so the next pixel needs the next column.
-              if (e_off == 3'd7) est <= E_WAIT;
-            end
+
+            sx  <= sx + 10'(gn);
+            rem <= rem - gn;
+
+            if (10'(gn) >= left)      est <= E_DONE;
+            else if ((rem - gn) == 0) est <= E_WAIT;
           end
 
           E_DONE: begin

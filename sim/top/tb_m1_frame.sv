@@ -498,8 +498,13 @@ initial begin
         if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
         if (cycles % 20000000 == 0)
             begin
-                $display("  %0d M cycles: pc=%06h frames=%0d painted=%0d nonblack=%0d",
-                         cycles/1000000, dbg_pc, frames, painted, nonblack);
+                // Deadline misses printed as a running total: 6849 was
+                // identical across three very different engine speeds, which
+                // only makes sense if they all happen in a phase where the
+                // engine is starved rather than slow. If it plateaus, they are
+                // a boot transient and steady state is clean.
+                $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d",
+                         cycles/1000000, dbg_pc, frames, dbg_overruns);
                 $fflush;
             end
     end
