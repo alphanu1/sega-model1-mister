@@ -84,7 +84,22 @@ module m1_video #(
   output logic        vid_vb,
 
   output logic        vblank_irq,     // to the V60
-  output logic [7:0]  dbg_fetches     // last line's fetch count, worst layer
+  output logic [7:0]  dbg_fetches,    // last line's fetch count, worst layer
+
+  // HOW OFTEN THE FETCH ENGINE MISSED ITS DEADLINE.
+  //
+  // A line's worth of fetching is about 3,280 core cycles at 80 MHz and four
+  // dense layers want roughly 6,456, so the budget can be exceeded — see
+  // docs/m1-m4-plan.md and task 2a in HANDOFF. When it is, line_start arrives
+  // while the sequencer is still in Q_RUN, the bank does not flip and the
+  // previous line is displayed again.
+  //
+  // That is a deliberate, locally-wrong-but-stable failure, and it is invisible
+  // from the outside: the picture is merely wrong. Counted here so "the image
+  // shifts and tears" can be told apart from "the renderer is broken" without
+  // guessing, because the two look identical on a screen and have nothing in
+  // common as bugs.
+  output logic [15:0] dbg_overruns
 );
 
   // ------------------------------------------------------------- timing
@@ -169,7 +184,7 @@ module m1_video #(
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
       hscr_r <= '0; vscr_r <= '0; f_start <= 1'b0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
-      bank <= 1'b0; dbg_fetches <= '0;
+      bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
     end else begin
       f_start <= 1'b0;
 
@@ -223,6 +238,10 @@ module m1_video #(
           // send the remaining writes to the buffer being displayed, tearing
           // every layer of every following line — a whole-screen failure from
           // a one-line overrun.
+          // Saturating, not wrapping: a counter that rolls over reads as a
+          // small number on a screen and says the opposite of what happened.
+          if (line_start && !(&dbg_overruns)) dbg_overruns <= dbg_overruns + 1'd1;
+
           if (f_done) begin
             if (f_fetches > dbg_fetches) dbg_fetches <= f_fetches;
             q <= Q_NEXT;

@@ -176,6 +176,7 @@ wire       vid_hs, vid_vs, vid_hb, vid_vb;
 wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
+wire [15:0] dbg_overruns;
 
 // mem_rst_n is the memory subsystem's own reset and must not follow the game
 // reset: the loader holds ioctl_wait until SDRAM is ready, so a loader held in
@@ -213,7 +214,7 @@ m1_integrated core (
 
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
-    .rom_loaded_o(loader_done), .dbg_fetches()
+    .rom_loaded_o(loader_done), .dbg_fetches(), .dbg_overruns(dbg_overruns)
 );
 
 // ----------------------------------------------------- getting the ROM in
@@ -489,6 +490,7 @@ initial begin
              dbg_pc, dbg_io_replies, v_flags);
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
+    $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
     $display("PROBE: %0d distinct palette words, %0d distinct tile words, %0d distinct palette INDICES",
              npal, ntram, npaddr);
     tv = 0;

@@ -278,6 +278,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   wire       vid_hs, vid_vs, vid_hb, vid_vb;
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
+  wire  [7:0] dbg_fetches;
+  wire [15:0] dbg_overruns;
   wire [15:0] dbg_io_replies;
 
   m1_integrated core (
@@ -312,7 +314,7 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
-    .dbg_fetches()
+    .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -437,7 +439,7 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // Every row carries its own number in the top byte. Tagging only some rows
   // meant counting bands from an edge that was sometimes out of frame, and two
   // rows got misread that way.
-  wire [31:0] dw [12];
+  wire [31:0] dw [13];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -452,6 +454,10 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   assign dw[11] = {8'h0B, 2'd0, ldr_overflow, st_s2[17:16],
                    rom_ready, mem_ready, ioctl_download,
                    st_s2[15:0]};                   // flags, I/O replies
+  // Fetch deadline misses against the worst layer's fetch count for the last
+  // line. If the picture is shifting and tearing, this says whether the
+  // renderer is failing or merely running out of scanline.
+  assign dw[12] = {8'h0C, dbg_overruns, dbg_fetches};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -459,12 +465,12 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // the concatenation runs bottom row first. Written with explicit indices
   // rather than as a list, because getting this backwards produces a display
   // that is perfectly legible and entirely wrong.
-  m1_diag #(.NWORDS(12)) diag (
+  m1_diag #(.NWORDS(13)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     .enable(~status[3]),
     .hb(vid_hb), .vb(vid_vb),
-    .words({dw[11], dw[10], dw[9], dw[8], dw[7], dw[6],
-             dw[5],  dw[4],  dw[3], dw[2], dw[1], dw[0]}),
+    .words({dw[12], dw[11], dw[10], dw[9], dw[8], dw[7], dw[6],
+             dw[5],  dw[4],  dw[3],  dw[2], dw[1], dw[0]}),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
     .out_r(dg_r), .out_g(dg_g), .out_b(dg_b)
   );

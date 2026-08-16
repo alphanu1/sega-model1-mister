@@ -137,7 +137,8 @@ module m1_integrated (
   // ioctl_wait went up. Brought out because a dropped word is a corrupt ROM
   // that reports a successful load and fails much later as a CPU fault.
   output logic        ldr_overflow,
-  output logic [7:0]  dbg_fetches
+  output logic [7:0]  dbg_fetches,
+  output logic [15:0] dbg_overruns
 );
 
   logic [14:0] vid_tram_addr;
@@ -259,7 +260,8 @@ module m1_integrated (
     .pal_addr(vid_pal_addr), .pal_data(vid_pal_data),
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
-    .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches)
+    .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
+    .dbg_overruns(dbg_overruns)
   );
 
   m1_rom_loader loader (
