@@ -33,6 +33,27 @@ end
 verilator disagree about implicit extension in signed contexts often enough that it is
 not worth finding out which one is right this time.
 
+**No bit select on a function call.** Quartus 17.0 rejects `f(a, b)[7 - i]` with
+`syntax error ... near text "["`, and rejects the whole module with it. Assign the
+result to a wire and index that:
+
+```systemverilog
+logic [7:0] grow;
+assign grow = glyph(nib, fy);   // not glyph(nib, fy)[7 - fx]
+assign lit  = grow[7 - fx];
+```
+
+Same family as the genvar rule below: legal SystemVerilog, accepted by verilator,
+and it only fails after twenty minutes of synthesis.
+
+**A comment must not begin with the word "verilator".** It is read as a pragma —
+`%Error-BADVLTPRAGMA: Unknown verilator comment` — so a sentence that happens to
+start with the tool's name fails the lint it is describing. Reword the line.
+
+**No `genvar` in a for-loop header.** `for (genvar i = ...)` is legal SystemVerilog
+and verilator takes it; Quartus 17.0 rejects it with "genvar is a reserved keyword".
+Declare the genvar outside the loop.
+
 **Cast loop-derived values explicitly.** `5'(27 - i)`, not `27 - i`.
 
 **Quartus 17.0 will not infer a two-write-port M10K.** Not from any shape tried.

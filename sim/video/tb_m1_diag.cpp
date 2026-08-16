@@ -27,9 +27,32 @@
 #include <cstdint>
 #include <vector>
 
-static const int NWORDS = 6;
-static const int CELL_W = 8;
+static const int NWORDS = 12;
+static const int CELL_W = 16;
 static const int CELL_H = 16;
+
+// The same font, mirrored here rather than shared. A test that imports the
+// table it is checking proves the renderer consistent with itself and nothing
+// more; typed out twice, a wrong glyph has to be wrong the same way twice to
+// pass.
+static const uint8_t FONT[16][8] = {
+  {0x7C,0xC6,0xCE,0xD6,0xE6,0xC6,0x7C,0x00},  // 0
+  {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},  // 1
+  {0x7C,0xC6,0x06,0x1C,0x30,0x60,0xFE,0x00},  // 2
+  {0x7C,0xC6,0x06,0x3C,0x06,0xC6,0x7C,0x00},  // 3
+  {0x0C,0x1C,0x3C,0x6C,0xFE,0x0C,0x0C,0x00},  // 4
+  {0xFE,0xC0,0xFC,0x06,0x06,0xC6,0x7C,0x00},  // 5
+  {0x3C,0x60,0xC0,0xFC,0xC6,0xC6,0x7C,0x00},  // 6
+  {0xFE,0xC6,0x0C,0x18,0x30,0x30,0x30,0x00},  // 7
+  {0x7C,0xC6,0xC6,0x7C,0xC6,0xC6,0x7C,0x00},  // 8
+  {0x7C,0xC6,0xC6,0x7E,0x06,0x0C,0x78,0x00},  // 9
+  {0x38,0x6C,0xC6,0xC6,0xFE,0xC6,0xC6,0x00},  // A
+  {0xFC,0x66,0x66,0x7C,0x66,0x66,0xFC,0x00},  // B
+  {0x3C,0x66,0xC0,0xC0,0xC0,0x66,0x3C,0x00},  // C
+  {0xF8,0x6C,0x66,0x66,0x66,0x6C,0xF8,0x00},  // D
+  {0xFE,0x62,0x68,0x78,0x68,0x62,0xFE,0x00},  // E
+  {0xFE,0x62,0x68,0x78,0x68,0x60,0xF0,0x00},  // F
+};
 
 // A raster wide and tall enough to contain the box and still have room outside
 // it for the passthrough checks.
@@ -95,13 +118,14 @@ static void set_words(Diag& g, const uint32_t* w) {
 
 // What the overlay should paint at a given visible position.
 static bool expect_cell(int x, int y, const uint32_t* w, uint32_t* out) {
-  if (x >= 32 * CELL_W || y >= NWORDS * CELL_H) return false;
-  int row = y / CELL_H;
-  int col = x / CELL_W;
-  if ((y % CELL_H) == CELL_H - 1) { *out = 0x000000; return true; }
-  if ((col % 4) == 0 && (x % CELL_W) == 0) { *out = 0x00C000; return true; }
-  bool set = (w[row] >> (31 - col)) & 1;
-  *out = set ? 0xFFFFFF : 0x000050;
+  if (x >= 8 * CELL_W || y >= NWORDS * CELL_H) return false;
+  int row   = y / CELL_H;
+  int digit = x / CELL_W;            // 0 leftmost = most significant nibble
+  int fx    = (x % CELL_W) / 2;      // drawn at 2x
+  int fy    = (y % CELL_H) / 2;
+  int nib   = (w[row] >> ((7 - digit) * 4)) & 0xF;
+  bool lit  = (FONT[nib][fy] >> (7 - fx)) & 1;
+  *out = lit ? 0xFFFFFF : 0x000050;
   return true;
 }
 
@@ -138,13 +162,17 @@ int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   Diag g;
 
-  // Patterns chosen so a swapped bit order, a swapped word order or a stuck
-  // cell all show up: a walking one, a walking zero, and two words whose hex
-  // digits are all distinct.
-  const uint32_t w1[NWORDS] = {0x00000001u, 0x80000000u, 0x01234567u,
-                               0x89abcdefu, 0xffffffffu, 0x00000000u};
+  // Between them these cover every glyph in every digit position, which is
+  // what catches a font entry that is wrong or a nibble selected from the
+  // wrong end of the word.
+  const uint32_t w1[NWORDS] = {0x01234567u, 0x89abcdefu, 0xfedcba98u,
+                               0x76543210u, 0x00000000u, 0xffffffffu,
+                               0x00000001u, 0x80000000u, 0x0bfff8u,
+                               0x104ef3d6u, 0x00300000u, 0x0b0824u};
   const uint32_t w2[NWORDS] = {0xdeadbeefu, 0x55555555u, 0xaaaaaaaau,
-                               0x0f0f0f0fu, 0xf0f0f0f0u, 0x12345678u};
+                               0x0f0f0f0fu, 0xf0f0f0f0u, 0x12345678u,
+                               0x9abcdef0u, 0x13572468u, 0xfedcba98u,
+                               0x02468aceu, 0x11223344u, 0xccddeeffu};
 
   // Disabled must be perfectly transparent. The overlay defaults to on in the
   // core, so the OSD switch that turns it off has to give the game back an
