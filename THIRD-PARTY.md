@@ -83,6 +83,42 @@ one. tv80 is the only option that can run inside the boot test, which is where
 every recent bug has been found; T80 would synthesise but could not be
 simulated alongside the rest of the design.
 
+## Evaluated for M4 sound, 2026-08-16
+
+The sound board is a 68000 at 10 MHz, a YM3438 and two MultiPCM 315-5560. The
+CPU is the part best served by existing work; nobody should write a 68000.
+
+| | licence | language | GPL-3 compatible | note |
+|---|---|---|---|---|
+| **fx68k** (Jorge Cwik / ijor) | GPL-3.0 | SystemVerilog | yes | cycle accurate; the usual MiSTer choice |
+
+**Reported figures, not measured here:** roughly 5,100 LE, about 5 KB of
+internal RAM, and up to ~40 MHz. Two notes before either number is relied on:
+
+- The LE-to-ALM conversion doing the rounds is 2:1, which is the *theoretical*
+  packing — one ALM holds two adaptive LUTs. Real designs rarely reach it, so
+  5,100 LE is more likely 2,800-3,500 ALM on this device than the ~2,550 the
+  straight division gives. Treat it as measured only after `make quartus`.
+- ~5 KB of internal RAM is 4-5 M10K, and **M10K is the binding resource on this
+  device now** — 409 of 553 spent, with the rasterizer's band buffer wanting
+  ~51 of what is left. Small, but track it from the start rather than at the end.
+
+40 MHz against a 10 MHz sound CPU is four times the headroom needed, which is
+one constraint this project does not have to think about.
+
+**Still to confirm before this is a decision**, and it is the criterion that
+decided the I/O board: does it simulate under Verilator? A core that cannot run
+inside the boot and frame tests cannot be verified the way everything else here
+is. Fully synchronous SystemVerilog is a good sign and not an answer.
+
+Licence terms are as reported by the project; confirm against the repository's
+own LICENSE when it is fetched, the same way `tools/bootstrap.sh` does for
+everything else in `third_party/`.
+
+GPL-3.0 combines with this project's GPL-3.0-or-later without friction. The
+combined work is distributable under GPL-3.0; our own files keep their
+"or later" option.
+
 ## Not usable
 
 ### frangarcj/geometrizer — no licence
