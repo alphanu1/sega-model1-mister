@@ -103,6 +103,7 @@ module m1_sdram_harness (
     .T_WR(T_WR), .CL(CL), .T_REFI(T_REFI), .INIT_NOP(INIT_NOP), .ACK_HOLD(2)
   ) dut (
     .clk(clk), .rst_n(rst_n), .ready(ready),
+    .rd_lat_sel(2'd1),   // CL+3, what this harness is baselined on
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
     .sd_we_n(we_n), .sd_ba(ba), .sd_a(a), .sd_dqm(dqm),
     .sd_dq_o(dq_c2m), .sd_dq_oe(dq_oe_c), .sd_dq_i(dq_m2c),

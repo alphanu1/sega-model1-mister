@@ -72,6 +72,7 @@ module emu
     "-;",
     "O[2],Video timing,Original 24kHz,Scandoubled;",
     "O[3],Debug overlay,On,Off;",
+    "O[5:4],SDRAM read phase,CL+2,CL+3,CL+4,CL+5;",
     "-;",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
@@ -243,8 +244,21 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // one refresh every 7.8125 us, which is 625 cycles. The default of 700 suits
   // 100 MHz and under-refreshes here — a data-retention fault that would look
   // like random ROM corruption rather than a timing setting.
+  // READ CAPTURE PHASE, SELECTABLE FROM THE OSD.
+  //
+  // The board returned every burst shifted right by one 16-bit word — the
+  // controller called the burst's word 1 its word 0 — which is what left the
+  // V60 reading FE104E as its reset vector where the ROM holds 4EF3D6. The
+  // derivation of CL+3 in m1_sdram is against sdram_model, which presents data
+  // on the same clock edge the controller uses; the board's device is clocked
+  // on the inverse of clk_sys and so answers half a period away.
+  //
+  // Rather than guess the correction one twenty-five minute build at a time,
+  // the phase is an OSD option. It defaults to CL+2, one cycle earlier than the
+  // model needs, which is what the measured shift implies.
   m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
+    .rd_lat_sel(status[5:4]),
     .sd_cke(SDRAM_CKE), .sd_cs_n(SDRAM_nCS), .sd_ras_n(SDRAM_nRAS),
     .sd_cas_n(SDRAM_nCAS), .sd_we_n(SDRAM_nWE), .sd_ba(SDRAM_BA),
     .sd_a(SDRAM_A), .sd_dqm({SDRAM_DQMH, SDRAM_DQML}),

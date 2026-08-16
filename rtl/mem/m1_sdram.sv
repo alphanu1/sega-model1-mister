@@ -86,6 +86,10 @@ module m1_sdram #(
   input  logic                 rst_n,
   output logic                 ready,
 
+  // Read capture depth: 0 -> CL+2, 1 -> CL+3, 2 -> CL+4, 3 -> CL+5. Tie to 1
+  // for the behaviour every simulation harness is baselined on. See RD_LAT.
+  input  logic [1:0]           rd_lat_sel,
+
   // SDRAM device
   output logic                 sd_cke,
   output logic                 sd_cs_n,
@@ -154,7 +158,39 @@ module m1_sdram #(
   // counted and the capture read was not — and every read returned zero.
   // This off-by-one has now cost the project six debugging sessions across
   // four modules, which is why it is spelled out instead of asserted.
-  localparam int unsigned RD_LAT = CL + 3;
+  //
+  // THAT DERIVATION IS AGAINST sdram_model, AND THE BOARD DISAGREES.
+  //
+  // The model samples commands and presents data on the same clock edge the
+  // controller uses. The board does not: SDRAM_CLK is the inverse of clk_sys,
+  // so the device samples and drives half a period away, and the model's own
+  // header says that forwarded-clock phase is "deliberately not modelled
+  // here". Every term above is right and the total is still a simulation
+  // figure.
+  //
+  // Measured on hardware: the assembled line came back shifted right by one
+  // 16-bit word — the controller tagged the burst's word 1 as word 0. The
+  // V60's reset vector read FE104E where the ROM holds 4EF3D6, which is
+  // exactly bits [39:16] of the same burst. It hid for a session because the
+  // only other address fetched is word 0, where the ROM is 000d 000d 000d
+  // 000d and a one-word shift is invisible.
+  //
+  // So the capture point is selectable at run time rather than guessed one
+  // Quartus build at a time. `rd_lat_sel` picks CL+2 through CL+5; the
+  // pipeline is always the longest of those and the tag is injected at the
+  // chosen depth. Simulation ties it to 1 and keeps CL+3, so every existing
+  // harness measures what it always measured.
+  localparam int unsigned RD_LAT     = CL + 5;   // pipeline depth, the maximum
+  localparam int unsigned RD_LAT_DEF = CL + 3;   // what the model needs
+
+  // Which stage the tag is injected at, so it reaches slot 0 after that many
+  // cycles. Registered off the selector to keep a slow OSD bit out of the
+  // command path.
+  logic [3:0] cap_depth;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) cap_depth <= 4'(RD_LAT_DEF);
+    else        cap_depth <= 4'(CL + 2 + int'(rd_lat_sel));
+  end
 
   localparam int unsigned WIDX = NP;          // write port's grant index
 
@@ -605,11 +641,14 @@ module m1_sdram #(
             // packing of {3'b000, x, col} would land x on A9, which the device
             // ignores.
             sd_a       <= {2'b00, 1'b0, 1'b0, xfer_addr[9:1]};
-            tag_v[RD_LAT-1]    <= 1'b1;
-            tag_p[RD_LAT-1]    <= grant[2:0];
-            tag_w[RD_LAT-1]    <= rd_issued[1:0];
-            tag_last[RD_LAT-1] <= (rd_issued + 1'b1 == rd_total);
-            rd_bank_cnt[tbank] <= 4'(RD_LAT);
+            // Injected at the selected depth, not at the top of the
+            // pipeline: the tag reaches slot 0 after cap_depth cycles, which
+            // is what decides which bus word is called word 0.
+            tag_v[cap_depth-1]    <= 1'b1;
+            tag_p[cap_depth-1]    <= grant[2:0];
+            tag_w[cap_depth-1]    <= rd_issued[1:0];
+            tag_last[cap_depth-1] <= (rd_issued + 1'b1 == rd_total);
+            rd_bank_cnt[tbank]    <= cap_depth;
             // Bursts wrap inside the open row: incrementing the full address
             // would walk off the end of the row on the last column and read
             // from a row that was never activated.
