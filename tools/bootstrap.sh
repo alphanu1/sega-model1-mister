@@ -181,6 +181,7 @@ if [ "$DO_MAME" = 1 ]; then
       '/src/devices/cpu/mb86233/*' \
       '/src/devices/cpu/v60/*' \
       '/src/mame/sega/model1*' \
+      '/src/mame/sega/315_5338a.*' \
       '/src/mame/sega/segaic24*' \
       '/src/devices/sound/multipcm.*' \
       '/src/devices/machine/mb8421.*' \

@@ -86,8 +86,21 @@ module m1_sdram #(
   input  logic                 rst_n,
   output logic                 ready,
 
-  // Read capture depth: 0 -> CL+2, 1 -> CL+3, 2 -> CL+4, 3 -> CL+5. Tie to 1
-  // for the behaviour every simulation harness is baselined on. See RD_LAT.
+  // Read capture depth. **0 IS CL+3, NOT CL+2**, and the ordering is that way
+  // round on purpose: an unconnected port reads as zero, and zero has to be the
+  // value that matches sdram_model, so forgetting to wire it degrades to
+  // "works" rather than to "every burst arrives one word late".
+  //
+  // It was the other way round for one commit and tb_m1_boot, which does not
+  // wire this port and is built with -Wno-PINMISSING, silently got the hardware
+  // phase against the simulation model. The V60 halted after a single
+  // instruction and the trace read "0 distinct addresses" — a testbench
+  // reporting a clean absence of the thing it was measuring.
+  //
+  //   0 -> CL+3  (sdram_model, and the safe default)
+  //   1 -> CL+2  (the board: its device is clocked on the inverse of clk_sys)
+  //   2 -> CL+4
+  //   3 -> CL+5
   input  logic [1:0]           rd_lat_sel,
 
   // SDRAM device
@@ -189,7 +202,12 @@ module m1_sdram #(
   logic [3:0] cap_depth;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) cap_depth <= 4'(RD_LAT_DEF);
-    else        cap_depth <= 4'(CL + 2 + int'(rd_lat_sel));
+    else case (rd_lat_sel)
+      2'd0:    cap_depth <= 4'(CL + 3);   // unconnected lands here, by design
+      2'd1:    cap_depth <= 4'(CL + 2);
+      2'd2:    cap_depth <= 4'(CL + 4);
+      default: cap_depth <= 4'(CL + 5);
+    endcase
   end
 
   localparam int unsigned WIDX = NP;          // write port's grant index

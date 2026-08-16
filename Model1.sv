@@ -83,6 +83,28 @@ module emu
   wire  [1:0] buttons;
   wire [127:0] status;
 
+  wire [31:0] joy0, joy1;
+  wire [15:0] joy0_lstick, joy0_rstick;
+  wire [10:0] ps2_key;
+
+  // The board's controls, gathered in one place so the I/O board takes a named
+  // bundle rather than reaching into hps_io's bit order.
+  //
+  // MRA order is Start, Coin, Service, Test. MiSTer's joystick bits are
+  // right,left,down,up then the buttons in order, so the four the MRAs name
+  // are bits 4..7.
+  wire io_start   = joy0[4];
+  wire io_coin    = joy0[5];
+  wire io_service = joy0[6];
+  wire io_test    = joy0[7];
+
+  // Steering and pedals. Virtua Racing reads these through the I/O board's
+  // MSM6253 ADC, so they are 8-bit unsigned there; MiSTer delivers signed
+  // -128..127 on each axis, hence the offset.
+  wire [7:0] io_wheel = {~joy0_lstick[7], joy0_lstick[6:0]};
+  wire [7:0] io_accel = {~joy0_rstick[15], joy0_rstick[14:8]};
+  wire [7:0] io_brake = {~joy0_rstick[7], joy0_rstick[6:0]};
+
   // ROM download. m1_rom_loader consumes this and writes SDRAM through the
   // controller's dedicated high-priority write port.
   wire        ioctl_download;
@@ -102,6 +124,19 @@ module emu
     .forced_scandoubler(forced_scandoubler),
     .buttons(buttons),
     .status(status),
+
+    // CONTROLS. Wired here so they exist; what consumes them is the I/O board.
+    //
+    // Until now hps_io was instantiated with none of these, so every MRA's
+    // <buttons names="Start,Coin,Service,Test,-,-"> went nowhere and the
+    // service menu could not be operated at all. Virtua Racing is a driving
+    // game: steering is an analog axis and the pedals are two more, so the
+    // analog ports are taken as well as the digital ones.
+    .joystick_0(joy0),
+    .joystick_1(joy1),
+    .joystick_l_analog_0(joy0_lstick),
+    .joystick_r_analog_0(joy0_rstick),
+    .ps2_key(ps2_key),
 
     .ioctl_download(ioctl_download),
     .ioctl_wr(ioctl_wr),
@@ -258,7 +293,11 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // model needs, which is what the measured shift implies.
   m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
-    .rd_lat_sel(status[5:4]),
+    // OSD order is CL+2, CL+3, CL+4, CL+5 and the selector's own encoding puts
+    // CL+3 at zero, so the two are mapped rather than passed through. The board
+    // wants CL+2, which is the OSD default.
+    .rd_lat_sel(status[5:4] == 2'd0 ? 2'd1 :
+                status[5:4] == 2'd1 ? 2'd0 : status[5:4]),
     .sd_cke(SDRAM_CKE), .sd_cs_n(SDRAM_nCS), .sd_ras_n(SDRAM_nRAS),
     .sd_cas_n(SDRAM_nCAS), .sd_we_n(SDRAM_nWE), .sd_ba(SDRAM_BA),
     .sd_a(SDRAM_A), .sd_dqm({SDRAM_DQMH, SDRAM_DQML}),
