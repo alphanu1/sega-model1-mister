@@ -278,11 +278,17 @@ is trivial:
   more than twice — the status flag — and **no input data**, because attract
   mode and the service menu had not been reached.
 
-They have now, on hardware, so the evidence that bounded the stub no longer
-bounds the problem. Watch which DPRAM offsets the service menu polls — the debug
-overlay or a boot trace with `WATCH_PAGE=0xC0` will show it — and that decides
-the open question the header names: **a real Z80 (tv80) or a wider HLE**. See
-`THIRD-PARTY.md` for the licence position on both.
+**Done, 2026-08-16: the controls are wired**, and the trace has been run.
+`docs/io-board.md` has the full findings; the short version is that the V60
+writes a `"SEGA"`-tagged command block at DPRAM `0x100` and reads back a 27-byte
+window at the same place, so that is a command/response buffer and the response
+is where input state must appear. It does **not** poll a fixed input offset,
+which is why the layout cannot be guessed from the trace alone.
+
+D9 has since settled tv80 versus HLE in favour of the HLE, so what remains is
+recovering the response format — either by disassembling `EPR-14869` (it is in
+`vr.zip`) or by running it against a model of the 315-5338A, whose register
+interface is now decoded in `docs/io-board.md`. Both routes are described there.
 
 Sound does **not** depend on this. MAME reaches the sound board through an i8251
 UART (`m1uart` -> `segam1audio`), not through the I/O board — see item 5.

@@ -216,6 +216,21 @@ One correction this entry carries: the plan's summary line costs the Z80 option
 at "3,000-2,500 ALM", which disagrees with its own detailed section at ~2,000.
 The ~2,000 figure is the one with reasoning attached.
 
+**Revisit when the resource count is final, which is not the same as reversing.**
+The HLE is chosen here on an area budget that is still made of estimates: sound
+at 5,000-7,000 ALM and the rasterizer at 3,000-6,000 are ranges, not
+measurements. When M2, M3 and M4 are built and the real number is known, if
+there is ALM room then the LLE is worth taking on its merits — a Z80 running
+`EPR-14869` plus the 315-5338A is the real board's behaviour by construction,
+including whatever the HLE turned out to approximate. The HLE is the right call
+under uncertainty; it is not automatically the right call once the uncertainty
+is gone.
+
+Two things make that revisit cheap rather than a rewrite. The V60 only ever sees
+the shared RAM, so HLE and LLE are interchangeable behind the same interface —
+`m1_ioboard`'s ports do not change. And the ROM is already in `vr.zip`, so the
+LLE needs no new asset, only the two blocks.
+
 Reverses if: the protocol turns out not to be recoverable from the ROM by
 disassembly — an undocumented handshake with the 315-5338A, or behaviour that
 depends on Z80 timing rather than on the bytes in the shared RAM. The fallback
