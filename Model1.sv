@@ -319,6 +319,14 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
 
   // -------------------------------------------------------------- diagnostics
   //
+  // DEBUG_OVERLAY=0 removes the whole instrument — the renderer, the capture
+  // registers, the fetch trace and the frame-rate counters — so its cost can be
+  // measured by building both ways rather than estimated, and so a release
+  // build can drop it. See docs/debug-overlay.md for the measurement and for
+  // what every row means.
+  localparam bit DEBUG_OVERLAY = 1;
+
+  //
   // Six words painted over the top left of the picture, readable off a phone
   // photograph. See rtl/video/m1_diag.sv for why this exists: on a bench the
   // screen is the only output channel, and without it every hypothesis about a
@@ -436,10 +444,80 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     st_s2 <= st_s1;
   end
 
+  // FRAME RATE, MEASURED RATHER THAN ASSUMED.
+  //
+  // The core is meant to emit MAME's 57.52 Hz and MiSTer's own Information
+  // screen agrees, but that reports what the scaler locked onto, not what the
+  // core produced. This counts the core's own vertical syncs.
+  //
+  // Two numbers because they answer different questions. Frames per ten
+  // seconds in BCD gives one decimal place — 0575 reads as 57.5 Hz — and is
+  // the number to quote. The frame period in clk_sys cycles updates every
+  // frame and is exact, so a rate that is drifting or a frame that is the
+  // wrong length shows up immediately instead of being averaged away.
+  //
+  // 1,390,720 cycles is the nominal period: 656 x 424 dots at five clk_sys
+  // per dot.
+  reg [26:0] fps_cyc;
+  reg  [3:0] fps_sec;
+  reg [15:0] fps_bcd_run, fps_bcd;
+  reg [23:0] fper_run, fper;
+  reg        d_vs;
+
+  // BCD so the digits render as themselves; a binary count would need dividing
+  // by hand off a photograph, which is exactly the sort of arithmetic this
+  // overlay exists to remove.
+  function automatic [15:0] bcd_inc(input [15:0] v);
+    reg [15:0] r;
+    begin
+      r = v;
+      if (r[3:0] == 4'd9) begin
+        r[3:0] = 4'd0;
+        if (r[7:4] == 4'd9) begin
+          r[7:4] = 4'd0;
+          if (r[11:8] == 4'd9) begin
+            r[11:8]  = 4'd0;
+            r[15:12] = r[15:12] + 4'd1;
+          end else r[11:8] = r[11:8] + 4'd1;
+        end else r[7:4] = r[7:4] + 4'd1;
+      end else r[3:0] = r[3:0] + 4'd1;
+      bcd_inc = r;
+    end
+  endfunction
+
+  always @(posedge clk_sys) begin
+    if (!mem_rst_n) begin
+      fps_cyc <= 0; fps_sec <= 0; fps_bcd_run <= 0; fps_bcd <= 0;
+      fper_run <= 0; fper <= 0; d_vs <= 0;
+    end else begin
+      d_vs     <= vid_vs;
+      fper_run <= fper_run + 1'd1;
+
+      if (vid_vs && !d_vs) begin
+        fper        <= fper_run;
+        fper_run    <= 0;
+        fps_bcd_run <= bcd_inc(fps_bcd_run);
+      end
+
+      if (fps_cyc == 27'd79_999_999) begin
+        fps_cyc <= 0;
+        if (fps_sec == 4'd9) begin
+          fps_sec     <= 0;
+          fps_bcd     <= fps_bcd_run;
+          fps_bcd_run <= 0;
+        end else begin
+          fps_sec <= fps_sec + 4'd1;
+        end
+      end else begin
+        fps_cyc <= fps_cyc + 1'd1;
+      end
+    end
+  end
+
   // Every row carries its own number in the top byte. Tagging only some rows
   // meant counting bands from an edge that was sometimes out of frame, and two
   // rows got misread that way.
-  wire [31:0] dw [13];
+  wire [31:0] dw [15];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -458,6 +536,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
   assign dw[12] = {8'h0C, dbg_overruns, dbg_fetches};
+  assign dw[13] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
+  assign dw[14] = {8'h0E, fper};                       // frame period, cycles
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -465,18 +545,26 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // the concatenation runs bottom row first. Written with explicit indices
   // rather than as a list, because getting this backwards produces a display
   // that is perfectly legible and entirely wrong.
-  m1_diag #(.NWORDS(13)) diag (
+  generate
+  if (DEBUG_OVERLAY) begin : g_diag
+  m1_diag #(.NWORDS(15)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     // Off by default: it is an instrument, not a feature, and it sits on top
     // of the picture. Kept in the build because it has now found four faults
     // that nothing else could see, and the next hardware problem will want it.
     .enable(status[3]),
     .hb(vid_hb), .vb(vid_vb),
-    .words({dw[12], dw[11], dw[10], dw[9], dw[8], dw[7], dw[6],
-             dw[5],  dw[4],  dw[3],  dw[2], dw[1], dw[0]}),
+    .words({dw[14], dw[13], dw[12], dw[11], dw[10], dw[9], dw[8],
+             dw[7],  dw[6],  dw[5],  dw[4],  dw[3], dw[2], dw[1], dw[0]}),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
     .out_r(dg_r), .out_g(dg_g), .out_b(dg_b)
   );
+  end else begin : g_nodiag
+    assign dg_r = vid_r;
+    assign dg_g = vid_g;
+    assign dg_b = vid_b;
+  end
+  endgenerate
 
   // ------------------------------------------------------------------ video
   assign CLK_VIDEO = clk_sys;

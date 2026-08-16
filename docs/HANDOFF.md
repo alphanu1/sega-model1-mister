@@ -31,6 +31,8 @@ so it confirmed the setting rather than testing it. Buffer now 512/256, sweep to
 
 **`docs/mister-integration.md` is the full write-up**, framework-generic rather
 than Model 1 specific, for reuse on any future MiSTer core.
+**`docs/debug-overlay.md`** documents the on-screen instrument: what every row
+means, and its measured cost of 307 ALM / 553 registers / zero M10K.
 
 ### The fifth fault: every SDRAM burst came back one word late
 

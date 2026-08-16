@@ -165,9 +165,23 @@ for a setting that actually breaks the build.
 
 ## Make the screen an instrument
 
+**`docs/debug-overlay.md` is this core's implementation**, with what every row
+means and what it costs. Measured, on a 5CSEBA6U23I7: **307 ALM, 553 registers,
+zero M10K** — under a third of a percent of what the core uses, and it did not
+cost timing. Cheap enough to keep in every build, behind a compile-time switch
+for the one that ships.
+
 Since the screen is the only channel, put data on it deliberately. `m1_diag`
-paints 32-bit words as a grid of blocks — white for one, dark blue for zero, a
-green rule every four bits so hex digits can be counted off a phone photograph.
+paints 32-bit words as eight hex digits in a 5x7 font at 2x, which a phone
+camera resolves without argument.
+
+It did not start that way. The first version drew 32 blocks per word with a
+green rule every four bits, and it worked — but reading it means locating a cell
+boundary to a few pixels in a photograph of an LCD, and a camera against a
+screen produces moire on exactly an 8-pixel pitch. Three values were misread
+that way in one session, twice sending the next experiment after the wrong
+subsystem. **An instrument that is hard to read is a source of wrong answers,
+not a defence against them.** Render digits.
 
 It works, and it paid for itself immediately: a photo showed `ioctl_wait`
 asserted with the buffer empty, nothing pending and the controller reporting
