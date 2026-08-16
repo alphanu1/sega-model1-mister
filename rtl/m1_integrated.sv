@@ -81,7 +81,7 @@ module m1_integrated (
   // Control state for the I/O board, idle-high. Crosses into the CPU domain
   // inside m1_main; it changes at human speed and is read by a polling CPU, so
   // a synchroniser buys nothing a metastable bit would not survive anyway.
-  input  logic [63:0] in_bytes,
+  input  logic [119:0] in_bytes,
 
   // SDRAM data port and instruction fetch
   output logic        sdr_req,

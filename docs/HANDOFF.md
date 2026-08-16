@@ -231,11 +231,11 @@ fetch deadline misses, 57.52 Hz measured from the core's own vsync, and the
 picture pixel-identical to the reference. Two of the four items that used to be in this section are done — the top level
 and MRA exist, and the tilemap fetch is pipelined.
 
-**The game is not yet playable, and that is the shortest gap to close.** No
-controller input reaches the core at all: `hps_io` in `Model1.sv` is
-instantiated with no joystick connections, and `m1_ioboard` is a boot-handshake
-stub whose own header says so — it answers the SEGA handshake and reads no
-input data. See item 2.
+**The game is not yet playable, and that is the shortest gap to close.** The
+controls are now wired end to end and the whole DPRAM map is measured rather
+than guessed — but this game reaches its I/O board through a mailbox at DPRAM
+`0x100` that we do not answer, so nothing the player does gets through yet. See
+item 2.
 
 Resource state after all of it, Quartus 17.0 on 5CSEBA6U23I7:
 
@@ -279,88 +279,93 @@ names that as the geometry oracle.
 
 ### 2. The I/O board — make it playable  (IN PROGRESS)
 
-**Status, 2026-08-16.** The controls are wired, the publisher works, and the
-game still does not see a button. `docs/io-board.md` has the full trail; the
-short version:
+**Status, 2026-08-16.** The control map is fully measured and wired. What is
+still owed is the mailbox response — see "what is owed" below.
+`docs/io-board.md` carries the full trail; this is the state.
 
-- All twelve Virtua Racing controls come off `hps_io` now, with test and service
-  also on OSD switches. Bit order is MAME's `INPUT_PORTS( vr )`.
-- `m1_ioboard` sweeps eight control bytes into the shared RAM the way the board
-  does, at roughly the board's own rate, and no longer regresses anything —
-  `pc=fe143d`, 62 handshake replies, the menu identical to baseline.
-- **The game reads none of it.** Over 150 M cycles the V60 touches 32 DPRAM
-  addresses and not one is where the sweep writes.
+#### The map, measured
 
-What the tracing established instead is that this game uses a **mailbox**: the
-V60 leaves a request at DPRAM `0x100`, raises a flag at `0x20`, and expects an
-answer in the same window. We clear the flag and write no answer, so 74 flag
-polls produce three empty sweeps.
+Three static readings had each been plausible and each been wrong. Running the
+real Z80 against the real ROM under MAME, with a Lua script logging every change
+to the shared RAM and one control held at a time, settled it in minutes:
 
-`tools/z80dasm.py` exists for this — a table-driven Z80 disassembler with a
-27-case self-test, no dependencies. It found the board's access primitives and
-its addressing convention (BC holds the DPRAM address, B low, C high).
-
-**What is owed is the content**, not the mechanism: decode the request payload
-and the response the Z80 builds for it, then write that response. Three
-experiments have each disproved a plausible layout, so prefer the experiment
-that can falsify the next guess.
-
-
-
-**Nothing the player does reaches the core.** Two separate gaps, and the first
-is trivial:
-
-- `hps_io` is instantiated in `Model1.sv` with **no joystick or analog
-  connections at all**. Start, coin, service and test are listed in every MRA's
-  `<buttons>` element and go nowhere.
-- `m1_ioboard` answers the boot handshake and nothing else. Its header is honest
-  about this: on the real board a Z80 (315-5338A) reads controls, coin, service
-  and the DIP switches into the shared RAM at 0xc00000, and this is not that
-  chip. Across a full boot run the V60 read exactly one address in that region
-  more than twice — the status flag — and **no input data**, because attract
-  mode and the service menu had not been reached.
-
-**Done, 2026-08-16: the controls are wired**, and the trace has been run.
-`docs/io-board.md` has the full findings; the short version is that the V60
-writes a `"SEGA"`-tagged command block at DPRAM `0x100` and reads back a 27-byte
-window at the same place, so that is a command/response buffer and the response
-is where input state must appear. It does **not** poll a fixed input offset,
-which is why the layout cannot be guessed from the trace alone.
-
-**The protocol is now recovered from the Z80 ROM** — see `docs/io-board.md` for
-how, and for the layout. The short version: the board runs a periodic sweep that
-writes its input ports into low DPRAM, and the V60 reads them there.
-
-| DPRAM | Content |
+| DPRAM | Contents |
 |---|---|
-| `0x00`-`0x07` | scanned control panel, eight bits at a time, two banks |
-| `0x08`-`0x0A` | **IN.0, IN.1, IN.2** — the player controls |
-| `0x0B`-`0x0D` | DSW1, DSW2, DSW3 |
-| `0x0E` | chip port 6 |
+| `0x00` | steering, centre `0x80`, full `00`-`ff` |
+| `0x01` | accelerator, released `0x01`, floored `0xff` |
+| `0x02` | brake, same shape |
+| `0x03`-`0x07` | set to `0xff` at startup, contents unknown |
+| `0x08` | IN.0 — coin 1, coin 2, test, service, start, VR1-3 |
+| `0x09` | IN.1 — VR4 at bit 0, shift down/up at bits 4/5 |
+| `0x0a` | IN.2 — drive-board RX, unused here |
+| `0x0b`-`0x0d` | DSW1-3 |
+| `0x0e` | chip port 6 |
+| `0x0f` | toggles on its own period — a board output, do not write it |
 
-An input publisher exists and is **off by default** because it regresses the
-machine. Two things were wrong with it, and an earlier note in this file said
-the wrong one:
+Every digital bit matches MAME's `INPUT_PORTS( vr )` and what `Model1.sv`
+already wired, so the layout recovered from the Z80 disassembly was right; what
+was missing was any way to know it. The analog channels are new information —
+nothing before this said where the MSM6253 landed.
 
-- It conflates which write finished. Any completed write clears `pending` if a
-  handshake is outstanding, so a routine refresh can be mistaken for the reply
-  and the flag byte never gets written.
-- It refreshes every cycle it can take the port. The real Z80 sweeps once per
-  loop at 4 MHz, thousands of times slower, which is why a collision that is
-  rare on the board is constant here.
+**Note the idle values are not uniform.** Digital bytes rest at `0xff` because
+every control is active low, but a released pedal reads `0x01`. A blanket
+`0xff` idle is both pedals floored.
 
-**This file previously said "do not fix its arbitration — the trace says
-request/response, not background refresh". That was wrong**, and the ROM says
-so. The publisher's model was right all along; only its rate and its completion
-tracking are broken. Fix those rather than redesigning it.
+#### What is built
 
-D9 has since settled tv80 versus HLE in favour of the HLE, so what remains is
-recovering the response format — either by disassembling `EPR-14869` (it is in
-`vr.zip`) or by running it against a model of the 315-5338A, whose register
-interface is now decoded in `docs/io-board.md`. Both routes are described there.
+- `m1_ioboard` sweeps `0x00`-`0x0e` — fifteen bytes, `SWEEP_BYTES` — at roughly
+  the board's own rate, stopping short of the `0x0f` output byte.
+- All fourteen controls come off `hps_io`, steering on the left stick with the
+  d-pad at full lock, pedals on buttons, test and service also on OSD switches.
+- Both driving-cabinet MRAs name the real panel in the RTL's bit order.
+- `make test_ioboard`: 21 + 68 checks, covering that each byte lands at its own
+  address, that the sweep wraps at `0x0e` rather than at the counter's natural
+  16, and that the boot handshake still wins the shared write port.
 
-Sound does **not** depend on this. MAME reaches the sound board through an i8251
-UART (`m1uart` -> `segam1audio`), not through the I/O board — see item 5.
+#### What is owed
+
+**The mailbox response, and it is the content rather than the mechanism.** This
+game does not read the low-DPRAM sweep at all. Over 150 M cycles the V60 touches
+32 DPRAM addresses and none is where the sweep writes; it uses a **mailbox**
+instead — a request left at `0x100`, a flag raised at `0x20`, an answer expected
+in the same window. We clear the flag and write no answer, so 74 flag polls
+produce three empty sweeps.
+
+So decode the request payload and the response the Z80 builds for it, then write
+that response. `tools/z80dasm.py` exists for this — table-driven, 27-case
+self-test, no dependencies — and has already found the board's access primitives
+and its addressing convention (BC holds the DPRAM address, B low, C high).
+
+The sweep stays regardless. It is what the board does, it costs nothing, and it
+is what the game will read once past this exchange.
+
+#### Two lessons worth keeping
+
+**The MRA and the RTL must be edited together.** They disagreed — the MRA named
+joystick bit 4 `Start` while `Model1.sv` read it as Coin, and the generic
+`names="Start,Coin,Service,Test,-,-"` covered four controls where the game has
+twelve. That is invisible until someone presses a button, and then it presents
+as a protocol fault.
+
+**Read the emulator's own key bindings rather than assuming them.** A whole
+measurement round was recorded as "these controls produce nothing" because Z and
+X were guessed as the shifters; they are VR3 and VR4, and the shifters are C and
+V. The presses had worked perfectly and the interpretation was wrong.
+
+#### This is per-game, but barely
+
+The DPRAM addresses are board hardware and do not vary — same 315-5338A, same
+`EPR-14869` in every cabinet. MAME carries six input maps across the ten Model 1
+entries, and the system half of IN.0 (coin 1, coin 2, test, service, start) is
+bit-identical in all of them. Only the game buttons move, IN.1 is fully
+game-specific, and the analog count runs from two (`netmerc`) to five (`swa`).
+That makes the per-game part a mux on the bit packing, selectable from the MRA,
+rather than an RTL change per title — not worth building until there is a second
+game, and the others need M2 and M3 first anyway.
+
+Sound does **not** depend on any of this. MAME reaches the sound board through an
+i8251 UART (`m1uart` -> `segam1audio`), not through the I/O board — see item 5.
+
 
 ### 3. Finish the rasterizer — the band buffer and binning
 

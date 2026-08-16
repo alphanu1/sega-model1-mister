@@ -68,5 +68,5 @@
 
     <nvram index="255" size="256"/>
 
-    <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>
+    <buttons names="Accel,Brake,Shift Up,Shift Down,VR1 Red,VR2 Blue,VR3 Yellow,VR4 Green,Start,Coin,Service,Test" default="A,B,R,L,X,Y,R2,L2,Start,Select,L3,R3" count="8"/>
 </misterromdescription>

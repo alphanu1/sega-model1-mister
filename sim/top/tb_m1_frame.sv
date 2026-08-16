@@ -194,8 +194,14 @@ m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
-    // Idle-high: every control is active low, so zero means all held.
-    .in_bytes({56'hffffffffffffff, PRESS_IN0}),
+    // The control region as the board presents it at rest, with one byte
+    // overridden. Not uniformly idle-high: the three ADC channels at 0x00-0x02
+    // rest at 0x80 (steering centred) and 0x01 (each pedal released).
+    .in_bytes({48'hffffffffffff,   // 0x0e..0x09
+               PRESS_IN0,          // 0x08  IN.0
+               40'hffffffffff,     // 0x07..0x03
+               8'h01, 8'h01,       // 0x02, 0x01  pedals released
+               8'h80}),            // 0x00        steering centred
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),

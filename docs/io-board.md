@@ -522,13 +522,67 @@ so every MRA's `<buttons names="Start,Coin,Service,Test,-,-">` went nowhere:
 - steering and two pedals from the analog sticks, converted from MiSTer's signed
   axes to the unsigned range the board's MSM6253 presents
 
-Against the measured map, two gaps remain in the wiring:
+The measurement exposed two gaps, both since closed:
 
-1. **Coin 2 is tied to a constant.** `io_in0` bit 1 is `1'b0`, which reads as
-   never pressed. It has a real bit and should have a real source.
-2. **The sweep does not reach the analog channels.** `INPUT_BASE = 0x008` with
-   eight bytes covers `0x08`-`0x0f`, so `0x00`-`0x02` are never published. The
-   wheel and both pedals are wired into the core and then dropped on the floor.
+1. **Coin 2 was tied to a constant** — `io_in0` bit 1 was `1'b0`, reading as
+   never pressed despite having a real bit.
+2. **The sweep did not reach the analog channels.** `INPUT_BASE = 0x008` over
+   eight bytes covers `0x08`-`0x0f`, so `0x00`-`0x02` were never published: the
+   wheel and both pedals were carried into the core and dropped.
 
 Neither was visible before the measurement, because nothing said the analog
 channels were at `0x00`-`0x02` in the first place.
+
+### What it looks like now
+
+The sweep runs `0x00`-`0x0e`, fifteen bytes, `SWEEP_BYTES` on `m1_ioboard`. It
+stops one short of `0x0f` on purpose — that byte toggles on its own period in
+the capture, so the board drives it outward and publishing control state over it
+would model the wrong direction.
+
+Idle is **not** uniformly `0xff`. The digital bytes are, because every control
+is active low, but the ADC channels rest at `0x80` (steering centred) and `0x01`
+per pedal. A blanket `0xff` idle reads as both pedals floored.
+
+Steering takes the left analog stick, with the d-pad slamming to full lock —
+which is what a digital steering input does on the cabinet. The pedals are
+buttons: `hps_io`'s analog ports are two-axis sticks, so there is no pedal
+travel to read, and a button giving full press is honest about that rather than
+pretending to be analog.
+
+### The MRA and the RTL have to be edited together
+
+They disagreed. The MRA named joystick bit 4 `Start` while `Model1.sv` read it
+as Coin, and the generic `names="Start,Coin,Service,Test,-,-"` covered four
+controls where the game has twelve. A mismatch there is invisible until someone
+presses a button, and then it looks like a protocol fault rather than a naming
+one.
+
+Both driving-cabinet MRAs now name the real panel, in the bit order the RTL
+reads, following the System 32 core's convention of game buttons first and the
+system ones after:
+
+    Accel, Brake, Shift Up, Shift Down, VR1..VR4, Start, Coin, Service, Test
+
+Coin 2 is wired to a bit but left off that list — a single-seat cabinet, and the
+pad has run out of buttons. Test and service are OSD switches as well, since
+they are things you set before boot rather than press during play.
+
+### This is per-game, but barely
+
+The DPRAM addresses are board hardware: IN.0/IN.1/IN.2 at `0x08`-`0x0a` and the
+ADC at `0x00` upward, the same in every cabinet, because it is the same
+315-5338A and the same `EPR-14869`. MAME carries six input maps across the ten
+Model 1 game entries — `vf`, `vr`, `swa`, `wingwar`, `wingwar360`, `netmerc` —
+and the *system* half of IN.0 is bit-identical in all of them:
+
+| bit | 0 | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|---|
+| | Coin 1 | Coin 2 | Test | Service 1 | Start 1 |
+
+So coin, test, service and start — everything needed to reach a service menu —
+are universal. Only the game buttons move, IN.1 is fully game-specific, and the
+analog channel count varies from two (`netmerc`) to five (`swa`). That makes the
+per-game part a mux on the bit packing, selectable from the MRA, rather than an
+RTL change per title. Not worth building until there is a second game, and the
+others need the TGP and the rasterizer first regardless.

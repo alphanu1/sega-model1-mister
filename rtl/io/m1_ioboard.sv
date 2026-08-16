@@ -70,11 +70,20 @@ module m1_ioboard #(
   // IP_ACTIVE_LOW, and an M10K comes up zeroed — so a core that publishes
   // nothing presents every button as held. That is worth ruling out before
   // anything subtler.
-  // Where the sweep lands. 0x08 because that is where the Z80 puts the port
-  // reads: 0x08-0x0a are IN.0/IN.1/IN.2, 0x0b-0x0d the three DIP banks, 0x0e
-  // port 6. Recovered from the ROM — see docs/io-board.md, and note this is a
-  // read fact now rather than the guess it was when this parameter appeared.
-  parameter logic [10:0] INPUT_BASE = 11'h008,
+  // Where the sweep lands, and how far it runs. 0x00-0x0e is the whole control
+  // region, confirmed by watching MAME run the real Z80 — see docs/io-board.md:
+  //
+  //   0x00-0x02  the MSM6253 ADC channels: steering, accelerator, brake
+  //   0x03-0x07  set to 0xff at startup, contents unknown
+  //   0x08-0x0a  IN.0/IN.1/IN.2
+  //   0x0b-0x0d  the three DIP banks
+  //   0x0e       port 6
+  //
+  // It stops at 0x0e deliberately. 0x0f toggles on a regular period in the
+  // capture, so it is something the board drives outward — a lamp, most likely
+  // — and writing control state over it would be modelling the wrong direction.
+  parameter logic [10:0] INPUT_BASE  = 11'h000,
+  parameter int          SWEEP_BYTES = 15,
 
   // Cycles between one byte of the sweep and the next.
   //
@@ -85,8 +94,9 @@ module m1_ioboard #(
   // Sweeping at roughly the board's rate makes that workaround stop mattering
   // instead of papering over it.
   //
-  // 2048 at 19.2 MHz is a full eight-byte pass every ~850 us, near enough a
-  // 4 MHz Z80 round trip, and still far faster than a finger.
+  // 2048 at 19.2 MHz is a full fifteen-byte pass every ~1.6 ms, near enough a
+  // 4 MHz Z80 round trip. That is ten passes per frame, so the steering axis is
+  // sampled far more often than it can be drawn, let alone moved.
   parameter int          SWEEP_GAP = 2048,
   // Sweeping the control bytes into the shared RAM, as the board does.
   parameter bit          PUBLISH_INPUTS = 1'b1
@@ -103,9 +113,14 @@ module m1_ioboard #(
   input  logic [11:1] v60_addr,
   input  logic [7:0]  v60_wdata,
 
-  // Eight bytes of control state, idle-high. Refreshed into the shared RAM
+  // The control region, byte 0 first, refreshed into the shared RAM
   // continuously so the V60 sees current state whenever it looks.
-  input  logic [63:0] in_bytes,
+  //
+  // Idle is 0xFF for the digital bytes — every control in model1.cpp is
+  // IP_ACTIVE_LOW — but NOT for the analog ones, whose released values were
+  // measured as 0x80 centre for steering and 0x01 for each pedal. Publishing a
+  // blanket 0xff would read as both pedals floored.
+  input  logic [SWEEP_BYTES*8-1:0] in_bytes,
 
   // The I/O side write into the DPRAM. That RAM has ONE physical write port
   // shared with the V60 — Quartus will not infer a true dual-port M10K from it,
@@ -128,12 +143,14 @@ module m1_ioboard #(
   logic [CNT_W-1:0] wait_cnt;
   logic             pending;
 
-  // Which of the eight bytes to refresh next. Round robin rather than
-  // write-on-change: the port is shared with the V60 and can be refused, so a
-  // change-triggered write would need a retry queue to avoid losing an edge,
-  // and a button held for one frame is millions of cycles wide anyway.
-  logic [2:0] pub_idx;
-  logic [7:0] pub_byte;
+  // Which byte to refresh next. Round robin rather than write-on-change: the
+  // port is shared with the V60 and can be refused, so a change-triggered write
+  // would need a retry queue to avoid losing an edge, and a button held for one
+  // frame is millions of cycles wide anyway.
+  localparam int IDX_W = (SWEEP_BYTES < 2) ? 1 : $clog2(SWEEP_BYTES);
+
+  logic [IDX_W-1:0] pub_idx;
+  logic [7:0]       pub_byte;
   always_comb pub_byte = in_bytes[{pub_idx, 3'b000} +: 8];
 
   // A request is any non-zero write to the flag byte. The V60 writes the flag
@@ -161,7 +178,7 @@ module m1_ioboard #(
       io_addr  <= FLAG_ADDR;
       io_din   <= REPLY;
       replies  <= 16'd0;
-      pub_idx  <= 3'd0;
+      pub_idx  <= '0;
       wr_reply <= 1'b0;
       gap      <= '0;
     end else begin
@@ -184,7 +201,10 @@ module m1_ioboard #(
           pending <= 1'b0;
           if (replies != 16'hffff) replies <= replies + 16'd1;
         end else begin
-          pub_idx <= pub_idx + 3'd1;
+          // Wrapped explicitly: SWEEP_BYTES is 15, so the counter's own natural
+          // wrap at 16 would index two bytes past the end of in_bytes.
+          pub_idx <= (pub_idx == IDX_W'(SWEEP_BYTES - 1)) ? '0
+                                                          : pub_idx + IDX_W'(1);
           gap     <= '0;
         end
       end else if (!io_we) begin

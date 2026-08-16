@@ -102,16 +102,32 @@ module emu
   // Test and service are OSD switches as well as buttons: they are things you
   // set before boot rather than press during play, and mapping a pad button to
   // something you need held at power-on is awkward.
-  wire io_coin    = joy0[4];
-  wire io_start   = joy0[5];
-  wire io_vr1     = joy0[6];
-  wire io_vr2     = joy0[7];
-  wire io_vr3     = joy0[8];
-  wire io_vr4     = joy0[9];
-  wire io_shift_up = joy0[10];
-  wire io_shift_dn = joy0[11];
-  wire io_test    = joy0[12] | status[6];
-  wire io_service = joy0[13] | status[7];
+  // Bit order matches the MRA's <buttons names=...> list, which is what maps
+  // pad buttons onto these. The two must be edited together — they disagreed
+  // once, the MRA naming bit 4 "Start" while this read it as Coin, and a
+  // mismatch there is invisible until someone presses the button.
+  wire io_accel_b  = joy0[4];
+  wire io_brake_b  = joy0[5];
+  wire io_shift_up = joy0[6];
+  wire io_shift_dn = joy0[7];
+  wire io_vr1      = joy0[8];
+  wire io_vr2      = joy0[9];
+  wire io_vr3      = joy0[10];
+  wire io_vr4      = joy0[11];
+  wire io_start    = joy0[12];
+  wire io_coin     = joy0[13];
+  wire io_service  = joy0[14] | status[7];
+  wire io_test     = joy0[15] | status[6];
+
+  // Coin 2 has a real bit on the board — measured at IN.0 bit 1 — and is left
+  // off the MRA's name list because this is a single-seat cabinet and the pad
+  // has run out of buttons. Wired rather than tied off, so naming it later is
+  // one line rather than a hunt for which bit it was.
+  wire io_coin2    = joy0[16];
+
+  // Steering on the d-pad as well as the stick.
+  wire io_steer_l  = joy0[1];
+  wire io_steer_r  = joy0[0];
 
   // Steering and pedals. Virtua Racing reads these through the I/O board's
   // MSM6253 ADC, so they are 8-bit unsigned there; MiSTer delivers signed
@@ -129,25 +145,47 @@ module emu
   //   IN.1  0 VR4, 4 shift down, 5 shift up
   // Inverted because every control on this hardware is active low.
   wire [7:0] io_in0 = ~{io_vr3, io_vr2, io_vr1, io_start,
-                        io_service, io_test, 1'b0, io_coin};
+                        io_service, io_test, io_coin2, io_coin};
   wire [7:0] io_in1 = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
   wire [7:0] io_in2 = 8'hff;          // drive board RX line, nothing on it here
 
-  // The eight bytes the sweep publishes, starting at DPRAM 0x08. The DIP banks
-  // read as all-ones — every switch off — until an MRA <switches> element
-  // drives them.
-  wire [63:0] io_in_bytes = {8'hff,    // 0x0f spare
-                             8'hff,    // 0x0e port 6
-                             8'hff,    // 0x0d DSW3
-                             8'hff,    // 0x0c DSW2
-                             8'hff,    // 0x0b DSW1
-                             io_in2,   // 0x0a
-                             io_in1,   // 0x09
-                             io_in0};  // 0x08
+  // The three MSM6253 channels. Each idle value is measured rather than assumed
+  // — see docs/io-board.md — and they are not the same: steering rests centred
+  // at 0x80, while a released pedal reads 0x01, matching MAME's
+  // PORT_MINMAX(1,0xff). Resting a pedal at 0x00 or 0xff is a car that will not
+  // move or will not stop.
+  //
+  // The d-pad goes to full lock rather than ramping. That is what a digital
+  // steering input does on the cabinet, and a pad has no travel to interpolate.
+  wire [7:0] wheel_stick = {~joy0_lstick[7], joy0_lstick[6:0]};
+  wire [7:0] io_wheel = io_steer_l ? 8'h00 :
+                        io_steer_r ? 8'hff : wheel_stick;
 
-  wire [7:0] io_wheel = {~joy0_lstick[7], joy0_lstick[6:0]};
-  wire [7:0] io_accel = {~joy0_rstick[15], joy0_rstick[14:8]};
-  wire [7:0] io_brake = {~joy0_rstick[7], joy0_rstick[6:0]};
+  // Buttons, not axes. hps_io's analog ports are two-axis sticks, so there is
+  // no travel to read from them for a pedal; a button giving full press is
+  // honest about that rather than pretending to be analog.
+  wire [7:0] io_accel = io_accel_b ? 8'hff : 8'h01;
+  wire [7:0] io_brake = io_brake_b ? 8'hff : 8'h01;
+
+  // The fifteen bytes the sweep publishes, DPRAM 0x00 first. The DIP banks read
+  // as all-ones — every switch off — until an MRA <switches> element drives
+  // them. 0x03-0x07 are 0xff because that is what the real board sets them to
+  // at startup; what they carry is not known.
+  wire [119:0] io_in_bytes = {8'hff,     // 0x0e port 6
+                              8'hff,     // 0x0d DSW3
+                              8'hff,     // 0x0c DSW2
+                              8'hff,     // 0x0b DSW1
+                              io_in2,    // 0x0a
+                              io_in1,    // 0x09
+                              io_in0,    // 0x08
+                              8'hff,     // 0x07
+                              8'hff,     // 0x06
+                              8'hff,     // 0x05
+                              8'hff,     // 0x04
+                              8'hff,     // 0x03
+                              io_brake,  // 0x02
+                              io_accel,  // 0x01
+                              io_wheel}; // 0x00
 
   // ROM download. m1_rom_loader consumes this and writes SDRAM through the
   // controller's dedicated high-priority write port.

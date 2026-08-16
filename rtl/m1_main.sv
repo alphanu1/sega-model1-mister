@@ -66,7 +66,7 @@ module m1_main #(
   input  logic        rom_loaded,  // hold the CPU until the ROMs are there
 
   // Control state for the I/O board, idle-high. See docs/io-board.md.
-  input  logic [63:0] in_bytes,
+  input  logic [119:0] in_bytes,
 
   // SDRAM data port (p0): ROM, work RAM, NVRAM, character RAM.
   output logic        sdr_req,
