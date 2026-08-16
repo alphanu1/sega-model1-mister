@@ -228,9 +228,14 @@ commit.
 **M1 is complete and running on hardware.** The core boots, loads its ROM,
 executes real Virtua Racing code and renders correctly on a DE10-Nano: zero
 fetch deadline misses, 57.52 Hz measured from the core's own vsync, and the
-picture pixel-identical to the reference. Three of the four items that used to
-be in this section are done — the top level and MRA exist, the tilemap fetch is
-pipelined, and the I/O responder is RTL rather than a testbench experiment.
+picture pixel-identical to the reference. Two of the four items that used to be in this section are done — the top level
+and MRA exist, and the tilemap fetch is pipelined.
+
+**The game is not yet playable, and that is the shortest gap to close.** No
+controller input reaches the core at all: `hps_io` in `Model1.sv` is
+instantiated with no joystick connections, and `m1_ioboard` is a boot-handshake
+stub whose own header says so — it answers the SEGA handshake and reads no
+input data. See item 2.
 
 Resource state after all of it, Quartus 17.0 on 5CSEBA6U23I7:
 
@@ -258,7 +263,31 @@ while the blocks do not exist), and the polygon list captured off the output
 FIFO to diff against MAME frame by frame — the verification model in `CLAUDE.md`
 names that as the geometry oracle.
 
-### 2. Finish the rasterizer — the band buffer and binning
+### 2. The I/O board — make it playable
+
+**Nothing the player does reaches the core.** Two separate gaps, and the first
+is trivial:
+
+- `hps_io` is instantiated in `Model1.sv` with **no joystick or analog
+  connections at all**. Start, coin, service and test are listed in every MRA's
+  `<buttons>` element and go nowhere.
+- `m1_ioboard` answers the boot handshake and nothing else. Its header is honest
+  about this: on the real board a Z80 (315-5338A) reads controls, coin, service
+  and the DIP switches into the shared RAM at 0xc00000, and this is not that
+  chip. Across a full boot run the V60 read exactly one address in that region
+  more than twice — the status flag — and **no input data**, because attract
+  mode and the service menu had not been reached.
+
+They have now, on hardware, so the evidence that bounded the stub no longer
+bounds the problem. Watch which DPRAM offsets the service menu polls — the debug
+overlay or a boot trace with `WATCH_PAGE=0xC0` will show it — and that decides
+the open question the header names: **a real Z80 (tv80) or a wider HLE**. See
+`THIRD-PARTY.md` for the licence position on both.
+
+Sound does **not** depend on this. MAME reaches the sound board through an i8251
+UART (`m1uart` -> `segam1audio`), not through the I/O board — see item 5.
+
+### 3. Finish the rasterizer — the band buffer and binning
 
 The fill path is done and measured: 2,113 ALM, 2 DSP, 0 M10K, 63.67 MHz, checked
 against a C transcription of MAME's `fill_quad` over 152,025 quads and 31.6 M
@@ -272,7 +301,7 @@ rather than receiving a sorted list, which is D3's premise; that is not a
 measurement meeting D3's reversal condition, and the quad count per frame from
 the M2 capture is what settles it.
 
-### 3. Close the SDRAM interface properly
+### 4. Close the SDRAM interface properly
 
 **This works but is unverified, and it is the one part of the design nothing has
 ever constrained.** `SDRAM_CLK` is a fabric inversion of `clk_sys`; there is no
@@ -290,7 +319,19 @@ Do this before trusting the design on a second board or a different SDRAM
 module. It is also the honest explanation for why the derivation in
 `m1_sdram`'s header is correct term by term and still gives the wrong total.
 
-### 4. Understand the 103-cycle character fetch wait
+### 5. M4 — sound, over a UART rather than the I/O board
+
+Entirely unbuilt, and worth recording how it attaches because it is not
+obvious: the main board talks to the sound board through an **i8251 UART**, not
+through the I/O board or a shared latch. `model1.cpp` wires `m1uart`'s txd to
+`segam1audio`'s rxd and back, with `rxrdy`/`txrdy` driving `sound_ready_w`.
+
+The sound board itself is a 68000, a YM3438 and two MultiPCMs, with its own ROM
+regions (`M1AUDIO_CPU_REGION`, `M1AUDIO_MPCM1/2_REGION`). `tools/gen_mra.py`
+already documents where they belong in the stream and deliberately omits them
+while the blocks do not exist.
+
+### 6. Understand the 103-cycle character fetch wait
 
 Measured in the whole system, a character fetch waits an average of 103 cycles
 (240 before the line-buffer work reduced the request rate). That is far more
