@@ -610,7 +610,10 @@ in this document can be trusted to about 2%.
 **Fmax is exactly the V60's standalone number**, which says the V60 is the
 critical path in context as well as alone. Nothing else in the design is close.
 
-**M10K is now a real constraint, not a free resource.** 332 of 553 for the main
+**M10K is now a real constraint, not a free resource.** (Superseded: the real
+core measures 409 of 553 — see `HANDOFF.md` "Budget", which is authoritative and
+carries the offload options. The figure below is from `m1_integrated`, a
+measurement vehicle without the MiSTer framework.) 332 of 553 for the main
 board's memories and the video line buffers, before D3's band buffer (~51),
 before sound, before sprites. Earlier entries in this plan treated block RAM as
 effectively unlimited; that is no longer true.
@@ -621,7 +624,8 @@ Built and measured: 21,796 (this) + 2,554 (one TGP, D4 as reversed) + 937
 (m1_sdram) = **25,287 ALM. 16,623 left.**
 
 Updated 2026-08-15: plus 2,113 for the quad filler (`m1_raster_fill`, built
-early to size M3) = **27,400 ALM, 14,510 left.**
+early to size M3) = **27,400 ALM, 14,510 left.** (Superseded: the real core is
+26,663 ALM with 15,247 left, of which the V60 alone is 17,691 — see `HANDOFF.md`.)
 
 D4 originally called for three TGP instances. It was reversed on 2026-08-15
 after finding that MAME instantiates one MB86233 and never executes the two
@@ -652,7 +656,8 @@ rasterizer is sized, because that is the block carrying the widest uncertainty.
 Against 16,623 available that fits, with the pessimistic end uncomfortably
 close. One further lever is measured and held in reserve:
 
-- **V60 without the FP group: -1,987 ALM**, and Fmax 24.62 -> 45.54. Evidence is
+- **V60 without the FP group: -1,987 ALM** here, **-2,984 on the full core**
+  (measured 2026-08-16; both kept until the lever is spent). Fmax 24.62 -> 45.54. Evidence is
   good (no trap across 7.8M instructions of real boot code, no excess of
   FP-shaped byte pairs in the ROMs) but not conclusive: attract mode and
   gameplay have not run, and only two of eight ROM sets were scanned.

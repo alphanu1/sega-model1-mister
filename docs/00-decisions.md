@@ -235,4 +235,6 @@ Reverses if: the protocol turns out not to be recoverable from the ROM by
 disassembly — an undocumented handshake with the 315-5338A, or behaviour that
 depends on Z80 timing rather than on the bytes in the shared RAM. The fallback
 is tv80 plus the custom chip, and it costs ~1,700 ALM that would then have to
-come from `S32_V60_NO_FP` (-1,987 ALM, measured, held in reserve).
+come from `S32_V60_NO_FP` (-1,987 ALM, measured, held in reserve; re-measured
+on the full core 2026-08-16 at **-2,984 ALM** — the larger design gives the
+lever more to remove).

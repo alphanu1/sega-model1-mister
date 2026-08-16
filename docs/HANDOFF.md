@@ -1,4 +1,4 @@
-# Handoff — 2026-08-15
+# Handoff — 2026-08-16
 
 State of the Sega Model 1 core at the end of the M1 memory/CPU/video work.
 Everything below is committed and pushed; the tree is clean and the full suite
@@ -64,74 +64,95 @@ CL+2**, and with it the core boots: Virtua Racing's TEST MODE menu renders from
 real ROM, the V60 runs at `fe1435`, the I/O board has answered 1,398 times, and
 every value the overlay reports matches simulation exactly.
 
-## The wobble: what it is NOT, and where that leaves it — 2026-08-16
+## The wobble — resolved
 
-The picture on hardware is unstable — flashing white, jumping vertically —
-and it became unstable only once the game had real tile data to draw.
+The picture was unstable on hardware, flashing white and jumping vertically. It
+was the scaler, not the core: `vsync_adjust` fixed it and the picture has been
+steady since. The diagnosis cost a day and two of the three theories died on
+contact with a measurement.
 
-**The fetch engine is not the cause, and the evidence that said it was, was
-misread.** The deadline-miss counter is cumulative, and 6,849 misses over 103
-frames was read as a rate — "one line in six" — when it is not:
+**The reading that wasted the most time**: 6,849 fetch deadline misses over 103
+frames, read as a rate — "one line in six" — when the counter is cumulative and
+every miss happened before frame 31. Seventy-two consecutive frames were clean.
+A cumulative counter is not a rate, and this file said so afterwards and the
+mistake was still repeated later in the same week.
 
-```
-20 M cycles: frames=31  misses=6849
-40 M cycles: frames=46  misses=6849
-...
-120 M cycles: frames=103 misses=6849
-```
+The engine work done chasing it was worth keeping anyway — cost per dense layer
+went 1,614 -> 1,182 cycles, text layers ~700 -> 267 — and the current build
+reports **zero** deadline misses on real content.
 
-Every miss happens before frame 31 and the count never moves again. Seventy-two
-consecutive frames are clean. The misses are a boot transient: while the V60
-sweeps memory in its power-on tests it saturates the SDRAM controller, every
-line overruns, and once the game settles the engine keeps up with room to
-spare. That was already true before any of the work below.
+## The open M1 defect: most of the 2D does not draw — 2026-08-16
 
-### What the engine work bought anyway
+**This is where to start.** MAME's attract frame shows a ranking table,
+`INSERT COIN(S)`, `CREDIT 0` and the SEGA logo over the road. Ours shows the sky
+and sea and nothing else, and neither scrolls.
 
-Both changes are verified and worth keeping — they are the difference between
-"keeps up" and "keeps up with margin", and the margin is what four dense layers
-will need — but neither addressed the symptom:
+### Ruled out, by measurement
 
-| | before | after |
-|---|---|---|
-| cost per layer, distinct tiles | 1,614 | 1,182 |
-| cost per layer, text | ~700 | **267** |
-| four text layers against 3,280 available | ~2,800 | **1,068** |
-| character fetch wait | 240 cycles | 103 |
-| deadline misses | 6,858 | 6,849 |
+Do not re-derive these.
 
-1. **Fetch pipelined**: fetch and emit are separate state machines a column
-   apart, so a column's memory latency is paid under the emission already
-   happening. Bought nine misses, because the unit test models a 14-cycle
-   char_ack and the real figure under CPU contention was 240 — pipelining hides
-   eight cycles.
-2. **Four pixels a cycle into the line buffer**: `char_data` always delivered
-   eight 4bpp pixels at once and the emit side wrote them one at a time. The
-   line buffers are now four lanes of 128 entries, so four consecutive screen
-   positions touch each lane once and land in one write even when the tile
-   boundary is unaligned — the only form Quartus will infer, since a per-lane
-   byte enable infers nothing at all (see `rtl/m1_mainram.sv`).
+| Suspect | Evidence it is not the cause |
+|---|---|
+| fetch bandwidth | overlay row `0C` reads **zero** deadline misses; an overrun repeats a scanline anyway, which is not the symptom |
+| the ROM | 26 of 29 parts match MAME 0.289, **no CRC mismatches**, all twelve the MRA loads among them |
+| the row mask alone | implemented, verified, on the board — **changed nothing on screen** |
 
-37,202 fetch checks and 380,929 video-against-MAME checks pass throughout.
+### The row mask: a real gap that was not the whole bug
 
-### So what is left
+segas24 masks each tilemap in 8-pixel columns from a table at tile RAM `0x6000`
+(tilemaps 0/1) or `0x6800` (2/3), four words per scanline. MAME draws every
+tilemap twice, once per tile category, and inverts the mask for the second pass
+— so a column shows whichever category matches its mask bit. Ignoring the table
+is equivalent to `m = 0`, which MAME's own fast path treats as "draw all 128
+pixels", so a layer was painted solid across windows that should have been
+transparent.
 
-In simulation, steady state is clean: zero deadline misses over 72 frames and a
-correct picture. On hardware it is unstable. That is the same shape of problem
-as every other fault this month — something simulation does not model — and the
-candidates have not been narrowed yet:
+It was measured in use: table `0x6000` holds 72 non-zero words at the attract
+frame, pattern `007f ffff e000` repeating from scanline 88, and `vscr & 0x1ff`
+is 88 for that tilemap. Two independent numbers agreeing.
 
-- **Video mode.** The core emits MAME's `set_raw(16 MHz, 656, 0, 496, 424, 0,
-  384)` = 57.52 Hz. The sync POSITIONS inside blanking are "chosen, not
-  derived" — `m1_video_timing`'s header says so — and MiSTer's scaler measures
-  the frame from those edges. A jumping image is characteristic of a scaler
-  that cannot lock. **Read the OSD's reported timings first; it costs nothing.**
-- **Read-phase margin.** CL+2 is correct for the fetches checked, but it was
-  chosen from a one-word shift, not from a timing analysis, and nothing
-  constrains the SDRAM I/O.
-- **The 103-cycle character wait** is still unexplained. It is far more than a
-  round-robin turn between three ports should cost, and worth understanding on
-  its own merits even though it is not the symptom.
+It is now implemented — gated in the mixer rather than folded into
+`lb_transparent`, because tilemaps 2/3 draw their category-0 pass opaque and an
+opaque pass ignores transparency. Cost **+204 ALM, zero M10K**, timing +0.401 ns.
+`test_video` agrees with the updated reference over 380,929 checks;
+`test_tile_mixer` went exhaustive 8,192 -> 131,072 states.
+
+**And the picture did not change.** Record that plainly: the mask was a real
+defect, correctly fixed, and something else is also wrong.
+
+### The remaining suspect
+
+**`ctrl & 0x6000` window/split-scroll mode**, unimplemented, and confirmed
+active in the reference — `ctrl` = `tile_ram[0x5004 + ((layer>>1) & 2)]` reads
+**`0x2058`**, so `ctrl & 0x6000` = `0x2000`, mode 1. In that path MAME:
+
+- returns early for the odd tilemap, drawing only the even one
+- pushes `vscr & 0x1ff` to both the even and odd tilemap
+- takes per-line H-scroll from a table at `0x4000 + 0x200*layer` when
+  `hscr & 0x8000`
+
+We implement none of it, which is also the likeliest home of the missing
+scrolling. `segaic24.cpp` `draw_common` is the reference; read it alongside
+`draw_rect`.
+
+### How to measure, next session
+
+The tooling is built and in the scratchpad pattern — run MAME from a scratch
+directory, it drops `cfg/`, `nvram/` and `snap/` wherever it starts:
+
+    mame vr -rompath ~/roms -window -skip_gameinfo -autoboot_delay 0 \
+            -autoboot_script <script>.lua
+
+`-skip_gameinfo` is required or the warning screen blocks autoboot and the
+script silently never loads. `-autoboot_delay 0` or the tap installs after the
+exchange it is meant to capture. Assign every notifier and tap to a global or
+the subscription is collected and the callback stops with no error.
+
+The scripts written today: log every change to a memory range, install a
+read/write tap with run-length compression, snapshot at frame intervals, and
+dump a named region. `manager.machine.video:snapshot()` gives a reference frame
+to diff against a photograph of the board.
+
 ## Where it is
 
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural
@@ -231,11 +252,10 @@ fetch deadline misses, 57.52 Hz measured from the core's own vsync, and the
 picture pixel-identical to the reference. Two of the four items that used to be in this section are done — the top level
 and MRA exist, and the tilemap fetch is pipelined.
 
-**The game is not yet playable, and that is the shortest gap to close.** The
-controls are now wired end to end and the whole DPRAM map is measured rather
-than guessed — but this game reaches its I/O board through a mailbox at DPRAM
-`0x100` that we do not answer, so nothing the player does gets through yet. See
-item 2.
+**The controls work; the picture does not.** The whole DPRAM map is measured
+rather than guessed, and the V60 polls all fourteen control bytes every frame on
+real hardware. What blocks playability is that most of the 2D never draws — see
+"The open M1 defect" above, which is the one thing to start on.
 
 Resource state after all of it, Quartus 17.0 on 5CSEBA6U23I7:
 
@@ -258,6 +278,33 @@ not. `rtl/tgp/` holds twelve modules — ALU, AGU, sequencer, register file,
 memory, decoder, transfer unit and three FP units — fuzz-verified against MAME at
 millions of cases per unit and area-measured at 2,554 ALM / 72 MHz.
 
+**The four interfaces it has to present**, read off `model1.cpp`'s memory map —
+the V60 already drives all of them:
+
+| V60 address | Function |
+|---|---|
+| `0xd00000` | copro RAM address latch (mirrored to `0x1fffe`) |
+| `0xd20000` | copro RAM data port |
+| `0xd80000` | command FIFO into the TGP |
+| `0xdc0000` | FIFO input status — what a waiting V60 polls |
+
+**The microcode is `315-5573.bin`, 8 KB, and is NOT in the current ROM set.**
+MAME loads it into `tgp_copro` and executes it; zero-filling it hangs the
+machine, which is how its role was established. The board has three MB86233s —
+`315-5571`/`315-5572` are the geometrizers and MAME never executes those (D4) —
+so `315-5573` is the one that matters. It is also exactly what M0 exit criterion
+2 needs: lockstep against real microcode rather than generated instructions.
+
+Also owed for M2: `copro_data` (2 MB, `mpr-14898`-`14901`) and the polygon ROMs
+(**16 MB**, `mpr-14890`-`14897`), which roughly quadruples the SDRAM footprint
+and is another argument for putting sound samples on DDR3. Note `mpr-14897.33`
+is present in the local set under the transposed name `mpr-14879.33`, CRC
+`74873195` — renaming completes the polygon set.
+
+**A stub will not do.** The TGP does the transform *and* the maths the game
+logic consumes, so a block that merely acknowledges the FIFO would let the V60
+proceed on garbage. That is why the real microcode matters.
+
 What is missing is everything around it: `grep` finds `mb86233_core` referenced
 only by its own file. No mailboxes, no copro glue, no command or result FIFOs, no
 microcode load, no polygon capture. The engine is built and on the bench, never
@@ -277,11 +324,12 @@ while the blocks do not exist), and the polygon list captured off the output
 FIFO to diff against MAME frame by frame — the verification model in `CLAUDE.md`
 names that as the geometry oracle.
 
-### 2. The I/O board — make it playable  (IN PROGRESS)
+### 2. The I/O board — DONE, and how it was found
 
-**Status, 2026-08-16.** The control map is fully measured and wired. What is
-still owed is the mailbox response — see "what is owed" below.
-`docs/io-board.md` carries the full trail; this is the state.
+**Status, 2026-08-16: complete.** The control map is measured, wired and
+verified on hardware — the V60 polls all fourteen control bytes every frame at
+the reference's own cadence. What blocks playability now is the 2D defect above,
+not the I/O board. `docs/io-board.md` carries the full trail.
 
 #### The map, measured
 
@@ -367,6 +415,11 @@ watch-page tables held 32 addresses and filled without saying so, so "the V60
 touches 32 DPRAM addresses and none is `0x08`" was a table limit reported as a
 measurement — and it was used to reject the correct answer. They hold 256 now
 and the same run reports 90. Anything that can fill must report that it did.
+
+**A negative result is a result, and must be written down as one.** The row
+mask was measured in use, correctly implemented, verified against MAME over
+380,929 checks, and changed nothing on screen. Without that recorded, the next
+session re-derives the same fix.
 
 **A read tap is a different instrument from a memory watch.** Watching memory
 change finds where values are *written*; it cannot find where they are *read*,
@@ -471,20 +524,81 @@ the harness coverage before that is settled.
 
 ## Budget
 
-27,400 ALM built of 41,910 — 25,287 plus the 2,113 of fill path measured on
-2026-08-15. **14,510 left.**
+**Measured on the real core** (`make rbf`, Quartus 17.0, 5CSEBA6U23I7), not on
+`m1_integrated` — earlier versions of this section quoted the measurement
+vehicle, which excludes the whole MiSTer framework:
 
-Still to build: MiSTer `sys/` 3,000-4,000, sound 5,000-7,000, I/O board
-2,500-3,000, and the rest of the rasterizer. That last number is the one that
-moved: the estimate was 3,000-6,000 for the whole thing and the fill path alone
-took 2,113, so what remains of it — binning, band buffer, writeback, scanout —
-is now the widest uncertainty in the budget rather than a comfortable margin.
+| | used | of | |
+|---|---|---|---|
+| ALM | 26,663 | 41,910 | 64% |
+| M10K | 409 | 553 | **74%** |
+| DSP | 49 | 112 | 44% |
 
-M10K is now a constraint too: 332 of 553 before the band buffer, sound or
-sprites.
+**The V60 is 17,691 ALM — 67% of the entire design.** Everything written for
+this project totals under 1,000; `ascal` takes 1,984 and the rest of the
+framework about 1,600. That single fact decides where optimisation is worth any
+effort, and it is the V60 or nothing.
 
-One lever is measured and unspent: **V60 without the FP group, -1,987 ALM and
-Fmax 24.62 -> 45.54**.
+Still to build, against **15,247 free ALM**: TGP 2,554 (measured), rasterizer
+3,000-6,000, sound ~7,000. Total 12,554-15,554 — it fits, with the pessimistic
+end exactly at the wall.
+
+**Unspent lever, re-measured:** V60 without the FP group is **-2,984 ALM** on
+the full core. An earlier -1,987 is recorded in `00-decisions.md` from a smaller
+design; both are kept rather than one silently overwritten, and they get
+reconciled when the lever is actually spent. `dbg_fp_trap` has never fired but
+is **inert by construction in a build that has FP**, so that is not evidence
+yet — `tb_m1_boot` prints a warning if an FP opcode executes, and a long run
+under the define settles it off-hardware.
+
+### M10K is the binding resource, and where it goes
+
+| memory | M10K | note |
+|---|---|---|
+| tile RAM (`tram_c` + `tram_v`) | 128 | **held twice** |
+| display lists (`dl0`, `dl1`) | 128 | consumer not built |
+| colour translation (`cxlat`) | 48 | |
+| palette (`pram_c` + `pram_v`) | 32 | **held twice** |
+| video line buffers | 12 | 1,792 bits in a 10,240-bit block |
+| `ascal` (framework) | 54 | not ours |
+| loader, DPRAM | 7 | |
+
+144 blocks free and D3's band buffer wants ~51, so M3 fits without any of the
+below. These are the reserve, in order of value:
+
+- **Deduplication is the biggest lever and it is ours.** Tile RAM and palette
+  are each stored twice, a CPU-side copy and a video-side copy, because an M10K
+  has two ports and we need one write plus two reads. That is **80 M10K of pure
+  redundancy**. The video side reads at 16 MHz effective against an 80 MHz
+  `clk_sys`, so there is 5:1 slack to interleave the CPU read behind an arbiter.
+  No SDRAM bandwidth cost.
+- **Display lists to SDRAM: 128 M10K.** Sequential streaming access, and the
+  consumer does not exist yet, so there is no working code to break.
+- **Line buffers to MLAB: 12 M10K for ~480 ALM.** They use 17% of each block.
+  The only good MLAB candidate — MLAB is 32 words deep, so everything else is
+  too deep to qualify.
+- Tile RAM to SDRAM is the wrong candidate: read every scanline, on a bus that
+  already has an unexplained 103-cycle character-fetch wait.
+
+### Sound, sized from MAME rather than guessed
+
+`model1.cpp`: 68000 with 768 KB of code, YM3438 at 8 MHz, **two MultiPCMs with
+4 MB of samples each**, over an i8251 UART at 31.25 kHz.
+
+- fx68k and Jotego's JT12 are both GPLv3, and every file here is
+  `GPL-3.0-or-later`, so both are usable. That removes the two largest pieces.
+- **The MultiPCM is the real unknown** — a 28-channel wavetable engine with
+  envelopes, interpolation and panning, times two instances, and no open core I
+  know of. MAME's device is BSD-3-Clause so it can drive per-channel fuzzing the
+  way the TGP was verified.
+- **Put the 8 MB of samples on DDR3, not SDRAM.** 56 channels each fetching from
+  a different place is random access, not bursts; it would row-thrash a bus that
+  already carries V60 fetch, CPU data and character fetch. `DDRAM_*` is
+  available and `ascal` already uses it.
+
+Worth spiking one MultiPCM channel through Quartus early — it converts the
+~7,000 estimate into a number, and that number decides whether all four
+milestones fit on this device.
 
 ## Open decisions
 
