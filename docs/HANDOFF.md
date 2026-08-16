@@ -32,31 +32,35 @@ so it confirmed the setting rather than testing it. Buffer now 512/256, sweep to
 **`docs/mister-integration.md` is the full write-up**, framework-generic rather
 than Model 1 specific, for reuse on any future MiSTer core.
 
-### Still failing, and what is known
+### The fifth fault: every SDRAM burst came back one word late
 
-The V60 **halts at PC 3** on hardware, having executed opcode `0x00`. The screen
-is black because the CPU never writes a tile or a palette entry; the tilemap
-engine is alive and fetching.
+The V60 read `FE104E` as its reset vector where the ROM holds `4EF3D6`. Both are
+the same burst `FFFF00FE104EF3D6`, simulation taking bits `[23:0]` and the board
+`[39:16]`: the controller was calling the burst's word 1 its word 0, on every
+read. The CPU therefore got a corrupt jump operand, computed a target of ~0,
+landed in on-chip work RAM full of zeros, executed opcode `0x00` and halted —
+generating no further SDRAM fetches, which is why the fetch count froze at six.
 
-What the on-screen debug overlay establishes, read off photographs:
+**It survived a session of looking straight at it.** The first fetch is at word
+0, where the ROM is `000d 000d 000d 000d` — every word identical, the one
+address in the image where a one-word shift cannot show. That fetch was checked
+against the ROM, matched, and reads were declared correct; the wrong conclusion
+then cost three long detours into the clock-domain crossings, the PLL dividers
+and the clock ratio, all of which were fine. **Verify against data that can
+distinguish the fault.**
 
-- The ROM arrives **intact** — words sent = words written = `0x00300000`,
-  overflow clear.
-- SDRAM reads are **correct**: the first instruction fetch returns `000d000d`,
-  which is exactly the first two words of the ROM image.
-- The first fetch lands at SDRAM word `000000`, and **simulation does the same
-  thing** — so that is normal, not a divergence.
-- `dbg_halted` set, `fp_trap` clear, `rom_ready` and `mem_ready` both set.
+`RD_LAT = CL + 3` is derived term by term in `m1_sdram` and derived entirely
+against `sdram_model`, which samples commands and presents data on the same edge
+the controller uses. The board does not: `SDRAM_CLK` is the inverse of
+`clk_sys`, so the device answers half a period away, and the model's own header
+says that forwarded-clock phase is "deliberately not modelled here". Every term
+is right and the total is a simulation figure.
 
-Ruled out with evidence, not argument: ROM layout, loader flow control, SDRAM
-read timing, the reset sequencing, the first-fetch address, and the clock ratio
-— simulation now runs at the board's real 80/19.23 MHz and still boots to the
-test-mode screen over 103 frames.
-
-What remains unexamined is what simulation still cannot model: metastability and
-skew on the two asynchronous domain crossings, which are cut with
-`set_clock_groups -asynchronous` and therefore never timed by the fitter.
-`m1_cdc_port` carrying the CPU's data reads is the leading suspect.
+The capture depth is now selectable at run time, CL+2 through CL+5, from the
+OSD; simulation ties it to CL+3 so no harness was rebaselined. **Hardware wants
+CL+2**, and with it the core boots: Virtua Racing's TEST MODE menu renders from
+real ROM, the V60 runs at `fe1435`, the I/O board has answered 1,398 times, and
+every value the overlay reports matches simulation exactly.
 
 ## The wobble, and what it is actually made of — 2026-08-16
 
