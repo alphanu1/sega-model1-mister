@@ -102,15 +102,61 @@ response format.
 
 ---
 
-## Two ways to finish this, neither started
+## Locating the protocol code, without a disassembler
 
-**Disassemble `EPR-14869`.** The ROM is in `vr.zip`. No Z80 disassembler is
-installed; a table-driven one is a few hundred lines and would live in `tools/`.
-The code that matters is whatever writes through registers `0x09`/`0x0a`, which
-is findable without reading all 64 KB. This is what D9 costed as "the more work
-of the two".
+Ghidra was the obvious tool and turned out not to be needed. Nothing was
+installed; the code was found by searching the ROM for the byte patterns of the
+instructions that must be there.
 
-**Or run it.** A small Z80 interpreter plus a model of the 315-5338A above,
+**None of what follows is committed.** The ROM is extracted to a scratch
+directory and analysed there; hard rule 2 means no ROM bytes and no disassembly
+listing enter the repository. What is recorded here is the *interface* — which
+is the thing an HLE has to reproduce and is not itself the ROM.
+
+Findings, in the order they fell out:
+
+- **Only the first 16 KB is real.** MAME maps `0x0000-0x3fff` as ROM, and bytes
+  `0x4000` upward in the 64 KB image are all `0xFF`.
+- **There are no absolute stores to the chip.** Searching for `LD (0x8009),A`
+  and friends found nothing, because the Z80 reaches the chip through a pointer:
+  the only loads of a constant in `0x8000-0x800f` are at ROM `0x0006`/`0x0007`,
+  setting `IY = 0x8000` at reset. Every access is `(IY+d)` indexed.
+- **The whole DPRAM access block is about 60 bytes**, around `0x74c-0x7b4`, and
+  the only chip registers it touches are the direction register `+8`, the
+  command register `+9`, and port 0.
+- The command values written are exactly the ones MAME's device implements:
+  `0x00`/`0x01` to set the address low and high, `0x07` to write a byte, `0x87`
+  to prepare to receive. Nothing undocumented appears.
+
+### The primitives, and how much of the ROM uses them
+
+| Routine | Call sites | What it does |
+|---|---|---|
+| `0x74c` | 8 | |
+| `0x768` | 13 | writes a byte (`cmd 0x07`) |
+| `0x776` | 12 | writes then receives (`0x07`, `0x87`) |
+| `0x787` | 3 | shared address setter (`0x00`, `0x01`, `0x87`), called by the two above |
+| `0x7a6`, `0x7b4` | 2 each | port 0 access |
+
+So the entire board-to-V60 protocol funnels through a handful of primitives with
+roughly 35 call sites in 16 KB. That is a small enough surface to read.
+
+### What is left to establish
+
+**Which DPRAM addresses the callers pass.** The address is set up in a register
+pair before calling `0x787`, so the layout falls out of reading the ~25 call
+sites of the two write routines. That is the remaining work, and it is bounded:
+25 sites, not 16 KB.
+
+Ghidra remains available if the caller analysis needs real decompilation — Arch
+has it, though it wants a JDK and about a gigabyte — but the targeted approach
+has not run out of road yet.
+
+---
+
+## The other route, if reading the callers stalls
+
+**Run it.** A small Z80 interpreter plus a model of the 315-5338A above,
 fed the exact command block the trace captured, would show what the board writes
 back without anyone reading assembly. That is the same "extend by observation"
 method that found the missing on-chip RAMs and the single-cycle ack, and it
