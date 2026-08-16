@@ -418,34 +418,67 @@ and it really is executed, so the V60 waits forever on a coprocessor running
 nothing. The other two placeholders are harmless, per D4's finding that MAME
 never executes the geometrizer ROMs.
 
-### The result
+### The result — the complete map
 
-Holding one control at a time, every press appears at DPRAM `0x08` as a single
-bit dropping from an idle `ff` — active low, one bit per control:
+Holding one control at a time, every press appears as a single bit dropping from
+an idle `ff` — active low, one bit per control. Three sweeps were needed to cover
+all fourteen; this is the union, and every row is a measurement:
 
-| `0x08` | bit | control |
-|---|---|---|
-| `fe` | 0 | Coin 1 |
-| `fb` | 2 | Test / Service Mode |
-| `f7` | 3 | Service 1 |
-| `ef` | 4 | 1P Start |
-| `df` | 5 | VR1 Red |
-| `bf` | 6 | VR2 Blue |
-| `7f` | 7 | VR3 Yellow |
-
-and at `0x09`, `fe` — bit 0 — for VR4 Green.
+| DPRAM | bit | control | observed |
+|---|---|---|---|
+| `0x08` | 0 | Coin 1 | `fe` |
+| | 1 | Coin 2 | `fd` |
+| | 2 | Test / Service Mode | `fb` |
+| | 3 | Service 1 | `f7` |
+| | 4 | 1P Start | `ef` |
+| | 5 | VR1 Red | `df` |
+| | 6 | VR2 Blue | `bf` |
+| | 7 | VR3 Yellow | `7f` |
+| `0x09` | 0 | VR4 Green | `fe` |
+| | 4 | Shift Down | `ef` |
+| | 5 | Shift Up | `df` |
 
 **This is exactly MAME's `INPUT_PORTS( vr )` bit order**, and exactly what
 `Model1.sv` already wires and what `m1_ioboard`'s `INPUT_BASE = 0x008` already
 targets. Both were right; what was missing was any way to know it.
+
+One row carries its own check. The operator reported pressing F2 twice by
+accident, and `0x08 -> fb` appears exactly twice in the log. A capture that
+reproduces an unprompted detail of how it was produced is measuring the machine
+rather than the expectation.
+
+### The analog channels
+
+`0x00`-`0x02` are the three MSM6253 channels, and holding an axis identifies each
+one outright — the value ramps rather than snapping, so it cannot be confused
+with a stray write:
+
+| DPRAM | channel | rest | travel |
+|---|---|---|---|
+| `0x00` | steering | `0x80` centre | full `00`-`ff` |
+| `0x01` | accelerator (pedal 1) | `0x01` | up to `0xff` |
+| `0x02` | brake (pedal 2) | `0x01` | up to `0xff` |
+
+Steering moved in steps of 3 per frame over 173 changes, which is the keyboard
+ramp rate rather than anything about the hardware — a MiSTer analog stick will
+present the absolute position directly.
+
+**Note the pedal rest value is `0x01`, not `0x00`.** Publishing zero is a
+released pedal only by luck; publish the measured idle.
+
+### Getting the keys right matters more than it sounds
+
+Two controls were recorded as "unmeasured" for a whole round because the guessed
+keybindings were wrong — Z and X are VR3 and VR4, not the shifters, which are C
+and V. The presses had worked perfectly; the interpretation was wrong. **Read
+Tab -> Input Assignments and use what it says**, rather than assuming the
+conventional layout. The wasted round looked exactly like a protocol fault.
 
 ### What else the capture shows
 
 - At frame 9 the board sets `0x03`-`0x0e` to `ff` in one go — the input region
   initialising to idle-high, which is why publishing zeros presents every
   control as held.
-- `0x00`-`0x02` change constantly during play. That fits the ROM's scanned-panel
-  bytes and is where steering and the pedals most likely land — untested.
 - `0x0f` toggles between `80`/`40`/`20`/`60` on a regular period. It looks like a
   lamp or blink output, not a control.
 - `0x11` free-runs. Ignore it when reading a diff.
@@ -489,6 +522,13 @@ so every MRA's `<buttons names="Start,Coin,Service,Test,-,-">` went nowhere:
 - steering and two pedals from the analog sticks, converted from MiSTer's signed
   axes to the unsigned range the board's MSM6253 presents
 
-They are wired and unused until the response format above is known. That is
-deliberate: the signals existing costs nothing and removes a step from whatever
-comes next.
+Against the measured map, two gaps remain in the wiring:
+
+1. **Coin 2 is tied to a constant.** `io_in0` bit 1 is `1'b0`, which reads as
+   never pressed. It has a real bit and should have a real source.
+2. **The sweep does not reach the analog channels.** `INPUT_BASE = 0x008` with
+   eight bytes covers `0x08`-`0x0f`, so `0x00`-`0x02` are never published. The
+   wheel and both pedals are wired into the core and then dropped on the floor.
+
+Neither was visible before the measurement, because nothing said the analog
+channels were at `0x00`-`0x02` in the first place.
