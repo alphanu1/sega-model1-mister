@@ -312,10 +312,27 @@ Decode the request payload the trace captured — `1c 82 01 00 3e 9d ff 00 ...` 
 (BC holds the DPRAM address, B low and C high), and the call sites are
 enumerated. What is not known is the *content*.
 
-**Three experiments have now each disproved a plausible layout.** The pattern is
-that reading the ROM says what the Z80 does, and the trace says what the V60
-does, and only where they agree is anything established. Prefer the experiment
-that can falsify the next guess over the one that would confirm it.
+### The trace is definitive about where the inputs come from
+
+Worth stating without hedging, because an earlier draft of this file did hedge
+and it obscured the conclusion. Over 150 M cycles the V60 reads exactly two
+things in this region: the flag at `0x20`, and the window at `0x100`-`0x12x`.
+Nothing else. **So the inputs must arrive through that window**, because it is
+the only place the CPU looks.
+
+That is conclusive for the goal — making the service menu respond — and the only
+caveat is scope rather than certainty: it is definitive about *this run*, to the
+service menu. Attract mode or gameplay may read elsewhere.
+
+It also settles what the low-DPRAM sweep is worth. It is faithful to the board
+and costs nothing, but it is **not** a route to working inputs and should not be
+counted as partial progress toward them.
+
+The remaining unknown is therefore narrow: what the response in that window has
+to contain. Reading the ROM says what the Z80 writes; the trace says what the
+V60 reads; the answer needs both. Prefer the experiment that can falsify the
+next guess over the one that would confirm it — three have each disproved a
+plausible layout already.
 
 ## Revisit the LLE when the resource count is final
 
