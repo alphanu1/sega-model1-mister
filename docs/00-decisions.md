@@ -184,3 +184,40 @@ and are small enough not to threaten the band buffer.
 Reverses if: M1 telemetry shows p0 wait cycles dominating with work RAM external, and a
 V60 cache does not recover it. The fallback is work RAM in M10K and a smaller band, which
 costs D3 before it costs D2.
+
+## D9 — The I/O board is an HLE, not a Z80
+
+Deferred three times because nothing needed it: across a full boot the V60 reads
+exactly one address in the DPRAM region more than twice — the status flag at
+`0xc00040`, forty times — and no input data at all. The core has now reached the
+service menu on hardware, so that evidence has run out and the choice has to be
+made.
+
+Both options were re-costed in `docs/m1-m4-plan.md` and both are more work than
+the first estimate:
+
+| | ALM | What it actually needs |
+|---|---|---|
+| HLE | ~300 | The protocol, which exists only inside the Z80 ROM — disassembling it, not inferring it |
+| LLE | ~2,000 | A Z80 **and** the 315-5338A, because the DPRAM is reached through the custom chip |
+
+**HLE, for area.** The measured budget after M1 is 15,443 ALM free, against
+10,900-15,900 for everything still to build. The LLE spends about 1,700 of that
+margin on the one block whose behaviour is fully observable from the outside:
+the V60 only ever sees the shared RAM, so an HLE that produces the right bytes
+there is indistinguishable from the real chip by construction. That is not true
+of the TGP or the rasterizer, which is where the margin should be kept.
+
+It is the more work of the two — the protocol has to be read out of the Z80 ROM
+rather than obtained by running it — and that trade is the point: more effort in
+exchange for room.
+
+One correction this entry carries: the plan's summary line costs the Z80 option
+at "3,000-2,500 ALM", which disagrees with its own detailed section at ~2,000.
+The ~2,000 figure is the one with reasoning attached.
+
+Reverses if: the protocol turns out not to be recoverable from the ROM by
+disassembly — an undocumented handshake with the 315-5338A, or behaviour that
+depends on Z80 timing rather than on the bytes in the shared RAM. The fallback
+is tv80 plus the custom chip, and it costs ~1,700 ALM that would then have to
+come from `S32_V60_NO_FP` (-1,987 ALM, measured, held in reserve).

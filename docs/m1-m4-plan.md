@@ -628,8 +628,26 @@ after finding that MAME instantiates one MB86233 and never executes the two
 Geometrizer ROMs it loads — see that entry. That frees 5,108 ALM.
 
 Still to build, estimated: MiSTer `sys/` 3,000-4,000; sound — 68000, YM3438 and
-two MultiPCM — 5,000-7,000; I/O board as a Z80 3,000-2,500; rasterizer
+two MultiPCM — 5,000-7,000; I/O board as a Z80 ~2,000 (the "3,000-2,500" this
+line used to carry disagreed with the detailed costing below it); rasterizer
 3,000-6,000. **12,500-19,500 against 11,515 available.**
+
+**Superseded by measurement, 2026-08-16.** M1 is built and the real numbers are
+in `docs/HANDOFF.md`: 26,467 ALM used of 41,910, so **15,443 free**. D9 chose
+the HLE for the I/O board at ~300 ALM rather than ~2,000, and `sys/` is no
+longer an estimate because it is in the build. What is left:
+
+| | ALM |
+|---|---|
+| Sound — 68000, YM3438, 2x MultiPCM | 5,000-7,000 |
+| Rasterizer, of which the fill path is 2,113 measured | 3,000-6,000 |
+| TGP, one instance, measured | ~2,554 |
+| I/O board, HLE per D9 | ~300 |
+| **Total** | **10,854-15,854 against 15,443** |
+
+It fits, with the pessimistic end 411 ALM over — which `S32_V60_NO_FP` covers
+twice over at -1,987 measured. The lever should still not be spent before the
+rasterizer is sized, because that is the block carrying the widest uncertainty.
 
 Against 16,623 available that fits, with the pessimistic end uncomfortably
 close. One further lever is measured and held in reserve:
