@@ -54,7 +54,35 @@ module m1_ioboard #(
   // Cycles between seeing the request and answering it. Stands in for a 4 MHz
   // Z80 noticing a mailbox; the V60 polls, so any non-zero value works and the
   // exact figure is not known.
-  parameter int          LATENCY = 64
+  parameter int          LATENCY = 64,
+
+  // PUBLISHING INPUT STATE INTO THE SHARED RAM
+  //
+  // The real board's Z80 keeps the controls somewhere in the DPRAM and the V60
+  // reads them there. Where is not yet known — see docs/io-board.md — so the
+  // base address is a parameter and this can be swept rather than asserted.
+  //
+  // The 315-5338A has a single-command fast write to DPRAM bytes 0..7, which no
+  // designer adds unless those bytes are refreshed often. That makes 0x000 the
+  // first place to look, not a guess dressed up as a default.
+  //
+  // IDLE IS 0xFF, NOT 0x00. Every control in MAME's model1.cpp is
+  // IP_ACTIVE_LOW, and an M10K comes up zeroed — so a core that publishes
+  // nothing presents every button as held. That is worth ruling out before
+  // anything subtler.
+  parameter logic [10:0] INPUT_BASE = 11'h000,
+  // OFF BY DEFAULT, BECAUSE IT REGRESSES THE MACHINE AS WRITTEN.
+  //
+  // Enabling it drops the handshake reply count from 62 to 1 and parks the V60
+  // at fe022c on a solid blue screen. The cause is this module, not the data:
+  // publishing to 0x400, an address nothing reads, gives byte-identical
+  // results to publishing at 0x000 — same PC, same reply count, same pixels.
+  // So the refresh is starving the handshake for the single shared write port,
+  // and the round-robin needs to yield properly before this can be turned on.
+  //
+  // The unit test does not catch it: there the port is always acknowledged,
+  // while in the system io_ack is denied whenever the V60 is writing.
+  parameter bit          PUBLISH_INPUTS = 1'b0
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -67,6 +95,10 @@ module m1_ioboard #(
   input  logic        v60_sel_dpram,
   input  logic [11:1] v60_addr,
   input  logic [7:0]  v60_wdata,
+
+  // Eight bytes of control state, idle-high. Refreshed into the shared RAM
+  // continuously so the V60 sees current state whenever it looks.
+  input  logic [63:0] in_bytes,
 
   // The I/O side write into the DPRAM. That RAM has ONE physical write port
   // shared with the V60 — Quartus will not infer a true dual-port M10K from it,
@@ -89,6 +121,14 @@ module m1_ioboard #(
   logic [CNT_W-1:0] wait_cnt;
   logic             pending;
 
+  // Which of the eight bytes to refresh next. Round robin rather than
+  // write-on-change: the port is shared with the V60 and can be refused, so a
+  // change-triggered write would need a retry queue to avoid losing an edge,
+  // and a button held for one frame is millions of cycles wide anyway.
+  logic [2:0] pub_idx;
+  logic [7:0] pub_byte;
+  always_comb pub_byte = in_bytes[{pub_idx, 3'b000} +: 8];
+
   // A request is any non-zero write to the flag byte. The V60 writes the flag
   // with a code that differs between the two handshakes, so the value is not
   // matched — only that it is not the cleared state.
@@ -104,6 +144,7 @@ module m1_ioboard #(
       io_addr  <= FLAG_ADDR;
       io_din   <= REPLY;
       replies  <= 16'd0;
+      pub_idx  <= 3'd0;
     end else begin
       // Held, not pulsed: the write stays asserted until the RAM acknowledges.
       if (io_ack) io_we <= 1'b0;
@@ -127,8 +168,21 @@ module m1_ioboard #(
       // The handshake is answered when the byte actually reaches the RAM, not
       // when the write was requested.
       if (io_we && io_ack) begin
-        pending <= 1'b0;
-        if (replies != 16'hffff) replies <= replies + 16'd1;
+        if (pending) begin
+          pending <= 1'b0;
+          if (replies != 16'hffff) replies <= replies + 16'd1;
+        end else begin
+          // That was an input refresh; move to the next byte.
+          pub_idx <= pub_idx + 3'd1;
+        end
+      end
+
+      // Input refresh, only when the handshake has nothing outstanding. The
+      // handshake is what boot blocks on, so it takes the port first.
+      if (PUBLISH_INPUTS && !pending && !io_we) begin
+        io_we   <= 1'b1;
+        io_addr <= INPUT_BASE + 11'(pub_idx);
+        io_din  <= pub_byte;
       end
     end
   end

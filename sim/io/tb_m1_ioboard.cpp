@@ -105,6 +105,11 @@ struct Dut {
   }
 };
 
+// The handshake checks below assume the write port is idle between requests.
+// With PUBLISH_INPUTS on it never is — the module refreshes the control bytes
+// continuously — so this binary is built with publishing OFF and the publisher
+// has its own build. Testing both through one binary would mean weakening the
+// handshake assertions to accommodate traffic they are specifically about.
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
 

@@ -73,6 +73,8 @@ module emu
     "O[2],Video timing,Original 24kHz,Scandoubled;",
     "O[3],Debug overlay,Off,On;",
     "O[5:4],SDRAM read phase,CL+2,CL+3,CL+4,CL+5;",
+    "O[6],Test switch,Off,On;",
+    "O[7],Service switch,Off,On;",
     "-;",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
@@ -93,14 +95,41 @@ module emu
   // MRA order is Start, Coin, Service, Test. MiSTer's joystick bits are
   // right,left,down,up then the buttons in order, so the four the MRAs name
   // are bits 4..7.
-  wire io_start   = joy0[4];
-  wire io_coin    = joy0[5];
-  wire io_service = joy0[6];
-  wire io_test    = joy0[7];
+  // Virtua Racing's control panel, from model1.cpp's INPUT_PORTS( vr ): coin,
+  // test, service, start, four VR view buttons and a two-position shifter.
+  // Twelve digital controls, not the four the generic MRA line named.
+  //
+  // Test and service are OSD switches as well as buttons: they are things you
+  // set before boot rather than press during play, and mapping a pad button to
+  // something you need held at power-on is awkward.
+  wire io_coin    = joy0[4];
+  wire io_start   = joy0[5];
+  wire io_vr1     = joy0[6];
+  wire io_vr2     = joy0[7];
+  wire io_vr3     = joy0[8];
+  wire io_vr4     = joy0[9];
+  wire io_shift_up = joy0[10];
+  wire io_shift_dn = joy0[11];
+  wire io_test    = joy0[12] | status[6];
+  wire io_service = joy0[13] | status[7];
 
   // Steering and pedals. Virtua Racing reads these through the I/O board's
   // MSM6253 ADC, so they are 8-bit unsigned there; MiSTer delivers signed
   // -128..127 on each axis, hence the offset.
+  // The eight bytes published into the shared RAM. Idle is 0xFF because every
+  // control in MAME's model1.cpp is IP_ACTIVE_LOW; a byte left at zero reads as
+  // every button on it held down.
+  //
+  // Byte 0 is Virtua Racing's IN.0 and byte 1 its IN.1, in MAME's bit order.
+  // WHERE these land in the DPRAM is a parameter on m1_ioboard and is not yet
+  // confirmed — see docs/io-board.md. The bit assignment within a byte is from
+  // model1.cpp and is not a guess; the base address is.
+  wire [7:0] io_in0 = ~{io_vr3, io_vr2, io_vr1, io_start,
+                        io_service, io_test, 1'b0, io_coin};
+  wire [7:0] io_in1 = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
+
+  wire [63:0] io_in_bytes = {40'hffffffffff, io_wheel, io_in1, io_in0};
+
   wire [7:0] io_wheel = {~joy0_lstick[7], joy0_lstick[6:0]};
   wire [7:0] io_accel = {~joy0_rstick[15], joy0_rstick[14:8]};
   wire [7:0] io_brake = {~joy0_rstick[7], joy0_rstick[6:0]};
@@ -325,6 +354,7 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     .clk_sys(clk_sys), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     .rst_n(rst_n), .mem_rst_n(mem_rst_n), .mem_ready(mem_ready),
+    .in_bytes(io_in_bytes),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),

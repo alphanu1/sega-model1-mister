@@ -188,6 +188,8 @@ m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
+    // Idle-high: every control is active low, so zero means all held.
+    .in_bytes(64'hffffffffffffffff),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),

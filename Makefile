@@ -261,8 +261,14 @@ test_glue:
 # poll being mistaken for a request.
 test_ioboard:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
+	  -GPUBLISH_INPUTS=0 \
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard --Mdir obj_ioboard
 	./obj_ioboard/tb_ioboard
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
+	  -GPUBLISH_INPUTS=1 \
+	  $(SRCS_m1_ioboard) sim/io/tb_m1_iopublish.cpp -o tb_iopublish \
+	  --Mdir obj_iopublish
+	./obj_iopublish/tb_iopublish
 
 test_decode:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_decode \

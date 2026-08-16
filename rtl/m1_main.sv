@@ -65,6 +65,9 @@ module m1_main #(
   input  logic        rst_n,
   input  logic        rom_loaded,  // hold the CPU until the ROMs are there
 
+  // Control state for the I/O board, idle-high. See docs/io-board.md.
+  input  logic [63:0] in_bytes,
+
   // SDRAM data port (p0): ROM, work RAM, NVRAM, character RAM.
   output logic        sdr_req,
   output logic        sdr_we,
@@ -242,6 +245,7 @@ module m1_main #(
     if (IOBOARD) begin : g_ioboard
       m1_ioboard ioboard (
         .clk(clk), .rst_n(rst_n),
+        .in_bytes(in_bytes),
         .v60_req(m_req), .v60_we(m_we), .v60_sel_dpram(sel_dpram),
         .v60_addr(m_addr[11:1]), .v60_wdata(m_wdata[7:0]),
         .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack),

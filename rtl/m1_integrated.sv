@@ -78,6 +78,11 @@ module m1_integrated (
   // routed out through the top level and back in.
   input  logic        mem_ready,      // clk_sys domain
 
+  // Control state for the I/O board, idle-high. Crosses into the CPU domain
+  // inside m1_main; it changes at human speed and is read by a polling CPU, so
+  // a synchroniser buys nothing a metastable bit would not survive anyway.
+  input  logic [63:0] in_bytes,
+
   // SDRAM data port and instruction fetch
   output logic        sdr_req,
   output logic        sdr_we,
@@ -207,6 +212,7 @@ module m1_integrated (
   m1_main main (
     .clk(clk_cpu), .ce(ce_cpu), .rst_n(rst_n_cpu),
     .rom_loaded(rom_loaded_sync[1]),
+    .in_bytes(in_bytes),
     .sdr_req(cpu_sdr_req), .sdr_we(cpu_sdr_we), .sdr_addr(cpu_sdr_addr),
     .sdr_din(cpu_sdr_din), .sdr_be(cpu_sdr_be),
     .sdr_dout(cpu_sdr_dout), .sdr_ack(cpu_sdr_ack),

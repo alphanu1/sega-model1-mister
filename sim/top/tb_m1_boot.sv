@@ -94,6 +94,8 @@ wire        mem_ready;
 
 m1_main main (
     .clk(clk_cpu), .ce(ce), .rst_n(rst_n_cpu), .rom_loaded(mem_ready_cpu[1]),
+    // Idle-high: every control is active low, so zero means all held down.
+    .in_bytes(64'hffffffffffffffff),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
     .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),

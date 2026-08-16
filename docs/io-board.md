@@ -122,6 +122,48 @@ implemented from what is learned, but no ROM-derived table gets committed.
 
 ---
 
+## Experiment 1: publishing input bytes — the mechanism is wrong
+
+**Result: negative, and the negative is about this code rather than about the
+hardware.**
+
+`m1_ioboard` gained an input publisher — eight bytes refreshed round-robin into
+the shared RAM at a parameterised base — on the reasoning that the 315-5338A's
+single-command fast write to bytes 0-7 implies those bytes are refreshed often,
+and that an M10K coming up zeroed presents every active-low control as held.
+
+Enabling it regresses the machine:
+
+| | publisher off | publisher on |
+|---|---|---|
+| V60 PC | `fe143d` | `fe022c` |
+| handshake replies | 62 | **1** |
+| screen | TEST MODE menu | one flat colour, RGB(16,66,255) |
+
+**The control run is what makes this conclusive.** Publishing to `0x400` — an
+address nothing reads — gives *byte-identical* results to publishing at
+`0x000`: same PC, same reply count, same pixel count. The data location is
+irrelevant, so the fault is the refresh starving the handshake for the single
+shared write port, not anything about where the bytes land.
+
+Beware the metric that nearly hid it: "non-black pixels" rose from 4.99 M to
+15.7 M, which reads like more being drawn. It was one flat blue field. A
+brightness count is not a liveness check.
+
+The unit test does not catch this, and it is worth understanding why before
+trusting the next one: there the write port always acknowledges, while in the
+system `io_ack` is denied whenever the V60 is writing. The round-robin has to
+yield the port properly, not merely take it when it happens to be free.
+
+`PUBLISH_INPUTS` therefore defaults to **0**. The mechanism and its 23 checks
+are kept because the HLE needs them; what is owed is the arbitration fix, and
+then re-running this experiment.
+
+What was NOT learned: where the inputs live. That question is untouched by this
+result.
+
+---
+
 ## Revisit the LLE when the resource count is final
 
 D9 chose the HLE against a budget that is still estimates — sound at 5,000-7,000
