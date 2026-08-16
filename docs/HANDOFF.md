@@ -324,20 +324,30 @@ every control is active low, but a released pedal reads `0x01`. A blanket
 
 #### What is owed
 
-**The mailbox response, and it is the content rather than the mechanism.** This
-game does not read the low-DPRAM sweep at all. Over 150 M cycles the V60 touches
-32 DPRAM addresses and none is where the sweep writes; it uses a **mailbox**
-instead — a request left at `0x100`, a flag raised at `0x20`, an answer expected
-in the same window. We clear the flag and write no answer, so 74 flag polls
-produce three empty sweeps.
+**A hardware test.** The input path is complete in simulation: with the identity
+block pushed, the V60 leaves the setup exchange and polls `0x00`-`0x0e` every
+frame, at the reference's own cadence. What has not happened yet is a button
+press on the board changing something on screen.
 
-So decode the request payload and the response the Z80 builds for it, then write
-that response. `tools/z80dasm.py` exists for this — table-driven, 27-case
-self-test, no dependencies — and has already found the board's access primitives
-and its addressing convention (BC holds the DPRAM address, B low, C high).
+After that, the open questions are small and named: `0x03`-`0x07` are published
+as `0xff` because that is what the board sets them to and their contents are not
+known, and the twenty-three undecoded bytes of the identity block are reproduced
+because the V60 requires them rather than because they are understood.
 
-The sweep stays regardless. It is what the board does, it costs nothing, and it
-is what the game will read once past this exchange.
+#### The finding that unblocked it
+
+This game does **not** read the low-DPRAM sweep during setup — and that led to
+three sessions of wrong conclusions. Our V60 polled the flag at `0x20`,
+block-read `0x100`, and never touched `0x08`, which read as "the inputs arrive
+through a mailbox at `0x100`". It does not. The V60 was **stuck in the setup
+exchange**, and every conclusion drawn from that trace was a conclusion about
+the phase it was stuck in.
+
+What was missing is a **128-byte identity block at DPRAM `0x100`-`0x17f`**. The
+V60 block-reads all of it once, immediately after its first handshake is
+answered, and will not go on to poll its controls until it has. Nothing writes
+that window beforehand, so the board supplies it. `docs/io-board.md` has the
+bytes and the hard-rule-2 reasoning for reproducing them.
 
 #### Two lessons worth keeping
 
@@ -351,6 +361,22 @@ as a protocol fault.
 measurement round was recorded as "these controls produce nothing" because Z and
 X were guessed as the shifters; they are VR3 and VR4, and the shifters are C and
 V. The presses had worked perfectly and the interpretation was wrong.
+
+**An instrument that saturates silently is worse than none.** The boot trace's
+watch-page tables held 32 addresses and filled without saying so, so "the V60
+touches 32 DPRAM addresses and none is `0x08`" was a table limit reported as a
+measurement — and it was used to reject the correct answer. They hold 256 now
+and the same run reports 90. Anything that can fill must report that it did.
+
+**A read tap is a different instrument from a memory watch.** Watching memory
+change finds where values are *written*; it cannot find where they are *read*,
+because a read leaves no trace. Both ends of this protocol are available as
+oracles — MAME's Lua `install_read_tap` on one side, our own boot trace on the
+other — and the question was settled in minutes once the right one was pointed
+at it. Two setup notes that each cost a run: `-skip_gameinfo`, or the warning
+screen blocks autoboot and the script silently never loads, and
+`-autoboot_delay 0`, or the tap installs after the exchange it is meant to
+capture.
 
 #### This is per-game, but barely
 

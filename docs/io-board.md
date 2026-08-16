@@ -581,6 +581,38 @@ rather than the sweep's gap — 128 bytes at one per 2048 cycles would not be
 there in time, since the V60 reads the window within a few thousand cycles of
 its handshake being answered.
 
+### The result: our V60 reads its controls
+
+With the block pushed, the boot trace matches the reference step for step.
+`make m1_boot BOOT_CYCLES=150000000 WATCH_PAGE=0xC0`:
+
+| DPRAM | V60 address | reads over the run |
+|---|---|---|
+| `0x00`-`0x07` | `c00000`-`c0000e` | 65 each |
+| `0x08`, `0x09` | `c00010`, `c00012` | **130 each** |
+| `0x0a`, `0x0e` | `c00014`, `c0001c` | 65 each |
+
+Against 71 vblank pulses in the same run, that is once per frame for the panel
+and the analog channels and twice per frame for the two digital ports —
+the reference's own cadence. The writes match too: `0x0f`, `0x12`, `0x11`, then
+the flag, then the flag once per frame thereafter.
+
+The PC still loops at `fe1433`/`fe1435`/`fe143d`. That is not the stall it was;
+it is the idle loop *reading the controls every frame*, which is what a service
+menu waiting for a press looks like.
+
+### The instrument that hid this for two sessions
+
+The boot trace's watch-page tables held **32 entries and filled silently**. So
+"over 150 M cycles the V60 touches 32 DPRAM addresses and none of them is where
+the sweep writes" — stated in this file as a definitive measurement, and used to
+reject the sweep — was a table limit reported as a finding. The count was
+exactly 32 because the table was exactly 32.
+
+They hold 256 now and the same run reports 90. **A saturating counter that
+reports its cap as a value is worse than no instrument**, because it produces a
+confident number. Anything that can fill should say so.
+
 ### On hard rule 2
 
 This block was obtained by running the board's ROM, so it is worth being
