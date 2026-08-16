@@ -120,6 +120,19 @@ opaque pass ignores transparency. Cost **+204 ALM, zero M10K**, timing +0.401 ns
 **And the picture did not change.** Record that plainly: the mask was a real
 defect, correctly fixed, and something else is also wrong.
 
+### Full analysis
+
+**`docs/2d-gap-analysis.md`** is the investigation: what is ruled out by
+measurement, what segas24 does that we do not, a per-tilemap content census from
+the running reference, three ranked hypotheses with the cheapest decisive test
+first, and the MAME harness notes. Read it before touching the video path.
+
+The headline from it: **the four tilemaps are two pairs, not four peers.** Odd
+maps are *window* maps and in `ctrl` mode are drawn only through their even
+partner. At the attract frame MAME draws tilemap 3 **not at all** — and we draw
+it. That is a confirmed divergence; whether it is *the* cause is the first thing
+to test.
+
 ### The remaining suspect
 
 **`ctrl & 0x6000` window/split-scroll mode**, unimplemented, and confirmed
