@@ -498,6 +498,107 @@ but what it reads there is the block exchange, not controls. Being definitive
 about *where a CPU reads* is not the same as being definitive about *what it
 reads for*.
 
+## Experiment 5: a read tap on the reference settles the whole thing
+
+Watching *changes to memory* found where the inputs are written. It could not
+find where they are **read**, because a read leaves no trace — so the question
+"does the V60 ever look at `0x08`?" needed a different instrument. MAME's Lua
+`install_read_tap` is that instrument, and it answered in one run.
+
+Two setup notes, both of which cost a run:
+
+- **`-skip_gameinfo`.** The game-info warning screen blocks autoboot entirely,
+  so the script never loads and produces no output and no error — identical in
+  appearance to a broken script.
+- **`-autoboot_delay 0`.** The whole setup exchange is over by frame 8. The
+  default delay installs the tap after it and sees only the steady state.
+
+### Where the inputs are read
+
+In steady state, per frame, the V60 reads:
+
+| DPRAM | reads |
+|---|---|
+| `0x00`-`0x07` | once per frame each |
+| `0x08`, `0x09` | about three times per frame |
+| `0x0a`, `0x0e` | about twice per frame |
+| `0x0f`, `0x10` | occasionally |
+
+**That is exactly where the sweep writes.** The low-DPRAM sweep is the input
+path after all, and it always was.
+
+Note `0x0f` and `0x10` are *not* ours to write — the V60 writes `0x0f` itself,
+along with `0x11` and `0x12`, so those are V60-to-board registers. The sweep
+stopping at `0x0e` is correct, and would have been a real bug the other way.
+
+### The correction this forces, and it is a big one
+
+An earlier section concluded the game uses a **mailbox** — a request at `0x100`,
+a flag at `0x20`, an answer expected in the window — and that the sweep was
+"**not** a route to working inputs and should not be counted as partial progress
+toward them". That is wrong twice over. The sweep is the whole input path, and
+the window is not a mailbox in the sense meant.
+
+What made this so hard to see is that both readings explain the same trace. Our
+V60 really does poll `0x20` and block-read `0x100`, and really does never read
+`0x08` — but that is because it never gets *past* the setup exchange, not
+because the exchange is where inputs live. **The trace was of a machine stuck in
+a phase, and every conclusion drawn from it was a conclusion about that phase.**
+
+### What the board actually has to say
+
+The reference transcript, compressed, is short enough to state in full:
+
+    W 0x1a-0x1d  "SEGA"          the V60 announces itself
+    W 0x20  01                   raises the flag
+    R 0x20  01  (x36131)         spins, waiting on a 4 MHz Z80
+    R 0x20  00                   the board has cleared it
+    R 0x100-0x17f                block-reads all 128 bytes of the window
+    R 0x0b-0x0d                  the DIP banks
+    R/W 0x0f, W 0x11, W 0x12
+    W 0x20  01                   raises the flag again
+    R 0x07..0x00, 0x08, 0x09, 0x0a, 0x0e     the controls
+    ... and from here, every frame: W 0x20 01, then read the controls
+
+The step we were missing is the **block read at `0x100`-`0x17f`**. Nothing writes
+that window before the V60 reads it — not the V60, which is still spinning on
+the flag — so the board supplies it. Reading it as zeros is what kept our core
+looping at `fe1433` while every input byte underneath it was already correct.
+
+Its contents, measured:
+
+    0x100: 53 45 47 41  1c 82 01 00  3e 9d ff 00  00 00 00 00
+    0x110: 00 01 01 01  00 01 01 ff  ff ff 03 00  00 00 00 00
+    0x120: 01 00 00 00  00 ... 00                 zero to 0x17f
+
+Bytes 0-3 are `"SEGA"` — the same signature the V60 writes at `0x1a`, returned
+so the exchange is symmetric. The remaining twenty-three non-zero bytes are
+version and configuration state and **are not decoded**; they are reproduced
+because the V60 requires them, not because they are understood.
+
+`m1_ioboard` pushes this block at startup, ahead of the sweep and at full rate
+rather than the sweep's gap — 128 bytes at one per 2048 cycles would not be
+there in time, since the V60 reads the window within a few thousand cycles of
+its handshake being answered.
+
+### On hard rule 2
+
+This block was obtained by running the board's ROM, so it is worth being
+explicit. What is reproduced is an **interface constant** — a 128-byte handshake
+response, twenty-seven bytes of which are non-zero — in the same category as the
+`"SEGA"` signature and the 315-5338A command codes already implemented here. No
+ROM image, no code, and no content table is committed. If that reading is judged
+too generous, the alternative is the LLE, which runs `EPR-14869` directly and
+produces the same bytes by executing them.
+
+### The method worth repeating
+
+Three static readings of this protocol were each plausible and each wrong, and
+the fourth and fifth were both settled by measurement in minutes. Reading the
+disassembly says what the board *can* do; only running it says what it *does*,
+and only a read tap says what the other side *looks at*. When both ends are
+available as an oracle, instrument them rather than reasoning about them.
+
 ## Revisit the LLE when the resource count is final
 
 D9 chose the HLE against a budget that is still estimates — sound at 5,000-7,000

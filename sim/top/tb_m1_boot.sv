@@ -253,16 +253,21 @@ end
 // and that is answered by which addresses it keeps reading. A histogram by
 // 64 KB page names the region; the exact address names the register.
 integer hist [0:255];
-integer exact_addr [0:31];
-integer exact_cnt  [0:31];
-integer exact_wr   [0:31];
+// The watch-page tables were 32 entries, which silently filled: a run that
+// touched more addresses reported exactly 32 distinct and dropped the rest,
+// so "the V60 never reads 0x08" was a table limit rather than a finding.
+localparam integer TRACKN = 256;
+
+integer exact_addr [0:TRACKN-1];
+integer exact_cnt  [0:TRACKN-1];
+integer exact_wr   [0:TRACKN-1];
 integer wr_addr [0:23];
 integer wr_data [0:23];
 integer wr_be   [0:23];
 integer wr_cyc  [0:23];
 integer nwr = 0;
-integer rd_addr [0:31];
-integer rd_cnt  [0:31];
+integer rd_addr [0:TRACKN-1];
+integer rd_cnt  [0:TRACKN-1];
 integer nrd = 0;
 integer nrdlog = 0;
 reg        pend_rd = 0;
@@ -281,9 +286,9 @@ reg        m_req_d = 0;
 always @(posedge clk) begin
     if (!rst_n) begin
         for (hi = 0; hi < 256; hi = hi + 1) hist[hi] = 0;
-        for (hi = 0; hi < 32; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; exact_wr[hi]=0; end
+        for (hi = 0; hi < TRACKN; hi = hi + 1) begin exact_addr[hi]=0; exact_cnt[hi]=0; exact_wr[hi]=0; end
         nwr = 0; nrd = 0;
-        for (hi = 0; hi < 32; hi = hi + 1) begin rd_addr[hi]=0; rd_cnt[hi]=0; end
+        for (hi = 0; hi < TRACKN; hi = hi + 1) begin rd_addr[hi]=0; rd_cnt[hi]=0; end
         nexact = 0;
     end else begin
         m_req_d <= main.m_req;
@@ -339,7 +344,7 @@ always @(posedge clk) begin
             // DIP switches, coin and service inputs — because that decides
             // whether a small responder covers M1 or whether the real
             // 315-5338A has to exist behind it.
-            if (main.m_addr[23:16] == WATCH_PAGE && !main.m_we && nrd < 32) begin
+            if (main.m_addr[23:16] == WATCH_PAGE && !main.m_we && nrd < TRACKN) begin
                 found = 0;
                 for (j = 0; j < nrd; j = j + 1)
                     if (rd_addr[j] == {main.m_addr, 1'b0}) begin
@@ -364,7 +369,7 @@ always @(posedge clk) begin
                     if (exact_addr[j] == {main.m_addr, 1'b0}) begin
                         exact_cnt[j] = exact_cnt[j] + 1; found = 1;
                     end
-                if (!found && nexact < 32) begin
+                if (!found && nexact < TRACKN) begin
                     exact_addr[nexact] = {main.m_addr, 1'b0};
                     exact_cnt[nexact]  = 1;
                     exact_wr[nexact]   = main.m_we;

@@ -183,12 +183,18 @@ int main(int argc, char** argv) {
     // the same cycle as the request would beat the V60's own write into the
     // RAM and be overwritten by it — the handshake would then never complete
     // even though the responder had "answered".
+    // Qualified on the address, not merely on io_we: the port is shared with
+    // the startup block push and the input sweep, so "is anything being
+    // written" no longer answers the question this test is asking. What must
+    // not happen early is a write to the FLAG.
     Dut t;
     t.bus(1, 1, 1, 0x020, 0x01);
-    check(t.d->io_we == 0, "answered in the same cycle as the request");
+    check(!(t.d->io_we && t.d->io_addr == 0x020),
+          "answered in the same cycle as the request");
     t.idle(2);
-    check(t.d->io_we == 0, "answered before any turnaround delay");
-    printf("  no write for at least 3 cycles after the request\n");
+    check(!(t.d->io_we && t.d->io_addr == 0x020),
+          "answered before any turnaround delay");
+    printf("  no reply for at least 3 cycles after the request\n");
   }
 
   // A request arriving while one is outstanding must restart, not be dropped.

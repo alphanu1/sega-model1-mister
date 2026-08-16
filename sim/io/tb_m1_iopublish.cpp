@@ -169,6 +169,39 @@ int main(int argc, char** argv) {
       check(t.ram[BASE + i] == 0xff, "idle byte was not 0xFF");
   }
 
+  printf("test: the identity block is pushed to 0x100-0x17f\n");
+  {
+    // The V60 block-reads all 128 bytes of this window once, right after its
+    // first handshake is answered, and will not go on to poll its controls
+    // until it has. Reading zeros there is what left our core looping at
+    // fe1433 with every input byte underneath it already correct.
+    //
+    // Values are from MAME running the real Z80 — see docs/io-board.md. Typed
+    // out again here rather than shared with the RTL: a table checked against
+    // itself proves only that it is self-consistent.
+    static const uint8_t BLOCK[0x80] = {
+      0x53, 0x45, 0x47, 0x41, 0x1c, 0x82, 0x01, 0x00,
+      0x3e, 0x9d, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x01, 0xff,
+      0xff, 0xff, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x01,   // 0x120; everything past here is zero
+    };
+    Dut t;
+    t.run(PASS);
+    for (int i = 0; i < 0x80; i++)
+      check(t.ram[0x100 + i] == BLOCK[i], "identity block byte is wrong");
+    printf("  0x100: ");
+    for (int i = 0; i < 12; i++) printf("%02x ", t.ram[0x100 + i]);
+    printf("...\n");
+
+    // It is a startup burst, not a refresh. 128 bytes at the sweep's own rate
+    // would take 260k cycles to appear, and the V60 reads the window within a
+    // few thousand of the handshake being answered.
+    Dut q;
+    q.run(400);
+    check(q.ram[0x100] == 0x53, "the block was not pushed promptly");
+  }
+
   printf("test: the handshake still wins the port\n");
   {
     // Publishing must not delay the reply boot blocks on. Raise the flag and

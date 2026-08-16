@@ -99,7 +99,20 @@ module m1_ioboard #(
   // sampled far more often than it can be drawn, let alone moved.
   parameter int          SWEEP_GAP = 2048,
   // Sweeping the control bytes into the shared RAM, as the board does.
-  parameter bit          PUBLISH_INPUTS = 1'b1
+  parameter bit          PUBLISH_INPUTS = 1'b1,
+
+  // Pushing the board's identity block into DPRAM 0x100-0x17f at startup.
+  //
+  // The V60 block-reads all 128 bytes of that window once, immediately after
+  // its first handshake is answered, and will not go on to poll its controls
+  // until it has. Nothing writes the window before that read — not the V60,
+  // which is still spinning on the flag — so the board itself supplies it.
+  //
+  // Without this the window reads as zeros, the V60 rejects it and loops at
+  // fe1433 forever, which is exactly where our core sat while every input byte
+  // underneath it was correct.
+  parameter bit          PUSH_BLOCK = 1'b1,
+  parameter logic [10:0] BLOCK_BASE = 11'h100
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -170,6 +183,57 @@ module m1_ioboard #(
   localparam int GAP_W = (SWEEP_GAP < 2) ? 1 : $clog2(SWEEP_GAP + 1);
   logic [GAP_W-1:0] gap;
 
+  // The board's identity block, as the reference presents it at DPRAM
+  // 0x100-0x17f. Every byte here was read off MAME running the real Z80 against
+  // the real ROM — see docs/io-board.md — rather than reasoned about, because
+  // only four of the twenty-seven non-zero bytes have a known meaning.
+  //
+  // Bytes 0-3 are "SEGA", the same signature the V60 writes at 0x1a to announce
+  // itself, returned here so the exchange is symmetric. The rest is version and
+  // configuration state whose fields are not decoded; the tail to 0x7f is zero.
+  //
+  // Written as a case rather than an initialised array on purpose: Quartus 17.0
+  // will not infer RAM from an array that is reset, and this wants to be a
+  // handful of LUTs regardless.
+  logic [6:0] blk_idx;
+  logic [7:0] blk_byte;
+  always_comb begin
+    case (blk_idx)
+      7'h00: blk_byte = 8'h53;   // 'S'
+      7'h01: blk_byte = 8'h45;   // 'E'
+      7'h02: blk_byte = 8'h47;   // 'G'
+      7'h03: blk_byte = 8'h41;   // 'A'
+      7'h04: blk_byte = 8'h1c;
+      7'h05: blk_byte = 8'h82;
+      7'h06: blk_byte = 8'h01;
+      7'h08: blk_byte = 8'h3e;
+      7'h09: blk_byte = 8'h9d;
+      7'h0a: blk_byte = 8'hff;
+      7'h11: blk_byte = 8'h01;
+      7'h12: blk_byte = 8'h01;
+      7'h13: blk_byte = 8'h01;
+      7'h15: blk_byte = 8'h01;
+      7'h16: blk_byte = 8'h01;
+      7'h17: blk_byte = 8'hff;
+      7'h18: blk_byte = 8'hff;
+      7'h19: blk_byte = 8'hff;
+      7'h1a: blk_byte = 8'h03;
+      7'h20: blk_byte = 8'h01;
+      default: blk_byte = 8'h00;
+    endcase
+  end
+
+  // All 128 bytes are written, including the zeros. The RAM does come up
+  // cleared, so the zeros are redundant on paper — but the V60 writes its own
+  // block into this same window on the path we currently take, and a push that
+  // only touched the non-zero bytes would leave that debris behind.
+  logic blk_done;
+
+  // Which write is outstanding: the sweep, the handshake reply, or a block
+  // byte. Two flags rather than one because all three share the single port and
+  // completion has to be attributed to whichever was actually issued.
+  logic wr_block;
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       pending  <= 1'b0;
@@ -181,6 +245,9 @@ module m1_ioboard #(
       pub_idx  <= '0;
       wr_reply <= 1'b0;
       gap      <= '0;
+      blk_idx  <= '0;
+      blk_done <= ~PUSH_BLOCK;
+      wr_block <= 1'b0;
     end else begin
       if (gap != GAP_W'(SWEEP_GAP)) gap <= gap + GAP_W'(1);
 
@@ -200,6 +267,9 @@ module m1_ioboard #(
         if (wr_reply) begin
           pending <= 1'b0;
           if (replies != 16'hffff) replies <= replies + 16'd1;
+        end else if (wr_block) begin
+          if (blk_idx == 7'h7f) blk_done <= 1'b1;
+          else                  blk_idx  <= blk_idx + 7'd1;
         end else begin
           // Wrapped explicitly: SWEEP_BYTES is 15, so the counter's own natural
           // wrap at 16 would index two bytes past the end of in_bytes.
@@ -215,11 +285,23 @@ module m1_ioboard #(
           io_addr  <= FLAG_ADDR;
           io_din   <= REPLY;
           wr_reply <= 1'b1;
+          wr_block <= 1'b0;
+        end else if (!blk_done) begin
+          // Ahead of the sweep, and at full rate rather than the sweep's gap.
+          // The V60 reads this window once, right after its first handshake is
+          // answered, and 128 bytes at one per 2048 cycles would not be there
+          // in time. It is a startup burst, not a refresh.
+          io_we    <= 1'b1;
+          io_addr  <= BLOCK_BASE + 11'(blk_idx);
+          io_din   <= blk_byte;
+          wr_reply <= 1'b0;
+          wr_block <= 1'b1;
         end else if (PUBLISH_INPUTS && gap == GAP_W'(SWEEP_GAP)) begin
           io_we    <= 1'b1;
           io_addr  <= INPUT_BASE + 11'(pub_idx);
           io_din   <= pub_byte;
           wr_reply <= 1'b0;
+          wr_block <= 1'b0;
         end
       end
     end
