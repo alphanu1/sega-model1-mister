@@ -71,7 +71,7 @@ module emu
     "Model1;;",
     "-;",
     "O[2],Video timing,Original 24kHz,Scandoubled;",
-    "O[3],Debug overlay,On,Off;",
+    "O[3],Debug overlay,Off,On;",
     "O[5:4],SDRAM read phase,CL+2,CL+3,CL+4,CL+5;",
     "-;",
     "T[0],Reset;",
@@ -467,7 +467,10 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // that is perfectly legible and entirely wrong.
   m1_diag #(.NWORDS(13)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
-    .enable(~status[3]),
+    // Off by default: it is an instrument, not a feature, and it sits on top
+    // of the picture. Kept in the build because it has now found four faults
+    // that nothing else could see, and the next hardware problem will want it.
+    .enable(status[3]),
     .hb(vid_hb), .vb(vid_vb),
     .words({dw[12], dw[11], dw[10], dw[9], dw[8], dw[7], dw[6],
              dw[5],  dw[4],  dw[3],  dw[2], dw[1], dw[0]}),

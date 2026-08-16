@@ -126,154 +126,247 @@ module m1_tile_fetch #(
   output logic [7:0]  fetches
 );
 
+  // ------------------------------------------------------------------------
+  // TWO ENGINES, ONE COLUMN APART.
+  //
+  // The fetch side works on the column after the one the emit side is drawing,
+  // so a column's SDRAM latency is paid underneath the eight cycles of
+  // emission already happening rather than after them. Cost per column goes
+  // from emit + wait to max(emit, wait).
+  //
+  // They are separate state machines rather than one with more states because
+  // the whole point is that they advance independently; a single sequencer
+  // that has to be in one place at a time is what made this serial.
+  //
+  // The hand-off is a single-entry buffer. `f_have` says the fetch side has a
+  // column ready; the emit side takes it at a tile boundary and the fetch side
+  // moves to the next. The fetch side never rewrites the buffer in the same
+  // cycle the emit side reads it — it goes to F_CHECK first, and only F_TILE
+  // writes — so no interlock beyond the flag is needed.
+  // ------------------------------------------------------------------------
+
   typedef enum logic [2:0] {
-    S_IDLE, S_CHECK, S_TILE_WAIT, S_CHAR, S_EMIT, S_DONE
-  } state_t;
-  state_t st;
+    F_IDLE, F_CHECK, F_TILE, F_CHAR, F_FULL
+  } fstate_t;
+  typedef enum logic [1:0] {
+    E_IDLE, E_WAIT, E_EMIT, E_DONE
+  } estate_t;
 
-  logic [9:0]  sx;           // screen pixel within the line
-  // scr_x is the SCREEN position handed to the decode, which applies the
-  // scroll itself. map_pos is the resulting position in map space, needed here
-  // because the tile boundary moves with hscr. Conflating the two is what put
-  // a slice of the wrong character on every column boundary: testing
-  // scr_x[2:0] finds screen-aligned boundaries, which are the map boundaries
-  // only when hscr is a multiple of eight.
-  logic [8:0]  scr_x, map_y;
-  logic [8:0]  map_pos;
-  logic [15:0] tile_word_r;
-  logic [31:0] char_r;
-  logic [17:0] last_char;
+  fstate_t fst;
+  estate_t est;
+
+  // Fetch side: fx is the screen position of the FIRST pixel of the column
+  // being fetched.
+  logic [9:0]  fx;
+  logic [15:0] tw_f;
+  logic [31:0] ch_f;
+  logic        f_have;
   logic [14:0] last_tile;
-  logic        char_valid, tile_valid;
+  logic [17:0] last_char;
+  logic        tile_valid, char_valid;
 
-  // The decode datapath is instantiated rather than reimplemented, so the
-  // addressing and the 4bpp unpacking have exactly one definition.
-  logic [14:0] dec_tile_addr;
-  logic [17:0] dec_char_addr;
+  // Emit side: sx is the pixel being written.
+  logic [9:0]  sx;
+  logic [15:0] tw_e;
+  logic [31:0] ch_e;
+
+  logic [8:0]  map_y;
+  assign map_y = line;
+
+  // TWO DECODES, NOT TWO COPIES OF THE ADDRESSING.
+  //
+  // The addresses have to be computed for the column being fetched while the
+  // pixels are still coming out of the column being drawn, which is one
+  // position each. m1_tile_decode is instantiated twice rather than having its
+  // arithmetic written out again here, so the addressing and the 4bpp
+  // unpacking keep exactly one definition — the reason it was a module in the
+  // first place.
+  logic [14:0] f_tile_addr;
+  logic [17:0] f_char_addr;
+
+  // The fetch decode only supplies addresses and the emit decode only supplies
+  // pixels, so each leaves the other half of m1_tile_decode unused. Named
+  // rather than connected empty: -Wall rejects an empty pin, and a named wire
+  // says the output was considered and not wanted.
+  logic [11:0] f_unused_pal;
+  logic  [3:0] f_unused_pixel;
+  logic        f_unused_prio, f_unused_transp, f_unused_disabled;
+  logic [14:0] e_unused_tile_addr;
+  logic [17:0] e_unused_char_addr;
+  logic  [3:0] e_unused_pixel;
+
+  m1_tile_decode dec_f (
+    .x(fx[8:0]), .y(map_y), .layer(layer),
+    .hscr(hscr), .vscr(vscr),
+    .tile_word(tw_f),
+    .char_w0(16'd0), .char_w1(16'd0),
+    .tile_mask(tile_mask),
+    .tile_addr(f_tile_addr), .char_addr(f_char_addr),
+    .pal_index(f_unused_pal), .pixel(f_unused_pixel), .prio(f_unused_prio),
+    .transparent(f_unused_transp), .disabled(f_unused_disabled)
+  );
+
   logic [11:0] dec_pal;
-  logic [3:0]  dec_pixel;
   logic        dec_prio, dec_transp, dec_disabled;
 
-  m1_tile_decode dec (
-    .x(scr_x), .y(map_y), .layer(layer),
+  m1_tile_decode dec_e (
+    .x(sx[8:0]), .y(map_y), .layer(layer),
     .hscr(hscr), .vscr(vscr),
-    .tile_word(tile_word_r),
-    .char_w0(char_r[15:0]), .char_w1(char_r[31:16]),
+    .tile_word(tw_e),
+    .char_w0(ch_e[15:0]), .char_w1(ch_e[31:16]),
     .tile_mask(tile_mask),
-    .tile_addr(dec_tile_addr), .char_addr(dec_char_addr),
-    .pal_index(dec_pal), .pixel(dec_pixel), .prio(dec_prio),
+    .tile_addr(e_unused_tile_addr), .char_addr(e_unused_char_addr),
+    .pal_index(dec_pal), .pixel(e_unused_pixel), .prio(dec_prio),
     .transparent(dec_transp), .disabled(dec_disabled)
   );
 
-  // The decode takes an unscrolled screen position and applies scroll itself,
-  // so drive it with the raw position and let it do the arithmetic once.
-  assign scr_x   = sx[8:0];
-  assign map_y   = line;
-  assign map_pos = scr_x - hscr[8:0];
+  assign tram_addr = f_tile_addr;
+  assign char_addr = f_char_addr;
+  assign busy      = (est != E_IDLE) || (fst != F_IDLE);
 
-  assign tram_addr = dec_tile_addr;
-  assign char_addr = dec_char_addr;
-  assign busy      = (st != S_IDLE) && (st != S_DONE);
+  // Where the emit side is inside its tile, and where the fetch side is inside
+  // its own. Both are map-space positions: a tile boundary moves with hscr, so
+  // testing the screen position finds the right place only when hscr is a
+  // multiple of eight.
+  logic [2:0] e_off, f_off;
+  assign e_off = 3'(sx[8:0] - hscr[8:0]);
+  assign f_off = 3'(fx[8:0] - hscr[8:0]);
 
+  // Pixels from fx to the start of the next tile. Eight when fx is already
+  // aligned, which is every column after the first.
+  logic [3:0] f_step;
+  assign f_step = 4'd8 - {1'b0, f_off};
+
+  logic consume;
+  assign consume = (est == E_WAIT) && f_have;
+
+  // ------------------------------------------------------------- fetch side
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      st <= S_IDLE; sx <= '0;
-      tile_word_r <= '0; char_r <= '0;
-      last_char <= '0; last_tile <= '0;
-      char_valid <= 1'b0; tile_valid <= 1'b0;
-      char_req <= 1'b0; lb_we <= 1'b0; done <= 1'b0; fetches <= '0;
+      fst <= F_IDLE; fx <= '0; tw_f <= '0; ch_f <= '0; f_have <= 1'b0;
+      last_tile <= '0; last_char <= '0;
+      tile_valid <= 1'b0; char_valid <= 1'b0;
+      char_req <= 1'b0; fetches <= '0;
+    end else if (start) begin
+      // Neither retained value survives a scanline. tile_valid especially: a
+      // tile address repeats across lines whenever the map row is unchanged,
+      // so without clearing it the first tile of a new line would reuse the
+      // previous line's word.
+      fst        <= F_CHECK;
+      fx         <= '0;
+      f_have     <= 1'b0;
+      tile_valid <= 1'b0;
+      char_valid <= 1'b0;
+      char_req   <= 1'b0;
+      fetches    <= '0;
+    end else begin
+      case (fst)
+        F_IDLE: ;
+
+        F_CHECK: begin
+          // f_tile_addr is combinational off fx. Refetch only when the tile
+          // actually changed.
+          if (tile_valid && (f_tile_addr == last_tile)) fst <= F_CHAR;
+          else                                          fst <= F_TILE;
+        end
+
+        F_TILE: begin
+          tw_f       <= tram_data;
+          last_tile  <= f_tile_addr;
+          tile_valid <= 1'b1;
+          fst        <= F_CHAR;
+        end
+
+        F_CHAR: begin
+          // f_char_addr is valid now the tile word is latched.
+          if (char_valid && (f_char_addr == last_char)) begin
+            // ch_f already holds this character; nothing to ask for.
+            f_have <= 1'b1;
+            fst    <= F_FULL;
+          end else if (!char_req) begin
+            char_req <= 1'b1;
+          end else if (char_ack) begin
+            char_req   <= 1'b0;
+            ch_f       <= char_data;
+            last_char  <= f_char_addr;
+            char_valid <= 1'b1;
+            fetches    <= fetches + 8'd1;
+            f_have     <= 1'b1;
+            fst        <= F_FULL;
+          end
+        end
+
+        F_FULL: begin
+          if (consume) begin
+            f_have <= 1'b0;
+            // Stop once the whole line has been fetched; the emit side has
+            // everything it will ask for.
+            if ((fx + 10'(f_step)) >= 10'(COLUMNS * 8)) begin
+              fst <= F_IDLE;
+            end else begin
+              fx  <= fx + 10'(f_step);
+              fst <= F_CHECK;
+            end
+          end
+        end
+
+        default: fst <= F_IDLE;
+      endcase
+    end
+  end
+
+  // -------------------------------------------------------------- emit side
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      est <= E_IDLE; sx <= '0; tw_e <= '0; ch_e <= '0;
+      lb_we <= 1'b0; done <= 1'b0;
       lb_addr <= '0; lb_pal <= '0; lb_transparent <= 1'b0; lb_prio <= 1'b0;
     end else begin
       lb_we <= 1'b0;
       done  <= 1'b0;
 
-      case (st)
-        S_IDLE: begin
-          if (start) begin
-            sx      <= '0;
-            fetches <= '0;
-            // Neither retained value survives a scanline.
-            //
-            // Clearing char_valid is belt-and-braces and mutation testing says
-            // so: deleting it changes no result. char_addr is
-            // tile_num*16 + row*2, so it encodes the character row, and a new
-            // scanline therefore computes a different address that the reuse
-            // comparison rejects on its own. It is kept because that argument
-            // rests on char_addr always carrying the row — true now, and not
-            // an invariant worth depending on silently if the addressing ever
-            // changes.
-            //
-            // Clearing tile_valid is NOT redundant: a tile address repeats
-            // across lines whenever the map row is unchanged, so without this
-            // the first tile of a new line would reuse the previous line's
-            // tile word.
-            tile_valid <= 1'b0;
-            char_valid <= 1'b0;
-            st         <= S_CHECK;
+      if (start) begin
+        sx  <= '0;
+        est <= E_WAIT;
+      end else begin
+        case (est)
+          E_IDLE: ;
+
+          E_WAIT: begin
+            // Stalls only when the fetch side has not caught up, which after
+            // the first column of a line is the whole measure of whether the
+            // engine is keeping ahead of the beam.
+            if (f_have) begin
+              tw_e <= tw_f;
+              ch_e <= ch_f;
+              est  <= E_EMIT;
+            end
           end
-        end
 
-        S_CHECK: begin
-          // tram_addr is combinational off sx. Refetch only when the tile the
-          // decode is pointing at actually changed.
-          if (tile_valid && (dec_tile_addr == last_tile)) st <= S_CHAR;
-          else                                            st <= S_TILE_WAIT;
-        end
-
-        S_TILE_WAIT: begin
-          tile_word_r <= tram_data;
-          last_tile   <= dec_tile_addr;
-          tile_valid  <= 1'b1;
-          st          <= S_CHAR;
-        end
-
-        S_CHAR: begin
-          // dec_char_addr is valid now the tile word is latched.
-          if (char_valid && (dec_char_addr == last_char)) begin
-            st <= S_EMIT;
-          end else if (!char_req) begin
-            char_req <= 1'b1;
-          end else if (char_ack) begin
-            char_req   <= 1'b0;
-            char_r     <= char_data;
-            last_char  <= dec_char_addr;
-            char_valid <= 1'b1;
-            fetches    <= fetches + 8'd1;
-            st         <= S_EMIT;
+          E_EMIT: begin
+            lb_we          <= 1'b1;
+            lb_addr        <= sx[8:0];
+            lb_pal         <= dec_pal;
+            lb_transparent <= dec_transp | dec_disabled;
+            lb_prio        <= dec_prio;
+            if (sx == 10'(COLUMNS * 8 - 1)) begin
+              est <= E_DONE;
+            end else begin
+              sx <= sx + 10'd1;
+              // The last pixel of a tile is where the low three bits of the
+              // MAP position wrap, so the next pixel needs the next column.
+              if (e_off == 3'd7) est <= E_WAIT;
+            end
           end
-        end
 
-        S_EMIT: begin
-          lb_we          <= 1'b1;
-          lb_addr        <= sx[8:0];
-          lb_pal         <= dec_pal;
-          lb_transparent <= dec_transp | dec_disabled;
-          lb_prio        <= dec_prio;
-          if (sx == 10'(COLUMNS * 8 - 1)) begin
-            st <= S_DONE;
-          end else begin
-            sx <= sx + 10'd1;
-            // Stay here and emit the next pixel from the row already latched,
-            // unless it belongs to a different tile. A tile boundary is
-            // exactly where the low three bits of the MAP position wrap, which
-            // is testable directly rather than by recomputing the address for
-            // sx+1 — and it is the scroll-correct form of "eight pixels per
-            // fetch", since the boundary moves with hscr.
-            //
-            // Returning to S_CHECK for every pixel instead cost three cycles
-            // per pixel and blew the scanline budget by 2.4x while producing
-            // identical output.
-            if (map_pos[2:0] == 3'd7) st <= S_CHECK;
+          E_DONE: begin
+            done <= 1'b1;
+            est  <= E_IDLE;
           end
-        end
 
-        S_DONE: begin
-          done <= 1'b1;
-          st   <= S_IDLE;
-        end
-
-        default: st <= S_IDLE;
-      endcase
+          default: est <= E_IDLE;
+        endcase
+      end
     end
   end
 

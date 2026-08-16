@@ -400,6 +400,26 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------------------------ character fetch latency
+//
+// The unit test models char_ack coming back in 14 cycles, and on that basis
+// pipelining the fetch engine should have removed the deadline misses. It
+// removed nine of 6858, so the number the engine actually waits is not 14 —
+// the CPU is competing for the same controller.
+//
+// Measured as total cycles with char_req asserted over the number of requests,
+// NOT by timing each request individually. The per-request version mispaired
+// once and produced a single 22-million-cycle sample that then dominated the
+// mean — an average that is wrong in the direction of the hypothesis being
+// tested is worse than no measurement.
+integer cl_wait = 0, cl_n = 0;
+reg     d_creq = 0;
+always @(posedge clk) begin
+    d_creq <= char_req;
+    if (char_req)            cl_wait = cl_wait + 1;
+    if (char_req && !d_creq) cl_n    = cl_n + 1;
+end
+
 // -------------------------------------------------------- stall detector
 //
 // A hang here used to be a test that never returned, which says only that
@@ -491,6 +511,9 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    if (cl_n > 0)
+        $display("FRAME: char fetch wait avg=%0d cycles over %0d fetches (%0d total)",
+                 cl_wait / cl_n, cl_n, cl_wait);
     $display("PROBE: %0d distinct palette words, %0d distinct tile words, %0d distinct palette INDICES",
              npal, ntram, npaddr);
     tv = 0;
