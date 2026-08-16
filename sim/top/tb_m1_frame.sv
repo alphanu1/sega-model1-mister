@@ -374,6 +374,7 @@ end
 reg [24:1] if_addr_first;
 reg [31:0] if_data_first;
 reg        if_seen = 0, d_ifack = 0;
+integer    ifetch_n = 0;
 always @(posedge clk) begin
     d_ifack <= p_ack[2];
     if (p_ack[2] && !d_ifack && !if_seen) begin
@@ -383,6 +384,17 @@ always @(posedge clk) begin
         $display("FIRST IFETCH: sdram word addr=%06h data=%08h",
                  ifp_addr, p_dout[2][31:0]);
         $fflush;
+    end
+    // The board halts after SIX instruction fetches, so the whole divergence
+    // is inside the first handful. Print them, with the PC that asked, so the
+    // sequence can be compared line by line against what hardware did.
+    if (p_ack[2] && !d_ifack) begin
+        if (ifetch_n < 12) begin
+            $display("  IFETCH[%0d] pc=%06h addr=%06h data=%016h",
+                     ifetch_n, dbg_pc, ifp_addr, p_dout[2]);
+            $fflush;
+        end
+        ifetch_n = ifetch_n + 1;
     end
 end
 

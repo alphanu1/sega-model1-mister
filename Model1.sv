@@ -352,40 +352,49 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     end
   end
 
-  // THE FIRST INSTRUCTION THE V60 EVER FETCHES, AND THE LAST ONE BEFORE IT DIED.
+  // THE WHOLE OF THE CPU'S LIFE, BECAUSE IT IS ONLY SIX FETCHES LONG.
   //
-  // The board halts at PC 3 on opcode 0x00 while the same RTL, the same ROM and
-  // the same clocks boot to the test screen in simulation. Memory is proven
-  // good — words sent equal words written, and the first fetch returns the
-  // ROM's real first word — so what is left is the execution path, and that
-  // needs the path, not another still frame of the end state.
+  // The board reports the V60 halted at PC 3 after exactly six instruction
+  // fetches. Six is small enough to enumerate, and simulation on identical RTL
+  // gives the sequence they should be:
   //
-  // First fetch and last fetch, with a count between them, says whether the CPU
-  // ran three instructions or three million before it went wrong.
-  reg [24:1] r_if_addr, r_last_addr;
-  reg [31:0] r_if_data, r_last_data;
+  //   0  000000   a prefetch artefact, address not yet valid
+  //   1  0bfff8   THE RESET VECTOR: f3d6 104e 00fe -> PC fe104e
+  //   2  0bfffc
+  //   3  000000
+  //   4  0b0824   boot code, V60 fe1048
+  //   5  0b0828
+  //
+  // The counter freezing at six is itself evidence: V60 address 0 is work RAM,
+  // which is on chip, so a CPU that jumped there would stop generating SDRAM
+  // fetches entirely — exactly what a null reset vector would produce.
+  //
+  // So capture all of them and put them on screen. Whichever row first
+  // disagrees with the table above is where hardware leaves the rails, and the
+  // data rows say whether it was given the wrong bytes or given the right ones
+  // and mis-executed them.
+  localparam int unsigned NFETCH = 8;
+  reg [24:1] fa [NFETCH];
+  reg [31:0] fd [NFETCH];
+  reg [3:0]  fn;
   reg [31:0] r_if_count;
-  reg        r_if_seen, d_if_ack;
+  reg        d_if_ack;
 
+  integer fi;
   always @(posedge clk_sys) begin
     if (!mem_rst_n) begin
-      r_if_addr <= 0; r_if_data <= 0; r_if_seen <= 0; d_if_ack <= 0;
-      r_last_addr <= 0; r_last_data <= 0; r_if_count <= 0;
+      fn <= 0; r_if_count <= 0; d_if_ack <= 0;
+      for (fi = 0; fi < NFETCH; fi = fi + 1) begin
+        fa[fi] <= 0; fd[fi] <= 0;
+      end
     end else begin
       d_if_ack <= p_ack[2];
-
       if (p_ack[2] && !d_if_ack) begin
         r_if_count <= r_if_count + 1'd1;
-        if (!r_if_seen) begin
-          r_if_seen <= 1'b1;
-          r_if_addr <= ifp_addr;
-          r_if_data <= p_dout[2][31:0];
-        end
-        // Frozen the moment the CPU halts, so what is on screen is the fetch it
-        // died on rather than whatever the bus did afterwards.
-        if (!st_s2[17]) begin
-          r_last_addr <= ifp_addr;
-          r_last_data <= p_dout[2][31:0];
+        if (fn < 4'(NFETCH)) begin
+          fa[fn] <= ifp_addr;
+          fd[fn] <= p_dout[2][31:0];
+          fn     <= fn + 4'd1;
         end
       end
     end
@@ -399,11 +408,9 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   assign ioctl_words = r_ioctl_words;
 
   // dbg_pc and friends live in the CPU domain and are sampled here in the
-  // video one through two flops. That is enough for something a human reads
-  // off a still image: individual bits are stable, but the 24 bits are not
-  // guaranteed to be one coherent instant, so a PC that is changing every
-  // cycle can show a value the CPU never had. A PC that is parked — which is
-  // the case this exists to diagnose — reads exactly.
+  // video one through two flops. Enough for something read off a still image:
+  // a PC that is parked — which is the case this exists to diagnose — reads
+  // exactly, while one changing every cycle may show a value never held.
   reg [23:0] pc_s1, pc_s2;
   reg [17:0] st_s1, st_s2;
   always @(posedge clk_sys) begin
@@ -413,28 +420,24 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     st_s2 <= st_s1;
   end
 
-  // EVERY ROW CARRIES ITS OWN NUMBER IN THE TOP BYTE.
-  //
-  // The previous layout tagged only three rows of eight, and reading the rest
-  // off a photograph meant counting bands from an edge that was sometimes out
-  // of frame. Two rows were misread that way. The counters lose their top eight
-  // bits to the tag, which costs nothing: the largest of them is the ROM stream
-  // at 0x300000, and a counter that wraps 24 bits is still legible as motion.
+  // Every row carries its own number in the top byte. Tagging only some rows
+  // meant counting bands from an edge that was sometimes out of frame, and two
+  // rows got misread that way.
   wire [31:0] dw [12];
-  assign dw[0]  = {8'h00, pc_s2};                      // V60 program counter
-  assign dw[1]  = {8'h01, r_if_count[23:0]};           // instruction fetches
-  assign dw[2]  = {8'h02, cpu_reads[23:0]};            // CPU data reads
-  assign dw[3]  = {8'h03, char_acks[23:0]};            // character fetches
-  assign dw[4]  = {8'h04, ioctl_words[23:0]};          // words the HPS sent
-  assign dw[5]  = {8'h05, ldr_words[23:0]};            // ...that reached SDRAM
-  assign dw[6]  = {7'h06, r_if_seen, r_if_addr};       // first fetch address
-  assign dw[7]  = {8'h07, r_if_data[23:0]};            // ...and what came back
-  assign dw[8]  = {8'h08, r_last_addr};                // last fetch before halt
-  assign dw[9]  = {8'h09, r_last_data[23:0]};          // ...and what came back
-  assign dw[10] = {8'h0A, char_data_l[23:0]};          // last character data
+  assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
+  assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
+  assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
+  assign dw[3]  = {8'h03, fa[1]};                  // fetch 1  <- reset vector
+  assign dw[4]  = {8'h04, fa[2]};                  // fetch 2
+  assign dw[5]  = {8'h05, fa[3]};                  // fetch 3
+  assign dw[6]  = {8'h06, fa[4]};                  // fetch 4
+  assign dw[7]  = {8'h07, fa[5]};                  // fetch 5
+  assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
+  assign dw[9]  = {8'h09, fd[4][23:0]};            // fetch 4 data
+  assign dw[10] = {8'h0A, fd[5][23:0]};            // fetch 5 data
   assign dw[11] = {8'h0B, 2'd0, ldr_overflow, st_s2[17:16],
                    rom_ready, mem_ready, ioctl_download,
-                   st_s2[15:0]};                       // flags, I/O replies
+                   st_s2[15:0]};                   // flags, I/O replies
 
   wire [7:0] dg_r, dg_g, dg_b;
 
