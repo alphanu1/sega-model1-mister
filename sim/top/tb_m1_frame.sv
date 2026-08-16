@@ -63,7 +63,13 @@ module tb_m1_frame #(
     // until SDRAM is ready, and SDRAM is not reported ready until the loader
     // has finished. The V60's gate is derived inside m1_integrated now, so
     // HOLD_CPU=0 is both the default and the correct wiring.
-    parameter bit     HOLD_CPU   = 0
+    parameter bit     HOLD_CPU   = 0,
+
+    // A control to hold down for the whole run, as the byte the I/O board
+    // publishes at DPRAM 0x08 (IN.0). Idle is 0xFF and a press is a bit going
+    // low: 0xEF holds START, 0xFE COIN, 0xFB TEST. Whether the menu reacts is
+    // the only test of the recovered layout that means anything.
+    parameter logic [7:0] PRESS_IN0 = 8'hff
 );
 
 localparam integer PRELOAD_WORDS = 32'h300000;
@@ -189,7 +195,7 @@ m1_integrated core (
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
     // Idle-high: every control is active low, so zero means all held.
-    .in_bytes(64'hffffffffffffffff),
+    .in_bytes({56'hffffffffffffff, PRESS_IN0}),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),

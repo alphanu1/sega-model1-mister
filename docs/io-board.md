@@ -230,6 +230,43 @@ board's rate makes that workaround stop mattering rather than papering over it.
 
 ---
 
+## Experiment 2: the sweep works, and the game does not read it
+
+With the completion-tracking and rate faults fixed, the publisher no longer
+regresses anything: `pc=fe143d`, 62 handshake replies, the TEST MODE menu
+rendering identically to baseline. Holding a control changes **zero pixels**.
+
+Re-running the boot trace with the sweep enabled says why. Over 150 M cycles the
+V60 touches 32 DPRAM addresses and **none of them are `0x08`-`0x0f`**:
+
+| Addresses | Accesses |
+|---|---|
+| `0x1a`-`0x1d` | the `"SEGA"` block, written once |
+| `0x20` | the flag, **74 accesses** |
+| `0x100`-`0x11a` | the window, **3 reads each** |
+
+**The mistake was conflating two questions.** The disassembly says what the Z80
+*writes*; it does not say what this V60 code *reads*. The sweep into low DPRAM
+is real and the layout is probably right for some code path — but it is not the
+path Virtua Racing's service menu uses, and the trace said so before the
+disassembly started.
+
+### The number worth noticing
+
+Three reads of the window against seventy-four of the flag. That is not a
+program ignoring its inputs; it is a program **waiting to be told they are
+ready**. `m1_ioboard` only ever clears the flag — it never raises one. If the
+board is meant to set it to signal "new data in the window", the V60 would poll,
+see nothing, and never re-read, which is the exact shape of these counts.
+
+Untested hypothesis, recorded because it is the cheapest next experiment: have
+the responder write the window and then raise the flag, and see whether the read
+count climbs. If it does, the input path is the `0x100` window and the flag is a
+doorbell in both directions.
+
+The sweep stays enabled. It costs nothing, it is what the board does, and
+attract mode may yet read it.
+
 ## Revisit the LLE when the resource count is final
 
 D9 chose the HLE against a budget that is still estimates — sound at 5,000-7,000

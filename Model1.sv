@@ -124,11 +124,26 @@ module emu
   // WHERE these land in the DPRAM is a parameter on m1_ioboard and is not yet
   // confirmed — see docs/io-board.md. The bit assignment within a byte is from
   // model1.cpp and is not a guess; the base address is.
+  // Bit order is MAME's INPUT_PORTS( vr ), not a guess:
+  //   IN.0  0 coin1, 1 coin2, 2 test, 3 service, 4 start, 5 VR1, 6 VR2, 7 VR3
+  //   IN.1  0 VR4, 4 shift down, 5 shift up
+  // Inverted because every control on this hardware is active low.
   wire [7:0] io_in0 = ~{io_vr3, io_vr2, io_vr1, io_start,
                         io_service, io_test, 1'b0, io_coin};
   wire [7:0] io_in1 = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
+  wire [7:0] io_in2 = 8'hff;          // drive board RX line, nothing on it here
 
-  wire [63:0] io_in_bytes = {40'hffffffffff, io_wheel, io_in1, io_in0};
+  // The eight bytes the sweep publishes, starting at DPRAM 0x08. The DIP banks
+  // read as all-ones — every switch off — until an MRA <switches> element
+  // drives them.
+  wire [63:0] io_in_bytes = {8'hff,    // 0x0f spare
+                             8'hff,    // 0x0e port 6
+                             8'hff,    // 0x0d DSW3
+                             8'hff,    // 0x0c DSW2
+                             8'hff,    // 0x0b DSW1
+                             io_in2,   // 0x0a
+                             io_in1,   // 0x09
+                             io_in0};  // 0x08
 
   wire [7:0] io_wheel = {~joy0_lstick[7], joy0_lstick[6:0]};
   wire [7:0] io_accel = {~joy0_rstick[15], joy0_rstick[14:8]};

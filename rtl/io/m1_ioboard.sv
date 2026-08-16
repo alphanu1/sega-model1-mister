@@ -70,19 +70,26 @@ module m1_ioboard #(
   // IP_ACTIVE_LOW, and an M10K comes up zeroed — so a core that publishes
   // nothing presents every button as held. That is worth ruling out before
   // anything subtler.
-  parameter logic [10:0] INPUT_BASE = 11'h000,
-  // OFF BY DEFAULT, BECAUSE IT REGRESSES THE MACHINE AS WRITTEN.
+  // Where the sweep lands. 0x08 because that is where the Z80 puts the port
+  // reads: 0x08-0x0a are IN.0/IN.1/IN.2, 0x0b-0x0d the three DIP banks, 0x0e
+  // port 6. Recovered from the ROM — see docs/io-board.md, and note this is a
+  // read fact now rather than the guess it was when this parameter appeared.
+  parameter logic [10:0] INPUT_BASE = 11'h008,
+
+  // Cycles between one byte of the sweep and the next.
   //
-  // Enabling it drops the handshake reply count from 62 to 1 and parks the V60
-  // at fe022c on a solid blue screen. The cause is this module, not the data:
-  // publishing to 0x400, an address nothing reads, gives byte-identical
-  // results to publishing at 0x000 — same PC, same reply count, same pixels.
-  // So the refresh is starving the handshake for the single shared write port,
-  // and the round-robin needs to yield properly before this can be turned on.
+  // NOT every cycle. The real Z80 sweeps its ports once per loop at 4 MHz, and
+  // refreshing thousands of times faster is what turned a collision that is
+  // rare on hardware into a constant one — the DPRAM here has a single shared
+  // write port, because Quartus will not infer the MB8421's second one.
+  // Sweeping at roughly the board's rate makes that workaround stop mattering
+  // instead of papering over it.
   //
-  // The unit test does not catch it: there the port is always acknowledged,
-  // while in the system io_ack is denied whenever the V60 is writing.
-  parameter bit          PUBLISH_INPUTS = 1'b0
+  // 2048 at 19.2 MHz is a full eight-byte pass every ~850 us, near enough a
+  // 4 MHz Z80 round trip, and still far faster than a finger.
+  parameter int          SWEEP_GAP = 2048,
+  // Sweeping the control bytes into the shared RAM, as the board does.
+  parameter bit          PUBLISH_INPUTS = 1'b1
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -136,6 +143,16 @@ module m1_ioboard #(
   always_comb request = v60_req && v60_we && v60_sel_dpram &&
                         (v60_addr == FLAG_ADDR[10:0]) && (v60_wdata != 8'h00);
 
+  // Which write is outstanding. WITHOUT THIS, ANY completed write clears a
+  // pending handshake: a routine refresh landing mid-handshake counted as the
+  // reply and the flag byte was never written, so the V60 waited forever for a
+  // flag nobody cleared. That is what broke the first version of this, not the
+  // arbitration it was blamed on.
+  logic wr_reply;
+
+  localparam int GAP_W = (SWEEP_GAP < 2) ? 1 : $clog2(SWEEP_GAP + 1);
+  logic [GAP_W-1:0] gap;
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       pending  <= 1'b0;
@@ -145,44 +162,45 @@ module m1_ioboard #(
       io_din   <= REPLY;
       replies  <= 16'd0;
       pub_idx  <= 3'd0;
+      wr_reply <= 1'b0;
+      gap      <= '0;
     end else begin
-      // Held, not pulsed: the write stays asserted until the RAM acknowledges.
-      if (io_ack) io_we <= 1'b0;
+      if (gap != GAP_W'(SWEEP_GAP)) gap <= gap + GAP_W'(1);
 
+      // A request is latched whenever it arrives, including while a refresh is
+      // in flight. The V60 raises the flag again for the second handshake and
+      // losing that one hangs boot.
       if (request) begin
-        // A second request arriving while one is outstanding restarts the
-        // timer rather than being dropped. The V60 raises the flag again for
-        // the second handshake, and losing that one hangs boot.
         pending  <= 1'b1;
         wait_cnt <= '0;
-      end else if (pending) begin
-        if (wait_cnt < CNT_W'(LATENCY)) begin
-          wait_cnt <= wait_cnt + CNT_W'(1);
-        end else if (!io_we) begin
-          io_we   <= 1'b1;
-          io_addr <= FLAG_ADDR;
-          io_din  <= REPLY;
-        end
+      end else if (pending && wait_cnt < CNT_W'(LATENCY)) begin
+        wait_cnt <= wait_cnt + CNT_W'(1);
       end
 
-      // The handshake is answered when the byte actually reaches the RAM, not
-      // when the write was requested.
       if (io_we && io_ack) begin
-        if (pending) begin
+        // Completion is attributed to whatever was actually issued.
+        io_we <= 1'b0;
+        if (wr_reply) begin
           pending <= 1'b0;
           if (replies != 16'hffff) replies <= replies + 16'd1;
         end else begin
-          // That was an input refresh; move to the next byte.
           pub_idx <= pub_idx + 3'd1;
+          gap     <= '0;
         end
-      end
-
-      // Input refresh, only when the handshake has nothing outstanding. The
-      // handshake is what boot blocks on, so it takes the port first.
-      if (PUBLISH_INPUTS && !pending && !io_we) begin
-        io_we   <= 1'b1;
-        io_addr <= INPUT_BASE + 11'(pub_idx);
-        io_din  <= pub_byte;
+      end else if (!io_we) begin
+        // One issue point, and the handshake takes it first: that is the reply
+        // boot blocks on, and the sweep can always wait another 850 us.
+        if (pending && wait_cnt >= CNT_W'(LATENCY)) begin
+          io_we    <= 1'b1;
+          io_addr  <= FLAG_ADDR;
+          io_din   <= REPLY;
+          wr_reply <= 1'b1;
+        end else if (PUBLISH_INPUTS && gap == GAP_W'(SWEEP_GAP)) begin
+          io_we    <= 1'b1;
+          io_addr  <= INPUT_BASE + 11'(pub_idx);
+          io_din   <= pub_byte;
+          wr_reply <= 1'b0;
+        end
       end
     end
   end

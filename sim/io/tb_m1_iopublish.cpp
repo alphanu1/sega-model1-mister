@@ -17,16 +17,26 @@
 //
 // WHAT THIS CAN AND CANNOT CHECK
 //
-// It checks the mechanism: that all eight bytes reach the RAM, that they track
-// their inputs, that the handshake still wins the port, and that idle state is
-// published as 0xFF rather than as zero. It CANNOT check that the layout is
-// right, because the layout is not known — see docs/io-board.md. The base
-// address is a parameter for exactly that reason.
+// It checks the mechanism: that all eight bytes reach the RAM at the right
+// addresses, that they track their inputs, that the handshake still wins the
+// port, and that idle state is published as 0xFF rather than as zero.
+//
+// The layout it checks against is now recovered from the Z80 ROM rather than
+// guessed — 0x08-0x0a are IN.0/IN.1/IN.2 and 0x0b-0x0d the DIP banks, see
+// docs/io-board.md. What it still cannot check is whether the V60 *likes* what
+// it finds there; only running the game does that.
 
 #include "Vm1_ioboard.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
+
+// Where the sweep lands and how long a full pass takes. Both track the module's
+// parameters: base 0x08 is where the Z80 puts its port reads, and the gap is
+// deliberately slow — the real board sweeps once per loop at 4 MHz, and
+// refreshing faster than that is what broke the first version of this.
+static const int BASE = 0x08;
+static const int PASS = 8 * 2048 + 4096;   // eight bytes, plus slack
 
 static long checks = 0, fails = 0;
 static void check(bool ok, const char* what) {
@@ -70,29 +80,30 @@ int main(int argc, char** argv) {
   {
     Dut t;
     t.d->in_bytes = 0x0807060504030201ull;
-    t.run(4000);
+    t.run(PASS);
     for (int i = 0; i < 8; i++)
-      check(t.ram[i] == i + 1, "byte did not reach the RAM");
-    printf("  bytes 0..7 = %02x %02x %02x %02x %02x %02x %02x %02x\n",
-           t.ram[0], t.ram[1], t.ram[2], t.ram[3],
-           t.ram[4], t.ram[5], t.ram[6], t.ram[7]);
+      check(t.ram[BASE + i] == i + 1, "byte did not reach the RAM");
+    printf("  DPRAM %02x..%02x = %02x %02x %02x %02x %02x %02x %02x %02x\n",
+           BASE, BASE + 7,
+           t.ram[BASE+0], t.ram[BASE+1], t.ram[BASE+2], t.ram[BASE+3],
+           t.ram[BASE+4], t.ram[BASE+5], t.ram[BASE+6], t.ram[BASE+7]);
   }
 
   printf("test: a change in the inputs is followed\n");
   {
     Dut t;
-    t.run(4000);
-    check(t.ram[0] == 0xff, "idle state was not published");
+    t.run(PASS);
+    check(t.ram[BASE] == 0xff, "idle state was not published");
 
     // A button press is a bit going LOW, because every control on this
     // hardware is active low.
     t.d->in_bytes = 0xfffffffffffffffbull;   // byte 0, bit 2
-    t.run(4000);
-    check(t.ram[0] == 0xfb, "press was not published");
+    t.run(PASS);
+    check(t.ram[BASE] == 0xfb, "press was not published");
 
     t.d->in_bytes = 0xffffffffffffffffull;
-    t.run(4000);
-    check(t.ram[0] == 0xff, "release was not published");
+    t.run(PASS);
+    check(t.ram[BASE] == 0xff, "release was not published");
   }
 
   printf("test: idle is 0xFF, not 0x00\n");
@@ -101,10 +112,10 @@ int main(int argc, char** argv) {
     // input byte is every button held. A core that publishes nothing is not
     // neutral, it is stuck on.
     Dut t;
-    check(t.ram[0] == 0x00, "test setup: RAM should start cleared");
-    t.run(4000);
+    check(t.ram[BASE] == 0x00, "test setup: RAM should start cleared");
+    t.run(PASS);
     for (int i = 0; i < 8; i++)
-      check(t.ram[i] == 0xff, "idle byte was not 0xFF");
+      check(t.ram[BASE + i] == 0xff, "idle byte was not 0xFF");
   }
 
   printf("test: the handshake still wins the port\n");
@@ -113,7 +124,7 @@ int main(int argc, char** argv) {
     // confirm it is still answered while refreshes are competing for the same
     // single write port.
     Dut t;
-    t.run(2000);
+    t.run(PASS);
 
     t.d->v60_req = 1; t.d->v60_we = 1; t.d->v60_sel_dpram = 1;
     t.d->v60_addr = 0x020; t.d->v60_wdata = 0x01;
@@ -132,8 +143,8 @@ int main(int argc, char** argv) {
     // And publishing resumes afterwards rather than being wedged by the
     // handshake having taken the port.
     t.d->in_bytes = 0x1111111111111111ull;
-    t.run(4000);
-    check(t.ram[3] == 0x11, "publishing did not resume after the handshake");
+    t.run(PASS);
+    check(t.ram[BASE + 3] == 0x11, "publishing did not resume after the handshake");
   }
 
   printf("m1_iopublish: checks=%ld fails=%ld\n", checks, fails);

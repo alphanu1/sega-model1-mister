@@ -509,6 +509,7 @@ m1_frame:
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION --top-module tb_m1_frame -GRUN_CYCLES=$(FRAME_CYCLES) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
+	  -GPRESS_IN0=$(FRAME_PRESS) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
 	./build/m1frame/m1frame
@@ -526,6 +527,10 @@ FRAME_CYCLES ?= 120000000
 # reproduced rather than only described.
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
+
+# A control held down for the whole run, as IN.0 would present it: 0xff none,
+# 0xef START, 0xfe COIN, 0xfb TEST. See docs/io-board.md for the bit order.
+FRAME_PRESS ?= 0xff
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to
