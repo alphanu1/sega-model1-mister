@@ -58,6 +58,52 @@ skew on the two asynchronous domain crossings, which are cut with
 `set_clock_groups -asynchronous` and therefore never timed by the fitter.
 `m1_cdc_port` carrying the CPU's data reads is the leading suspect.
 
+## The wobble, and what it is actually made of — 2026-08-16
+
+The picture on hardware is unstable: flashing white, jumping vertically.
+It became unstable only once the game had real tile data to draw, which is
+the tell — with tile RAM all zeros every column asked for the same
+character, every read hit the open row, and the engine kept up easily.
+
+Measured, in this order, each number replacing an assumption:
+
+| | |
+|---|---|
+| fetch deadline misses | **6849 per 103 frames** — about one line in six shown stale |
+| cost per layer, before pipelining | 1614 cycles worst case |
+| cost per layer, after pipelining | **1188** worst case, 578 text |
+| misses after pipelining | **6849** — nine fewer. Not the constraint. |
+| character fetch wait, in the whole system | **240 cycles average** over 100,372 fetches |
+
+The engine's own header attributes 1,118 idle cycles a layer to "one
+request outstanding at a time", and pipelining the fetch behind the emit
+is the fix that follows from that. It bought nine misses out of 6,858,
+because the premise was wrong: the unit test models char_ack returning in
+14 cycles and the real figure with the V60 competing for the same
+controller is 240. Pipelining hides eight cycles. It cannot hide 240.
+
+So the next lever is NOT the fetch engine. In rough numbers per line, on
+the screen measured: about 4.4 character fetches across all four layers
+(tile reuse is very effective on a text screen), so ~1,050 cycles of
+waiting, plus 4 x 496 = 1,984 cycles of emission at one pixel per cycle,
+against 3,280 available. That total sits just under the budget, which is
+exactly why 17% of lines miss rather than all of them.
+
+Two candidates, and the second is cheaper than it looks:
+
+1. **Arbitration.** The video has a hard deadline every scanline and the
+   V60 does not. 240 cycles is far more than a round-robin turn between
+   three active ports should cost, so find out where it goes before
+   changing m1_sdram — it is verified at 80,009 checks and the reason for
+   the delay is not yet established.
+2. **Wider line-buffer writes.** char_data is 32 bits — eight 4bpp pixels
+   arriving at once — and the emit side spends eight cycles writing them
+   one at a time. Writing all eight per cycle takes emission from 1,984
+   cycles to 248 for four layers, which alone puts the line comfortably
+   inside budget. It means restructuring the line buffers in m1_video as
+   62 entries of 8 pixels with an 8-way read mux on hcnt[2:0], at
+   about the same M10K cost.
+
 ## Where it is
 
 **Real Virtua Racing code boots and executes.** The V60 takes the architectural
