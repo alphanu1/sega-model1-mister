@@ -352,26 +352,41 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     end
   end
 
-  // THE FIRST INSTRUCTION THE V60 EVER FETCHES, AND WHERE FROM.
+  // THE FIRST INSTRUCTION THE V60 EVER FETCHES, AND THE LAST ONE BEFORE IT DIED.
   //
-  // The board showed the CPU halted at PC 3 having executed opcode 0x00, which
-  // means its reset fetch did not return the boot vector. That has two very
-  // different causes — SDRAM reads coming back empty, or the fetch going to the
-  // wrong address — and the only way to tell them apart is to see the first
-  // fetch itself. Latched once and held, because it happens microseconds after
-  // reset and is gone long before anyone can photograph it.
-  reg [24:1] r_if_addr;
-  reg [31:0] r_if_data;
+  // The board halts at PC 3 on opcode 0x00 while the same RTL, the same ROM and
+  // the same clocks boot to the test screen in simulation. Memory is proven
+  // good — words sent equal words written, and the first fetch returns the
+  // ROM's real first word — so what is left is the execution path, and that
+  // needs the path, not another still frame of the end state.
+  //
+  // First fetch and last fetch, with a count between them, says whether the CPU
+  // ran three instructions or three million before it went wrong.
+  reg [24:1] r_if_addr, r_last_addr;
+  reg [31:0] r_if_data, r_last_data;
+  reg [31:0] r_if_count;
   reg        r_if_seen, d_if_ack;
+
   always @(posedge clk_sys) begin
     if (!mem_rst_n) begin
       r_if_addr <= 0; r_if_data <= 0; r_if_seen <= 0; d_if_ack <= 0;
+      r_last_addr <= 0; r_last_data <= 0; r_if_count <= 0;
     end else begin
       d_if_ack <= p_ack[2];
-      if (p_ack[2] && !d_if_ack && !r_if_seen) begin
-        r_if_seen <= 1'b1;
-        r_if_addr <= ifp_addr;
-        r_if_data <= p_dout[2][31:0];
+
+      if (p_ack[2] && !d_if_ack) begin
+        r_if_count <= r_if_count + 1'd1;
+        if (!r_if_seen) begin
+          r_if_seen <= 1'b1;
+          r_if_addr <= ifp_addr;
+          r_if_data <= p_dout[2][31:0];
+        end
+        // Frozen the moment the CPU halts, so what is on screen is the fetch it
+        // died on rather than whatever the bus did afterwards.
+        if (!st_s2[17]) begin
+          r_last_addr <= ifp_addr;
+          r_last_data <= p_dout[2][31:0];
+        end
       end
     end
   end
@@ -398,23 +413,28 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     st_s2 <= st_s1;
   end
 
-  // The rows, top of the screen first. Each leads with its own row number so a
-  // photograph that is cropped, rotated or partly glared out can still be
-  // matched up row by row instead of counted from an edge that may not be in
-  // the frame.
-  wire [31:0] dw [10];
-  assign dw[0] = {8'h00, pc_s2};                       // V60 program counter
-  assign dw[1] = char_data_l;                          // last character data
-  assign dw[2] = {8'h02, 6'd0, char_addr_l};           // ...and its address
-  assign dw[3] = ioctl_words;                          // words the HPS sent
-  assign dw[4] = ldr_words;                            // ...that reached SDRAM
-  assign dw[5] = char_acks;                            // character fetches
-  assign dw[6] = cpu_reads;                            // CPU data reads
-  assign dw[7] = {8'h07, 2'd0, ldr_overflow, st_s2[17:16],
-                  rom_ready, mem_ready, ioctl_download,
-                  st_s2[15:0]};                        // I/O replies
-  assign dw[8] = {7'h08, r_if_seen, r_if_addr};        // first fetch address
-  assign dw[9] = r_if_data;                            // ...and what came back
+  // EVERY ROW CARRIES ITS OWN NUMBER IN THE TOP BYTE.
+  //
+  // The previous layout tagged only three rows of eight, and reading the rest
+  // off a photograph meant counting bands from an edge that was sometimes out
+  // of frame. Two rows were misread that way. The counters lose their top eight
+  // bits to the tag, which costs nothing: the largest of them is the ROM stream
+  // at 0x300000, and a counter that wraps 24 bits is still legible as motion.
+  wire [31:0] dw [12];
+  assign dw[0]  = {8'h00, pc_s2};                      // V60 program counter
+  assign dw[1]  = {8'h01, r_if_count[23:0]};           // instruction fetches
+  assign dw[2]  = {8'h02, cpu_reads[23:0]};            // CPU data reads
+  assign dw[3]  = {8'h03, char_acks[23:0]};            // character fetches
+  assign dw[4]  = {8'h04, ioctl_words[23:0]};          // words the HPS sent
+  assign dw[5]  = {8'h05, ldr_words[23:0]};            // ...that reached SDRAM
+  assign dw[6]  = {7'h06, r_if_seen, r_if_addr};       // first fetch address
+  assign dw[7]  = {8'h07, r_if_data[23:0]};            // ...and what came back
+  assign dw[8]  = {8'h08, r_last_addr};                // last fetch before halt
+  assign dw[9]  = {8'h09, r_last_data[23:0]};          // ...and what came back
+  assign dw[10] = {8'h0A, char_data_l[23:0]};          // last character data
+  assign dw[11] = {8'h0B, 2'd0, ldr_overflow, st_s2[17:16],
+                   rom_ready, mem_ready, ioctl_download,
+                   st_s2[15:0]};                       // flags, I/O replies
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -422,12 +442,12 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   // the concatenation runs bottom row first. Written with explicit indices
   // rather than as a list, because getting this backwards produces a display
   // that is perfectly legible and entirely wrong.
-  m1_diag #(.NWORDS(10)) diag (
+  m1_diag #(.NWORDS(12)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     .enable(~status[3]),
     .hb(vid_hb), .vb(vid_vb),
-    .words({dw[9], dw[8], dw[7], dw[6], dw[5], dw[4], dw[3], dw[2],
-             dw[1], dw[0]}),
+    .words({dw[11], dw[10], dw[9], dw[8], dw[7], dw[6],
+             dw[5],  dw[4],  dw[3], dw[2], dw[1], dw[0]}),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
     .out_r(dg_r), .out_g(dg_g), .out_b(dg_b)
   );
