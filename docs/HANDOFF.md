@@ -285,12 +285,32 @@ window at the same place, so that is a command/response buffer and the response
 is where input state must appear. It does **not** poll a fixed input offset,
 which is why the layout cannot be guessed from the trace alone.
 
-An input publisher was tried and is **off by default**: it starves the
-handshake, and a control run at an address nothing reads gave byte-identical
-results, so the fault is the mechanism rather than the data. Do not fix its
-arbitration — the trace says request/response, not background refresh, and a
-burst triggered by the handshake would not contend for the port at all. See
-`docs/io-board.md`.
+**The protocol is now recovered from the Z80 ROM** — see `docs/io-board.md` for
+how, and for the layout. The short version: the board runs a periodic sweep that
+writes its input ports into low DPRAM, and the V60 reads them there.
+
+| DPRAM | Content |
+|---|---|
+| `0x00`-`0x07` | scanned control panel, eight bits at a time, two banks |
+| `0x08`-`0x0A` | **IN.0, IN.1, IN.2** — the player controls |
+| `0x0B`-`0x0D` | DSW1, DSW2, DSW3 |
+| `0x0E` | chip port 6 |
+
+An input publisher exists and is **off by default** because it regresses the
+machine. Two things were wrong with it, and an earlier note in this file said
+the wrong one:
+
+- It conflates which write finished. Any completed write clears `pending` if a
+  handshake is outstanding, so a routine refresh can be mistaken for the reply
+  and the flag byte never gets written.
+- It refreshes every cycle it can take the port. The real Z80 sweeps once per
+  loop at 4 MHz, thousands of times slower, which is why a collision that is
+  rare on the board is constant here.
+
+**This file previously said "do not fix its arbitration — the trace says
+request/response, not background refresh". That was wrong**, and the ROM says
+so. The publisher's model was right all along; only its rate and its completion
+tracking are broken. Fix those rather than redesigning it.
 
 D9 has since settled tv80 versus HLE in favour of the HLE, so what remains is
 recovering the response format — either by disassembling `EPR-14869` (it is in

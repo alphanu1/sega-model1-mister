@@ -203,36 +203,30 @@ yield the port properly, not merely take it when it happens to be free.
 
 `PUBLISH_INPUTS` therefore defaults to **0**.
 
-### Do not fix the arbitration yet — the shape is probably wrong
+### What was actually wrong with it — corrected after reading the ROM
 
-The obvious follow-up is to make the round-robin yield the port properly. That
-is likely work on a mechanism this board does not want.
+At the time this failed I concluded the shape was wrong: that the trace showed
+request/response, so a background refresh was the wrong model and its
+arbitration should not be fixed. **The ROM says otherwise.** The board does
+exactly what the publisher was trying to do — a periodic sweep writing input
+ports into low DPRAM. The model was right.
 
-Continuous refresh was inferred from the 315-5338A's fast write to bytes 0-7.
-But that path is the **Z80's** convenience for reaching the shared RAM through
-the custom chip; it says something about how the Z80 talks to the chip, not
-about how the V60 reads inputs. Those bytes may be status or DIP state.
+Two things were actually broken:
 
-What the trace shows points elsewhere. The V60 writes a command block, raises
-the flag, and reads a 27-byte window **three times across an entire run, with no
-polling loop**. That is request/response, not a mailbox somebody refreshes in
-the background. If that is the shape, the responder should:
+1. **It conflates which write finished.** `if (io_we && io_ack)` treats any
+   completed write as the handshake reply whenever `pending` is set, so a
+   routine refresh completing mid-handshake clears `pending` and bumps the
+   reply counter *without the flag byte ever being written*. The V60 then waits
+   for a flag nobody cleared.
+2. **It refreshes every cycle it can take the port.** The real Z80 sweeps once
+   per loop at 4 MHz — thousands of times slower. That is what turns a
+   collision that is rare on hardware into a constant one here.
 
-1. see the flag raised
-2. read the command block
-3. write a response — input state included — into the window
-4. clear the flag
-
-which is a burst triggered by the handshake, at a moment when the V60 is sitting
-in a polling loop rather than driving the bus. **It would not contend for the
-port at all**, and the starvation this experiment hit would not exist to fix.
-
-So the mechanism and its 23 checks stay as scaffolding, off by default, and the
-next move is to establish the protocol shape rather than to polish a refresh
-loop that may be answering the wrong question.
-
-What was NOT learned: where the inputs live. That question is untouched by this
-result.
+The single shared write port is itself a workaround, not the hardware: the real
+board has an MB8421 true dual-port RAM and no arbitration at all. Ours shares
+one port because Quartus 17.0 will not infer a two-write-port M10K — measured in
+`rtl/m1_mainram.sv` at 192 ALM becoming 16,059 when tried. Sweeping at the
+board's rate makes that workaround stop mattering rather than papering over it.
 
 ---
 
