@@ -122,11 +122,11 @@ module m1_video #(
   // ------------------------------------------------------- line buffers
   // Double buffered: `bank` is written while ~bank is displayed.
   logic bank;
-  logic [13:0] rd_q [4];              // {prio, transparent, pal_index}
+  logic [14:0] rd_q [4];              // {masked, prio, transparent, pal_index}
 
   // EIGHT SEPARATE RAMS, NOT ONE ARRAY INDEXED BY BANK
   //
-  // The obvious form is `logic [13:0] lbuf [2][4][512]` written at
+  // The obvious form is `logic [14:0] lbuf [2][4][512]` written at
   // lbuf[bank][cur_layer][...] and read at lbuf[~bank][L][...]. Quartus cannot
   // infer block RAM from that: the bank index is a signal rather than a
   // constant, so the write is a dynamic selection across both banks and the
@@ -139,17 +139,34 @@ module m1_video #(
   // a single M10K. Both banks are read every cycle at the same address and the
   // result is muxed afterwards, which costs a 14-bit mux instead of an address
   // mux and keeps the memories inferrable.
-  wire [13:0] lb_q [2][4];
+  wire [14:0] lb_q [2][4];
 
   // ---------------------------------------------------------- sequencer
-  typedef enum logic [2:0] {
-    Q_IDLE, Q_HSCR, Q_HSCR_W, Q_VSCR, Q_VSCR_W, Q_RUN, Q_NEXT
+  typedef enum logic [3:0] {
+    Q_IDLE, Q_HSCR, Q_HSCR_W, Q_VSCR, Q_VSCR_W,
+    Q_MASK, Q_MASK_W, Q_RUN, Q_NEXT
   } qstate_t;
   qstate_t q;
 
   logic [1:0]  cur_layer;
   logic [8:0]  cur_line;
   logic [15:0] hscr_r, vscr_r;
+
+  // This scanline's row mask for the pair the current layer belongs to.
+  //
+  // segas24 keeps two tables: tilemaps 0/1 read tile_ram 0x6000 and 2/3 read
+  // 0x6800, four words per scanline in both. MAME indexes them by SCREEN line,
+  // not by the scrolled map line — `mask += yy1*4` walks the destination
+  // rectangle — so this is cur_line, unscrolled.
+  logic [63:0] mask_r;
+  logic [1:0]  mask_i;
+
+  // Base of this layer's table. MAME picks it with `layer & 4` on the 8-way
+  // draw index, which is bit 1 of the tilemap number: 0/1 -> 0x6000,
+  // 2/3 -> 0x6800. Four words per scanline, so the line scales by four.
+  logic [14:0] mask_base;
+  always_comb
+    mask_base = (cur_layer[1] ? 15'h6800 : 15'h6000) + {4'd0, cur_line, 2'd0};
   logic        f_start;
   logic        f_busy, f_done;
   logic [14:0] f_tram_addr;
@@ -158,7 +175,7 @@ module m1_video #(
   logic [3:0]       f_lb_we;
   logic [8:0]       f_lb_addr;
   logic [3:0][11:0] f_lb_pal;
-  logic [3:0]       f_lb_transparent, f_lb_prio;
+  logic [3:0]       f_lb_transparent, f_lb_prio, f_lb_masked;
 
   // The sequencer borrows the tile RAM port to read the scroll registers, so
   // the address is muxed rather than driven straight from the fetch engine.
@@ -176,6 +193,7 @@ module m1_video #(
     .char_data(char_data), .char_ack(char_ack),
     .lb_we(f_lb_we), .lb_addr(f_lb_addr), .lb_pal(f_lb_pal),
     .lb_transparent(f_lb_transparent), .lb_prio(f_lb_prio),
+    .lb_masked(f_lb_masked), .row_mask(mask_r),
     .fetches(f_fetches)
   );
 
@@ -183,6 +201,7 @@ module m1_video #(
     if (!rst_n) begin
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
       hscr_r <= '0; vscr_r <= '0; f_start <= 1'b0;
+      mask_r <= '0; mask_i <= '0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
       bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
     end else begin
@@ -218,9 +237,26 @@ module m1_video #(
         Q_VSCR: q <= Q_VSCR_W;
         Q_VSCR_W: begin
           vscr_r        <= tram_data;
-          seq_owns_tram <= 1'b0;
-          f_start       <= 1'b1;
-          q             <= Q_RUN;
+          seq_tram_addr <= mask_base + {13'd0, 2'd0};
+          mask_i        <= 2'd0;
+          q             <= Q_MASK;
+        end
+
+        // Four words, read one per pass. Eight more tile-RAM reads per line
+        // than before across the four layers, against a budget measured in
+        // thousands of cycles, so it does not move the deadline.
+        Q_MASK: q <= Q_MASK_W;
+        Q_MASK_W: begin
+          mask_r[{mask_i, 4'd0} +: 16] <= tram_data;
+          if (mask_i == 2'd3) begin
+            seq_owns_tram <= 1'b0;
+            f_start       <= 1'b1;
+            q             <= Q_RUN;
+          end else begin
+            seq_tram_addr <= mask_base + {13'd0, mask_i + 2'd1};
+            mask_i        <= mask_i + 2'd1;
+            q             <= Q_MASK;
+          end
         end
 
         Q_RUN: begin
@@ -284,11 +320,11 @@ module m1_video #(
   generate
     for (gb = 0; gb < 2; gb++) begin : g_bank
       for (gl = 0; gl < 4; gl++) begin : g_layer
-        logic [13:0] lane_q [4];
+        logic [14:0] lane_q [4];
         logic [1:0]  sel_q;
 
         for (gn = 0; gn < 4; gn++) begin : g_lane
-          logic [13:0] mem [128];
+          logic [14:0] mem [128];
 
           // Which incoming pixel belongs to this lane, and which group it
           // lands in. Pixels before the base's own lane have wrapped into the
@@ -309,7 +345,7 @@ module m1_video #(
 
           always_ff @(posedge clk) begin
             if (wen)
-              mem[waddr] <= {f_lb_prio[widx], f_lb_transparent[widx],
+              mem[waddr] <= {f_lb_masked[widx], f_lb_prio[widx], f_lb_transparent[widx],
                              f_lb_pal[widx]};
             lane_q[gn] <= mem[hcnt[8:2]];
           end
@@ -331,13 +367,14 @@ module m1_video #(
 
   // ------------------------------------------------------------- mixing
   logic [3:0][11:0] mix_pal;
-  logic [3:0]       mix_transp, mix_prio;
+  logic [3:0]       mix_transp, mix_prio, mix_masked;
 
   always_comb begin
     for (int L = 0; L < 4; L++) begin
       mix_pal[L]    = rd_q[L][11:0];
       mix_transp[L] = rd_q[L][12];
       mix_prio[L]   = rd_q[L][13];
+      mix_masked[L] = rd_q[L][14];
     end
   end
 
@@ -348,6 +385,7 @@ module m1_video #(
     .pal_index(mix_pal),
     .transparent(mix_transp),
     .prio(mix_prio),
+    .masked(mix_masked),
     .disabled(4'b0000),          // already folded into transparent by the fetch
     .poly_index(12'd0),
     .poly_valid(1'b0),           // no 3D until M2

@@ -60,6 +60,22 @@ module m1_tile_mixer (
   input  logic [3:0]       prio,        // tile category bit
   input  logic [3:0]       disabled,    // layer disable, from vscr bit 15
 
+  // Per-pixel row-mask verdict, one bit per tilemap: the pixel's category does
+  // not match the mask's selection for its 8-pixel column, so it is not drawn.
+  //
+  // segas24 masks a tilemap in 8-pixel columns from a table at tile_ram 0x6000
+  // (tilemaps 0/1) or 0x6800 (2/3), four words per scanline. MAME draws each
+  // tilemap twice — once per category — and inverts the mask for the second
+  // pass (`win = layer & 1`, `if(win) m = ~m`), so a column shows exactly one
+  // of the two categories: whichever equals its mask bit. m1_tile_fetch reduces
+  // that to this one bit per pixel.
+  //
+  // Gated here rather than folded into `transparent` because tilemaps 2 and 3
+  // draw their category-0 pass opaque, and an opaque pass ignores transparency
+  // — a masked pixel there would still be drawn. MAME applies the mask outside
+  // the TILEMAP_DRAW_OPAQUE test, so it must be gated outside this one too.
+  input  logic [3:0]       masked,
+
   // The 3D image. Not generated until M2, so `poly_valid` is tied low for now
   // and the slot is kept because inserting a depth later would silently change
   // every layer's relationship to it.
@@ -82,8 +98,8 @@ module m1_tile_mixer (
       // Tilemaps 2 and 3 draw their category-0 pass opaque, so pen 0 counts as
       // a hit there and nowhere else.
       automatic logic opaque_pass = (i >= 2);
-      hit_cat1[i] = !disabled[i] &&  prio[i] && !transparent[i];
-      hit_cat0[i] = !disabled[i] && !prio[i] && (!transparent[i] || opaque_pass);
+      hit_cat1[i] = !disabled[i] && !masked[i] &&  prio[i] && !transparent[i];
+      hit_cat0[i] = !disabled[i] && !masked[i] && !prio[i] && (!transparent[i] || opaque_pass);
     end
   end
 

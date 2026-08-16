@@ -67,15 +67,31 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
     transp[L] = (px == 0) || ((vscr >> 15) & 1);
     prio[L] = (tw >> 15) & 1;
   }
+  // The row mask, from segaic24.cpp draw_common/draw_rect. Two tables — 0x6000
+  // for tilemaps 0/1, 0x6800 for 2/3 — four words per SCREEN scanline, one bit
+  // per 8-pixel column, bit 15 leftmost.
+  //
+  // MAME draws each tilemap twice and flips the mask for the second pass
+  // (`win = layer & 1`, `if(win) m = ~m`), so a column shows whichever category
+  // matches its mask bit. Note what that means when the table is all zero: the
+  // category-1 pass sees ~0 = 0xffff and draws nothing at all.
+  int mbit[4];
+  for (int L = 0; L < 4; L++) {
+    uint16_t m = tile_ram[((L & 2) ? 0x6800 : 0x6000) + y * 4 + (x >> 7)];
+    mbit[L] = (m >> (15 - ((x >> 3) & 15))) & 1;
+  }
+
   // Mixer: paint back to front, MAME's draw order 6,4,2,0 then 7,5,3,1.
   int idx = 0;
   auto cat0 = [&](int i) {
     if (prio[i]) return;
+    if (mbit[i]) return;                 // this column shows category 1 here
     if (transp[i] && i < 2) return;      // 6 and 4 are opaque, 2 and 0 are not
     idx = pal[i];
   };
   auto cat1 = [&](int i) {
     if (!prio[i] || transp[i]) return;
+    if (!mbit[i]) return;                // this column shows category 0 here
     idx = pal[i];
   };
   cat0(3); cat0(2); cat0(1); cat0(0);

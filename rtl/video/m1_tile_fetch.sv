@@ -100,6 +100,14 @@ module m1_tile_fetch #(
   input  logic [15:0] hscr,
   input  logic [15:0] vscr,
   input  logic [13:0] tile_mask,
+
+  // This scanline's row mask for the pair this layer belongs to: four 16-bit
+  // words, word 0 covering screen x 0-127 and so on, bit 15 the leftmost eight
+  // pixels of each word. NOT the same thing as tile_mask above, which is a
+  // width mask on the tile NUMBER — MAME calls both "mask" and they are
+  // unrelated.
+  input  logic [63:0] row_mask,
+
   output logic        busy,
   output logic        done,
 
@@ -131,6 +139,12 @@ module m1_tile_fetch #(
   output logic [3:0][11:0] lb_pal,
   output logic [3:0]       lb_transparent,
   output logic [3:0]       lb_prio,
+
+  // Row-mask verdict per pixel: this pixel's category does not match the mask
+  // selection for its column, so the mixer must not draw it. Carried alongside
+  // rather than merged into lb_transparent because tilemaps 2 and 3 draw their
+  // category-0 pass opaque, and an opaque pass ignores transparency.
+  output logic [3:0]       lb_masked,
 
   // Per-line telemetry: how many character fetches were actually issued. With
   // the repeat check this is well below COLUMNS on text screens, and it is the
@@ -353,12 +367,28 @@ module m1_tile_fetch #(
     end
   end
 
+  // Four consecutive screen pixels can straddle an 8-pixel mask column, and do
+  // whenever the tile boundary is unaligned, so each is looked up on its own
+  // rather than sharing one bit. Word 0 covers x 0-127; within a word bit 15 is
+  // the leftmost eight pixels, which is MAME's `0x8000 >> (x >> 3)`.
+  logic [9:0]  px      [4];
+  logic [15:0] px_word [4];
+  logic [3:0]  px_mask;
+  always_comb begin
+    for (int i = 0; i < 4; i++) begin
+      px[i]      = sx + 10'(i);
+      px_word[i] = row_mask[{px[i][8:7], 4'd0} +: 16];
+      px_mask[i] = px_word[i][4'd15 - px[i][6:3]];
+    end
+  end
+
   // -------------------------------------------------------------- emit side
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       est <= E_IDLE; sx <= '0; rem <= '0; tw_e <= '0; ch_e <= '0;
       lb_we <= 4'd0; done <= 1'b0;
       lb_addr <= '0; lb_pal <= '0; lb_transparent <= '0; lb_prio <= '0;
+      lb_masked <= '0;
     end else begin
       lb_we <= 4'd0;
       done  <= 1'b0;
@@ -393,6 +423,12 @@ module m1_tile_fetch #(
             lb_pal         <= dec_pal;
             lb_transparent <= dec_transp | dec_disabled;
             lb_prio        <= dec_prio;
+            // Visible where the pixel's category equals its mask bit, so
+            // masked is the disagreement. With an all-zero mask that leaves
+            // category 0 showing and category 1 hidden, which is what MAME's
+            // fast paths do: !m draws the whole 128, and the inverted pass
+            // sees 0xffff and draws none of it.
+            lb_masked      <= dec_prio ^ px_mask;
 
             sx  <= sx + 10'(gn);
             rem <= rem - gn;
