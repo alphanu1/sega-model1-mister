@@ -147,8 +147,7 @@ The row-mask and window-mode fixes are **confirmed working on the board** — a
 video of the screen shows the renderer obeying `ctrl` correctly in both states
 (see `findings.md`). They did not put text on screen.
 
-**START HERE — THE OPEN M1 DEFECT IS IDENTIFIED. Window mode with `hscr` bit 15
-clear must draw a SPLIT, and we draw nothing.**
+**THE OPEN M1 DEFECT IS FIXED. Window mode 1 draws its vertical split.**
 
 `draw_common`'s inner `if (hscr & 0x8000)` was recorded as having no `else`. **It
 has one, at `segaic24.cpp:418-456`**, and in it MAME splits the screen into two
@@ -161,19 +160,36 @@ That is a horizon: **it is the sky and the sea.** Suppressing the pair paints
 palette 0 across the screen instead, which is blue, at whatever rate the game
 toggles the mode — which is what the board shows, and what the flash is.
 
-Fix in this order, and change `tb_m1_video.cpp`'s reference model with the RTL or
-the suite will hold the bug in place:
+**Measured on real game code**, `make m1_frame FRAME_TRACE=1
+FRAME_CYCLES=3400000000`, same frame before and after:
 
-1. **mode 1, `hscr` bit 15 clear** — per-**scanline** layer pick, `y >= v` takes the
-   other map of the pair. Cheap: the renderer is per-scanline and `cur_line` is to
-   hand. This is the sky and sea, and it is the one to do first.
-2. **modes 2/3, bit 15 clear** — per-**pixel** split at `x = h`; a column mask, so
-   the row-mask machinery can carry it.
-3. **bit 15 set** — the per-line H-scroll table at `0x4000 + 0x200*layer`. Nothing
-   measured reaches it. Last.
+| | before | after |
+|---|---|---|
+| backdrop | `175982/190464` (92%) | **`0/190464`** |
+| tilemap 2 wins | `0` | **`176366`** |
+| tilemaps 0/1 wins | `11038, 3060` | `11038, 3060` |
 
-`findings.md` has the withdrawn entry in full, the MAME excerpt and why two
-rereadings of the source failed to catch it.
+The change was one term: `hscr` bit 15 never belonged in the layer decision. For
+mode 1 both of MAME's branches pick the same map — bit 15 set flips at `y >= v` per
+scanline, bit 15 clear clips two rectangles at the same `v` — so the bit selects
+where the horizontal scroll comes from, not which map draws.
+
+`tb_m1_video.cpp`'s reference is corrected in step, and the suite now **fails 4,330
+checks** against the reinstated bug, verified by doing it. It did not before,
+because the fixture set `hscr` bit 15 and the faulty term was `!win_hs || ...` — an
+input the game never presents. `findings.md` has that, and the fact that the first
+report of the blindness invented two wrong mechanisms for it.
+
+Still owed on this path:
+
+1. **modes 2/3** — per-**pixel** split at `x = h`; a column mask, so the row-mask
+   machinery can carry it. Pair 0/1 takes `ctrl = 0x4000` on 130 frames of 2,065.
+2. **`hscr` bit 15 set** — the per-line H-scroll table at `0x4000 + 0x200*layer`.
+   Nothing measured reaches it. Last.
+3. **A disabled layer 2/3 still paints.** `cat0` treats them as opaque
+   unconditionally, so `vscr` bit 15 does not stop them; MAME's
+   `if (vscr & 0x8000) return;` skips before any category decision. RTL and
+   reference agree, so the suite cannot see it. Separate bug, unresolved.
 
 **The full-screen blue is tilemap 2 drawn opaque over an empty map.**
 Not the backdrop — `bd=0/190464`, nothing falls through. Tilemap 2 wins 180,790 of

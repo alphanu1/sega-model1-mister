@@ -53,6 +53,7 @@ static uint8_t ref_pixel(uint32_t tile, int row, int col) {
 static inline int pal5bit(int v) { v &= 0x1f; return (v << 3) | (v >> 2); }
 
 // The whole chain for one pixel, independent of the RTL's structure.
+long ref_wins[5] = {0,0,0,0,0};
 static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   int pal[4], transp[4], prio[4];
   for (int L = 0; L < 4; L++) {
@@ -95,27 +96,28 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   // see the note in m1_video.sv. When that is implemented, this is where the
   // expectation changes.
   //
-  // THIS SUITE CANNOT DISCRIMINATE THE WINDOW FIX, and that was verified rather
-  // than assumed: reinstating `!win_hs` in the RTL leaves all 380,929 checks
-  // passing. Two properties of the fixture make pair 2/3 invisible whatever it
-  // does, and both were found by trying to close the hole rather than by reading:
+  // THE SUITE DISCRIMINATES THIS: reinstating `!win_hs` in the RTL now fails 4,330
+  // of 380,929 checks. It did not before, and the reason is worth keeping.
   //
-  //  1. The fill writes the font pattern over the row-mask tables at 0x6000 too,
-  //     and `mbit[0]`/`mbit[1]` are exact complements, so at every pixel exactly
-  //     one of layers 0/1 is unmasked. Together they cover the screen.
-  //  2. `cat0` treats layers 2 and 3 as opaque unconditionally — `transp[i] &&
-  //     i < 2` — so layer 3 paints even with its disable bit set, and it is
-  //     painted before layer 2. A suppressed layer 2 is replaced rather than
-  //     revealed.
+  // The fixture set hscr bit 15 on the window pair. The faulty term was
+  // `!win_hs || ...`, so with the bit set the term was never evaluated and the
+  // bug was unreachable from this fixture. That was first reported as "this suite
+  // cannot discriminate the fix", which was wrong twice over — the suite is fine,
+  // and the two mechanisms offered for why it was blind (row-mask complementarity
+  // and the opaque cat0 pass) were both invented to explain a result that had a
+  // much simpler cause. **A fixture that avoids the bug is indistinguishable from
+  // one that covers it, and the way to tell them apart is to break the RTL on
+  // purpose and watch the count.**
   //
-  // Item 2 is a SEPARATE SUSPECTED BUG, in this model and matched by the RTL:
-  // MAME's `if (vscr & 0x8000) return;` skips a disabled layer entirely, before
-  // any category decision. Worth resolving on its own; do not fold it into a
-  // window change.
+  // The `layer wins` line printed at the end exists for the same reason: a layer
+  // that never wins a visible pixel is a layer this suite cannot test, and it now
+  // fails outright rather than passing quietly.
   //
-  // Until the fixture exposes pair 2/3, the window fix is verified by `m1_frame`
-  // on real game code, where maps 2/3 winning zero pixels against 4,095 fetched
-  // words is directly measurable. See findings.md.
+  // Separately, and NOT the reason for the above: `cat0` treats layers 2 and 3 as
+  // opaque unconditionally — `transp[i] && i < 2` — so a layer whose vscr disable
+  // bit is set still paints. MAME's `if (vscr & 0x8000) return;` skips it before
+  // any category decision. The RTL matches this model, so the suite cannot see it.
+  // Suspected bug, unresolved, deliberately not folded into a window change.
   int win_off[4];
   for (int L = 0; L < 4; L++) {
     uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
@@ -156,6 +158,11 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
 
   // Mixer: paint back to front, MAME's draw order 6,4,2,0 then 7,5,3,1.
   int idx = 0;
+  // Which layer supplied the final index, -1 for the backdrop. Counted so the
+  // fixture's coverage of each layer is a measurement rather than an assumption:
+  // a layer that never wins a pixel is a layer this suite cannot test.
+  extern long ref_wins[5];
+  int winner = -1;
   // The mask gate is the same in both passes — it is a property of the tilemap,
   // not of the category.
   auto cat0 = [&](int i) {
@@ -163,16 +170,17 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
     if (prio[i]) return;
     if (mbit[i]) return;                 // this column is not drawn from map i
     if (transp[i] && i < 2) return;      // 6 and 4 are opaque, 2 and 0 are not
-    idx = pal[i];
+    idx = pal[i]; winner = i;
   };
   auto cat1 = [&](int i) {
     if (win_off[i]) return;
     if (!prio[i] || transp[i]) return;
     if (mbit[i]) return;                 // same gate, same polarity
-    idx = pal[i];
+    idx = pal[i]; winner = i;
   };
   cat0(3); cat0(2); cat0(1); cat0(0);
   cat1(3); cat1(2); cat1(1); cat1(0);
+  ref_wins[winner < 0 ? 4 : winner]++;
 
   uint16_t e = pal_ram[idx & 0xfff];
   int r = pal5bit(e), g = pal5bit(e >> 5), b = pal5bit(e >> 10);
@@ -204,14 +212,7 @@ int main(int argc, char** argv) {
     tile_ram[i] = font[(i >> 6) & 7];
   }
   // Scroll registers: a mix of aligned, unaligned and one disabled layer.
-  // NOTE 0x5004 is layer 0's vscr AND pair 0/1's ctrl, so it stays below 0x2000.
-  // It is 3 rather than 0 to match layer 1: the font fill makes 2 of every 8 tile
-  // rows transparent, and only when the two layers''' vertical scrolls AGREE do
-  // those bands coincide and leave a gap for pair 2/3 to show through. With
-  // layer 0 at 0 and layer 1 at 3 the bands interleave, pair 2/3 is covered
-  // everywhere, and the comparison cannot see whether it drew at all —
-  // reinstating the window bug left 380,929 checks passing.
-  tile_ram[0x5000] = 0;      tile_ram[0x5004] = 3;
+  tile_ram[0x5000] = 0;      tile_ram[0x5004] = 0;
   tile_ram[0x5001] = 5;      tile_ram[0x5005] = 3;
   tile_ram[0x5002] = 0x1f8;  tile_ram[0x5006] = 0x101;
   tile_ram[0x5003] = 11;     tile_ram[0x5007] = 0x8000;   // layer 3 disabled
@@ -222,16 +223,22 @@ int main(int argc, char** argv) {
   // suites still passed.
   tile_ram[0x5006] = 0x2000 | (uint16_t)(-160 & 0x1ff);   // mode 1, v = 160
   tile_ram[0x5004] = 0x0000;                              // pair 0/1 normal
-  // Window mode has TWO outcomes and they need separate coverage: with hscr bit
-  // 15 set the pair draws one map per region, and with it clear the pair draws
-  // NOTHING. The second is what the game selects, and the first is the logic that
-  // would silently stop being tested if only the second were covered. So this
-  // alternates per frame — see the frame loop.
+  // PAIR 2/3's hscr, WITH BIT 15 CLEAR, which is what the game selects — attract
+  // keeps hscr below 0x0200 on every tilemap.
   //
-  // Only ever set on the window-mode pair. In the NORMAL path hscr bit 15 selects
-  // the per-line H-scroll table at 0x4000, which is unimplemented, so setting it
-  // on pair 0/1 would be testing against a divergence rather than a fixture.
-  tile_ram[0x5002] = 0x8000 | 0x1f8;                      // pair 2/3 hscr
+  // It used to be set here, and that single bit made the suite blind to the whole
+  // window bug. The RTL suppressed both maps of a pair whenever bit 15 was clear;
+  // the fixture set it; so the faulty term was never evaluated, and reinstating
+  // the bug left all 380,929 checks passing. The hole was reported as "this suite
+  // cannot discriminate the fix" — also wrong. It discriminates perfectly. It was
+  // being handed the one input that hides the fault, which is worse, because a
+  // fixture that avoids the bug looks exactly like a fixture that covers it.
+  //
+  // Bit 15 selects the per-line H-scroll table at 0x4000 in both the normal and
+  // the window path, and that is unimplemented, so setting it anywhere means
+  // testing against a known divergence rather than against a fixture. It stays
+  // clear until that table exists.
+  tile_ram[0x5002] = 0x1f8;                               // pair 2/3 hscr
 
   d->clk = 0; d->rst_n = 0; d->ce_pix = 0; d->tile_mask = TILE_MASK;
   d->tram_data = 0; d->char_data = 0; d->char_ack = 0; d->pal_data = 0;
@@ -323,6 +330,17 @@ int main(int argc, char** argv) {
     fails++;
   }
 
+  // Per-layer coverage, printed because a layer that never wins a pixel is a
+  // layer this suite cannot test — and one silently did not for the whole life of
+  // the window logic.
+  printf("  layer wins: 0=%ld 1=%ld 2=%ld 3=%ld backdrop=%ld\n",
+         ref_wins[0], ref_wins[1], ref_wins[2], ref_wins[3], ref_wins[4]);
+  for (int L = 0; L < 4; L++)
+    if (ref_wins[L] == 0) {
+      printf("  FAIL: tilemap %d never won a visible pixel — fixture covers it not "
+             "at all\n", L);
+      fails++;
+    }
   printf("m1_video: checks=%ld fails=%ld\n", checks, fails);
   delete d;
   return fails ? 1 : 0;

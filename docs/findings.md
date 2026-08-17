@@ -493,3 +493,56 @@ and 144 into the row masks. That reopens read-during-write as a hazard on the
 maps that are being written — though it remains unable to explain a *low* non-blank
 count, for the reason given there.
 
+
+### FIXED, and measured on real game code — 2026-08-17
+
+Same frame, `make m1_frame FRAME_TRACE=1 FRAME_CYCLES=3400000000`, before and after
+removing `!win_hs` from the suppress term:
+
+| | before | after |
+|---|---|---|
+| backdrop | `175982/190464` (92%) | **`0/190464`** |
+| tilemap 2 wins | `0` | **`176366`** |
+| tilemaps 0/1 wins | `11038, 3060` | `11038, 3060` |
+
+The blue is gone and the sky/sea layer draws, with the text layers untouched.
+
+It agrees with MAME term for term. `ctrl = 0x2000` gives `v = (-0x2000) & 0x1ff =
+0`, so `c1` is the empty rectangle and `c2` is the whole screen; bit 9 of `0xE000`
+is clear so `layer ^= 1` fires, and `draw(layer^1, c2)` is **tilemap 2 across the
+entire screen**. 176,366 is exactly the screen less the 14,098 pixels layers 0 and
+1 take. An earlier note in `m1_video.sv` had this backwards — "MAME draws tilemap 3
+across the whole screen and tilemap 2 not at all" — because the swap was read the
+wrong way round.
+
+### The fixture had been hiding the bug, and the first report of that was wrong too
+
+Reinstating `!win_hs` initially left all 380,929 checks passing, which was reported
+as "this suite cannot discriminate the fix", with two mechanisms offered for why:
+row-mask complementarity between layers 0/1, and `cat0` treating layers 2/3 as
+opaque. **Both were invented to explain a result that had a much simpler cause.**
+
+`tb_m1_video.cpp` set `tile_ram[0x5002] = 0x8000 | 0x1f8`. The faulty term was
+`!win_hs || ...`, so with bit 15 set it was never evaluated and the bug was
+unreachable from that fixture. The game keeps `hscr` below `0x0200` on every
+tilemap, so the fixture was testing an input the hardware never presents. With the
+bit cleared the suite fails **4,330 of 380,929** checks against the bug and passes
+clean without it.
+
+Two things came out of it, both kept:
+
+- **A fixture that avoids a bug is indistinguishable from one that covers it.** The
+  only way to tell is to break the RTL on purpose and watch the count move. That is
+  now done for this fix rather than asserted.
+- `tb_m1_video` prints a **`layer wins`** line and **fails** if any tilemap never
+  won a visible pixel. A layer that wins nothing is a layer the suite cannot test,
+  and that had been true silently.
+
+Still open and deliberately not folded in: `cat0` treats layers 2 and 3 as opaque
+unconditionally, so a layer with its `vscr` disable bit set still paints. MAME's
+`if (vscr & 0x8000) return;` skips it before any category decision. The RTL and the
+reference agree, so the suite cannot see it.
+
+Modes 2 and 3 remain suppressed — they split horizontally at `x = h`, which the
+per-scanline suppress cannot express. Measured use: pair 0/1 takes `ctrl = 0x4000`
+on 130 frames of 2,065.

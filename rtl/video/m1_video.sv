@@ -326,8 +326,12 @@ module m1_video #(
   //      column mask and can reuse the row-mask machinery.
   //   3. hscr bit 15 SET — the per-line H-scroll table at 0x4000 + 0x200*layer.
   //      Not reached by anything measured so far; do it last.
-  // The reference model in tb_m1_video.cpp encodes the same misreading and has to
-  // change with the RTL, or the suite will hold the bug in place.
+  // The reference model in tb_m1_video.cpp encoded the same misreading and was
+  // corrected with this. Reinstating the term below now fails 4,330 checks —
+  // verified by doing it, after a first attempt reported the suite as unable to
+  // discriminate the fix at all. That was wrong: the fixture had hscr bit 15 SET,
+  // and the faulty term was `!win_hs || ...`, so the fault was simply unreachable
+  // from it. The game keeps hscr below 0x0200, the fixture now does too.
   //
   // ---------------------------------------------------------------- FIXED, mode 1
   //
