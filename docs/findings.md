@@ -294,8 +294,41 @@ Quartus 17.0, 5CSEBA6U23I7, on the real core unless stated.
 | debug overlay | 307 | 0 | |
 | `S32_V60_NO_FP` | **-2,984** | 0 | unspent. Its justification is a claim about *Golden Axe*, not this game — get Model 1's own `dbg_fp_trap` evidence first |
 
-**The V60 being 67% of the design is the fact that decides where optimisation is
-worth any effort.** Squeezing our own code cannot matter.
+**The V60 being the majority of the design is the fact that decides where
+optimisation is worth any effort.** Squeezing our own code cannot matter.
+
+### And the V60 is about 2.5x larger than it needs to be
+
+Measured against the sibling Model 2 core's i960, which is a fair comparison
+rather than a flattering one — it has decimal, multiply, divide AND a full
+floating-point unit:
+
+| | i960 (Model 2) | our V60 |
+|---|---|---|
+| ALM | **7,015** | **17,691** |
+| source lines | 4,069 | 4,571 |
+| modules | **16** | **1** |
+| FP included | add, mul, div, sqrt, misc | yes |
+
+Comparable source size, 2.5x the area — and the i960's *entire* FP unit fits
+inside its 7,015 while our FP group **alone** is 2,984.
+
+**So the cost is structure, not instruction count.** The i960 is decomposed with a
+shared `i960_alu`, `i960_muldiv` and `i960_regs`; ours is one module with a
+102-state FSM that spells arithmetic out inline per state, so nothing can be
+shared. That is exactly why it measures **93% combinational** — 21,470 ALM of
+logic against 1,591 of registers.
+
+**The tempting fix is the wrong one.** Gating instruction families off (the way
+`S32_V60_NO_FP` does) removes features to buy area, needs per-family evidence that
+this game never uses them, and leaves the underlying waste in place. Sharing
+datapaths keeps every instruction and attacks the actual cause. Reach for the
+second before the first.
+
+Caveat on doing it: the V60 is imported and carries a 29/29 unit suite. Any
+restructuring is measured against that suite staying green, one shared structure
+at a time, with a Quartus number per step — `SRCS_s32_v60` already exists so a
+V60-only build makes each step minutes rather than half an hour.
 
 M10K is the binding resource: **101 blocks free** against the band buffer's ~51.
 Reserves, in order of value: tile RAM and palette
