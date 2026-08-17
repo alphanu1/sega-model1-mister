@@ -94,6 +94,12 @@ module m1_main #(
   output logic [15:0] dbg_tgp_retires,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
+  output logic [15:0] dbg_tgp_io_addr,
+  output logic        dbg_tgp_io_rd,
+  output logic        dbg_tgp_io_wr,
+  output logic        dbg_tgp_io_ack,
+  output logic        dbg_tgp_fifo_rd,
+  output logic        dbg_tgp_fifo_wr,
 
   // SDRAM data port (p0): ROM, work RAM, NVRAM, character RAM.
   output logic        sdr_req,
@@ -372,7 +378,10 @@ module m1_main #(
     .dat_req(tgp_dat_req), .dat_addr(tgp_dat_addr),
     .dat_rdata(tgp_dat_rdata), .dat_ack(tgp_dat_ack),
     .dbg_retires(dbg_tgp_retires), .dbg_pc(dbg_tgp_pc),
-    .dbg_unimplemented(dbg_tgp_unimpl)
+    .dbg_unimplemented(dbg_tgp_unimpl),
+    .dbg_io_addr(dbg_tgp_io_addr), .dbg_io_rd(dbg_tgp_io_rd),
+    .dbg_io_wr(dbg_tgp_io_wr), .dbg_io_ack(dbg_tgp_io_ack),
+    .dbg_fifo_rd(dbg_tgp_fifo_rd), .dbg_fifo_wr(dbg_tgp_fifo_wr)
   );
 
   logic [15:0] rdata_r;

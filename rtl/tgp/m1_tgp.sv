@@ -97,7 +97,18 @@ module m1_tgp #(
   // Telemetry: is it executing, and is it retiring anything.
   output logic [15:0] dbg_retires,
   output logic [15:0] dbg_pc,
-  output logic        dbg_unimplemented
+  output logic        dbg_unimplemented,
+
+  // What it is waiting on, if it has stopped. A retire count that freezes says
+  // only "stopped"; these say WHERE. io_rd or io_wr held with no ack is an
+  // unanswered IO access, and the address names which one — a decode gap looks
+  // identical to a dead coprocessor without this.
+  output logic [15:0] dbg_io_addr,
+  output logic        dbg_io_rd,
+  output logic        dbg_io_wr,
+  output logic        dbg_io_ack,
+  output logic        dbg_fifo_rd,
+  output logic        dbg_fifo_wr
 );
 
   // ------------------------------------------------------------ microcode ROM
@@ -221,6 +232,13 @@ module m1_tgp #(
                 : sel_datb ? io_wr
                 : sel_datw ? dat_ack
                 : (io_rd || io_wr);   // AS_RF LEDs and anything unmapped
+
+  assign dbg_io_addr = io_addr;
+  assign dbg_io_rd   = io_rd;
+  assign dbg_io_wr   = io_wr;
+  assign dbg_io_ack  = io_ack;
+  assign dbg_fifo_rd = fifo_rd;
+  assign dbg_fifo_wr = fifo_wr;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin

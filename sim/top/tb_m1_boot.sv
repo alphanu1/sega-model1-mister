@@ -111,6 +111,27 @@ wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 wire        mem_ready;
 wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
+wire [15:0] tio_addr;
+wire        tio_rd, tio_wr, tio_ack, tfifo_rd, tfifo_wr;
+
+// Log the coprocessor's first IO accesses, and how long each waited. An access
+// that never acks is the difference between a decode gap and a dead core, and
+// they look identical from a frozen retire count.
+integer tio_n = 0, tio_wait = 0;
+reg     tio_seen = 0;
+always @(posedge clk_cpu) begin
+    if ((tio_rd || tio_wr) && !tio_seen) begin
+        tio_seen <= 1'b1; tio_wait = 0;
+    end
+    if ((tio_rd || tio_wr) && tio_seen) tio_wait = tio_wait + 1;
+    if (tio_ack && tio_seen) begin
+        tio_seen <= 1'b0;
+        tio_n = tio_n + 1;
+        if (tio_n <= 14)
+            $display("BOOT:   TGP io %0d: %s %04h  waited %0d", tio_n,
+                     tio_wr ? "W" : "R", tio_addr, tio_wait);
+    end
+end
 
 // The coprocessor's read-only SDRAM regions. m1_main is in the CPU domain here
 // and the SDRAM model in the fast one, so this crosses the same way the CPU's
@@ -224,6 +245,9 @@ m1_main main (
     .tgp_dat_rdata(t_mem_rdata), .tgp_dat_ack(t_dat_ack),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
+    .dbg_tgp_io_addr(tio_addr), .dbg_tgp_io_rd(tio_rd),
+    .dbg_tgp_io_wr(tio_wr), .dbg_tgp_io_ack(tio_ack),
+    .dbg_tgp_fifo_rd(tfifo_rd), .dbg_tgp_fifo_wr(tfifo_wr),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
     .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),
@@ -640,6 +664,8 @@ initial begin
 
     $display("BOOT: TGP data reads=%0d tables=%0d  first two data words: %08h %08h (MAME: 00000030 00012e00)",
              tgp_dat_reads, tgp_tbl_reads, first_dat0, first_dat1);
+    $display("BOOT: TGP stuck? io_rd=%0d io_wr=%0d io_ack=%0d io_addr=%04h fifo_rd=%0d fifo_wr=%0d  (io accesses completed=%0d)",
+             tio_rd, tio_wr, tio_ack, tio_addr, tfifo_rd, tfifo_wr, tio_n);
     $display("BOOT: TGP retires=%0d pc=%04h unimplemented=%0d",
              dbg_tgp_retires, dbg_tgp_pc, dbg_tgp_unimpl);
     $display("BOOT: copro RAM writes=%0d  V60->TGP pushes=%0d  TGP->V60 returns=%0d  V60 pops=%0d",
