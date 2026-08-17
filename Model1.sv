@@ -336,15 +336,17 @@ module emu
 
   // Port map per docs/00-decisions.md D8: p0 CPU data, p1 character RAM,
   // p2 instruction fetch. p3 and p4 are sound, unbuilt.
-  assign p_req  = {2'b00, ifp_req,  char_req,           sdr_req};
-  assign p_we   = {2'b00, 1'b0,     1'b0,               sdr_we};
+  assign p_req  = {1'b0, tgp_mem_req, ifp_req, char_req, sdr_req};
+  assign p_we   = {1'b0, 1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
 // from word 0, which is V60 program ROM, and every glyph decodes from the same
 // wrong data. 31 distinct tile numbers then render identically and the screen
 // is a uniform pattern that looks like a video bug rather than an address one.
-assign p_addr = {24'd0, 24'd0, ifp_addr,
+// p3's address is aligned down to its 4-word burst boundary; m1_integrated keeps
+// bit 1 to pick which 32-bit half of the burst it wanted.
+assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
   assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
@@ -399,6 +401,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   wire       vid_hs, vid_vs, vid_hb, vid_vb;
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
+  wire        tgp_mem_req;
+  wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
   wire        dbg_tgp_unimpl;
   wire  [7:0] dbg_fetches;
@@ -426,6 +430,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     .ioctl_wait(ioctl_wait),
     .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
     .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
+    .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),
+    .tgp_mem_dout(p_dout[3]), .tgp_mem_ack(p_ack[3]),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
 

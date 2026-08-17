@@ -143,9 +143,16 @@ module m1_sdram #(
   // Burst length per port, in 16-bit words. D8: p1 is tile character fetch and
   // p2 is polygon/TGP data, both of which are consumed in runs, so they burst.
   // The rest are single-word random access.
+  //
+  // p3 is the coprocessor's read-only regions — copro_data and the math tables.
+  // A coprocessor fetch is one 32-bit word, so it needs TWO 16-bit words, and
+  // only 1 and 4 are available: the capture below assembles the non-single case
+  // from cap[2], cap[1], cap[0], so a length of 2 would take two of those from
+  // stale slots. So it bursts 4 and the requester picks its half — see
+  // m1_integrated, which aligns the address down and selects on bit 1.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
-      1, 2:    blen = 4'd4;
+      1, 2, 3: blen = 4'd4;
       default: blen = 4'd1;
     endcase
   endfunction

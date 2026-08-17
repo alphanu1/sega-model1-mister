@@ -43,9 +43,16 @@ module tb_m1_boot #(
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
-// ROMX, ROM0 and the banked data ROMs. The boot ROM checksums the data ROMs
-// too, so preloading only the program leaves that sweep reading zeros.
-localparam integer PRELOAD_WORDS = 32'h300000;
+// ROMX, ROM0 and the banked data ROMs — the boot ROM checksums the data ROMs
+// too, so preloading only the program leaves that sweep reading zeros — plus the
+// coprocessor's two read-only regions above them: copro_data at word 0x300000
+// and copro_tables at 0x400000, ending at 0x420000.
+//
+// Sized to the hex the packer emits. It grew when the coprocessor regions were
+// added and $readmemh failed with "file address beyond bounds of array", which is
+// at least a loud failure — a short array that silently truncated would have left
+// the TGP reading zeros and looked like a coprocessor fault.
+localparam integer PRELOAD_WORDS = 32'h420000;
 
 // TWO CLOCK DOMAINS, which is what the core actually has: memory and video on
 // the fast clock, the V60 on the slow one. 100/25 MHz here rather than the
@@ -104,6 +111,77 @@ wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 wire        mem_ready;
 wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
+
+// The coprocessor's read-only SDRAM regions. m1_main is in the CPU domain here
+// and the SDRAM model in the fast one, so this crosses the same way the CPU's
+// data port does. One port for both regions: the TGP holds its request until
+// ack, so it can only have one outstanding.
+localparam [24:1] COPRO_DAT_BASE = 24'h300000;
+localparam [24:1] COPRO_TBL_BASE = 24'h400000;
+wire        t_tbl_req, t_dat_req;
+wire [15:0] t_tbl_addr;
+wire [18:0] t_dat_addr;
+wire        t_mem_ack;
+wire [31:0] t_mem_rdata;
+wire        t_tbl_ack = t_mem_ack &&  t_tbl_req;
+wire        t_dat_ack = t_mem_ack && !t_tbl_req && t_dat_req;
+wire        t_mem_req  = t_tbl_req || t_dat_req;
+wire [24:1] t_mem_addr = t_tbl_req ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
+                                   : (COPRO_DAT_BASE + {4'd0, t_dat_addr, 1'b0});
+wire        tgp_mem_req;
+wire [24:1] tgp_mem_addr;
+
+// Are the coprocessor's reads actually being served, and with the right data?
+// The first two data-ROM words are a free check against the reference — see
+// docs/findings.md — so capture them rather than inferring from behaviour.
+integer     tgp_dat_reads = 0, tgp_tbl_reads = 0;
+reg [31:0]  first_dat0 = 32'hxxxxxxxx, first_dat1 = 32'hxxxxxxxx;
+// Sampled the cycle AFTER the acknowledge. a_dout is registered and updates on
+// the same edge as a_ack, so a non-blocking capture at that edge takes the
+// PREVIOUS value — which produced a half-right pair and read exactly like a data
+// path fault.
+reg         dat_ack_d = 0;
+reg [24:1]  dat_addr_d = 0;
+always @(posedge clk_cpu) begin
+    dat_ack_d  <= t_dat_ack;
+    if (t_dat_ack) dat_addr_d <= t_mem_addr;
+    if (dat_ack_d) begin
+        tgp_dat_reads = tgp_dat_reads + 1;
+        if (tgp_dat_reads == 1) first_dat0 <= t_mem_rdata;
+        if (tgp_dat_reads == 2) first_dat1 <= t_mem_rdata;
+        if (tgp_dat_reads <= 6)
+            $display("BOOT:   TGP data read %0d: sdram word %06h -> %08h",
+                     tgp_dat_reads, dat_addr_d, t_mem_rdata);
+    end
+    if (t_tbl_ack) tgp_tbl_reads = tgp_tbl_reads + 1;
+end
+
+// And prove the preload itself, independently of the coprocessor's path: what
+// does the ROM image actually hold at those two indices?
+initial begin
+    #1;
+    $display("BOOT: preload check: word 0x300020/21 = %04h %04h, 0x300040/41 = %04h %04h",
+             rom[24'h300020], rom[24'h300021], rom[24'h300040], rom[24'h300041]);
+end
+
+// 32 bits wide: a coprocessor fetch is one 32-bit word and the SDRAM burst's
+// low 32 bits are exactly that. a_dout is the requester's data; b_dout is the
+// input from the far side. Connecting those the wrong way round returned zero on
+// every read while the accesses completed normally.
+m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) tgp_mem_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
+    .a_req(t_mem_req), .a_we(1'b0), .a_addr(t_mem_addr),
+    .a_din(32'd0), .a_be(2'b11),
+    .a_dout(t_mem_rdata), .a_ack(t_mem_ack), .a_busy(),
+    .b_clk(clk), .b_rst_n(rst_n_sys),
+    .b_req(tgp_mem_req), .b_we(tgp_unused_we), .b_addr(tgp_mem_addr),
+    .b_din(tgp_unused_din), .b_be(tgp_unused_be),
+    .b_dout(tgp_mem_addr[1] ? p_dout[3][63:32] : p_dout[3][31:0]),
+    .b_ack(p_ack[3])
+);
+wire        tgp_unused_we;
+wire [31:0] tgp_unused_din;
+wire [1:0]  tgp_unused_be;
 wire        dbg_tgp_unimpl;
 
 // ------------------------------------------------ coprocessor microcode
@@ -137,8 +215,13 @@ m1_main main (
     // Tables and the 2 MB data window are not wired yet; acknowledged with zero
     // so the coprocessor runs. Nothing it computes is correct until the math
     // units exist — see docs/m2-tgp-integration.md.
-    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
-    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
+    // The coprocessor's read-only regions, served from the SDRAM model like
+    // everything else. copro_data at word 0x300000, tables at 0x400000 — the
+    // same bases the packer uses, and the preload now covers both.
+    .tgp_tbl_req(t_tbl_req), .tgp_tbl_addr(t_tbl_addr),
+    .tgp_tbl_rdata(t_mem_rdata), .tgp_tbl_ack(t_tbl_ack),
+    .tgp_dat_req(t_dat_req), .tgp_dat_addr(t_dat_addr),
+    .tgp_dat_rdata(t_mem_rdata), .tgp_dat_ack(t_dat_ack),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
@@ -181,9 +264,10 @@ wire [4:0][63:0] p_dout;
 
 wire        ifp_req;
 wire [24:1] ifp_addr;
-assign p_req  = {2'b00, ifp_req, 1'b0, m_sdr_req};
-assign p_we   = {4'b0000, m_sdr_we};
-assign p_addr = {24'd0, 24'd0, ifp_addr, 24'd0, m_sdr_addr};
+assign p_req  = {1'b0, tgp_mem_req, ifp_req, 1'b0, m_sdr_req};
+assign p_we   = {4'b0000, m_sdr_we};   // every added port is read-only
+// p3 aligned down to its burst boundary, as at the top level.
+assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr, 24'd0, m_sdr_addr};
 assign p_din  = {16'd0, 16'd0, 16'd0, 16'd0, m_sdr_din};
 assign p_be   = {2'd0, 2'd0, 2'd0, 2'd0, m_sdr_be};
 // The V60's data port crosses here rather than being wired straight to the
@@ -554,6 +638,8 @@ initial begin
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (MAME sees 72)", nz);
     end
 
+    $display("BOOT: TGP data reads=%0d tables=%0d  first two data words: %08h %08h (MAME: 00000030 00012e00)",
+             tgp_dat_reads, tgp_tbl_reads, first_dat0, first_dat1);
     $display("BOOT: TGP retires=%0d pc=%04h unimplemented=%0d",
              dbg_tgp_retires, dbg_tgp_pc, dbg_tgp_unimpl);
     $display("BOOT: copro RAM writes=%0d  V60->TGP pushes=%0d  TGP->V60 returns=%0d  V60 pops=%0d",

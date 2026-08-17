@@ -118,6 +118,13 @@ module m1_integrated (
   input  logic        ldr_wr_ack,
   // The microcode now goes straight into m1_main's coprocessor rather than out
   // to the top level, where it was connected to nothing.
+  // The coprocessor's read-only SDRAM port, in the FAST domain. 64-bit burst
+  // read like the instruction fetch, because a 32-bit fetch is two words.
+  output logic        tgp_mem_req,
+  output logic [24:1] tgp_mem_addr,
+  input  logic [63:0] tgp_mem_dout,
+  input  logic        tgp_mem_ack,
+
   output logic [15:0] dbg_tgp_retires,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
@@ -225,8 +232,10 @@ module m1_integrated (
     // stalling: the math units are not implemented either, so nothing it
     // computes is correct at this stage and pretending otherwise would be worse
     // than a documented zero.
-    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
-    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
+    .tgp_tbl_req(t_tbl_req), .tgp_tbl_addr(t_tbl_addr),
+    .tgp_tbl_rdata(t_mem_rdata), .tgp_tbl_ack(t_tbl_ack),
+    .tgp_dat_req(t_dat_req), .tgp_dat_addr(t_dat_addr),
+    .tgp_dat_rdata(t_mem_rdata), .tgp_dat_ack(t_dat_ack),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
     .sdr_req(cpu_sdr_req), .sdr_we(cpu_sdr_we), .sdr_addr(cpu_sdr_addr),
@@ -247,6 +256,69 @@ module m1_integrated (
   logic        u_tgp_wr;
   logic [10:0] u_tgp_addr;
   logic [31:0] u_tgp_din;
+
+  // ------------------------------- the coprocessor's read-only SDRAM regions
+  //
+  // copro_tables (256 KB) and copro_data (2 MB) share ONE port and one clock
+  // crossing, because the TGP can only ever have one access outstanding — its
+  // IO handshake holds until ack. Two ports would cost a second m1_cdc_port to
+  // no purpose.
+  //
+  // Word bases follow the packer: copro_data at SDRAM word 0x300000, tables at
+  // 0x400000, both immediately above the V60 image so the download stream stays
+  // contiguous. Each is a 32-bit fetch, which is TWO 16-bit SDRAM words.
+  localparam logic [24:1] COPRO_DAT_BASE = 24'h300000;
+  localparam logic [24:1] COPRO_TBL_BASE = 24'h400000;
+
+  logic        t_tbl_req, t_tbl_ack, t_dat_req, t_dat_ack;
+  logic [15:0] t_tbl_addr;
+  logic [18:0] t_dat_addr;
+  logic [31:0] t_mem_rdata;
+
+  // Tables win an exact tie; they cannot both be asserted in practice.
+  wire         t_mem_req  = t_tbl_req || t_dat_req;
+  wire [24:1]  t_mem_addr = t_tbl_req
+                          ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
+                          : (COPRO_DAT_BASE + {4'd0, t_dat_addr, 1'b0});
+
+  // A 32-bit read is two 16-bit words. The SDRAM port returns a 64-bit burst,
+  // so one transaction covers both halves and the low 32 bits are the word.
+  logic t_mem_ack;
+  assign t_tbl_ack = t_mem_ack &&  t_tbl_req;
+  assign t_dat_ack = t_mem_ack && !t_tbl_req && t_dat_req;
+
+  // Named rather than left empty: an empty-by-name pin and a forgotten one look
+  // identical in a diff, and one of those was the bug above.
+  logic        tgp_mem_unused_we;
+  logic [31:0] tgp_mem_unused_din;
+  logic [1:0]  tgp_mem_unused_be;
+
+  // The crossing, THIRTY-TWO BITS WIDE.
+  //
+  // A coprocessor fetch is one 32-bit word, which is two 16-bit SDRAM words, and
+  // the controller returns a 64-bit burst — so the low 32 bits of one burst are
+  // the whole answer and DW=32 carries it back in a single transaction.
+  //
+  // The first version used DW=16 and connected the SDRAM's data to `b_dout`
+  // while leaving `a_dout` open. b_dout is the INPUT carrying data from the far
+  // side; a_dout is the OUTPUT to the requester. So the requester's wire was
+  // driven by nothing and every read returned zero — with the accesses
+  // completing normally, which is what made it look like an address fault. The
+  // two captured data words are what localised it.
+  m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) u_tgp_mem_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
+    .a_req(t_mem_req), .a_we(1'b0), .a_addr(t_mem_addr),
+    .a_din(32'd0), .a_be(2'b11),
+    .a_dout(t_mem_rdata), .a_ack(t_mem_ack), .a_busy(),
+    .b_clk(clk_sys), .b_rst_n(rst_n_sys),
+    .b_req(tgp_mem_req), .b_we(tgp_mem_unused_we), .b_addr(tgp_mem_addr),
+    .b_din(tgp_mem_unused_din), .b_be(tgp_mem_unused_be),
+    // A 4-word burst carries TWO 32-bit words. Which one was asked for is bit 1
+    // of the address, and the top level aligns the request down to the burst
+    // boundary — a burst port's address must be burst-aligned.
+    .b_dout(tgp_mem_addr[1] ? tgp_mem_dout[63:32] : tgp_mem_dout[31:0]),
+    .b_ack(tgp_mem_ack)
+  );
 
   // ------------------------------------------------------------- the crossings
   logic cpu_sdr_busy;
