@@ -76,19 +76,51 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   //   if (ctrl & 0x6000) {           // window mode
   //       if (layer & 1) return;     // the odd map never draws directly
   //       set_scrolly(both);
-  //       if (hscr & 0x8000) { ...draw per line... }   // no else
+  //       if (hscr & 0x8000) { ...per-line H-scroll table, flip map at y >= v... }
+  //       else               { ...clip two rectangles, draw layer and layer^1... }
   //   } else { ...normal path with the row mask... }
   //
-  // With the mode selected and hscr bit 15 clear, NEITHER map of the pair draws.
-  // The game does exactly that — ctrl 0x2000 on pair 2/3 with hscr never above
-  // 0x0200 — and drawing the even map anyway put an opaque full-screen fill
-  // (the sky and sea) where the hardware shows nothing.
+  // This model previously read that inner `if` as having no else, and reported
+  // NEITHER map drawing when hscr bit 15 was clear. That is wrong — segaic24.cpp
+  // :418-456 — and because the RTL was written from the same reading, 380,929
+  // checks agreed with the bug. A reference derived from the same reading of the
+  // source as the implementation cannot catch a misreading of the source.
+  //
+  // For MODE 1 the two branches pick the same map: bit 15 set flips at y >= v
+  // per scanline, bit 15 clear clips at the same v. So bit 15 changes where the
+  // horizontal scroll comes from, not which map draws, and it is absent here.
+  //
+  // MODES 2 and 3 split HORIZONTALLY at x = hscr & 0x1ff. That is per-pixel and
+  // the RTL suppresses the pair instead, so this model matches it deliberately —
+  // see the note in m1_video.sv. When that is implemented, this is where the
+  // expectation changes.
+  //
+  // THIS SUITE CANNOT DISCRIMINATE THE WINDOW FIX, and that was verified rather
+  // than assumed: reinstating `!win_hs` in the RTL leaves all 380,929 checks
+  // passing. Two properties of the fixture make pair 2/3 invisible whatever it
+  // does, and both were found by trying to close the hole rather than by reading:
+  //
+  //  1. The fill writes the font pattern over the row-mask tables at 0x6000 too,
+  //     and `mbit[0]`/`mbit[1]` are exact complements, so at every pixel exactly
+  //     one of layers 0/1 is unmasked. Together they cover the screen.
+  //  2. `cat0` treats layers 2 and 3 as opaque unconditionally — `transp[i] &&
+  //     i < 2` — so layer 3 paints even with its disable bit set, and it is
+  //     painted before layer 2. A suppressed layer 2 is replaced rather than
+  //     revealed.
+  //
+  // Item 2 is a SEPARATE SUSPECTED BUG, in this model and matched by the RTL:
+  // MAME's `if (vscr & 0x8000) return;` skips a disabled layer entirely, before
+  // any category decision. Worth resolving on its own; do not fold it into a
+  // window change.
+  //
+  // Until the fixture exposes pair 2/3, the window fix is verified by `m1_frame`
+  // on real game code, where maps 2/3 winning zero pixels against 4,095 fetched
+  // words is directly measurable. See findings.md.
   int win_off[4];
   for (int L = 0; L < 4; L++) {
     uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
     if (!(ctrl & 0x6000)) { win_off[L] = 0; continue; }
-    uint16_t hs   = tile_ram[0x5000 + (L & 2)];   // the PAIR's even hscr
-    if (!(hs & 0x8000)) { win_off[L] = 1; continue; }   // nothing draws
+    if (((ctrl & 0x6000) >> 13) != 1) { win_off[L] = 1; continue; }  // modes 2/3
     uint16_t nv   = (uint16_t)(-(int)ctrl);
     int v         = nv & 0x1ff;
     int swap      = !(nv & 0x200);
@@ -172,7 +204,14 @@ int main(int argc, char** argv) {
     tile_ram[i] = font[(i >> 6) & 7];
   }
   // Scroll registers: a mix of aligned, unaligned and one disabled layer.
-  tile_ram[0x5000] = 0;      tile_ram[0x5004] = 0;
+  // NOTE 0x5004 is layer 0's vscr AND pair 0/1's ctrl, so it stays below 0x2000.
+  // It is 3 rather than 0 to match layer 1: the font fill makes 2 of every 8 tile
+  // rows transparent, and only when the two layers''' vertical scrolls AGREE do
+  // those bands coincide and leave a gap for pair 2/3 to show through. With
+  // layer 0 at 0 and layer 1 at 3 the bands interleave, pair 2/3 is covered
+  // everywhere, and the comparison cannot see whether it drew at all —
+  // reinstating the window bug left 380,929 checks passing.
+  tile_ram[0x5000] = 0;      tile_ram[0x5004] = 3;
   tile_ram[0x5001] = 5;      tile_ram[0x5005] = 3;
   tile_ram[0x5002] = 0x1f8;  tile_ram[0x5006] = 0x101;
   tile_ram[0x5003] = 11;     tile_ram[0x5007] = 0x8000;   // layer 3 disabled
@@ -240,8 +279,17 @@ int main(int argc, char** argv) {
       // edge of vblank, which is ~40 blank lines before the first visible line
       // is rendered, so the RTL and the reference cannot disagree about which
       // value applied to a line.
-      tile_ram[0x5002] = (frames & 1) ? (uint16_t)(0x8000 | 0x1f8)
-                                      : (uint16_t)0x01f8;
+      //
+      // This used to alternate hscr bit 15 at 0x5002, on the reading that the bit
+      // decided whether the pair drew at all. It does not — for mode 1 both
+      // branches pick the same map — so that alternation exercised nothing once
+      // the misreading was corrected. The two outcomes that DO differ are mode 1,
+      // which splits vertically at v and draws both maps, and modes 2/3, which
+      // split horizontally and are not implemented. ctrl is the pair's even vscr,
+      // so this moves layer 2's scroll with it, exactly as the hardware does.
+      tile_ram[0x5006] = (frames & 1)
+                       ? (uint16_t)(0x2000 | (uint16_t)(-160 & 0x1ff))   // mode 1
+                       : (uint16_t)(0x4000 | (uint16_t)(-160 & 0x1ff));  // mode 2
     }
     prev_vb = d->vid_vb;
 

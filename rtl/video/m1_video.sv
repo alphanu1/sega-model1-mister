@@ -328,9 +328,35 @@ module m1_video #(
   //      Not reached by anything measured so far; do it last.
   // The reference model in tb_m1_video.cpp encodes the same misreading and has to
   // change with the RTL, or the suite will hold the bug in place.
+  //
+  // ---------------------------------------------------------------- FIXED, mode 1
+  //
+  // MODE 1 IS THE VERTICAL SPLIT AND IS NOW CORRECT IN BOTH hscr CASES. The
+  // per-scanline pick above is what MAME does either side of `if (hscr & 0x8000)`:
+  // bit 15 set walks the scanlines applying the per-line H-scroll table and flips
+  // the map at `y >= v`; bit 15 clear clips two rectangles at the same `v`. The
+  // LAYER SELECTION is identical, so `win_hs` does not belong in it at all — only
+  // in where the horizontal scroll comes from, which is item 3 below.
+  //
+  // MODES 2 AND 3 SPLIT HORIZONTALLY, at x = hscr & 0x1ff, and that is a per-pixel
+  // decision this scanline-at-a-time suppress cannot express. They stay suppressed
+  // — the pre-existing behaviour — because drawing the vertically-picked map for a
+  // horizontal split would be wrong in a way that looks plausible on screen, and a
+  // wrong picture that looks reasonable is worse here than a missing one. Measured
+  // use: pair 0/1 takes ctrl = 0x4000 on 130 frames of 2,065, so this is real but
+  // it is not the sky and sea.
+  //
+  // Still owed, in order:
+  //   1. modes 2/3 as a per-pixel column split at x = h, layer ^= 1 when
+  //      !(hscr & 0x200). The row-mask path in m1_tile_fetch masks in 8-pixel
+  //      groups; this needs finer, so it is a change there rather than here.
+  //   2. hscr bit 15 set — the per-line H-scroll table at 0x4000 + 0x200*layer.
+  //      Affects the scroll VALUE, not which map draws, so mode 1 is already right
+  //      about the split without it. Nothing measured reaches it.
   wire        win_hs       = hctrl_r[15];
+  wire        win_vsplit   = (ctrl_r[14:13] == 2'b01);   // mode 1
   wire        win_suppress = win_mode
-                           && (!win_hs || (cur_layer[0] != win_pick));
+                           && (win_vsplit ? (cur_layer[0] != win_pick) : 1'b1);
 
   // Base of this layer's table. MAME picks it with `layer & 4` on the 8-way
   // draw index, which is bit 1 of the tilemap number: 0/1 -> 0x6000,
