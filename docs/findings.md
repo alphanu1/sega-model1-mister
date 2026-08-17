@@ -616,4 +616,53 @@ gives `v = 0`, so only the even map draws and the odd map's scroll never matters
 It matters as soon as `v != 0`. Recorded rather than fixed on its own, because it
 belongs with modes 2/3 and both touch the same ports.
 
+## The build with the window fix: 29,434 ALM, 452 M10K, and -0.019 ns — 2026-08-17
 
+`bash tools/mister_project.sh && cd build/mister && quartus_sh --flow compile
+Model1`, Quartus 17.0.0 Lite, 5CSEBA6U23I7. Successful, 0 errors, 138 warnings.
+`build/mister/output_files/Model1.rbf`, 4,118,248 bytes.
+
+| | this build | free |
+|---|---|---|
+| ALM | 29,434 / 41,910 (70%) | 12,476 |
+| M10K | 452 / 553 (82%) | **101** |
+| DSP | 50 / 112 (45%) | 62 |
+| registers | 23,433 | — |
+
+M10K at 101 free matches what was already recorded as the binding resource, and
+the band buffer wants ~51 of them. The `26,663 ALM / 409 M10K` figure in CLAUDE.md
+is **stale** — it predates the row-mask, window and census work — and the numbers
+here supersede it.
+
+### Worst setup slack is -0.019 ns, and it is the SDRAM address path
+
+```
+From  emu:emu|m1_sdram:sdram|xfer_addr[2]_OTERM175
+To    emu:emu|m1_sdram:sdram|sd_a[12]
+Slack -0.019 (VIOLATED)
+```
+
+One violated path of five reported, the next two at +0.029 and +0.063 on the same
+bus. **It is inside `m1_sdram` at both ends**, so the window change does not touch
+it; the previous +0.401 ns was on a design ~2,800 ALM smaller and this is placement
+pressure on an interface that has no constraints of its own.
+
+**The fitter names the cause**, 16 times:
+
+```
+Warning (176279): Can't pack register node "...|m1_sdram:sdram|sd_a[8]" into I/O
+pin "SDRAM_A[8]". The node cannot simultaneously use clear and load signals.
+```
+
+`sd_a` is reset to `'0` at `m1_sdram.sv:433` and conditionally loaded everywhere
+else. A Cyclone V I/O register takes one or the other, not both, so all 13 address
+bits sit in the fabric and pay routing delay to the pin instead of being packed.
+
+**The fix is to drop the reset on the SDRAM outputs**, which they do not need — the
+bus is don't-care until a command is issued, and `cmd` is separately reset to
+`C_NOP`. That should pack them and recover far more than 19 ps. Not done here: it
+belongs to "close the SDRAM interface", it needs its own build to measure, and
+`m1_sdram`'s 74,729-check suite has to be re-run against it. 19 ps at the slow 85C
+corner is within the model's own noise and the board has run with this interface
+unconstrained throughout, so it is flashable — but it is not clean and should not
+be recorded as if it were.
