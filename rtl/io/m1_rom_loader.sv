@@ -72,9 +72,19 @@
 `timescale 1ns/1ps
 
 module m1_rom_loader #(
-  // Byte offset where the TGP program ROM starts, and where the stream ends.
-  parameter logic [26:0] TGP_PROG_BASE = 27'h1F0_0000,
-  parameter logic [26:0] STREAM_END    = 27'h1F0_2000,
+  // The microcode arrives on ITS OWN DOWNLOAD INDEX, not at an offset inside
+  // the main stream.
+  //
+  // It used to be keyed on byte offset 0x1F0_0000 — near the top of SDRAM,
+  // which is a sensible place to PUT it but a terrible way to DELIVER it: the
+  // game stream is 6 MB, so reaching that offset would mean padding 25 MB of
+  // filler through the HPS to carry 8 KB. MRA supports a second <rom index=>
+  // and MiSTer cores route extra regions that way as standard.
+  //
+  // Kept as a parameter so the routing is stated rather than buried, and so the
+  // testbench can drive both indices.
+  parameter logic [15:0] TGP_INDEX     = 16'd1,
+  parameter logic [26:0] TGP_PROG_END  = 27'h0_2000,   // 8 KB of microcode
 
   // Write buffer depth, in 16-bit words, and how many in-flight transfers to
   // leave room for after `ioctl_wait` asserts.
@@ -176,11 +186,14 @@ module m1_rom_loader #(
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
   logic is_sdram, is_tgp;
-  assign is_sdram = (ioctl_addr < TGP_PROG_BASE);
-  assign is_tgp   = (ioctl_addr >= TGP_PROG_BASE) && (ioctl_addr < STREAM_END);
+  // Routed by index, not by address. Both streams start at byte 0.
+  assign is_sdram = (ioctl_index == ROM_INDEX);
+  assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
 
   logic stream_ok;
-  assign stream_ok = ioctl_download && (ioctl_index == ROM_INDEX);
+  // Either index is a stream we accept; which one decides where it goes.
+  assign stream_ok = ioctl_download &&
+                     ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX));
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -235,7 +248,8 @@ module m1_rom_loader #(
             // byte offset shifted by two — bits [12:2]. Using [13:3] shifted
             // by three and indexed every other program word, which produced
             // 128 wrong words out of 128 and looked like a byte-order fault.
-            tgp_addr <= ioctl_addr[12:2] - TGP_PROG_BASE[12:2];
+            // No base to subtract now that this is its own index.
+            tgp_addr <= ioctl_addr[12:2];
             tgp_wr   <= 1'b1;
           end
         end

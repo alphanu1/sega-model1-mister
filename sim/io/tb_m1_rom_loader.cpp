@@ -30,7 +30,10 @@
 #include <random>
 #include <vector>
 
-static const uint32_t TGP_PROG_BASE = 0x1F00000;
+// The microcode arrives on its own download index rather than at an offset in
+// the main stream — see m1_rom_loader.sv. Both streams start at byte 0, so the
+// test drives the index rather than a base address.
+static const uint16_t TGP_INDEX = 1;
 static const uint32_t STREAM_END    = 0x1F02000;
 
 struct Loader {
@@ -73,11 +76,11 @@ struct Loader {
 
 // Streams a region, modelling a host that reacts to ioctl_wait late.
 static void stream(Loader& h, std::mt19937& rng, uint32_t base, uint32_t words,
-                   int wait_latency) {
+                   int wait_latency, uint16_t index = 0) {
   std::vector<int> pending;              // cycles of "already in flight"
   uint32_t i = 0;
   h.d->ioctl_download = 1;
-  h.d->ioctl_index = 0;
+  h.d->ioctl_index = index;
 
   int slack = 0;
   while (i < words) {
@@ -98,10 +101,10 @@ static void stream(Loader& h, std::mt19937& rng, uint32_t base, uint32_t words,
     h.d->ioctl_dout = data;
     h.d->ioctl_wr = 1;
 
-    if (addr < TGP_PROG_BASE) {
+    if (h.d->ioctl_index == 0) {
       h.expect_sdram[addr >> 1] = data;
     } else if (addr < STREAM_END) {
-      uint32_t idx = (addr - TGP_PROG_BASE) >> 2;
+      uint32_t idx = addr >> 2;
       if (addr & 2) h.expect_tgp[idx] = (h.expect_tgp[idx] & 0xffff) | ((uint32_t)data << 16);
       else          h.expect_tgp[idx] = (h.expect_tgp[idx] & 0xffff0000u) | data;
     }
@@ -156,7 +159,7 @@ int main(int argc, char** argv) {
       0x0F00000,   // polygon ROM
     };
     for (uint32_t base : regions) stream(h, rng, base, 400, 2);
-    stream(h, rng, TGP_PROG_BASE, 256, 2);     // TGP program, 128 32-bit words
+    stream(h, rng, 0, 256, 2, TGP_INDEX);     // microcode, 128 32-bit words
     finish_download(h);
 
     h.checks++;
@@ -182,6 +185,15 @@ int main(int argc, char** argv) {
   printf("test: TGP program words assemble low half first\n");
   {
     long bad = 0;
+    // A comparison of two empty maps passes and proves nothing. This test read
+    // "0 program words, 0 mismatches" and still went green once, when the
+    // stream helper was overriding the download index — so assert that there is
+    // something to check before checking it.
+    h.checks++;
+    if (h.expect_tgp.empty()) {
+      printf("  FAIL no microcode words were streamed — this test is vacuous\n");
+      h.fails++;
+    }
     h.checks++;
     if (h.got_tgp.size() != h.expect_tgp.size()) {
       printf("  FAIL TGP wrote %zu words, expected %zu\n",
