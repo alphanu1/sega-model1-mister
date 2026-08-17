@@ -585,3 +585,35 @@ time with a 4-bit `lb_masked` and knows its own x, so each of the four bits can 
 set from `x < h` against which side this layer owns. The row-mask path is 8-pixel
 granular and cannot be reused directly, but it is the same insertion point.
 
+### And in window mode BOTH maps take the EVEN map's scroll — 2026-08-17
+
+Found while planning the modes 2/3 work, from the same branch:
+
+```cpp
+set_scrolly(layer, vscr & 0x1ff);    set_scrolly(layer|1, vscr & 0x1ff);
+set_scrollx(layer, -(hscr & 0x1ff)); set_scrollx(layer|1, -(hscr & 0x1ff));
+```
+
+`vscr` and `hscr` there are the **even** map's, because `if (layer & 1) return;`
+runs first and only the even map ever reaches this code. We pass each layer its
+own, so the odd map of a window pair scrolls wrongly.
+
+Both values are already latched — `ctrl_r` **is** the even `vscr` and `hctrl_r` the
+even `hscr` — so the fix is two muxes at the fetcher's ports:
+
+```systemverilog
+.hscr(win_mode ? hctrl_r : hscr_r),
+.vscr(win_mode ? ctrl_r  : vscr_r),
+```
+
+`vscr` bit 15 rides along correctly rather than by accident: in window mode MAME
+only ever tests the **even** map's disable bit, because the odd map returns before
+the check. So an odd map cannot be disabled on its own in window mode, and passing
+`ctrl_r` reproduces that.
+
+**Invisible in attract today**, which is why it has not shown up: `ctrl = 0x2000`
+gives `v = 0`, so only the even map draws and the odd map's scroll never matters.
+It matters as soon as `v != 0`. Recorded rather than fixed on its own, because it
+belongs with modes 2/3 and both touch the same ports.
+
+
