@@ -122,6 +122,35 @@ combination the wrong mask formula got right.
 matches, so it is the same machine, but `/root/.ssh/authorized_keys` no longer
 accepts it. Nothing can be flashed until that is restored.
 
+### Where it stands on hardware, and the next three moves
+
+The row-mask and window-mode fixes are **confirmed working on the board** — a
+video of the screen shows the renderer obeying `ctrl` correctly in both states
+(see `findings.md`). They did not put text on screen, because **tilemaps 0 and 1
+win nothing on hardware** while simulation wins 11,038 and 9,743 from tile RAM
+whose content matches MAME's census exactly.
+
+In order:
+
+1. **Finish the hardware content census.** Two overlay rows counting non-blank
+   tile words per map, the equivalent of the frame test's `have=`. Drop the copro
+   FIFO rows (`17`/`18`) to stay under the 24-row ceiling — they read `FFFF` and
+   `0` and carry nothing while the TGP has no rasterizer to feed. This splits "no
+   content" from "content not drawn", which is the one question blocking
+   everything else, and it is the pair of numbers that located the row-mask fault
+   in simulation. A start was made and reverted rather than left half-wired: a
+   `tw_nonblank` pulse off `m1_tile_fetch`'s `F_TILE` state, accumulated per
+   `cur_layer` in `m1_video` and latched at `vblank_start`.
+2. **Test the dual-clock tile RAM.** Quartus warns its read-during-write is
+   undefined, Verilator models it as clean, and it is the memory in question —
+   see `findings.md`. Free first experiment: the OSD already carries
+   `O[5:4],SDRAM read phase,CL+2..CL+5`, so sweeping it costs a menu click and
+   says whether any memory-timing sensitivity is in play before a rebuild.
+3. **Measure the test/service switches.** They do not reach the game. The bit
+   order and polarity in `Model1.sv` check out against the documented map — IN.0
+   bit 2 test, bit 3 service, inverted for active low — so the next step is the
+   oracle, `INPUT_PORTS( vr )` in `model1.cpp`, not an edit.
+
 ### How to see it, and what to expect
 
     make m1_frame FRAME_CYCLES=900000000 FRAME_TRACE=1

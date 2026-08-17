@@ -243,6 +243,67 @@ comment in the reference stated the wrong rule explicitly and confidently.
   case asserting the mask is independent of the tile category, and reinstating the
   old expression fails it.
 
+## Tile RAM infers as dual-clock RAM, and Quartus calls its read-during-write
+## behaviour UNDEFINED — 2026-08-17
+
+From the build log, unprompted:
+
+```
+Warning (276027): Inferred dual-clock RAM node
+  "...m1_main:main|m1_mainram:rams|tram_v_lo_rtl_0" ... The read-during-write
+  behavior of a dual-clock RAM is UNDEFINED and may not match the behavior of
+  the original design.
+```
+
+Both video-side tile RAM copies (`tram_v_lo`, `tram_v_hi`) and both palette
+copies raise it. The CPU writes on `clk`, the video side reads on `vid_clk`, and
+a simultaneous access to one address has no defined result on real silicon.
+
+**Verilator models it as a clean read.** So this is a simulation-versus-hardware
+divergence *by construction*, in the exact memory whose contents appear to be
+missing on hardware — and no amount of simulation can show it. That makes it a
+strong candidate rather than a proven cause; it has not been tested.
+
+Note tile RAM is already **duplicated**, `tram_c_*` for the CPU side and
+`tram_v_*` for the video side, precisely so each is one-write/one-read and fits
+an M10K's two ports. So this is not a port-count overflow. It is the crossing.
+
+## What the board does, measured from a video — 2026-08-17
+
+Photographs could not settle this; 471 frames of phone video at 30 fps could.
+Frames classified by counting cyan pixels across the whole frame, which survives
+the camera moving — a fixed crop does not, and a first attempt misread camera
+motion as picture texture.
+
+The screen is **flat blue almost always**, with the sea appearing in **isolated
+single frames** every ~6-13 video frames. Reading the overlay on a sea frame
+against a blue one:
+
+| Row | Sea frame | Blue frames |
+|---|---|---|
+| `13` tilemap 2 | **`02E800`** = 190,464 = whole screen | `000000` |
+| `16` ctrl pair 2/3 | **`000000`** — window mode off | `002000` — window mode on |
+| `11`/`12` tilemaps 0/1 | `000000` | `000000` |
+
+**The renderer is correct in both states.** Window bits clear, tilemap 2 draws
+full screen; window bits set, the pair is suppressed per MAME's rule and the
+backdrop shows. The flashing is the core faithfully following a register that is
+toggling at roughly 4 Hz.
+
+Two things that are NOT explained:
+
+- **`ctrl` toggles on hardware and holds still in both references.** MAME holds
+  `0x2000`-`0x23xx` continuously; our simulation holds `0x2000`. The board flips
+  `0x0000` ↔ `0x2000`.
+- **Tilemaps 0 and 1 win nothing on any frame read**, where simulation wins
+  11,038 and 9,743. That is where the missing text is, and it is upstream of the
+  video path — the sea proves tile-RAM reads and char fetches work for tilemap 2.
+
+**The instrument still owed** is a per-map tile-RAM *content* census on hardware,
+the equivalent of the frame test's `have=`. Wins alone cannot separate "the layer
+holds nothing" from "it holds text that is not drawn", and those need opposite
+fixes. In simulation that pair is what located the row-mask fault.
+
 ## The 2D path
 
 **The missing 2D was never a rendering fault.** Our tile RAM at frame 71 matches
