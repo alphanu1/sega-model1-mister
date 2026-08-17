@@ -215,28 +215,25 @@ subscription is collected and the callback stops with no error. Wrap notifier
 bodies in `pcall` — errors inside them vanish. Run from a scratch directory:
 MAME drops `cfg/`, `nvram/` and `snap/` wherever it starts.
 
-**Audit every ROM source MAME searches**, not the one that is easiest to open —
-and MAME MERGES them. Measured, by pointing `-rompath` at one source at a time:
+**A leftover in the working directory invalidated three of my own
+conclusions.** I claimed, from pointing `-rompath` at one source at a time, that
+neither `vr.zip` nor `vr.7z` was complete and that MAME assembles a set across
+both. That was wrong. `-verbose` shows MAME **never opens the 7z**: it runs from
+`vr.zip` alone. What actually differed between the runs was a
+`nvram/vr/ioboard_eeprom` file this session had created — with it present, the
+EEPROM comes from saved NVRAM and `93c45.bin` is not needed from any archive at
+all. The "missing file" was a fresh-NVRAM condition wearing a missing-ROM costume.
 
-| rompath | Result |
-|---|---|
-| `vr.zip` alone | fails — `93c45.bin` missing |
-| `vr.7z` alone | fails — `epr-14869.25`, `epr-15112.17` missing |
-| the directory holding all of them | works |
+**So: run ROM-resolution experiments from a clean directory, and check what the
+previous run left behind.** This project's own notes say a control experiment run
+against a dirty state proves nothing — written about the MiSTer needing a reboot
+between core loads — and the same applies here. `cfg/`, `nvram/` and `snap/`
+accumulate wherever MAME starts.
 
-So neither archive is complete and MAME succeeds by combining zip, 7z and a
-directory named after the set. This has produced two wrong claims: first that
-three files were missing (auditing only the zip), then that `93c45.bin` was in
-`~/roms/vr/` when it is actually in `~/roms/vr decapped/` and inside `vr.7z`.
-**Point `-rompath` at a single source to find out what that source really holds**;
-an audit that walks paths by hand gets the merge wrong.
-
-**What MAME needs is not what the core needs.** MAME emulates the I/O board Z80
-and the comm board, so it requires `93c45.bin`, `epr-14869.25` and
-`epr-15112.17`. The MRA needs thirteen parts, all present in `vr.zip` and
-CRC-verified. A missing file that stops MAME may be irrelevant to the core, and
-the reverse is also true — check against the MRA's own part list, not against
-MAME's.
+**What MAME needs is not what the core needs**, and that part stands. MAME
+emulates the I/O board Z80 and the comm board; the MRA loads thirteen parts, all
+present in `vr.zip` and CRC-verified. Check against the MRA's part list, not
+against MAME's.
 
 ---
 
