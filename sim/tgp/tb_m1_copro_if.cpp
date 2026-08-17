@@ -304,6 +304,52 @@ int main(int argc, char** argv) {
     check(t.rd(Dut::RAM, 0) == 0xa5a5, "the TGP's contended write was lost");
   }
 
+  printf("test: a full inbound FIFO stalls the V60 instead of dropping a word\n");
+  {
+    // The board's flow control: model1_m.cpp halts the V60 on
+    // on_fifo_full_post_sync, depth 16. Dropping the write instead loses
+    // geometry with nothing reporting it, which is the worst failure available
+    // here — the picture is wrong and no counter moves.
+    Dut t;
+    check(t.d->v60_stall == 0, "stall asserted with an empty FIFO");
+
+    // Fill it. Nothing is popping, so the push that fills it is the last one
+    // acknowledged; a further push is deliberately never acked, so drive it
+    // directly rather than through wr(), which asserts on the acknowledge.
+    for (int i = 0; i < 16; i++) {
+      t.wr(Dut::FIFO, 0, (uint16_t)(i + 1));
+      t.wr(Dut::FIFO, 1, 0x8000);
+    }
+    check(t.d->v60_stall == 1, "a full FIFO did not stall the V60");
+
+    // A further push must NOT be acknowledged — that is the backpressure.
+    t.d->sel_fifo = 1; t.d->sel_adr = 0; t.d->sel_ram = 0;
+    t.d->req = 1; t.d->we = 1; t.d->a1 = 1; t.d->wdata = 0xdead;
+    bool acked = false;
+    for (int i = 0; i < 12; i++) { t.tick(); if (t.d->ack) acked = true; }
+    check(!acked, "a push into a full FIFO was acknowledged — the word is lost");
+    t.idle();
+
+    // Drain one and the stall must lift.
+    t.d->fifo_in_pop = 1; t.tick(); t.d->fifo_in_pop = 0; t.idle();
+    check(t.d->v60_stall == 0, "the stall did not lift when the FIFO drained");
+
+    // And the sixteen queued words must be intact and in order — the point of
+    // stalling rather than dropping.
+    // The drain above already took word 1, so what remains is 2..16. Checked as
+    // a strictly increasing sequence rather than against hardcoded indices —
+    // the first version compared against i+1 and failed on its own off-by-one,
+    // which is a test bug that reads exactly like data loss.
+    int seen = 0; uint32_t prev = 1;
+    for (int i = 0; i < 16 && t.d->fifo_in_valid; i++) {
+      uint32_t v = t.d->fifo_in_data & 0xffff;
+      if (v == prev + 1) { seen++; prev = v; }
+      t.d->fifo_in_pop = 1; t.tick(); t.d->fifo_in_pop = 0; t.idle();
+    }
+    printf("  %d of the remaining 15 words came back in order\n", seen);
+    check(seen == 15, "queued words were lost or reordered");
+  }
+
   printf("m1_copro_if: checks=%ld fails=%ld\n", checks, fails);
   return fails ? 1 : 0;
 }

@@ -53,10 +53,28 @@ module m1_copro_if #(
   // 8192 32-bit words: `copro_ram_data[adr & 0x1fff]` on both sides.
   parameter int unsigned RAM_WORDS = 8192,
 
-  // Depth of each direction's FIFO. MAME uses an unbounded GENERIC_FIFO_U32, so
-  // there is no hardware figure to match. The V60 pushes 11 words per command
-  // block (measured in the boot trace), so this is several blocks of slack.
-  parameter int unsigned FIFO_DEPTH = 64
+  // DEPTH 16, from the hardware rather than from convenience.
+  //
+  // model1_m.cpp calls `m_copro_fifo_in->setup(16, ...)` and the same for the
+  // outbound one. An earlier version of this file guessed 64 and called it
+  // "several command blocks of slack", which was inventing headroom the board
+  // does not have.
+  //
+  // The depth matters because FLOW CONTROL IS BY HALTING A CPU, not by a status
+  // register — which is why fifoin_status_r can be a constant 0xFFFF that
+  // nothing polls. Mapping the call site onto gen_fifo.h's setup() signature:
+  //
+  //   on_fifo_empty_pre_sync   -> the TGP stalls on reading an empty FIFO
+  //   on_fifo_empty_post_sync  -> the TGP is HALTED while it stays empty
+  //   on_fifo_unempty          -> the TGP is released
+  //   on_fifo_full_post_sync   -> the V60 is HALTED while the FIFO is full
+  //   on_fifo_unfull           -> the V60 is released
+  //
+  // So a full inbound FIFO must stop the V60 rather than drop the write, and a
+  // full outbound FIFO must stop the TGP. Dropping instead loses geometry
+  // silently, which is the worst available failure: the picture is wrong and
+  // nothing anywhere reports it.
+  parameter int unsigned FIFO_DEPTH = 16
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -93,6 +111,11 @@ module m1_copro_if #(
   input  logic [31:0] fifo_out_data,  // TGP -> V60
   input  logic        fifo_out_push,
   output logic        fifo_out_full,
+
+  // Backpressure onto the V60. Asserted while the inbound FIFO is full: the bus
+  // must stall rather than accept a write that would be dropped. See the depth
+  // note above — this is the board's flow control, not an optimisation.
+  output logic        v60_stall,
 
   // Telemetry. A count that never moves separates "the V60 is not talking to
   // us" from "we are not answering", which has been the difference between two
@@ -145,6 +168,11 @@ module m1_copro_if #(
 
   // What the next low access will pop.
   wire [31:0] fout_head = fout_empty ? pop_r : fout[fout_rd[FW-1:0]];
+
+  // Hold the V60 off while there is nowhere to put its next command word. MAME
+  // halts the CPU outright; stalling the access is the bus-level equivalent and
+  // keeps the effect local to this interface.
+  assign v60_stall = fin_full;
 
   // ---------------------------------------------------------------- arbiter
   // The V60 wins. Its accesses are rare — the boot trace shows none at all to
@@ -227,8 +255,16 @@ module m1_copro_if #(
         S_IDLE: begin
           if (v60_ram) begin
             st <= S_V60_RAM;               // address presented this cycle
-          end else if (v60_acc) begin
-            // Register or FIFO: no RAM, so complete now.
+          end else if (v60_acc && !(we && sel_fifo && a1 && fin_full)) begin
+            // Register or FIFO: no RAM, so complete now — EXCEPT a push into a
+            // full FIFO, which must not be acknowledged. The board halts the
+            // V60 there; withholding the acknowledge is the bus equivalent, and
+            // the access simply retries when the TGP drains.
+            //
+            // If the coprocessor never drains, the V60 hangs. That is the
+            // correct failure: MAME hangs it too, and a hung CPU with a stuck
+            // counter is diagnosable, whereas silently dropping the word gives
+            // a wrong picture and no counter moves at all.
             if (we && sel_adr) begin
               if (be[0]) adr[7:0]  <= wdata[7:0];
               if (be[1]) adr[15:8] <= wdata[15:8];

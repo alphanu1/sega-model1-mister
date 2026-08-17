@@ -324,6 +324,7 @@ module m1_main #(
   wire         to_copro = sel_copro_adr || sel_copro_ram || sel_copro_fifo;
   logic [15:0] dbg_copro_ram_writes, dbg_copro_fifo_pushes;
   logic [15:0] dbg_copro_returns, dbg_copro_pops;
+  logic        copro_v60_stall;
 
   m1_copro_if copro (
     .clk(clk), .rst_n(rst_n),
@@ -341,7 +342,8 @@ module m1_main #(
     .fifo_out_full(t_fout_full),
     .dbg_ram_writes(dbg_copro_ram_writes),
     .dbg_fifo_pushes(dbg_copro_fifo_pushes),
-    .dbg_fifo_returns(dbg_copro_returns), .dbg_fifo_pops(dbg_copro_pops)
+    .dbg_fifo_returns(dbg_copro_returns), .dbg_fifo_pops(dbg_copro_pops),
+    .v60_stall(copro_v60_stall)
   );
 
   // --------------------------------------------------------- the coprocessor

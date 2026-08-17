@@ -185,6 +185,7 @@ if [ "$DO_MAME" = 1 ]; then
       '/src/mame/sega/segaic24*' \
       '/src/devices/sound/multipcm.*' \
       '/src/devices/machine/mb8421.*' \
+      '/src/devices/machine/gen_fifo.*' \
       '/LICENSE.md'
     # Pin only AFTER sparse-checkout is configured. The clone is --no-checkout,
     # so checking out a ref before the sparse patterns exist would materialise
