@@ -349,6 +349,56 @@ frames while reporting a normal `$finish`**. It is `longint` now. Another silent
 truncation reporting success, in the same family as the saturating counters and the
 32-entry watch tables.
 
+## Window mode 2 blanks our whole screen — and the board's fault is NOT this
+
+Two separate things, found by finally running simulation to the state the board is
+actually in (~frame 2000, `RUN_CYCLES` 3.6e9):
+
+### 1. Mode 2 on pair 0/1 suppresses everything, for 130 frames of 2,065
+
+```
+F2007 win=0,0,0,0  bd=190080/190464  have=16,768,1024,1024
+      rtl_have=552,4095,4095,4095    ctrl=4000,2000
+```
+
+Every map holds content and **nothing draws** — 99.8% backdrop. `ctrl` for pair
+0/1 reads `0x4000`, so `ctrl & 0x6000` is `0x4000`: window **mode 2**, on the pair
+that carries all the text. Our rule then suppresses the whole pair because
+`hscr & 0x8000` is clear.
+
+**The value is legitimate.** MAME writes `0x4000` to `tile_ram[0x5004]` in 6 of 115
+samples, ours in 130 of 2,065 — 5.2% against 6.3%, the same behaviour. So this is
+not a CPU divergence.
+
+**What is NOT established** is whether blanking is the right response. `draw_common`
+has no `else` on its inner `if (hscr & 0x8000)`, which reads as "draw nothing", and
+that is what we implement. But MAME's snapshots always show the 2D text, so either
+those blank frames are a real brief flicker in the reference too, or the reading is
+wrong for modes 2/3 specifically. **Settle it by snapshotting MAME on a frame where
+`tile_ram[0x5004]` is `0x4000`** — do not reason about it. Modes 2 and 3 are
+unimplemented either way; MAME's mode 2/3 path draws a horizontal split from the
+per-line H-scroll table at `0x4000 + 0x200*layer`.
+
+### 2. The board's fault is different, and simulation does NOT reproduce it
+
+The board reads `19` = `008 000` — tilemap 0 with 8 non-blank words fetched in a
+whole frame, tilemap 1 with none — while row `15` reads `000000`, so pair 0/1's
+window mode is **off** and nothing is being suppressed. The maps are simply empty.
+
+Simulation at the same point has `have=16,768` and `rtl_have=552,4095`: content in
+both. So the two blue screens have **different causes** and it was tempting to
+merge them:
+
+| | pair 0/1 ctrl | maps 0/1 | why the screen is blue |
+|---|---|---|---|
+| our simulation | `4000`, mode 2 | full | correctly-content-bearing maps suppressed |
+| the board | `0000`, off | empty | nothing to draw |
+
+**So the board's empty maps 0/1 remain unreproduced in simulation and unexplained.**
+Next instrument: a write tap on tile RAM `0x0000`-`0x1FFF` in MAME to see what
+writes them and when, against `make m1_boot WATCH_PAGE=0x70` for ours. Tilemaps 2/3
+filling perfectly on the board still proves the tile-RAM write path itself works.
+
 ## The 2D path
 
 **The missing 2D was never a rendering fault.** Our tile RAM at frame 71 matches
