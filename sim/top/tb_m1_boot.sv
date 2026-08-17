@@ -511,6 +511,8 @@ initial begin
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (MAME sees 72)", nz);
     end
 
+    $display("BOOT: copro RAM writes=%0d fifo pushes=%0d",
+             main.dbg_copro_ram_writes, main.dbg_copro_fifo_pushes);
     $display("BOOT: bus accesses by 64KB page:");
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)

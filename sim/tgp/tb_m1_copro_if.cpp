@@ -42,7 +42,7 @@ struct Dut {
     d = new Vm1_copro_if;
     d->clk = 0; d->rst_n = 0;
     d->sel_adr = 0; d->sel_ram = 0; d->sel_fifo = 0;
-    d->req = 0; d->we = 0; d->a1 = 0; d->be = 3; d->wdata = 0;
+    d->stb = 0; d->we = 0; d->a1 = 0; d->be = 3; d->wdata = 0;
     d->fifo_in_pop = 0; d->fifo_out_push = 0; d->fifo_out_data = 0;
     d->eval();
     for (int i = 0; i < 4; i++) tick();
@@ -54,22 +54,25 @@ struct Dut {
   void tick() { d->clk = 0; d->eval(); d->clk = 1; d->eval(); }
 
   void idle(int n = 1) {
-    d->req = 0; d->sel_adr = d->sel_ram = d->sel_fifo = 0; d->we = 0;
+    d->stb = 0; d->sel_adr = d->sel_ram = d->sel_fifo = 0; d->we = 0;
     for (int i = 0; i < n; i++) tick();
   }
 
   // One bus beat. Read data is registered, so it is valid after the tick.
   void wr(int which, int a1, uint16_t data, int be = 3) {
     d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
-    d->req = 1; d->we = 1; d->a1 = a1; d->be = be; d->wdata = data;
+    d->stb = 1; d->we = 1; d->a1 = a1; d->be = be; d->wdata = data;
     tick();
     idle();
   }
+  // q is combinational, so it is sampled DURING the strobe — the same cycle
+  // m1_main latches it — not after the tick.
   uint16_t rd(int which, int a1) {
     d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
-    d->req = 1; d->we = 0; d->a1 = a1;
-    tick();
+    d->stb = 1; d->we = 0; d->a1 = a1;
+    d->clk = 0; d->eval();
     uint16_t v = d->q;
+    d->clk = 1; d->eval();
     idle();
     return v;
   }
@@ -206,6 +209,42 @@ int main(int argc, char** argv) {
       check(t.rd(Dut::RAM, 0) == (uint16_t)(0x1000 + i), "swept low half wrong");
       check(t.rd(Dut::RAM, 1) == (uint16_t)(0x2000 + i), "swept high half wrong");
     }
+  }
+
+  printf("test: a held strobe would triple-fire, so it must be one cycle\n");
+  {
+    // m1_main holds m_req across B_IDLE, B_LOCAL and B_ACK. The interface is
+    // driven from B_LOCAL alone for that reason, and this pins what goes wrong
+    // otherwise: three cycles of strobe on an auto-incrementing access advance
+    // the address three times, which reads downstream as the V60 skipping two
+    // words in every three.
+    Dut t;
+    t.set_adr(0x8200);
+    // one-cycle strobe: exactly one increment
+    (void)t.rd(Dut::RAM, 1);
+    check(t.rd(Dut::ADR, 0) == 0x8201, "one strobe did not advance exactly one word");
+
+    // three cycles of strobe: three increments, which is the bug this guards
+    t.d->sel_ram = 1; t.d->sel_adr = 0; t.d->sel_fifo = 0;
+    t.d->stb = 1; t.d->we = 0; t.d->a1 = 1;
+    t.tick(); t.tick(); t.tick();
+    t.idle();
+    check(t.rd(Dut::ADR, 0) == 0x8204,
+          "a held strobe did not advance three words — the guard is not measuring what it claims");
+  }
+
+  printf("test: the FIFO pops exactly once per access\n");
+  {
+    // The same hazard on the path where it corrupts rather than skews: a held
+    // strobe on a FIFO read would pop three words and return the third.
+    Dut t;
+    for (uint32_t i = 1; i <= 3; i++) {
+      t.d->fifo_out_data = 0x1000u * i; t.d->fifo_out_push = 1; t.tick();
+    }
+    t.d->fifo_out_push = 0; t.idle();
+    check(t.rd(Dut::FIFO, 0) == 0x1000, "first pop");
+    check(t.rd(Dut::FIFO, 0) == 0x2000, "second pop — one access popped more than one word");
+    check(t.rd(Dut::FIFO, 0) == 0x3000, "third pop");
   }
 
   printf("m1_copro_if: checks=%ld fails=%ld\n", checks, fails);

@@ -59,12 +59,25 @@ module m1_copro_if #(
   input  logic        sel_ram,
   input  logic        sel_fifo,
 
-  input  logic        req,
+  // ONE CYCLE PER ACCESS, not a held request.
+  //
+  // m1_main holds m_req from B_IDLE through B_ACK, so a raw request would fire
+  // three times. Memory writes survive that — they are idempotent — but a FIFO
+  // pop and an address post-increment do not, and triple-incrementing would
+  // look like the V60 skipping two words out of every three. Drive this from
+  // the single-cycle B_LOCAL state.
+  input  logic        stb,
   input  logic        we,
   input  logic        a1,          // word offset: 0 = low half, 1 = high half
   input  logic [1:0]  be,          // byte enables, for the address register
   input  logic [15:0] wdata,
-  output logic [15:0] q,           // registered, read the cycle after the access
+  // COMBINATIONAL, valid whenever the selects are.
+  //
+  // The RAM's data is already registered — the read address tracks the address
+  // register continuously rather than being presented per access — so there is
+  // nothing to wait for, and m1_main samples this in the same cycle it strobes.
+  // Registering it here would hand m1_main the previous access's value.
+  output logic [15:0] q,
 
   // ------------------------------------------------------------- TGP side
   // Present so the shape is fixed before the TGP arrives. The RAM has ONE
@@ -142,8 +155,21 @@ module m1_copro_if #(
   // (m_v60_copro_fifo_r) for the same reason.
   logic [31:0] pop_r;
 
+  // The head of the outbound FIFO: what the next low access will pop. Read
+  // combinationally so that access returns it and latches it in the same cycle.
+  wire [31:0] fout_head = fout_empty ? pop_r : fout[fout_rd[FW-1:0]];
+
+  always_comb begin
+    if      (sel_adr)  q = adr;
+    else if (sel_ram)  q = a1 ? ram_q[31:16] : ram_q[15:0];
+    // Low returns the word about to be popped; high returns the high half of
+    // the word the preceding low access popped. MAME keeps the same latch.
+    else if (sel_fifo) q = a1 ? pop_r[31:16] : fout_head[15:0];
+    else               q = 16'hffff;
+  end
+
   // ------------------------------------------------------------------ access
-  wire acc      = req && (sel_adr || sel_ram || sel_fifo);
+  wire acc      = stb && (sel_adr || sel_ram || sel_fifo);
   wire wr_adr   = acc &&  we && sel_adr;
   wire rd_ram_h = acc && !we && sel_ram  &&  a1;
   wire wr_ram_h = acc &&  we && sel_ram  &&  a1;
@@ -169,7 +195,6 @@ module m1_copro_if #(
     if (!rst_n) begin
       adr <= '0; lat_lo <= '0; pop_r <= '0;
       fin_wr <= '0; fin_rd <= '0; fout_wr <= '0; fout_rd <= '0;
-      q <= 16'hffff;
       dbg_ram_writes <= '0; dbg_fifo_pushes <= '0;
     end else begin
       // ---- the address register
@@ -207,26 +232,13 @@ module m1_copro_if #(
         fout_wr <= fout_wr + 1'd1;
       end
       if (rd_fifo_l) begin
-        if (!fout_empty) begin
-          pop_r  <= fout[fout_rd[FW-1:0]];
-          fout_rd <= fout_rd + 1'd1;
-        end else begin
-          // An empty pop returns the previous word, which is what a FIFO with
-          // no underflow reporting does. MAME's status register is a constant,
-          // so there is nothing here for software to have checked.
-          pop_r <= pop_r;
-        end
+        // An empty pop keeps the previous word, which is what a FIFO with no
+        // underflow reporting does. MAME's status register is a constant, so
+        // there is nothing here software could have checked.
+        pop_r <= fout_head;
+        if (!fout_empty) fout_rd <= fout_rd + 1'd1;
       end
 
-      // ---- read data, registered
-      if (acc && !we) begin
-        if (sel_adr)       q <= adr;
-        else if (sel_ram)  q <= a1 ? ram_q[31:16] : ram_q[15:0];
-        else if (sel_fifo) q <= a1 ? pop_r[31:16]
-                                   : (fout_empty ? pop_r[15:0]
-                                                 : fout[fout_rd[FW-1:0]][15:0]);
-        else               q <= 16'hffff;
-      end
     end
   end
 

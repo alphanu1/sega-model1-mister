@@ -32,7 +32,7 @@ SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
 SRCS_TOP_CORE := rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
   rtl/io/m1_rom_loader.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
@@ -50,7 +50,7 @@ SRCS_m1_mainram := rtl/m1_mainram.sv
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
-  rtl/io/m1_ioboard.sv rtl/mem/bw_monitor.sv \
+  rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
@@ -489,7 +489,7 @@ m1_boot:
 	  -GWATCH_PAGE=$(WATCH_PAGE) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
-	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot

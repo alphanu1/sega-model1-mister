@@ -283,6 +283,31 @@ module m1_main #(
   typedef enum logic [1:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK } bstate_t;
   bstate_t bst;
 
+  // ------------------------------------------------- coprocessor interface
+  // CPR, 0xd00000-0xdfffff: the address register, the 8192x32 copro RAM window
+  // and the command FIFOs. The TGP itself is not attached yet — see
+  // docs/m2-tgp-integration.md — so its side is tied off here and the V60's
+  // traffic simply lands somewhere real instead of reading 0xFFFF.
+  //
+  // Strobed from B_LOCAL, which is one cycle. A held request would post-
+  // increment the address three times per access; m1_copro_if's testbench pins
+  // that explicitly.
+  logic [15:0] copro_q;
+  logic [15:0] dbg_copro_ram_writes, dbg_copro_fifo_pushes;
+
+  m1_copro_if copro (
+    .clk(clk), .rst_n(rst_n),
+    .sel_adr(sel_copro_adr), .sel_ram(sel_copro_ram), .sel_fifo(sel_copro_fifo),
+    .stb(bst == B_LOCAL), .we(m_we), .a1(m_addr[1]), .be(m_be), .wdata(m_wdata),
+    .q(copro_q),
+    // TGP side, absent for now: nothing pops the inbound FIFO and nothing
+    // pushes the outbound one.
+    .fifo_in_data(), .fifo_in_valid(), .fifo_in_pop(1'b0),
+    .fifo_out_data(32'd0), .fifo_out_push(1'b0), .fifo_out_full(),
+    .dbg_ram_writes(dbg_copro_ram_writes),
+    .dbg_fifo_pushes(dbg_copro_fifo_pushes)
+  );
+
   logic [15:0] rdata_r;
   logic        ack_r;
   logic        sdr_ack_d;
@@ -334,6 +359,10 @@ module m1_main #(
           else if (sel_colxlat) rdata_r <= cxlat_q;
           else if (sel_dpram)   rdata_r <= dpram_q;
           else if (sel_glue)    rdata_r <= glue_rdata;
+          else if (sel_copro_adr || sel_copro_ram || sel_copro_fifo)
+                                rdata_r <= copro_q;
+          // sel_fifo_stat deliberately falls through: MAME's fifoin_status_r
+          // returns a constant 0xFFFF and the default below already is that.
           // Everything the board does not decode, plus the regions this does
           // not implement yet: acknowledge and read as an unpulled bus.
           else                  rdata_r <= 16'hFFFF;
