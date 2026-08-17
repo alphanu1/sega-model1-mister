@@ -566,13 +566,20 @@ m1_frame:
 	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
-	  +define+SIMULATION --top-module tb_m1_frame -GRUN_CYCLES=$(FRAME_CYCLES) \
+	  +define+SIMULATION --top-module tb_m1_frame \
+	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
 	./build/m1frame/m1frame
 
+# PASSED AS A 64-BIT LITERAL. Verilator's -G parses a bare decimal as 32 bits
+# whatever the parameter is declared as, so -GRUN_CYCLES=3600000000 wrapped
+# negative and the run finished having executed ZERO cycles — while printing a
+# normal $finish and a frame summary. Declaring the parameter longint was not
+# enough; the literal needs its width. Reaching the attract state the board is
+# actually in takes about 3.6e9.
 FRAME_CYCLES ?= 120000000
 
 # FRAME_TRACE=1 prints one line per frame: what share of the frame fell through
