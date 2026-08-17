@@ -116,9 +116,11 @@ module m1_integrated (
   output logic [15:0] ldr_wr_din,
   output logic [1:0]  ldr_wr_be,
   input  logic        ldr_wr_ack,
-  output logic        tgp_wr,
-  output logic [10:0] tgp_addr,
-  output logic [31:0] tgp_din,
+  // The microcode now goes straight into m1_main's coprocessor rather than out
+  // to the top level, where it was connected to nothing.
+  output logic [15:0] dbg_tgp_retires,
+  output logic [15:0] dbg_tgp_pc,
+  output logic        dbg_tgp_unimpl,
 
   // Video out
   output logic [7:0]  vid_r, vid_g, vid_b,
@@ -213,6 +215,20 @@ module m1_integrated (
     .clk(clk_cpu), .ce(ce_cpu), .rst_n(rst_n_cpu),
     .rom_loaded(rom_loaded_sync[1]),
     .in_bytes(in_bytes),
+    // Microcode from the loader, written in the FAST domain into the dual-clock
+    // program RAM inside m1_tgp. Complete before the CPU is released, so there
+    // is no crossing to handshake.
+    .ucode_clk(clk_sys), .ucode_we(u_tgp_wr),
+    .ucode_addr(u_tgp_addr), .ucode_data(u_tgp_din),
+    // The TGP's math tables and 2 MB data window belong in SDRAM and are not
+    // wired yet. Acknowledged with zero so the coprocessor runs rather than
+    // stalling: the math units are not implemented either, so nothing it
+    // computes is correct at this stage and pretending otherwise would be worse
+    // than a documented zero.
+    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
+    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
+    .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
+    .dbg_tgp_unimpl(dbg_tgp_unimpl),
     .sdr_req(cpu_sdr_req), .sdr_we(cpu_sdr_we), .sdr_addr(cpu_sdr_addr),
     .sdr_din(cpu_sdr_din), .sdr_be(cpu_sdr_be),
     .sdr_dout(cpu_sdr_dout), .sdr_ack(cpu_sdr_ack),
@@ -227,6 +243,10 @@ module m1_integrated (
     .dbg_io_replies(dbg_io_replies),
     .rom_bank(rom_bank)
   );
+
+  logic        u_tgp_wr;
+  logic [10:0] u_tgp_addr;
+  logic [31:0] u_tgp_din;
 
   // ------------------------------------------------------------- the crossings
   logic cpu_sdr_busy;
@@ -277,7 +297,7 @@ module m1_integrated (
     .ioctl_wait(ioctl_wait),
     .sdr_wr_req(ldr_wr_req), .sdr_wr_addr(ldr_wr_addr),
     .sdr_wr_din(ldr_wr_din), .sdr_wr_be(ldr_wr_be), .sdr_wr_ack(ldr_wr_ack),
-    .tgp_wr(tgp_wr), .tgp_addr(tgp_addr), .tgp_din(tgp_din),
+    .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
     .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)
   );
 

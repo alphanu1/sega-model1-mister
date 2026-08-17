@@ -68,6 +68,33 @@ module m1_main #(
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
 
+  // ------------------------------------------------- coprocessor microcode
+  // From m1_rom_loader, in the FAST memory domain. The program RAM inside
+  // m1_tgp is dual-clock for this reason; the write side finishes before the
+  // CPU is released, so no handshake is needed.
+  input  logic        ucode_clk,
+  input  logic        ucode_we,
+  input  logic [10:0] ucode_addr,
+  input  logic [31:0] ucode_data,
+
+  // The TGP's math tables and its 2 MB data-ROM window. Both belong in SDRAM
+  // and are brought out rather than served here — see
+  // docs/m2-tgp-integration.md. Tie dat_ack high with zero data to let the
+  // coprocessor run before they exist; the math units are not built either, so
+  // nothing it computes is right yet regardless.
+  output logic        tgp_tbl_req,
+  output logic [15:0] tgp_tbl_addr,
+  input  logic [31:0] tgp_tbl_rdata,
+  input  logic        tgp_tbl_ack,
+  output logic        tgp_dat_req,
+  output logic [18:0] tgp_dat_addr,
+  input  logic [31:0] tgp_dat_rdata,
+  input  logic        tgp_dat_ack,
+
+  output logic [15:0] dbg_tgp_retires,
+  output logic [15:0] dbg_tgp_pc,
+  output logic        dbg_tgp_unimpl,
+
   // SDRAM data port (p0): ROM, work RAM, NVRAM, character RAM.
   output logic        sdr_req,
   output logic        sdr_we,
@@ -296,6 +323,7 @@ module m1_main #(
   logic        copro_ack;
   wire         to_copro = sel_copro_adr || sel_copro_ram || sel_copro_fifo;
   logic [15:0] dbg_copro_ram_writes, dbg_copro_fifo_pushes;
+  logic [15:0] dbg_copro_returns, dbg_copro_pops;
 
   m1_copro_if copro (
     .clk(clk), .rst_n(rst_n),
@@ -304,14 +332,45 @@ module m1_main #(
     // request however long it is held, so nothing here needs to pulse.
     .req(m_req), .we(m_we), .a1(m_addr[1]), .be(m_be), .wdata(m_wdata),
     .q(copro_q), .ack(copro_ack),
-    // TGP side, absent for now: nothing drives the RAM port, nothing pops the
-    // inbound FIFO and nothing pushes the outbound one.
-    .tgp_req(1'b0), .tgp_we(1'b0), .tgp_addr(13'd0), .tgp_wdata(32'd0),
-    .tgp_rdata(), .tgp_ack(),
-    .fifo_in_data(), .fifo_in_valid(), .fifo_in_pop(1'b0),
-    .fifo_out_data(32'd0), .fifo_out_push(1'b0), .fifo_out_full(),
+    // The coprocessor, now present on both the RAM port and the FIFOs.
+    .tgp_req(t_ram_req), .tgp_we(t_ram_we), .tgp_addr(t_ram_addr),
+    .tgp_wdata(t_ram_wdata), .tgp_rdata(t_ram_rdata), .tgp_ack(t_ram_ack),
+    .fifo_in_data(t_fin_data), .fifo_in_valid(t_fin_valid),
+    .fifo_in_pop(t_fin_pop),
+    .fifo_out_data(t_fout_data), .fifo_out_push(t_fout_push),
+    .fifo_out_full(t_fout_full),
     .dbg_ram_writes(dbg_copro_ram_writes),
-    .dbg_fifo_pushes(dbg_copro_fifo_pushes)
+    .dbg_fifo_pushes(dbg_copro_fifo_pushes),
+    .dbg_fifo_returns(dbg_copro_returns), .dbg_fifo_pops(dbg_copro_pops)
+  );
+
+  // --------------------------------------------------------- the coprocessor
+  // In the CPU domain, beside the RAM it shares with the V60. MAME clocks the
+  // real part at 40 MHz against this domain's 19.2, so throughput is the open
+  // question — measure it against the polygon rate before moving it to the fast
+  // domain, which would put a clock crossing on the shared RAM.
+  logic        t_ram_req, t_ram_we, t_ram_ack;
+  logic [12:0] t_ram_addr;
+  logic [31:0] t_ram_wdata, t_ram_rdata;
+  logic [31:0] t_fin_data, t_fout_data;
+  logic        t_fin_valid, t_fin_pop, t_fout_push, t_fout_full;
+
+  m1_tgp tgp (
+    .clk(clk), .rst_n(rst_n),
+    .ucode_clk(ucode_clk), .ucode_we(ucode_we),
+    .ucode_addr(ucode_addr), .ucode_data(ucode_data),
+    .ram_req(t_ram_req), .ram_we(t_ram_we), .ram_addr(t_ram_addr),
+    .ram_wdata(t_ram_wdata), .ram_rdata(t_ram_rdata), .ram_ack(t_ram_ack),
+    .fifo_in_data(t_fin_data), .fifo_in_valid(t_fin_valid),
+    .fifo_in_pop(t_fin_pop),
+    .fifo_out_data(t_fout_data), .fifo_out_push(t_fout_push),
+    .fifo_out_full(t_fout_full),
+    .tbl_req(tgp_tbl_req), .tbl_addr(tgp_tbl_addr),
+    .tbl_rdata(tgp_tbl_rdata), .tbl_ack(tgp_tbl_ack),
+    .dat_req(tgp_dat_req), .dat_addr(tgp_dat_addr),
+    .dat_rdata(tgp_dat_rdata), .dat_ack(tgp_dat_ack),
+    .dbg_retires(dbg_tgp_retires), .dbg_pc(dbg_tgp_pc),
+    .dbg_unimplemented(dbg_tgp_unimpl)
   );
 
   logic [15:0] rdata_r;

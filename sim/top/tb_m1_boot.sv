@@ -70,6 +70,18 @@ reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
 wire rst_n_cpu = rs_cpu[1];
 always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys <= {rs_sys[0], 1'b1};
+
+// Streamed in while reset is asserted, one word per fast cycle.
+always @(posedge clk) begin
+    if (!rst_n) begin
+        uc_we <= 1'b0; uc_addr <= '0;
+    end else if (uc_addr != 11'd2047 || uc_we) begin
+        uc_we   <= 1'b1;
+        uc_data <= ucode[uc_addr];
+        if (uc_we) uc_addr <= uc_addr + 11'd1;
+        if (uc_addr == 11'd2047 && uc_we) uc_we <= 1'b0;
+    end
+end
 always @(posedge clk_cpu or negedge rst_n) if (!rst_n) rs_cpu <= 0; else rs_cpu <= {rs_cpu[0], 1'b1};
 
 // rom_loaded crosses fast to slow; it only ever rises once, before the CPU runs.
@@ -91,6 +103,26 @@ wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 wire        mem_ready;
+wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
+wire        dbg_tgp_unimpl;
+
+// ------------------------------------------------ coprocessor microcode
+// Loaded from the extracted 315-5573.bin. Absent, the TGP executes zeros and
+// this test cannot say anything about the coprocessor — so it says so loudly
+// rather than reporting a clean run that measured nothing.
+localparam string UCODEHEX = "build/rom/vr_tgp_prog.hex";
+reg [31:0] ucode [0:2047];
+reg        uc_we = 0;
+reg [10:0] uc_addr = 0;
+reg [31:0] uc_data = 0;
+integer    uc_i;
+initial begin
+    for (uc_i = 0; uc_i < 2048; uc_i = uc_i + 1) ucode[uc_i] = 32'h0;
+    $readmemh(UCODEHEX, ucode);
+    if (ucode[0] === 32'h0)
+        $display("BOOT: *** no TGP microcode at %s — run tools/build_tgp_rom.py ***",
+                 UCODEHEX);
+end
 
 m1_main main (
     .clk(clk_cpu), .ce(ce), .rst_n(rst_n_cpu), .rom_loaded(mem_ready_cpu[1]),
@@ -98,6 +130,17 @@ m1_main main (
     // At rest: digital bytes idle-high, the three ADC channels at their
     // measured released values — steering centred, both pedals up.
     .in_bytes({96'hffffffffffffffffffffffff, 8'h01, 8'h01, 8'h80}),
+    // The coprocessor's microcode, streamed in before reset is released — the
+    // same order the MRA path uses on hardware. THIS is what makes the boot
+    // trace able to answer whether the V60 gets past its wait at fed5a4.
+    .ucode_clk(clk), .ucode_we(uc_we), .ucode_addr(uc_addr), .ucode_data(uc_data),
+    // Tables and the 2 MB data window are not wired yet; acknowledged with zero
+    // so the coprocessor runs. Nothing it computes is correct until the math
+    // units exist — see docs/m2-tgp-integration.md.
+    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
+    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
+    .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
+    .dbg_tgp_unimpl(dbg_tgp_unimpl),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
     .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),
@@ -511,8 +554,11 @@ initial begin
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (MAME sees 72)", nz);
     end
 
-    $display("BOOT: copro RAM writes=%0d fifo pushes=%0d",
-             main.dbg_copro_ram_writes, main.dbg_copro_fifo_pushes);
+    $display("BOOT: TGP retires=%0d pc=%04h unimplemented=%0d",
+             dbg_tgp_retires, dbg_tgp_pc, dbg_tgp_unimpl);
+    $display("BOOT: copro RAM writes=%0d  V60->TGP pushes=%0d  TGP->V60 returns=%0d  V60 pops=%0d",
+             main.dbg_copro_ram_writes, main.dbg_copro_fifo_pushes,
+             main.dbg_copro_returns, main.dbg_copro_pops);
     $display("BOOT: bus accesses by 64KB page:");
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)

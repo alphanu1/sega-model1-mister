@@ -71,10 +71,13 @@ int main(int argc, char** argv) {
   auto tables = load_hex("build/rom/vr_tgp_tables.hex", 65536);
 
   auto* d = new Vm1_tgp;
-  auto tick = [&]{ d->clk = 0; d->eval(); d->clk = 1; d->eval(); };
+  // Both clocks stepped together here: the microcode write side is finished
+  // before the core leaves reset, so there is no crossing to model.
+  auto tick = [&]{ d->clk = 0; d->ucode_clk = 0; d->eval();
+                   d->clk = 1; d->ucode_clk = 1; d->eval(); };
 
   d->clk = 0; d->rst_n = 0;
-  d->ucode_we = 0; d->ucode_addr = 0; d->ucode_data = 0;
+  d->ucode_clk = 0; d->ucode_we = 0; d->ucode_addr = 0; d->ucode_data = 0;
   d->ram_rdata = 0; d->ram_ack = 0;
   d->fifo_in_data = 0; d->fifo_in_valid = 0; d->fifo_out_full = 0;
   d->tbl_rdata = 0; d->tbl_ack = 0; d->dat_rdata = 0; d->dat_ack = 0;

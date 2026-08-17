@@ -399,6 +399,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
   wire       vid_hs, vid_vs, vid_hb, vid_vb;
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
+  wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
+  wire        dbg_tgp_unimpl;
   wire  [7:0] dbg_fetches;
   wire [15:0] dbg_overruns;
   wire [15:0] dbg_io_replies;
@@ -424,7 +426,8 @@ assign p_addr = {24'd0, 24'd0, ifp_addr,
     .ioctl_wait(ioctl_wait),
     .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
     .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
-    .tgp_wr(), .tgp_addr(), .tgp_din(),
+    .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
+    .dbg_tgp_unimpl(dbg_tgp_unimpl),
 
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),

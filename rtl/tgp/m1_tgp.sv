@@ -50,6 +50,14 @@ module m1_tgp #(
   // Written before the core is released from reset. On hardware this arrives
   // over the MRA path like every other ROM; hard rule 2 keeps it out of the
   // repository either way.
+  //
+  // ON ITS OWN CLOCK. The ROM loader lives in the fast memory domain and the
+  // coprocessor in the CPU domain, so this is a dual-clock memory: one write
+  // port, one read port, different clocks. That is the one memory shape Quartus
+  // infers without argument (measured in docs/mister-integration.md: 32768x8
+  // dual clock gives 32 M10K and 37 ALM), and it needs no handshake because the
+  // write side is finished before the core leaves reset.
+  input  logic        ucode_clk,
   input  logic        ucode_we,
   input  logic [10:0] ucode_addr,
   input  logic [31:0] ucode_data,
@@ -99,8 +107,10 @@ module m1_tgp #(
   logic [15:0] prog_addr;
   logic [31:0] prog_rdata;
 
-  always_ff @(posedge clk) begin
+  always_ff @(posedge ucode_clk) begin
     if (ucode_we) prog[ucode_addr] <= ucode_data;
+  end
+  always_ff @(posedge clk) begin
     prog_rdata <= prog[prog_addr[10:0]];
   end
 

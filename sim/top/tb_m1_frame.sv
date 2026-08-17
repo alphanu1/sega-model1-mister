@@ -202,6 +202,10 @@ m1_integrated core (
                40'hffffffffff,     // 0x07..0x03
                8'h01, 8'h01,       // 0x02, 0x01  pedals released
                8'h80}),            // 0x00        steering centred
+    .ucode_clk(clk), .ucode_we(1'b0), .ucode_addr(11'd0), .ucode_data(32'd0),
+    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
+    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
+    .dbg_tgp_retires(), .dbg_tgp_pc(), .dbg_tgp_unimpl(),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),

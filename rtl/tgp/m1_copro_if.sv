@@ -98,7 +98,12 @@ module m1_copro_if #(
   // us" from "we are not answering", which has been the difference between two
   // very different days on this project.
   output logic [15:0] dbg_ram_writes,
-  output logic [15:0] dbg_fifo_pushes
+  output logic [15:0] dbg_fifo_pushes,   // V60 -> TGP
+  // TGP -> V60, and the V60's reads of them. Without these there is no way to
+  // tell "the coprocessor is not answering" from "the coprocessor answered and
+  // the V60 did not like it", which are completely different problems.
+  output logic [15:0] dbg_fifo_returns,
+  output logic [15:0] dbg_fifo_pops
 );
 
   localparam int AW = $clog2(RAM_WORDS);
@@ -203,6 +208,7 @@ module m1_copro_if #(
       q <= 16'hffff; ack <= 1'b0; served <= 1'b0;
       tgp_rdata <= '0; tgp_ack <= 1'b0;
       dbg_ram_writes <= '0; dbg_fifo_pushes <= '0;
+      dbg_fifo_returns <= '0; dbg_fifo_pops <= '0;
     end else begin
       ack     <= 1'b0;
       tgp_ack <= 1'b0;
@@ -212,6 +218,8 @@ module m1_copro_if #(
       if (fifo_out_push && !fout_full) begin
         fout[fout_wr[FW-1:0]] <= fifo_out_data;
         fout_wr <= fout_wr + 1'd1;
+        if (dbg_fifo_returns != 16'hffff)
+          dbg_fifo_returns <= dbg_fifo_returns + 16'd1;
       end
       if (fifo_in_pop && !fin_empty) fin_rd <= fin_rd + 1'd1;
 
@@ -234,7 +242,11 @@ module m1_copro_if #(
             end
             if (!we && sel_fifo && !a1) begin
               pop_r <= fout_head;
-              if (!fout_empty) fout_rd <= fout_rd + 1'd1;
+              if (!fout_empty) begin
+                fout_rd <= fout_rd + 1'd1;
+                if (dbg_fifo_pops != 16'hffff)
+                  dbg_fifo_pops <= dbg_fifo_pops + 16'd1;
+              end
             end
             q <= sel_adr  ? adr
                : sel_fifo ? (a1 ? pop_r[31:16] : fout_head[15:0])

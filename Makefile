@@ -501,7 +501,8 @@ m1_boot:
 	  -GWATCH_PAGE=$(WATCH_PAGE) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
-	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
