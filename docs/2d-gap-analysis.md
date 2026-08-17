@@ -33,7 +33,7 @@ nothing else, and neither scrolls.
 | Suspect | Evidence against |
 |---|---|
 | fetch bandwidth | overlay row `0C` reads **zero** deadline misses. An overrun repeats a scanline anyway, which is not this symptom |
-| the ROM | 26 of 29 parts match MAME 0.289, **no CRC mismatches**, and all twelve the MRA loads are among them |
+| the ROM | **29 of 29** parts match MAME 0.289, zero CRC mismatches (audit every source MAME searches, not just the zip) |
 | scroll register decode | ours reads `0x5000+layer` / `0x5004+layer` and masks `& 0x1ff`, matching `draw_common` exactly |
 | tilemap base addresses | MAME's four maps are at tile_ram `0x0000`/`0x1000`/`0x2000`/`0x3000`, 64x64 tiles — ours matches |
 | tile word decode | `val & tile_mask`, colour `(val>>7) & 0xff`, category `val & 0x8000` — ours matches |

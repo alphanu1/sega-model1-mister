@@ -285,6 +285,11 @@ buffer wants about 51 of them.
 
 ### 1. M2 — put the TGP in the design
 
+**`docs/m2-tgp-integration.md` is the interface spec** — the four V60-side
+registers with their exact commit and post-increment rules, the TGP's four
+address spaces, the four table-driven math units, what has to be built with
+sizes, and the order to build it in. Read that first.
+
 **The core is done; the integration has not started.** Worth stating precisely,
 because "the TGP is not done" reads as though the files are missing and they are
 not. `rtl/tgp/` holds twelve modules — ALU, AGU, sequencer, register file,
