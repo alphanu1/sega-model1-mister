@@ -19,7 +19,7 @@ NetMerc.
 |---|---|
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
 | M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls; segas24 window/split-scroll mode still owed |
-| M2 — geometry pipeline | **TGP built, verified and measured — instantiated nowhere.** The engine exists; the mailboxes, FIFOs, copro RAM and microcode load around it do not |
+| M2 — geometry pipeline | **in the design and running real microcode on hardware.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built; the four math units and the polygon-list capture are not |
 | M3 — rasterizer and video | fill path built and measured; band buffer, binning, writeback and scanout not built |
 | M4 — sound | not started — 68000, YM3438 and two MultiPCMs, over a UART rather than the I/O board |
 
@@ -58,7 +58,8 @@ design: **21,796 ALM, 332/553 M10K, 24.62 MHz**. Fmax is exactly the V60's
 standalone figure, so the V60 is the critical path in context as well as alone.
 
 `make rbf` builds the real core — `sys_top` plus `emu` — and that is the number
-that counts: **26,459 ALM, 409/553 M10K, 49 DSP**, timing closed at +0.456 ns.
+that counts: **29,141 ALM, 452/553 M10K, 50 DSP**, timing closed at +0.116 ns —
+thin, and the V60 owns that path.
 
 **The V60 is 17,691 ALM of that — 67% of the whole design.** Everything written
 for this project totals under 1,000; `ascal` and the rest of the framework take
@@ -66,8 +67,9 @@ about 3,600. So the V60 is the only thing where optimisation is worth spending
 time, and M10K rather than ALM is the binding resource at 74%.
 
 Against what is still to build — TGP 2,554 measured, rasterizer 3,000-6,000 and
-sound ~7,000 estimated — 15,451 free ALM fits, with the pessimistic end at the
-wall. One lever is measured and unspent: the V60 without its FP group, worth
+sound ~7,000 estimated — **12,769 free ALM** fits at the optimistic end and not at
+the pessimistic one, and 101 free M10K against the band buffer's ~51 is tighter
+still. One lever is measured and unspent: the V60 without its FP group, worth
 **-2,984 ALM** on the full core (an earlier -1,987 figure was measured on a
 smaller design). `dbg_fp_trap` has never fired, but only through boot and
 attract — `tb_m1_boot` prints an explicit warning if an FP opcode ever executes,

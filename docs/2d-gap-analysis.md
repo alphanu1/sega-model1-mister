@@ -17,6 +17,16 @@ nothing else, and neither scrolls.
 > loops at `fed5a4`-`fed5a9`, not halted, which is the same PC the debug overlay
 > reports on hardware — so board and simulation are in the same state.
 >
+> **CAUSE FOUND 2026-08-17: the V60 faked `IN` and `OUT`.** That loop is
+> `INW`/`TESTB`/`BNE` on the V60's I/O space, and our imported core returned a
+> constant for `IN` and discarded `OUT` — correct for System 32, wrong for Model
+> 1. With real accesses the attract sequence advances and tilemap 1 gains its 648
+> category-1 tiles, matching the reference exactly. See `findings.md`.
+>
+> So the row mask and window mode below are now LIVE questions rather than
+> hypotheses: the mask table populates (240 words against the reference's 72) and
+> `ctrl` is being written, so the window mode is finally reachable.
+>
 > **Every difference below is a difference in program state, not in rendering.**
 > The row mask table is empty at the point we reach, in MAME too, which is why
 > implementing it correctly changed nothing on screen. The window mode is

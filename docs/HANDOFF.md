@@ -264,82 +264,70 @@ fetch deadline misses, 57.52 Hz measured from the core's own vsync, and the
 picture pixel-identical to the reference. Two of the four items that used to be in this section are done — the top level
 and MRA exist, and the tilemap fetch is pipelined.
 
-**The controls work; the picture does not.** The whole DPRAM map is measured
-rather than guessed, and the V60 polls all fourteen control bytes every frame on
-real hardware. What blocks playability is that most of the 2D never draws — see
-"The open M1 defect" above, which is the one thing to start on.
+**The controls work, and the attract sequence now advances.** The whole DPRAM map
+is measured rather than guessed and the V60 polls all fourteen control bytes every
+frame on hardware. The thing that stopped the picture was **the V60 faking `IN`
+and `OUT`** — see `findings.md` — and with real I/O-space accesses tilemap 1 gains
+its 648 category-1 tiles, matching the reference exactly. The remaining 2D
+question is the unimplemented `ctrl & 0x6000` window mode, which is now reachable
+for the first time.
 
 Resource state after all of it, Quartus 17.0 on 5CSEBA6U23I7:
 
 | | used | of | |
 |---|---|---|---|
-| ALM | 26,469 | 41,910 | 63% |
-| M10K | 409 | 553 | 74% |
-| DSP | 49 | 112 | 44% |
+| ALM | 29,141 | 41,910 | 70% |
+| M10K | 452 | 553 | **82%** |
+| DSP | 50 | 112 | 45% |
+
+Worst setup slack **+0.116 ns**, down from +0.401 before M2 — thin enough that
+odd behaviour on this build should be read as a timing suspect before a logic
+one, and the V60 owns that path.
 
 **M10K is now the binding resource, not ALM.** 144 blocks remain and D3's band
 buffer wants about 51 of them.
 
 ---
 
-### 1. M2 — put the TGP in the design
+### 1. M2 — the TGP is in the design and running  (IN PROGRESS)
 
-**`docs/m2-tgp-integration.md` is the interface spec** — the four V60-side
-registers with their exact commit and post-increment rules, the TGP's four
-address spaces, the four table-driven math units, what has to be built with
-sizes, and the order to build it in. Read that first.
+**`docs/m2-tgp-integration.md` is the interface spec**, read off MAME. What is
+built, measured on the real core at **29,141 ALM (70%), 452/553 M10K (82%)**:
 
-**The core is done; the integration has not started.** Worth stating precisely,
-because "the TGP is not done" reads as though the files are missing and they are
-not. `rtl/tgp/` holds twelve modules — ALU, AGU, sequencer, register file,
-memory, decoder, transfer unit and three FP units — fuzz-verified against MAME at
-millions of cases per unit and area-measured at 2,554 ALM / 72 MHz.
+- `m1_copro_if` — the V60's four CPR registers and the 8192x32 copro RAM, shared
+  with the TGP through an arbiter. 248 checks.
+- `m1_tgp` — `mb86233_core` with its microcode ROM, the two data-space FIFOs, the
+  IO decode and the TGP's own four RAM address registers.
+- **The coprocessor executes real decapped microcode** (`315-5573.bin`, over the
+  MRA's index 1) and `unimplemented` has never asserted — the first check on
+  months of fuzzing from real code rather than generated instructions.
+- `copro_data` (2 MB) and the math tables (256 KB) in SDRAM, reads verified
+  **bit-exact against the reference**.
+- FIFO depth 16 with stall-on-full, which is what the board does — flow control
+  is by halting a CPU, not by a status register.
 
-**The four interfaces it has to present**, read off `model1.cpp`'s memory map —
-the V60 already drives all of them:
+**What is left:**
 
-| V60 address | Function |
-|---|---|
-| `0xd00000` | copro RAM address latch (mirrored to `0x1fffe`) |
-| `0xd20000` | copro RAM data port |
-| `0xd80000` | command FIFO into the TGP |
-| `0xdc0000` | FIFO input status — what a waiting V60 polls |
+1. **The four math units.** Table lookups into the 256 KB ROM in four 16K-word
+   quadrants — sincos, atan, inv, isqrt — each an index computation plus an
+   exponent fixup. Currently the table read returns the quadrant base rather than
+   a computed index, so anything derived from them is wrong. They are pure
+   functions of (operand, table) and fuzz cleanly the way the FP units did.
+   **`atan` carries a deliberate table-bug correction** that MAME reproduces:
+   reproduce it, do not tidy it.
+2. **Polygon-list capture** off the output FIFO, diffed frame by frame against
+   MAME. That is M2's exit criterion.
+3. **Widen two saturating debug counters** — TGP retires and V60->TGP pushes both
+   sit at 65,535, so they currently say only "a lot".
+4. **The frame testbench needs an index-1 ioctl pass** for the microcode, or the
+   TGP executes zeros there and the V60 stalls exactly as it used to.
 
-**The microcode is `315-5573.bin`, 8 KB, and is NOT in the current ROM set.**
-MAME loads it into `tgp_copro` and executes it; zero-filling it hangs the
-machine, which is how its role was established. The board has three MB86233s —
-`315-5571`/`315-5572` are the geometrizers and MAME never executes those (D4) —
-so `315-5573` is the one that matters. It is also exactly what M0 exit criterion
-2 needs: lockstep against real microcode rather than generated instructions.
+### And it closes M0 exit criterion 2
 
-Also owed for M2: `copro_data` (2 MB, `mpr-14898`-`14901`) and the polygon ROMs
-(**16 MB**, `mpr-14890`-`14897`), which roughly quadruples the SDRAM footprint
-and is another argument for putting sound samples on DDR3. Note `mpr-14897.33`
-is present in the local set under the transposed name `mpr-14879.33`, CRC
-`74873195` — renaming completes the polygon set.
-
-**A stub will not do.** The TGP does the transform *and* the maths the game
-logic consumes, so a block that merely acknowledges the FIFO would let the V60
-proceed on garbage. That is why the real microcode matters.
-
-What is missing is everything around it: `grep` finds `mb86233_core` referenced
-only by its own file. No mailboxes, no copro glue, no command or result FIFOs, no
-microcode load, no polygon capture. The engine is built and on the bench, never
-bolted into the car.
-
-Note also that M0's exit criterion 2 is still owed: the lockstep that exists runs
-*generated* instructions against a reference, not real microcode.
-
-The MB86233 is built, fuzz-verified against MAME and area-measured, and it is
-**instantiated nowhere**. Nothing renders in 3D until it is, and the rasterizer
-has nothing to draw until geometry exists.
-
-This is the next milestone and the largest single piece of work left. It needs
-the TGP wired to the main board, its program and data ROMs added to the MRA
-(`tools/gen_mra.py` already documents where they go and deliberately omits them
-while the blocks do not exist), and the polygon list captured off the output
-FIFO to diff against MAME frame by frame, which is the geometry oracle: bit-exact
-agreement with the reference, checked in volume.
+`315-5573.bin` is real decapped microcode and the core now runs it, so lockstep
+against the reference executing the same 8 KB is finally reachable.
+`sim/tgp/mb86233_ref.cpp` has the whole-CPU reference; what it never had was real
+code to run.
 
 ### 2. The I/O board — DONE, and how it was found
 
@@ -547,20 +535,32 @@ vehicle, which excludes the whole MiSTer framework:
 
 | | used | of | |
 |---|---|---|---|
-| ALM | 26,663 | 41,910 | 64% |
-| M10K | 409 | 553 | **74%** |
-| DSP | 49 | 112 | 44% |
+| ALM | 29,141 | 41,910 | 70% |
+| M10K | 452 | 553 | **82%** |
+| DSP | 50 | 112 | 45% |
+
+Worst setup slack **+0.116 ns**, down from +0.401 before M2 — thin enough that
+odd behaviour on this build should be read as a timing suspect before a logic
+one, and the V60 owns that path.
 
 **The V60 is 17,691 ALM — 67% of the entire design.** Everything written for
 this project totals under 1,000; `ascal` takes 1,984 and the rest of the
 framework about 1,600. That single fact decides where optimisation is worth any
 effort, and it is the V60 or nothing.
 
-Still to build, against **15,247 free ALM**: TGP 2,554 (measured), rasterizer
-3,000-6,000, sound ~7,000. Total 12,554-15,554 — it fits, with the pessimistic
-end exactly at the wall.
+Still to build, against **12,769 free ALM** and **101 free M10K**: the rasterizer
+3,000-6,000 and sound ~7,000. The TGP is spent. That fits at the optimistic end
+and does not at the pessimistic one, so the `S32_V60_NO_FP` lever below has
+stopped being optional — and M10K is tighter than ALM, with the band buffer
+wanting ~51 of the 101 left.
 
-**Unspent lever, re-measured:** V60 without the FP group is **-2,984 ALM** on
+**Unspent lever, and its evidence is about the wrong game.** The V60's own
+comment justifies it with "Golden Axe never executes the optional floating-point
+groups" — a claim about Golden Axe, and the same shape as the "io space unused on
+S32" comment that cost days on the IN/OUT path. Model 1 needs Model 1's evidence:
+`dbg_fp_trap` under a build with the define, through attract and a race.
+
+V60 without the FP group is **-2,984 ALM** on
 the full core. An earlier -1,987 is recorded in `00-decisions.md` from a smaller
 design; both are kept rather than one silently overwritten, and they get
 reconciled when the lever is actually spent. `dbg_fp_trap` has never fired but

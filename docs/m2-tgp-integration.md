@@ -1,18 +1,20 @@
 # M2 — putting the TGP in the design
 
 The MB86233 core is built, fuzz-verified against MAME at millions of cases per
-unit, and area-measured at 2,554 ALM / 72 MHz. It is instantiated nowhere. This
-is the interface it has to present, read off MAME rather than inferred —
-`model1.cpp` for the memory maps and machine config, `model1_m.cpp` for the
-handlers.
+unit, and area-measured at 2,554 ALM / 72 MHz. **It is now instantiated, executing
+real decapped microcode, and on hardware** — `m1_tgp` in `m1_main`, fed from the
+MRA's index 1. This is the interface it presents, read off MAME rather than
+inferred: `model1.cpp` for the memory maps and machine config, `model1_m.cpp` for
+the handlers.
 
-**Why this is the blocker.** Measured 2026-08-17: our V60 advances through
-attract mode, matches MAME's tile RAM exactly at frame 71, reaches map 0's
-frame-300 state, then starts touching `0xd00000` (510 accesses in 700 M cycles)
-and the rest of the attract setup never happens. It ends in a three-instruction
-loop at `fed5a4`-`fed5a9`, not halted, no FP trap, I/O board still answering —
-the same PC the debug overlay reports on hardware. The 2D path has no
-demonstrated fault; the coprocessor's absence is what stops the picture.
+Resource cost measured on the real core: **29,141 ALM (70%), 452/553 M10K (82%)**,
++2,478 ALM and +43 M10K over the pre-M2 build.
+
+**What actually blocked the picture was not this.** The V60 sat in a
+three-instruction loop at `fed5a4` because our imported core faked `IN` and `OUT`
+— see `findings.md`. With those routed to the bus the attract sequence advances
+and tilemap 1 gains its text layer. M2 was necessary but it was not sufficient,
+and it was not the thing in the way.
 
 ---
 
@@ -169,9 +171,10 @@ reading these.
 | `copro_data` window | 2 MB | **SDRAM** |
 | four math units | index + exponent fixup | modest ALM |
 
-M10K is the constraint, as ever: 409 of 553 spent, 144 free, and the copro RAM
-alone wants 32. D3's band buffer wants ~51. That still fits, but the reserve
-options in `HANDOFF.md` "Budget" exist for exactly this.
+M10K is the constraint, as ever. **Built: 452 of 553 spent, 101 free** — the copro
+RAM took 32 and the microcode 8. D3's band buffer wants ~51 of what is left, so it
+fits with little to spare and the reserve options in `HANDOFF.md` "Budget" have
+stopped being theoretical.
 
 **The polygon ROMs are 16 MB** (`mpr-14890`-`14897`), which roughly quadruples
 the SDRAM footprint over the V60's 6 MB. That is the other argument for putting

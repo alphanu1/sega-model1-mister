@@ -149,54 +149,75 @@ Nothing in the IO space is optional. To frame 400: DATAROM 70,119 reads, SINCOS
 **deliberate table-bug correction** that MAME reproduces, with a comment saying
 the hardware does something equivalent. Reproduce it; do not tidy it.
 
-### Where the V60 diverges, located to one instruction
+### The V60 faked IN and OUT — RESOLVED
 
-The two cores agree exactly at `pc=fed58f`, reading the copro RAM address
-register and getting the same value:
+The cores agreed exactly at `pc=fed58f`, then ours looped at
+`fed5a4`/`fed5a7`/`fed5a9` while the reference reached `fed5b9`. Disassembling
+those three instructions named it in minutes:
 
-```
-ours   cyc 524303849  d00000 -> 00  be=11  pc=fed58f
-MAME   f272           R d00000 = 0000     pc=fed58f
-```
+| Address | Opcode | Instruction |
+|---|---|---|
+| `fed5a4` | `0x24` | **`INW`** — read a word from the V60's **I/O space** |
+| `fed5a7` | `0xf1` | `TESTB` |
+| `fed5a9` | `0x65` | `BNE8` — branch back |
 
-The reference then reaches `pc=fed5b9`, where it writes `0x8001` and reads it
-back. Ours loops at `fed5a4`/`fed5a7`/`fed5a9` — **between** those two points.
+A polling loop on an I/O-space read. And our imported V60 did this:
 
-**That loop takes no data reads.** A PC-filtered read tap over `fed580`-`fed5d0`
-on the reference finds only the two `d00000` accesses above; nothing at
-`fed5a4`-`fed5a9`. So it is compute and branch, not a poll — we are not failing to
-supply something it waits for, our V60 is computing a different result and
-branching differently.
-
-That is a different class of problem from everything above.
-
-**The instructions themselves, read out of the reference's memory** — the cheapest
-way in, and cheaper than lockstep:
-
-```
-fed588: 80 e0 f2 79 2a d1 ff ba
-fed590: 80 e0 f2 71 2a d1 ff 64
-fed598: 06 d1 60 65 ec 44 21 f2
-fed5a0: 63 2a d3 ff 24 20 61 f1
-fed5a8: 60 65 fb 09 20 f4 ff 1b
-fed5b0: 80 f4 01 80 f2 51 2a d1
-fed5b8: ff ba 80 f4 01 80 f2 47
-fed5c0: 2a d1 ff 64 06 d1 60 65
-fed5c8: e8 24 20 f3 00 00 d2 00
+```systemverilog
+8'h20, 8'h22, 8'h24: begin  // IN — read io (mapped to bus, io space unused on S32)
+    wb_op2(32'hffffffff, cur_op[2:1]);
+end
+8'h21, 8'h23, 8'h25: begin  // OUT — ignore
+    st <= S_NEXT;
+end
 ```
 
-Our loop is `fed5a4` / `fed5a7` / `fed5a9`, so it is within `24 20 61 f1 60 65 fb
-09`. Decoding that names the condition being tested, and MAME's V60 disassembler
-is in the sparse checkout (`src/devices/cpu/v60/v60d.cpp`) if a decode is needed
-rather than a debugger session. Note `-debug -debugger none -debugscript` did not
-produce output in this build; the invocation needs work.
+**`IN` returned a constant and `OUT` was discarded.** True enough for System 32,
+where nothing uses the space. On Model 1 `model1_io` maps the coprocessor's four
+registers — RAM address, RAM data, command FIFO, FIFO status — **at the same
+addresses as `model1_mem`**, so an `IN` or `OUT` there is a real transaction with
+real side effects: reading the FIFO pops it, writing the address register arms an
+auto-increment. The V60 was polling a value that could never satisfy its test.
 
-**A number to distrust:** "510 accesses to `0xd00000`" appears in earlier commit
-messages and was measured before the coprocessor interface existed, when that
-region read `0xFFFF`. It is now **2**. Wiring the interface changed the V60's
-behaviour materially, and that was initially mis-read as no change.
+Routed to the ordinary data bus, since the two maps coincide on this board. A
+machine that mapped them differently would need a separate space.
+
+Effect, against the reference at the equivalent frame:
+
+| | before | after | reference |
+|---|---|---|---|
+| tilemap 0 category-1 | 4096 | **4012** | 4012 |
+| tilemap 1 category-1 | **0** | **648** | 648 |
+| row mask non-zero | 0 | 240 | 72 |
+| `scroll[5006]` | `0000` | `2000` | `2058` |
+
+Tilemap 1's 648 tiles are the text layer that was missing from the screen, and it
+matches exactly. Row mask and scroll do **not** match yet — plausibly the
+unimplemented `ctrl & 0x6000` window mode, which now matters.
+
+**THE INSTRUMENT LESSON, and it is the most expensive one here.** The I/O space
+generates no memory-bus traffic, so every bus-level instrument showed an empty
+loop and the fault read as a CPU bug. A PC-filtered read tap on the reference
+reported "no data reads at all in `fed5a4`-`fed5a9`" — true, and utterly
+misleading. **When a loop appears to poll nothing, disassemble it.** Ten minutes
+of decoding against days spent around it.
 
 ---
+
+## Imported code carries its origin's assumptions
+
+**IMPORTED CODE CARRIES ITS ORIGIN'S ASSUMPTIONS, AND THEY ARE USUALLY IN A
+COMMENT.** The V60 comes from `meathax/s32`, and its `IN`/`OUT` handler said
+"io space unused on S32" while returning a constant and discarding writes. That
+was *correct for System 32* and silently wrong here, and it cost days — the
+comment was accurate, honest, and load-bearing, and nobody read it against Model
+1's memory map.
+
+Worth a sweep for the same shape wherever `S32`, `Golden Axe` or `Spider-Man`
+appears in a comment in `rtl/cpu/v60/`: each one marks a place where behaviour was
+scoped to a different board. `S32_V60_NO_FP`'s own comment says "Golden Axe never
+executes the optional floating-point groups", which is exactly the same class of
+claim about a different game.
 
 ## Instruments, and what each cannot do
 
@@ -264,18 +285,20 @@ Quartus 17.0, 5CSEBA6U23I7, on the real core unless stated.
 | | ALM | M10K | note |
 |---|---|---|---|
 | whole core, before M2 | 26,663 | 409 | timing +0.401 ns |
+| whole core, **with M2** | **29,141** | **452** | timing **+0.116 ns** — thin |
 | **`s32_v60` alone** | **17,691** | — | **67% of the design** |
 | `ascal` + framework | ~3,600 | 54 | not ours |
 | everything we wrote | <1,000 | — | before M2 |
 | `m1_copro_if` | 1,244 | 33 | `RAM_BLOCK_TYPE = M10K` confirmed |
 | row mask | +204 | 0 | line-buffer word 14 -> 15 bits was free |
 | debug overlay | 307 | 0 | |
-| `S32_V60_NO_FP` | **-2,984** | 0 | unspent; `-1,987` recorded earlier on a smaller design |
+| `S32_V60_NO_FP` | **-2,984** | 0 | unspent. Its justification is a claim about *Golden Axe*, not this game — get Model 1's own `dbg_fp_trap` evidence first |
 
 **The V60 being 67% of the design is the fact that decides where optimisation is
 worth any effort.** Squeezing our own code cannot matter.
 
-M10K is the binding resource. Reserves, in order of value: tile RAM and palette
+M10K is the binding resource: **101 blocks free** against the band buffer's ~51.
+Reserves, in order of value: tile RAM and palette
 are each held **twice** (80 blocks of pure redundancy, and the video side has 5:1
 clock slack to interleave a CPU read); display lists to SDRAM (128 blocks,
 sequential access, consumer not yet built); line buffers to MLAB (12 blocks for

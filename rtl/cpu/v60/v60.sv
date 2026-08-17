@@ -20,7 +20,11 @@
 //   - Not implemented (reserved-instruction exception, logged in sim): the
 //     un-dispatched 0x5C/0x5F sub-opcodes (MAME UNHANDLED). MMU/TLB effects are
 //     absent like MAME, but CLRTLB still decodes its complete operand. Address-
-//     trap and separate IN/OUT-space side effects remain outside the S32 profile.
+//     trap effects remain outside the S32 profile. IN/OUT-space accesses used to
+//     as well, and that was a real fault on Model 1 rather than a scoping note —
+//     see the IN/OUT exec cases: model1_io maps the coprocessor's registers, so a
+//     faked IN left the CPU polling a constant forever. They are real bus
+//     accesses now.
 //     The V70 (IS_V70=1) 32-bit external bus is declared but s32_v60_bus still
 //     issues 16-bit cycles; System 32 is V60 only, so the parameter is unused.
 //
@@ -1162,6 +1166,13 @@ else if (ce) begin
         8'h5c, 8'h5f: begin
 `ifdef S32_V60_NO_FP
             // Golden Axe never executes the optional floating-point groups.
+            //
+            // That is a claim about GOLDEN AXE and says nothing about Virtua
+            // Racing. It is the same shape as the "io space unused on S32"
+            // comment that cost days on the IN/OUT path: accurate about its own
+            // board, load-bearing, and silently wrong elsewhere. Before spending
+            // this lever on Model 1, get Model 1's own evidence — dbg_fp_trap
+            // under a build with the define, through attract and a race.
             // Keep their architectural fallback while removing the entire
             // decode/data path from this dedicated build.
             exc_vector <= 8'd8;
