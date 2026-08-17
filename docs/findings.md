@@ -436,503 +436,60 @@ It also says what the flashing is: alternation between frames whose map reads
 content and frames whose map reads blank. The board shows sky and sea part of the
 time, so the content exists — the blue frames are the reads that came back empty.
 
-### Tilemaps 1, 2 and 3 are empty in SIMULATION too — 2026-08-17
+### WITHDRAWN: tilemaps 1, 2 and 3 are empty in simulation — 2026-08-17
 
-From the same trace, stable from frame 90 to frame 296: `have=53,0,0,0`.
+**Wrong, and wrong because the run was too short.** It was measured at frames 90 to
+296 as `have=53,0,0,0` and reported as a divergence from MAME. The user objected
+that the board plainly shows sky and sea, so the data must be there. It is.
 
-**First, the instrument's caveat, because it nearly produced a wrong claim.**
-`tram_content_census` in `tb_m1_frame.sv` strides `i = i + 4` — it samples every
-fourth word, 1,024 of each map's 4,096. So its counts are a **4x undersample** and
-must be multiplied by four before comparing with MAME's. Map 0's `53` is therefore
-about 212 words, which sits inside MAME's 205-1675 range. Map 0 is roughly right.
-
-**Maps 1, 2 and 3 read exactly zero across 1,024 samples each.** A map holding
-4,096 non-blank words — which is what MAME reports for maps 2 and 3 at every
-sample — cannot sample zero in 1,024 tries. So they are genuinely empty, and this
-is a divergence in simulation, reproducible for free, with no hardware round trip
-needed.
-
-MAME, for comparison: map 0 205-1675, map 1 648-2976, maps 2 and 3 constant 4096.
-
-Which means the sea and sky on our screen are **not** what the reference draws.
-Tilemap 2 wins 180,790 of 190,464 pixels while holding no content at all — the
-opaque category-0 pass over an empty map, already documented above as a real state
-worth recognising. The reference fills that area from 4,096 real tiles. We paint it
-flat.
-
-So there are two defects, not one, and they are separable:
-
-1. **In simulation**: maps 1, 2 and 3 are never populated. Only map 0 is.
-2. **On hardware, additionally**: map 0 reads near-empty (`008`) where simulation
-   has ~212 words.
-
-### Confirmed with the layout removed as an assumption — 2026-08-17
-
-The census above reads the four map bases *this design believes in*, which makes it
-worthless for the question "is there data in the tilemaps at all": a wrong base
-reads zeros out of a populated array and looks exactly like an empty one. So
-`tram_block_census` in `tb_m1_frame.sv` walks all 32,768 words at full stride in
-`0x1000`-word blocks and reports where content actually is. At frame 64:
+Run to 3.4e9 cycles instead of 4e8 and tile RAM fills completely, at frame ~352:
 
 ```
-  tram blocks: 0000:203
+  tram blocks: 0000:315 1000:648 2000:4096 3000:4096 5000:1 6000:48
 ```
 
-**One block, and it is tilemap 0.** Nothing at `0x1000`, `0x2000`, `0x3000`, or in
-the scroll and mask regions above `0x4000`. The bases were right and there is no
-tile data hiding at an unexpected offset. Note the scroll region takes 12-24 writes
-a frame and still reads blank, which is consistent: `ctrl=0000`, so it is being
-written zeros.
+**Those are MAME's numbers.** Map 0 315 against MAME's 205-1675 (315 is one of its
+sampled values), map 1 648 against MAME's 648, maps 2 and 3 4096 each against
+MAME's constant 4096. Plus a scroll register and 48 mask words. Our tile RAM
+content is not a divergence at all — it is right.
 
-### But the board shows sky and sea, so the board has content we do not
+So the earlier reading has one cause: **296 frames is not far enough in.** This is
+the third time a board-versus-simulation comparison has been made at the wrong
+simulation state, and the first two are recorded under "Instruments, and what each
+cannot do". The instrument is fine; the run length was the fault, and there was no
+check that the state had been reached.
 
-Raised by the user against this measurement, and it is the right objection.
+Keep the 4x stride caveat from the withdrawn entry — `tram_content_census` samples
+every fourth word, so its counts must be multiplied by four before comparing with
+MAME. `have=58,144,1024,1024` at frame 381 is 232/576/4096/4096, which agrees with
+the full-stride block census above.
 
-Two flat colours with a horizon cannot come from an empty map. Every route through
-an empty tilemap arrives at **one** colour: tile word `0x0000` gives colour bits 0,
-so the pixel indexes palette 0 whichever layer wins, and a row-masked map falling
-through to map 3 or to the backdrop lands on palette 0 as well. A distinct sky and
-sea needs either real tile words or two palette bases. Character RAM cannot supply
-it either — an 8x8 pattern repeated across the screen reads as texture, not as a
-horizon.
+### The whole failure reproduces in simulation at frame 381 — 2026-08-17
 
-So the board's tile RAM holds map content that simulation's does not, and
-**simulation is not the good reference it was being treated as**. It is 296 frames
-in where the board is at roughly 2,400 by its own I/O reply count — the same
-wrong-state comparison already recorded under "Instruments, and what each cannot
-do", made again.
-
-That reverses the priority written above. (1) is still a real gap, but it may be
-nothing more than the run being too short, and that has to be settled before any
-time is spent on it. A run to ~2,500 frames is 3.4e9 cycles, which is free and
-needs no board.
-
-## What the board does, measured from a video — 2026-08-17
-
-Photographs could not settle this; 471 frames of phone video at 30 fps could.
-Frames classified by counting cyan pixels across the whole frame, which survives
-the camera moving — a fixed crop does not, and a first attempt misread camera
-motion as picture texture.
-
-The screen is **flat blue almost always**, with the sea appearing in **isolated
-single frames** every ~6-13 video frames. Reading the overlay on a sea frame
-against a blue one:
-
-| Row | Sea frame | Blue frames |
-|---|---|---|
-| `13` tilemap 2 | **`02E800`** = 190,464 = whole screen | `000000` |
-| `16` ctrl pair 2/3 | **`000000`** — window mode off | `002000` — window mode on |
-| `11`/`12` tilemaps 0/1 | `000000` | `000000` |
-
-**The renderer is correct in both states.** Window bits clear, tilemap 2 draws
-full screen; window bits set, the pair is suppressed per MAME's rule and the
-backdrop shows. The flashing is the core faithfully following a register that is
-toggling at roughly 4 Hz.
-
-Two things that are NOT explained:
-
-- **`ctrl` toggles on hardware and holds still in both references.** MAME holds
-  `0x2000`-`0x23xx` continuously; our simulation holds `0x2000`. The board flips
-  `0x0000` ↔ `0x2000`.
-- **Tilemaps 0 and 1 win nothing on any frame read**, where simulation wins
-  11,038 and 9,743. That is where the missing text is, and it is upstream of the
-  video path — the sea proves tile-RAM reads and char fetches work for tilemap 2.
-
-**The instrument still owed** is a per-map tile-RAM *content* census on hardware,
-the equivalent of the frame test's `have=`. Wins alone cannot separate "the layer
-holds nothing" from "it holds text that is not drawn", and those need opposite
-fixes. In simulation that pair is what located the row-mask fault.
-
-## MAME's tilemap 0 is never empty; ours is — 2026-08-17
-
-Full non-blank word counts (all 4,096 words per map, not sampled), MAME, every
-150 frames through 55 s of attract:
-
-| MAME frame | tm0 | tm1 | tm2 | tm3 | ctrl |
-|---|---|---|---|---|---|
-| 150 | 205 | 0 | 0 | 0 | `0000` |
-| 300-1800 | 231-315 | 648 | 4096 | 4096 | `2059`..`23ce` |
-| 2100 | 1675 | 1302 | 4096 | 4096 | `23d7` |
-| 2400-2850 | 69-153 | 0 | 4096 | 4096 | `23f0`..`20de` |
-| 3000-3150 | 663-747 | 0 | 4096 | 4096 | `2000` |
-
-**Tilemap 0 holds 69 to 1,675 words at every screen after boot — it is never
-empty.** Tilemap 1 empties on the demo-drive screens, which is why "tilemap 1 is
-empty" is not by itself a fault. Tilemaps 2 and 3 are completely full throughout.
-
-The board, from overlay rows `19`/`1A` on the same kind of screen: tilemap 0 **8**
-non-blank words fetched in a whole frame, tilemap 1 **0**, tilemaps 2 and 3
-**saturated at 4,095**. So maps 2/3 match the oracle exactly and maps 0/1 are
-empty where the oracle always has content.
-
-**That proves the tile-RAM write path works** — half the maps fill perfectly — and
-narrows the question to why the low half, tile RAM words `0x0000`-`0x1FFF`, stays
-empty on hardware.
-
-Caveat on comparing the two numbers: MAME's is words PRESENT in the map, the
-board's is words FETCHED on the displayed span per frame, saturating at 4,095. A
-map holding 153 scattered non-blank words would be re-fetched across 384 lines and
-should read large or saturated, not 8 — so the difference is real and not an
-artefact of the two metrics. But they are not the same measurement and should not
-be quoted as though they were.
-
-### And the comparison was being made against the wrong simulation state
-
-Row `0B` shows the board at **2,221 I/O replies**, roughly frame 2,400. Every
-simulation compared against it had stopped near frame 680. The board had been in a
-different attract screen for minutes.
-
-`RUN_CYCLES` was `integer` — 32-bit signed — so a request for 3.6e9 cycles, which
-is what reaching frame 2,400 needs, **wrapped negative and ended the run after 32
-frames while reporting a normal `$finish`**. It is `longint` now. Another silent
-truncation reporting success, in the same family as the saturating counters and the
-32-entry watch tables.
-
-## Window mode 2 blanks our whole screen — and the board's fault is NOT this
-
-Two separate things, found by finally running simulation to the state the board is
-actually in (~frame 2000, `RUN_CYCLES` 3.6e9):
-
-### 1. Mode 2 on pair 0/1 suppresses everything, for 130 frames of 2,065
+Once the run is long enough there is no need for a board at all:
 
 ```
-F2007 win=0,0,0,0  bd=190080/190464  have=16,768,1024,1024
-      rtl_have=552,4095,4095,4095    ctrl=4000,2000
+F382 bd=175982/190464 win=11038,3060,0,0 have=79,144,1024,1024
+     rtl_have=2520,4095,4095,4095 wr=252,0,24,144 ctrl=0000,2000
 ```
 
-Every map holds content and **nothing draws** — 99.8% backdrop. `ctrl` for pair
-0/1 reads `0x4000`, so `ctrl & 0x6000` is `0x4000`: window **mode 2**, on the pair
-that carries all the text. Our rule then suppresses the whole pair because
-`hscr & 0x8000` is clear.
+Read across it:
 
-**The value is legitimate.** MAME writes `0x4000` to `tile_ram[0x5004]` in 6 of 115
-samples, ours in 130 of 2,065 — 5.2% against 6.3%, the same behaviour. So this is
-not a CPU divergence.
+- `ctrl=0000,2000` — pair 2/3 is in **window mode 1**
+- `rtl_have=...,4095,4095` — maps 2 and 3 hold and fetch full content
+- `win=11038,3060,0,0` — and they win **zero** pixels
+- `bd=175982/190464` — so **92% of the screen falls through to the backdrop**,
+  which is palette 0, which is blue
 
-**What is NOT established** is whether blanking is the right response. `draw_common`
-has no `else` on its inner `if (hscr & 0x8000)`, which reads as "draw nothing", and
-that is what we implement. But MAME's snapshots always show the 2D text, so either
-those blank frames are a real brief flicker in the reference too, or the reading is
-wrong for modes 2/3 specifically. **Settle it by snapshotting MAME on a frame where
-`tile_ram[0x5004]` is `0x4000`** — do not reason about it. Modes 2 and 3 are
-unimplemented either way; MAME's mode 2/3 path draws a horizontal split from the
-per-line H-scroll table at `0x4000 + 0x200*layer`.
+That is the reported symptom, cause and effect on one line, and it is the window
+suppression above: MAME would draw this pair as a vertical split, tilemap 2 above
+scanline `v` and tilemap 3 below. Note the blue arrives by the backdrop here and by
+tilemap 2's opaque pass at frame 296 — two different routes to palette 0, which is
+why chasing the colour rather than the counter wasted time.
 
-### 2. The board's fault is different, and simulation does NOT reproduce it
+`wr=252,0,24,144` also corrects the "the game loop never rewrites the tilemaps"
+finding above: it does, once it reaches this screen. 252 words a frame into maps 0/1
+and 144 into the row masks. That reopens read-during-write as a hazard on the
+maps that are being written — though it remains unable to explain a *low* non-blank
+count, for the reason given there.
 
-The board reads `19` = `008 000` — tilemap 0 with 8 non-blank words fetched in a
-whole frame, tilemap 1 with none — while row `15` reads `000000`, so pair 0/1's
-window mode is **off** and nothing is being suppressed. The maps are simply empty.
-
-Simulation at the same point has `have=16,768` and `rtl_have=552,4095`: content in
-both. So the two blue screens have **different causes** and it was tempting to
-merge them:
-
-| | pair 0/1 ctrl | maps 0/1 | why the screen is blue |
-|---|---|---|---|
-| our simulation | `4000`, mode 2 | full | correctly-content-bearing maps suppressed |
-| the board | `0000`, off | empty | nothing to draw |
-
-**So the board's empty maps 0/1 remain unreproduced in simulation and unexplained.**
-Next instrument: a write tap on tile RAM `0x0000`-`0x1FFF` in MAME to see what
-writes them and when, against `make m1_boot WATCH_PAGE=0x70` for ours. Tilemaps 2/3
-filling perfectly on the board still proves the tile-RAM write path itself works.
-
-## The 2D path
-
-**The missing 2D was never a rendering fault.** Our tile RAM at frame 71 matches
-MAME at frame 71 exactly, including 370 category-1 tiles on map 0 — not a number
-to match by chance. MAME writes the text, the scroll registers and the row-mask
-table only between frames 150 and 300, and our V60 stops advancing before that.
-
-Everything chased before that was a difference in **program state**, not in
-pixels. Two real gaps were found on the way and both are worth keeping:
-
-- **The row mask is implemented** and verified: segas24 masks each tilemap in
-  8-pixel columns from tile RAM `0x6000` (maps 0/1) or `0x6800` (2/3), four words
-  per scanline, and each tilemap is drawn twice with the mask inverted for the
-  second pass — so a column shows whichever category matches its mask bit.
-  Ignoring it equals `m = 0`, which MAME treats as "draw all 128 pixels".
-- **`ctrl & 0x6000` window/split-scroll mode is NOT implemented.** Confirmed
-  active in the reference (`ctrl = 0x2058`). The four tilemaps are two **pairs**,
-  not four peers — odd maps are window maps, drawn only through their even
-  partner — and `ctrl` is the pair's even `vscr`, not each map's own register.
-
-**The mixer's draw order and opaque flags are confirmed** against
-`model1_v.cpp`, not inferred: layers `6,4` opaque then `2,0`, then the 3D, then
-`7,5,3,1`. Our `opaque_pass = (i >= 2)` and paint order match exactly.
-
-Ruled out by measurement: fetch bandwidth (**zero** deadline misses; an overrun
-repeats a scanline anyway, which is not the symptom) and the ROM set (29/29,
-zero CRC mismatches).
-
----
-
-## The coprocessor
-
-**The V60 never reads back from it.** Over 2,500 logged accesses the reference
-does 1,198 FIFO writes, 102 address-register writes, two status reads, and **zero
-FIFO reads and zero copro RAM data accesses**. The TGP's output goes to the
-renderer, not to the CPU. So a core showing "returns=0, pops=0" is behaving
-correctly.
-
-**Flow control is by halting a CPU, not by a status register.** `setup(16, ...)`
-on both FIFOs, and `gen_fifo.h` names the callbacks: empty halts the TGP, full
-halts the **V60**, un-empty and un-full release them. That is why
-`fifoin_status_r` can be a constant `0xffff` nobody polls. **Depth is 16.** A
-push into a full FIFO must stall, never drop — dropping loses geometry with no
-counter moving anywhere.
-
-**The data ROM is the coprocessor's first blocker, not the math units.** Its
-opening move at frame 0:
-
-```
-W DATABASE 002e = 00000010      set the window base
-R DATAROM  8010 = 00000030      read a word out of it
-R DATAROM  8020 = 00012e00      and another — which becomes the NEXT base
-```
-
-Two data-ROM reads before any math unit is touched, and the second value is
-itself a window base. **Those two words are a free test vector** for whatever
-wires that memory up.
-
-Nothing in the IO space is optional. To frame 400: DATAROM 70,119 reads, SINCOS
-21,548/13,337, INV 11,072/5,536, ISQRT 9,332/4,666, ATAN 1,008/4,032.
-
-**The two sides' copro RAM rules differ**, and both are on the same 8192x32 RAM:
-
-| | V60 | TGP |
-|---|---|---|
-| address registers | one | **four**, selected by IO address bits 4:3 |
-| increment | only when bit 15 set, by 1 | **always**, by **4** when bit 18 set else 1 |
-| commit | on the **high** half of a 16-bit pair | whole 32-bit word |
-
-**The four math units are table lookups**, not arithmetic: a 256 KB ROM in four
-16K-word quadrants — sincos `0x0000`, atan `0x4000`, inv `0x8000`, isqrt
-`0xc000` — each an index computation plus an exponent fixup. `atan` carries a
-**deliberate table-bug correction** that MAME reproduces, with a comment saying
-the hardware does something equivalent. Reproduce it; do not tidy it.
-
-### The V60 faked IN and OUT — RESOLVED
-
-The cores agreed exactly at `pc=fed58f`, then ours looped at
-`fed5a4`/`fed5a7`/`fed5a9` while the reference reached `fed5b9`. Disassembling
-those three instructions named it in minutes:
-
-| Address | Opcode | Instruction |
-|---|---|---|
-| `fed5a4` | `0x24` | **`INW`** — read a word from the V60's **I/O space** |
-| `fed5a7` | `0xf1` | `TESTB` |
-| `fed5a9` | `0x65` | `BNE8` — branch back |
-
-A polling loop on an I/O-space read. And our imported V60 did this:
-
-```systemverilog
-8'h20, 8'h22, 8'h24: begin  // IN — read io (mapped to bus, io space unused on S32)
-    wb_op2(32'hffffffff, cur_op[2:1]);
-end
-8'h21, 8'h23, 8'h25: begin  // OUT — ignore
-    st <= S_NEXT;
-end
-```
-
-**`IN` returned a constant and `OUT` was discarded.** True enough for System 32,
-where nothing uses the space. On Model 1 `model1_io` maps the coprocessor's four
-registers — RAM address, RAM data, command FIFO, FIFO status — **at the same
-addresses as `model1_mem`**, so an `IN` or `OUT` there is a real transaction with
-real side effects: reading the FIFO pops it, writing the address register arms an
-auto-increment. The V60 was polling a value that could never satisfy its test.
-
-Routed to the ordinary data bus, since the two maps coincide on this board. A
-machine that mapped them differently would need a separate space.
-
-Effect, against the reference at the equivalent frame:
-
-| | before | after | reference |
-|---|---|---|---|
-| tilemap 0 category-1 | 4096 | **4012** | 4012 |
-| tilemap 1 category-1 | **0** | **648** | 648 |
-| row mask non-zero | 0 | 240 | 72 |
-| `scroll[5006]` | `0000` | `2000` | `2058` |
-
-Tilemap 1's 648 tiles are the text layer that was missing from the screen, and it
-matches exactly. Row mask and scroll do **not** match yet — plausibly the
-unimplemented `ctrl & 0x6000` window mode, which now matters.
-
-**THE INSTRUMENT LESSON, and it is the most expensive one here.** The I/O space
-generates no memory-bus traffic, so every bus-level instrument showed an empty
-loop and the fault read as a CPU bug. A PC-filtered read tap on the reference
-reported "no data reads at all in `fed5a4`-`fed5a9`" — true, and utterly
-misleading. **When a loop appears to poll nothing, disassemble it.** Ten minutes
-of decoding against days spent around it.
-
----
-
-## Imported code carries its origin's assumptions
-
-**IMPORTED CODE CARRIES ITS ORIGIN'S ASSUMPTIONS, AND THEY ARE USUALLY IN A
-COMMENT.** The V60 comes from `meathax/s32`, and its `IN`/`OUT` handler said
-"io space unused on S32" while returning a constant and discarding writes. That
-was *correct for System 32* and silently wrong here, and it cost days — the
-comment was accurate, honest, and load-bearing, and nobody read it against Model
-1's memory map.
-
-Worth a sweep for the same shape wherever `S32`, `Golden Axe` or `Spider-Man`
-appears in a comment in `rtl/cpu/v60/`: each one marks a place where behaviour was
-scoped to a different board. `S32_V60_NO_FP`'s own comment says "Golden Axe never
-executes the optional floating-point groups", which is exactly the same class of
-claim about a different game.
-
-## Instruments, and what each cannot do
-
-- **A read tap and a memory watch are different tools.** A read leaves no trace
-  in memory, so watching contents cannot find where something is *read*. Not
-  knowing this cost a day.
-- **A saturating counter that reports its cap as a value is worse than no
-  instrument**, because it produces a confident number. The boot trace's
-  watch-page tables held 32 entries and filled silently, so "the V60 touches 32
-  addresses and none is `0x08`" was a table limit reported as a finding. They
-  hold 256 now.
-- **A cumulative counter is not a rate.** 6,849 deadline misses over 103 frames
-  read as "one line in six"; every miss was before frame 31 and 72 consecutive
-  frames were clean.
-- **A test comparing two empty sets passes and proves nothing.** The loader test
-  reported "0 program words, 0 mismatches" and went green when a helper was
-  overriding the download index. Assert there is something to check.
-- **A guard test must fail if it stops measuring.** The single-cycle strobe test
-  asserts both that one strobe advances one word *and* that three advance three.
-- **`make area` is not `make quartus`.** Generic 6-LUT mapping built
-  `m1_copro_if`'s 256 Kbit RAM out of logic and reported 17,737 LUTs against the
-  real 1,244 ALM and 33 M10K — a 14x disagreement, and only one of them measures
-  the thing.
-- **"Non-black pixels" is not a liveness metric.** 15.7 M non-black was one flat
-  blue field.
-- **The overlay reported four wrong rows, and the wrongness was invisible.** Four
-  faults at once, none of which any test or lint caught — see
-  `debug-overlay.md`. The one to carry forward: three of them made rows read
-  `00000000`, and a blank row looks like *absence* rather than *error*, so the
-  hunt went after the bitstream instead of the wiring.
-- **A single captured frame cannot see an alternation.** The board's picture
-  flashed between a rendered image and a flat colour; the frame test captured
-  one frame at one cycle and rendered correctly, so "simulation is right and
-  hardware is wrong" was believed for two builds. `FRAME_TRACE=1` now prints one
-  line per frame.
-- **A backdrop is not a blank screen.** `m1_tile_mixer` emits source 15 when no
-  layer wins, and the backdrop is palette entry 0 — which in this game is blue.
-  So a frame where every layer declines to draw is a *flat blue picture*, not a
-  black one, and the per-tilemap census reads four zeros because it only counts
-  sources below 8. Two different faults produce that reading and the census
-  alone cannot separate them; the backdrop share can.
-- **Verify against data that can distinguish the fault.** The SDRAM word-late bug
-  survived a session because it was checked at word 0, where the ROM is
-  `000d 000d 000d 000d` — the one address where a one-word shift cannot show.
-
-### MAME harness details, each of which cost a run
-
-`-skip_gameinfo` or the warning screen blocks autoboot and the script silently
-never loads. `-autoboot_delay 0` or a tap installs after the exchange it was
-meant to capture. Assign every notifier and tap to a **global** or the
-subscription is collected and the callback stops with no error. Wrap notifier
-bodies in `pcall` — errors inside them vanish. Run from a scratch directory:
-MAME drops `cfg/`, `nvram/` and `snap/` wherever it starts.
-
-**A leftover in the working directory invalidated three of my own
-conclusions.** I claimed, from pointing `-rompath` at one source at a time, that
-neither `vr.zip` nor `vr.7z` was complete and that MAME assembles a set across
-both. That was wrong. `-verbose` shows MAME **never opens the 7z**: it runs from
-`vr.zip` alone. What actually differed between the runs was a
-`nvram/vr/ioboard_eeprom` file this session had created — with it present, the
-EEPROM comes from saved NVRAM and `93c45.bin` is not needed from any archive at
-all. The "missing file" was a fresh-NVRAM condition wearing a missing-ROM costume.
-
-**So: run ROM-resolution experiments from a clean directory, and check what the
-previous run left behind.** This project's own notes say a control experiment run
-against a dirty state proves nothing — written about the MiSTer needing a reboot
-between core loads — and the same applies here. `cfg/`, `nvram/` and `snap/`
-accumulate wherever MAME starts.
-
-**What MAME needs is not what the core needs**, and that part stands. MAME
-emulates the I/O board Z80 and the comm board; the MRA loads thirteen parts, all
-present in `vr.zip` and CRC-verified. Check against the MRA's part list, not
-against MAME's.
-
----
-
-## Measured resource costs
-
-Quartus 17.0, 5CSEBA6U23I7, on the real core unless stated.
-
-| | ALM | M10K | note |
-|---|---|---|---|
-| whole core, before M2 | 26,663 | 409 | timing +0.401 ns |
-| whole core, **with M2** | **29,141** | **452** | timing **+0.116 ns** — thin |
-| **`s32_v60` alone** | **17,691** | — | **67% of the design** |
-| `ascal` + framework | ~3,600 | 54 | not ours |
-| everything we wrote | <1,000 | — | before M2 |
-| `m1_copro_if` | 1,244 | 33 | `RAM_BLOCK_TYPE = M10K` confirmed |
-| row mask | +204 | 0 | line-buffer word 14 -> 15 bits was free |
-| debug overlay | 307 | 0 | |
-| `S32_V60_NO_FP` | **-2,984** | 0 | unspent. Its justification is a claim about *Golden Axe*, not this game — get Model 1's own `dbg_fp_trap` evidence first |
-
-**The V60 being the majority of the design is the fact that decides where
-optimisation is worth any effort.** Squeezing our own code cannot matter.
-
-### And the V60 is about 2.5x larger than it needs to be
-
-Measured against the sibling Model 2 core's i960, which is a fair comparison
-rather than a flattering one — it has decimal, multiply, divide AND a full
-floating-point unit:
-
-| | i960 (Model 2) | our V60 |
-|---|---|---|
-| ALM | **7,015** | **17,691** |
-| source lines | 4,069 | 4,571 |
-| modules | **16** | **1** |
-| FP included | add, mul, div, sqrt, misc | yes |
-
-Comparable source size, 2.5x the area — and the i960's *entire* FP unit fits
-inside its 7,015 while our FP group **alone** is 2,984.
-
-**So the cost is structure, not instruction count.** The i960 is decomposed with a
-shared `i960_alu`, `i960_muldiv` and `i960_regs`; ours is one module with a
-102-state FSM that spells arithmetic out inline per state, so nothing can be
-shared. That is exactly why it measures **93% combinational** — 21,470 ALM of
-logic against 1,591 of registers.
-
-**The tempting fix is the wrong one.** Gating instruction families off (the way
-`S32_V60_NO_FP` does) removes features to buy area, needs per-family evidence that
-this game never uses them, and leaves the underlying waste in place. Sharing
-datapaths keeps every instruction and attacks the actual cause. Reach for the
-second before the first.
-
-Caveat on doing it: the V60 is imported and carries a 29/29 unit suite. Any
-restructuring is measured against that suite staying green, one shared structure
-at a time, with a Quartus number per step — `SRCS_s32_v60` already exists so a
-V60-only build makes each step minutes rather than half an hour.
-
-**Does sharing cost speed? The sibling project measured it, and no.** Its i960
-registered the register-file read and reported *"Cost: zero cycles. Same 65,630
-cycles, same 3,870 retires"* with Fmax 25.29 -> 27.3 (+8%) and slack 0.451 ->
-3.370. Cycles cannot suffer in a sequential FSM anyway — one state is active at a
-time, so states that never coincide can share a unit for free.
-
-**And the path it fixed is a description of ours**: *"read address through a
-combinational 32:1 multiplexer, through the ALU and FP result muxing, into
-writeback"*. So start there rather than with FP: it is small, contained, and has
-cross-project evidence on the same device at a similar operating point. Note the
-same commit is candid that the gain was less than predicted — the register read
-was half the path — so expect incremental steps, each measured.
-
-**Two inherited cautions.** When a restructuring appears to cost Fmax, check for a
-FALSE PATH before redesigning: that project's decoder change measured a 27.44 ->
-24.63 loss whose cause was a static path no cycle ever uses. And it fixed that
-structurally rather than with an SDC exception, because *"a constraint that stops
-being true fails silently, whereas this cannot rot"* — the same preference applies
-here, where the SDRAM interface is already carrying unconstrained paths.
-
-M10K is the binding resource: **101 blocks free** against the band buffer's ~51.
-Reserves, in order of value: tile RAM and palette
-are each held **twice** (80 blocks of pure redundancy, and the video side has 5:1
-clock slack to interleave a CPU read); display lists to SDRAM (128 blocks,
-sequential access, consumer not yet built); line buffers to MLAB (12 blocks for
-~480 ALM — they use 17% of each block).

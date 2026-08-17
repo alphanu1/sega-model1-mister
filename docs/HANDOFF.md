@@ -91,19 +91,23 @@ detail with the source quotes is in `findings.md`; the short version:
    as `mask ^ category`. That is right for two of the four combinations and
    inverted for the other two, and it suppressed every category-1 tile on the even
    tilemaps. `INSERT COIN(S)`, `CREDIT 0` and the SEGA logo live there.
-2. **A pair in window mode draws nothing unless `hscr & 0x8000`.** There is no
-   `else` on that inner `if`. Attract selects window mode on pair 2/3 with `hscr`
-   never above `0x0200`, so MAME draws tilemaps 2 and 3 **not at all** — and our
-   tilemap 2, opaque, covered all 190,464 pixels. **The sky and sea were a bug:** a
-   pair the hardware does not display.
+2. ~~A pair in window mode draws nothing unless `hscr & 0x8000`.~~ **WITHDRAWN, and
+   it is now the open defect.** There *is* an `else` on that inner `if`, at
+   `segaic24.cpp:418-456`, and in it MAME splits the screen into two rectangles and
+   draws **both** maps of the pair. Attract does select window mode 1 on pair 2/3
+   with `hscr` never above `0x0200` — which means the pair is drawn as a **vertical
+   split at scanline `v`, tilemap 2 above and tilemap 3 below**. That is a horizon:
+   **the sky and sea are correct, and suppressing them is the bug.** It paints
+   palette 0 — blue — across the screen instead. See the START HERE block below.
 
 Measured before: tilemap 0 held content in 617 of 680 frames and won a pixel in 47,
 all of them boot frames. After: 9,674 pixels, then 7,449 with the full attract
 screen up, and tilemaps 2/3 correctly silent.
 
-**Our tile RAM content now matches MAME's census exactly** at the ranking screen —
-`58, 144, 1024, 1024` non-blank words per map in both. So the V60 is producing the
-right picture data and the 2D path is drawing what MAME draws.
+**Our tile RAM content matches MAME's census exactly**, confirmed twice: `58, 144,
+1024, 1024` sampled at the ranking screen, and `315, 648, 4096, 4096` at full
+stride over the whole array (the sampled census strides by four). So the V60
+produces the right picture data. What the 2D path then does with it is the defect.
 
 **What is left on that screen is the 3D.** 93% of the frame is backdrop, because
 the road and cars that fill it are geometry and the rasterizer is not built. Expect
@@ -111,10 +115,11 @@ text on a flat colour, not a full picture. That is M2/M3, not a 2D fault.
 
 ### The board, and why its photographs misled
 
-The board showed sky and sea alternating with a flat blue, and both were
-consistent with these bugs plus the absent 3D: the sky/sea was the wrongly-drawn
-pair, and the flat blue was the backdrop on attract screens whose content is
-almost entirely geometry. Simulation rendered "correctly" only because the one
+The board showed sky and sea alternating with a flat blue. That was read as
+"the sky/sea is the wrongly-drawn pair and the blue is the backdrop", which has it
+backwards: **the sky and sea are correct and the blue is the fault** — the window
+split not being drawn. The user settled it by matching the blue's flash rate to the
+text blink rate, which no still frame can carry. Simulation rendered "correctly" only because the one
 frame it captured was the ranking table, whose text sits on tilemap 1 — the single
 combination the wrong mask formula got right.
 
@@ -176,28 +181,29 @@ Not the backdrop — `bd=0/190464`, nothing falls through. Tilemap 2 wins 180,79
 0, which is blue. The blue and the backdrop are indistinguishable on a photograph
 and land in different counters, and the search went to the wrong one for a while.
 
-**And do not trust the simulation as a reference until it has been run long
-enough.** It is 296 frames in where the board is at roughly 2,400 by its own I/O
-reply count. The board shows sky and sea, which an empty map cannot produce — every
-route through one lands on palette 0 — so the board holds map content simulation
-does not, and the first job is a long run (~3.4e9 cycles, free) to find out whether
-that is a real divergence or just a short run. `findings.md` has the argument.
+**RUN THE SIMULATION LONG ENOUGH — 3.4e9 cycles, not the default.** At 4e8 cycles
+it reaches frame 296 and tile RAM holds map 0 only, which was written up here as a
+divergence from MAME and is not one. At 3.4e9 it reaches frame ~352 and tile RAM
+fills to `0000:315 1000:648 2000:4096 3000:4096`, which is **MAME's census
+exactly**. Our tile-RAM content is right. That withdrawn entry is in
+`findings.md`; the failure was run length, and this is the third board-versus-sim
+comparison made at the wrong simulation state.
 
-Measured from `make m1_frame FRAME_TRACE=1`, stable frames 90 to 296:
+**The whole defect then reproduces locally, no board needed**, at frame 381:
 
-1. **Tilemaps 1, 2 and 3 are empty in SIMULATION.** `have=53,0,0,0`. Correcting
-   for the census's 4x stride, map 0 holds ~212 words — inside MAME's 205-1675
-   range — while maps 1, 2 and 3 hold none at all against MAME's 648-2976 and
-   4096, 4096. Our sea and sky are tilemap 2's opaque category-0 pass over an
-   *empty* map; the reference fills that area from 4,096 real tiles. **This is
-   reproducible for free** and until it is fixed the board has no correct
-   reference to be compared against. Do this one first.
-2. **On hardware, additionally, map 0 reads near-empty** (`008` in overlay row
-   `19`) where simulation has ~212 words. That is the hardware-only part, and it
-   needs the write census below to place it.
+```
+F382 bd=175982/190464 win=11038,3060,0,0 have=79,144,1024,1024
+     rtl_have=2520,4095,4095,4095 wr=252,0,24,144 ctrl=0000,2000
+```
 
-The earlier claim that our tile-RAM content "matches MAME's census exactly" came
-from a single frame at the ranking screen and does not hold across the run.
+Pair 2/3 in window mode 1, maps 2 and 3 holding full content, winning **zero**
+pixels, and 92% of the screen falling through to the backdrop — palette 0, blue.
+Symptom, cause and effect on one line. Fix the window split and this is the frame
+to check it against.
+
+Note `wr=252,0,24,144`: the game *does* rewrite maps 0/1 and the row masks once it
+reaches this screen, which corrects the "the game loop never rewrites the tilemaps"
+reading taken at frame 92.
 
 In order:
 
