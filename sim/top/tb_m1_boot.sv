@@ -475,6 +475,42 @@ initial begin
     $display("BOOT: io handshake replies=%0d (answered in RTL by m1_ioboard)",
              dbg_io_replies);
     $display("BOOT: sdram violations flags=%04h", v_flags);
+    // ------------------------------------------------------ tile RAM census
+    //
+    // Is the missing 2D even IN the tile RAM? The picture on hardware shows the
+    // background and none of the text, and it looked identical before and after
+    // the row mask went in — so either the render drops it or the V60 never
+    // wrote it. Those need separating before any more video RTL is touched.
+    //
+    // MAME at its attract frame reports, per 4096-word map:
+    //   map 0: 4096 nonzero, 4096 category-1, commonest colour 00
+    //   map 1: 4096 nonzero,  648 category-1, commonest colour 00
+    //   map 2: 4096 nonzero,    0 category-1, commonest colour 7c
+    //   map 3: 4096 nonzero,    0 category-1, commonest colour 60
+    // A map that reads all zeros here is a CPU-side question, not a video one.
+    begin : tram_census
+        integer m, i, nz, cat1, w;
+        for (m = 0; m < 4; m = m + 1) begin
+            nz = 0; cat1 = 0;
+            for (i = 0; i < 4096; i = i + 1) begin
+                w = {main.rams.tram_c_hi[m*4096 + i], main.rams.tram_c_lo[m*4096 + i]};
+                if (w[13:0] != 0) nz = nz + 1;
+                if (w[15])        cat1 = cat1 + 1;
+            end
+            $display("BOOT: tilemap %0d: %0d/4096 nonzero, %0d category-1", m, nz, cat1);
+        end
+        $write("BOOT: scroll/ctrl:");
+        for (i = 0; i < 8; i = i + 1)
+            $write(" [%04h]=%04h", 15'h5000 + i,
+                   {main.rams.tram_c_hi[15'h5000 + i], main.rams.tram_c_lo[15'h5000 + i]});
+        $display("");
+        nz = 0;
+        for (i = 0; i < 2048; i = i + 1)
+            if ({main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]} != 0)
+                nz = nz + 1;
+        $display("BOOT: row mask 0x6000: %0d/2048 nonzero (MAME sees 72)", nz);
+    end
+
     $display("BOOT: bus accesses by 64KB page:");
     for (i = 0; i < 256; i = i + 1)
         if (hist[i] != 0)

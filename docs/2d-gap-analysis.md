@@ -8,6 +8,24 @@ otherwise. `segaic24.cpp` is the reference — `draw_common` and `draw_rect`.
 `CREDIT 0` and the SEGA logo over the road. Ours shows the sky and sea and
 nothing else, and neither scrolls.
 
+> **RESOLVED, 2026-08-17 — this is not a rendering fault.** Our tile RAM at
+> frame 71 matches MAME at frame 71 exactly, including 370 category-1 tiles on
+> map 0. MAME writes the text, the scroll registers and the mask table only
+> between frames 150 and 300, and our V60 stops advancing before that: it
+> reaches map 0's frame-300 state, starts touching the coprocessor at
+> `0xd00000` (510 accesses), and the rest of the setup never happens. It then
+> loops at `fed5a4`-`fed5a9`, not halted, which is the same PC the debug overlay
+> reports on hardware — so board and simulation are in the same state.
+>
+> **Every difference below is a difference in program state, not in rendering.**
+> The row mask table is empty at the point we reach, in MAME too, which is why
+> implementing it correctly changed nothing on screen. The window mode is
+> likewise never entered because `ctrl` is never written. Keep both — they are
+> real and will be needed — but the blocker is M2.
+>
+> What this file is still good for: the segas24 semantics, which are now
+> verified against `model1_v.cpp`, and the harness notes.
+
 ---
 
 ## Ruled out by measurement — do not re-derive these
@@ -206,34 +224,26 @@ mame vr -rompath ~/roms -window -skip_gameinfo -autoboot_delay 0 \
   is launching before the previous instance has exited; `pkill -x mame` then
   wait for `pgrep` to go quiet rather than sleeping a fixed few seconds.
 
-### Completing the ROM set removes the orange screen
+### The ROM set is complete — an earlier claim here was wrong
 
-Three files are missing against MAME 0.289, and one is free:
+This file previously said three files were missing and built a theory about a
+transposed filename. **Both were wrong.** The set is complete: 29 of 29 against
+MAME 0.289 with zero CRC mismatches.
 
-| File | Status |
-|---|---|
-| `mpr-14897.33` | **present under a transposed name** — the set has `mpr-14879.33` with CRC `74873195`, which is exactly what `mpr-14897.33` should be. Copy it under the right name and this warning goes |
-| `315-5573.bin` | genuinely absent. TGP microcode, 8 KB, CRC `3335a19b`. Needed for M2 regardless |
-| `93c45.bin` | genuinely absent. I/O board EEPROM default, 128 bytes, CRC `65aac303`. Our HLE does not use it |
+The error was auditing only `vr.zip`. **MAME searches both the zip and a
+directory named after the set**, and `~/roms/vr/` holds `315-5573.bin`
+(`3335a19b`), `93c45.bin` (`65aac303`) and `mpr-14897.33` (`74873195`) — the
+three that looked absent. Audit every source MAME would search, not the one that
+is easiest to open.
 
-Do the rename into a **scratch copy** of the zip and point `-rompath` there —
-hard rule 2 keeps ROM images out of the repository, and there is no reason to
-mutate the working set in `~/roms` either.
-- `-autoboot_delay 0`, or a tap installs after the exchange it should capture.
-- Assign every notifier and tap to a **global**, or the subscription is
-  collected and the callback stops with no error.
-- Wrap notifier bodies in `pcall` and log the message; errors inside a notifier
-  vanish otherwise.
-- `manager.machine.video:snapshot()` gives a reference frame to diff against a
-  photograph of the board.
-- tile_ram word *w* is at V60 `0x700000 + w*2`.
+So the orange screen is not a missing-ROM warning; with a complete set it is the
+ordinary imperfect-emulation disclaimer, which `-skip_gameinfo` does not cover
+in this build. One keypress clears it.
 
-Scripts in `scratchpad/mame/`: `maps.lua` (per-map census plus the window-mode
-arithmetic), `mask.lua` (row-mask tables and scroll registers), `rows.lua`
-(per-row dump, did not fire), `trace.lua` (read/write tap, run-length
-compressed), `snap.lua` (timed snapshots).
-
----
+**`315-5573.bin` being present matters beyond this**: it is the real decapped
+coprocessor microcode, so M2 and M0's outstanding exit criterion 2 — lockstep
+against real microcode rather than generated instructions — are the same piece
+of work, with the oracle available on both sides.
 
 ## The best experiment nobody has run yet
 
