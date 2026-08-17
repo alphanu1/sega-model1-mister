@@ -132,24 +132,56 @@ whose content matches MAME's census exactly.
 
 In order:
 
-1. **Finish the hardware content census.** Two overlay rows counting non-blank
-   tile words per map, the equivalent of the frame test's `have=`. Drop the copro
-   FIFO rows (`17`/`18`) to stay under the 24-row ceiling — they read `FFFF` and
-   `0` and carry nothing while the TGP has no rasterizer to feed. This splits "no
-   content" from "content not drawn", which is the one question blocking
-   everything else, and it is the pair of numbers that located the row-mask fault
-   in simulation. A start was made and reverted rather than left half-wired: a
-   `tw_nonblank` pulse off `m1_tile_fetch`'s `F_TILE` state, accumulated per
-   `cur_layer` in `m1_video` and latched at `vblank_start`.
-2. **Test the dual-clock tile RAM.** Quartus warns its read-during-write is
-   undefined, Verilator models it as clean, and it is the memory in question —
-   see `findings.md`. Free first experiment: the OSD already carries
+1. **The hardware content census is BUILT** — overlay rows `19` and `1A`, two
+   12-bit counts each, tilemaps 0-3. Read them against the win census in rows
+   `11`-`14`:
+
+   | have | won | Meaning | Where to look |
+   |---|---|---|---|
+   | 0 | 0 | the layer holds nothing | the CPU, or its writes to tile RAM |
+   | >0 | 0 | content is there and not reaching the screen | masking, window mode, priority |
+   | 0 | >0 | an opaque pass over an empty map | correct, and worth recognising |
+   | >0 | >0 | on screen | — |
+
+   That third row is real and was seen in simulation: tilemap 2 winning 180,790
+   pixels while holding no content at all, because tilemaps 2/3 draw their
+   category-0 pass opaque. Do not read a zero `have` as a broken layer without
+   checking `won`.
+
+   Validated against a direct read of tile RAM — `make m1_frame FRAME_TRACE=1`
+   prints both `have=` (the whole map, from the testbench) and `rtl_have=` (words
+   fetched on the displayed span, from the RTL). They differ in magnitude by
+   design and agree about zero, which is the reading that matters.
+2. **Test the dual-clock tile RAM** — but weigh it honestly. Quartus warns its
+   read-during-write is undefined and Verilator models it as clean, so it is a
+   real sim-versus-hardware divergence in the memory in question (`findings.md`).
+   **It is a weak explanation for a systematically empty layer**, though:
+   read-during-write corrupts only the word being written at the instant it is
+   read, which gives occasional wrong tiles, not a layer that holds nothing all
+   frame. Treat it as a hazard to close rather than the leading suspect, and let
+   the census point first.
+
+   Free experiments before any rebuild: the OSD carries
    `O[5:4],SDRAM read phase,CL+2..CL+5`, so sweeping it costs a menu click and
-   says whether any memory-timing sensitivity is in play before a rebuild.
-3. **Measure the test/service switches.** They do not reach the game. The bit
-   order and polarity in `Model1.sv` check out against the documented map — IN.0
-   bit 2 test, bit 3 service, inverted for active low — so the next step is the
-   oracle, `INPUT_PORTS( vr )` in `model1.cpp`, not an edit.
+   says whether any memory-timing sensitivity exists at all. The honest fix, if
+   needed, is a registered/synchronised read or moving tile RAM to one clock
+   domain.
+3. **The test/service switches are CORRECTLY MAPPED** — checked against the
+   oracle, `INPUT_PORTS( vr )` in `model1.cpp`:
+
+   | Bit | MAME | Ours |
+   |---|---|---|
+   | `0x04` (2) | `PORT_SERVICE_NO_TOGGLE` | `io_test` |
+   | `0x08` (3) | `IPT_SERVICE1` | `io_service` |
+
+   Both active low, both in IN.0, which `findings.md` measured as DPRAM `0x08`.
+   So bit order, address and polarity are all right and **no edit is warranted**.
+
+   Two things to try instead, both free. The naming is misleading: bit 2 is MAME's
+   *Service Mode* switch — the one that opens the test menu — while bit 3 is the
+   service *coin* button, which does not. And service mode is sampled at boot on
+   this hardware, so set `Test switch` **On** and then `T[0] Reset` rather than
+   expecting a running game to react.
 
 ### How to see it, and what to expect
 
