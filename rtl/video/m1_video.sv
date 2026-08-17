@@ -359,8 +359,46 @@ module m1_video #(
   //      about the split without it. Nothing measured reaches it.
   wire        win_hs       = hctrl_r[15];
   wire        win_vsplit   = (ctrl_r[14:13] == 2'b01);   // mode 1
-  wire        win_suppress = win_mode
-                           && (win_vsplit ? (cur_layer[0] != win_pick) : 1'b1);
+  wire        win_hsplit   = win_mode && !win_vsplit;    // modes 2 and 3
+
+  // Modes 2/3, the HORIZONTAL split. Same shape as mode 1 one level down:
+  //
+  //   h = hscr & 0x1ff
+  //   c1 = x < h  shows `layer`,  c2 = x >= h shows `layer ^ 1`
+  //   and layer is swapped first when (hscr & 0x200) is CLEAR
+  //
+  // So the low bit of the map that owns the LEFT side is !(hscr & 0x200), and
+  // any layer that is not that one owns the right. Per pixel, not per scanline,
+  // so m1_tile_fetch applies it — see its split_en/split_x/split_right.
+  wire [8:0]  win_h         = hctrl_r[8:0];
+  wire        win_left_pick = ~hctrl_r[9];
+  wire        win_right     = (cur_layer[0] != win_left_pick);
+
+  // Mode 1 only. Modes 2/3 no longer blank the pair — that was the placeholder
+  // while the column split did not exist, and it cost the text layers every
+  // frame the game selected mode 2 (194 of 2,478 measured).
+  wire        win_suppress  = win_mode && win_vsplit
+                           && (cur_layer[0] != win_pick);
+
+  // IN WINDOW MODE BOTH MAPS OF A PAIR SCROLL FROM THE EVEN MAP'S REGISTERS.
+  //
+  // draw_common reads hscr/vscr before the shift, then returns immediately for
+  // the odd map, so only the even map's values ever reach the window branch —
+  // and it applies them to both:
+  //
+  //   set_scrolly(layer, vscr & 0x1ff);    set_scrolly(layer|1, vscr & 0x1ff);
+  //   set_scrollx(layer, -(hscr & 0x1ff)); set_scrollx(layer|1, -(hscr & 0x1ff));
+  //
+  // ctrl_r IS that even vscr and hctrl_r that even hscr, both already latched.
+  //
+  // vscr bit 15 rides along correctly rather than by accident: in window mode
+  // MAME only ever tests the EVEN map's disable bit, because the odd map returns
+  // before the check, so an odd map cannot be disabled on its own there.
+  //
+  // Invisible in attract today — ctrl = 0x2000 gives v = 0, so only the even map
+  // draws and the odd map's scroll never matters. It matters as soon as v != 0.
+  wire [15:0] f_hscr = win_mode ? hctrl_r : hscr_r;
+  wire [15:0] f_vscr = win_mode ? ctrl_r  : vscr_r;
 
   // Base of this layer's table. MAME picks it with `layer & 4` on the 8-way
   // draw index, which is bit 1 of the tilemap number: 0/1 -> 0x6000,
@@ -388,8 +426,9 @@ module m1_video #(
   m1_tile_fetch #(.COLUMNS(COLUMNS)) fetch (
     .clk(clk), .rst_n(rst_n),
     .start(f_start), .line(cur_line), .layer(cur_layer),
-    .hscr(hscr_r), .vscr(vscr_r), .tile_mask(tile_mask),
+    .hscr(f_hscr), .vscr(f_vscr), .tile_mask(tile_mask),
     .layer_off(win_suppress),
+    .split_en(win_hsplit), .split_x(win_h), .split_right(win_right),
     .busy(f_busy), .done(f_done),
     .tram_addr(f_tram_addr), .tram_data(tram_data),
     .char_req(char_req), .char_addr(char_addr),

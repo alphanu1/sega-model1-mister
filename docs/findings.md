@@ -692,3 +692,73 @@ the slow 85C corner is within the model's own noise and the board has run with
 this interface unconstrained throughout, so the `.rbf` is flashable — but it is not
 clean and is not recorded as if it were. It will also get worse as M2 and M3 grow
 the design, which is when this becomes a requirement rather than a note.
+
+## The window fix WORKS on hardware, and the blue flash is a different fault
+## — 2026-08-18
+
+Read off the board's own overlay, from a 30 fps video, comparing a picture frame
+against a blank one in the same second.
+
+**The fix is confirmed on hardware.** Row `13`, tilemap 2's visible pixels, reads
+`02E800` = **190,464 — the entire screen** — where it read `000000` before, and the
+sky and sea in those frames are real tilemap 2 content rather than a flat fill. Row
+`11` reads `000005`, and 190,459 + 5 = 190,464 exactly, so there is no backdrop at
+all. That defect is closed.
+
+### The blue flash is periodic, and it is the game clearing the screen
+
+Measured from the video by texture in the picture region only — a blue-pixel count
+cannot see it, because the correct picture is *also* blue:
+
+```
+blank runs (video frames): (12,14) (26,28) (39,42) (53,55) (66,69) (80,82) ...
+112 blank frames of 460, period ~13.5 frames at 30 fps
+```
+
+**0.45 s period, ~24% duty, about 7 core frames at a time.** The user timed it at
+"every 1/2 second" before any of this was measured, and also pointed out that 30 fps
+cannot resolve it cleanly — both correct, and the second is why earlier metrics on
+the same video found nothing.
+
+| overlay row | picture frame | blank frame |
+|---|---|---|
+| `16` pair 2/3 ctrl | `002000` | **`000000`** |
+| `1A` map2, map3 content | `FFFFFF` | **`000FFF`** |
+| `11`-`14` wins | `5, 0, 190459, 0` | **all zero** |
+| `19` map0, map1 content | `008000` | `000000` |
+| `1B` writes | `003 00C` | `000 008` |
+
+**Window mode is OFF during the blank**, so the window logic is not involved. Map 2
+reads empty, its category-0 pass is opaque, so it paints palette 0 over the whole
+screen and hides map 3 — which still holds `FFF`. That is the blue.
+
+Rows `19` and `16` change **in the same frame**, which the user established by
+watching them: the game writes `ctrl` and the tile content as one operation, so the
+screen is torn down and rebuilt each cycle rather than one register drifting.
+
+### Three things this rules out
+
+1. **The write path is innocent.** Row `1B` matches simulation exactly on both
+   frames — `003 00C` against `wr=3,0,12,0`, and `000 008` against `wr=0,0,24,0`.
+   Read-during-write is now dead on evidence rather than on the arithmetic argument
+   used earlier, and the CPU writes maps 0/1 on hardware just as it does in sim.
+2. **The V60 is not being reset.** Row `01`, instruction fetches, is monotonic
+   across the blanks: `7A7D..` -> `7D4DE6` -> `88638.`. It fetches straight through.
+3. **Simulation does not reproduce it.** Its 336 `ctrl=0000,0000` frames are ONE
+   contiguous run at frames 1-336 — boot — and it never returns. The board goes back
+   there every 0.45 s indefinitely.
+
+### So maps 0/1 are empty because the game never finishes drawing them
+
+Only **8** non-blank words reach map 0 before the next teardown, against
+simulation's 552-2,520 at the same `ctrl` state. The missing text is not a memory
+fault and not a compositing fault: the game is being restarted before it draws.
+
+**Cause unknown, and this is a CPU-side question now.** The overlay's PC row cannot
+help — it samples at the same point every frame and reads `FFE59C` blank or not.
+What is needed is the PC **at the instant of the teardown**, latched on the `ctrl`
+`0x2000 -> 0x0000` transition, with a counter. That names the code and makes it
+traceable in the ROM. Candidates not yet tested: a self-test or synchronisation wait
+timing out, and the published DPRAM bytes — the DSWs at `0x0b`-`0x0d` and the
+`0x03`-`0x07` block whose contents are recorded as unknown — since simulation feeds
+fixed inputs and the board reads real ones.

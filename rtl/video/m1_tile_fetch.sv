@@ -113,6 +113,15 @@ module m1_tile_fetch #(
   // per line, because a window splits the screen between the two maps of a pair.
   input  logic        layer_off,
 
+  // Window modes 2 and 3: the pair's two maps split the screen at a COLUMN, not
+  // at a scanline, so this cannot be folded into layer_off the way mode 1's
+  // vertical split is. split_x is MAME's `h = hscr & 0x1ff` and split_right says
+  // which side of it this layer owns — 1 for x >= h, 0 for x < h. MAME draws
+  // `layer` into the clip left of h and `layer^1` into the clip right of it.
+  input  logic        split_en,
+  input  logic [8:0]  split_x,
+  input  logic        split_right,
+
   output logic        busy,
   output logic        done,
 
@@ -400,11 +409,19 @@ module m1_tile_fetch #(
   logic [9:0]  px      [4];
   logic [15:0] px_word [4];
   logic [3:0]  px_mask;
+  // The column split, per pixel, off the same x. Masked when the pixel falls on
+  // the side of the split this layer does NOT own, which is the disagreement
+  // between `x < h` and split_right:
+  //   split_right = 1  owns x >= h, so mask where (x < h) is 1
+  //   split_right = 0  owns x <  h, so mask where (x < h) is 0
+  logic [3:0]  px_split;
   always_comb begin
     for (int i = 0; i < 4; i++) begin
-      px[i]      = sx + 10'(i);
-      px_word[i] = row_mask[{px[i][8:7], 4'd0} +: 16];
-      px_mask[i] = px_word[i][4'd15 - px[i][6:3]];
+      px[i]       = sx + 10'(i);
+      px_word[i]  = row_mask[{px[i][8:7], 4'd0} +: 16];
+      px_mask[i]  = px_word[i][4'd15 - px[i][6:3]];
+      px_split[i] = split_en
+                 && ((px[i] < {1'b0, split_x}) == split_right);
     end
   end
 
@@ -460,7 +477,7 @@ module m1_tile_fetch #(
             // m = ~m` does. This was `dec_prio ^ px_mask`, which tied the mask to
             // the category instead of to the tilemap, and suppressed every
             // category-1 tile on the even tilemaps. See m1_video's Q_MASK_W.
-            lb_masked      <= px_mask | {4{layer_off}};
+            lb_masked      <= px_mask | {4{layer_off}} | px_split;
 
             sx  <= sx + 10'(gn);
             rem <= rem - gn;
