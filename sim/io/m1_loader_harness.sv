@@ -41,6 +41,13 @@ module m1_loader_harness (
   output logic        overflow,
 
   // TGP program memory write port, observed directly
+  // Microcode load evidence, brought out so the C++ side can check the count and
+  // the checksum against what it streamed. The whole point of these two is that
+  // they are trustworthy on HARDWARE, where nothing else can observe the stream —
+  // so they need to be wrong here if they would be wrong there.
+  output logic [11:0] ucode_words,
+  output logic [15:0] ucode_csum,
+
   output logic        tgp_wr,
   output logic [10:0] tgp_addr,
   output logic [31:0] tgp_din,
@@ -75,7 +82,8 @@ module m1_loader_harness (
     .sdr_wr_req(wr_req), .sdr_wr_addr(wr_addr), .sdr_wr_din(wr_din),
     .sdr_wr_be(wr_be), .sdr_wr_ack(wr_ack),
     .tgp_wr(tgp_wr), .tgp_addr(tgp_addr), .tgp_din(tgp_din),
-    .rom_loaded(rom_loaded), .overflow(overflow)
+    .rom_loaded(rom_loaded), .overflow(overflow),
+    .ucode_words(ucode_words), .ucode_csum(ucode_csum)
   );
 
   logic [NP-1:0]       p_req, p_we, p_ack;

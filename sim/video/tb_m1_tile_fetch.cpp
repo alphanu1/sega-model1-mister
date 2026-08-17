@@ -121,11 +121,13 @@ struct Fetch {
   // the RTL. When that reading turned out to be wrong, 380,929 checks agreed with
   // the bug. A module's own outputs need checking at the module.
   long render(int line, int layer, uint16_t hscr, uint16_t vscr,
-              uint64_t rmask = 0, bool loff = false) {
+              uint64_t rmask = 0, bool loff = false,
+              bool sen = false, int sx_split = 0, bool sright = false) {
     for (int i = 0; i < 512; i++) lb_written[i] = false;
     tw_pulses = 0;
     d->line = line; d->layer = layer; d->hscr = hscr; d->vscr = vscr;
     d->row_mask = rmask; d->layer_off = loff;
+    d->split_en = sen; d->split_x = sx_split; d->split_right = sright;
     long t0 = cyc;
     d->start = 1; tick(); d->start = 0;
     long guard = 0;
@@ -140,14 +142,19 @@ static long checks = 0, fails = 0;
 // the leftmost eight. The fetch engine applies the bit as given — the odd-tilemap
 // inversion happens in m1_video when the word is read, mirroring MAME's
 // `if (win) m = ~m` — so this must NOT invert.
-static int want_mask_bit(uint64_t rmask, int sx, bool loff) {
+// Window modes 2/3 add a per-pixel column split: masked on the side this layer
+// does NOT own, which is the disagreement between `x < h` and split_right.
+static int want_mask_bit(uint64_t rmask, int sx, bool loff,
+                         bool sen = false, int h = 0, bool sright = false) {
   if (loff) return 1;
+  if (sen && ((sx < h) == sright)) return 1;
   uint16_t w = (uint16_t)(rmask >> (((sx >> 7) & 3) * 16));
   return (w >> (15 - ((sx >> 3) & 15))) & 1;
 }
 
 static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
-                   const char* what, uint64_t rmask = 0, bool loff = false) {
+                   const char* what, uint64_t rmask = 0, bool loff = false,
+                   bool sen = false, int h = 0, bool sright = false) {
   long bad = 0;
   for (int sx = 0; sx < COLUMNS * 8; sx++) {
     uint32_t map_x = ((uint32_t)sx - (hscr & 0x1ff)) & 0x1ff;
@@ -166,7 +173,7 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
       if (bad < 6) printf("  FAIL %s: pixel %d never written\n", what, sx);
       bad++; fails++; continue;
     }
-    int want_mk = want_mask_bit(rmask, sx, loff);
+    int want_mk = want_mask_bit(rmask, sx, loff, sen, h, sright);
     if (f.lb_pal[sx] != want_pal || f.lb_tr[sx] != want_tr ||
         f.lb_pr[sx] != want_pr || f.lb_mk[sx] != want_mk) {
       if (bad < 6)
@@ -291,6 +298,37 @@ int main(int argc, char** argv) {
     f.render(5, 2, 0, 0);
     verify(f, 5, 2, 0, 0, "alternating");
     printf("  %u char fetches\n", (unsigned)f.d->fetches);
+  }
+
+  // ----------------------------------- window modes 2/3, the per-pixel split
+  //
+  // Mode 1's vertical split is one bit for a whole scanline and rides on
+  // layer_off. Modes 2/3 split at an arbitrary x, so the mask has to change part
+  // way through a four-pixel emit group — which is the only reason this belongs
+  // here rather than in m1_video. 194 frames of 2,478 on real game code select
+  // mode 2 on the pair the TEXT lives on, and it was blanked outright until this.
+  printf("test: the modes 2/3 column split masks exactly one side\n");
+  {
+    for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = (uint16_t)(i * 7 + 1);
+    Fetch f; f.lat = 3; f.reset();
+    // h=0 collapses the left region to nothing and h=496 the right; those are
+    // where MAME's clip rectangles degenerate and where an off-by-one shows up as
+    // a whole missing region rather than one wrong pixel.
+    const int hs[] = {0, 1, 3, 8, 137, 248, 249, 495, 496};
+    for (int hi = 0; hi < 9; hi++)
+      for (int side = 0; side < 2; side++) {
+        char what[64];
+        snprintf(what, sizeof what, "split h=%d right=%d", hs[hi], side);
+        f.render(11, 0, 0, 0, 0, false, true, hs[hi], side != 0);
+        verify(f, 11, 0, 0, 0, what, 0, false, true, hs[hi], side != 0);
+      }
+    // It composes with the row mask rather than replacing it, and layer_off still
+    // wins over both — so mode 1 and modes 2/3 cannot end up half-applied.
+    uint64_t rm = 0xf0f00f0fffff0000ull;
+    f.render(12, 1, 0, 0, rm, false, true, 200, true);
+    verify(f, 12, 1, 0, 0, "split+rowmask", rm, false, true, 200, true);
+    f.render(13, 0, 0, 0, 0, true, true, 100, false);
+    verify(f, 13, 0, 0, 0, "split+layer_off", 0, true, true, 100, false);
   }
 
   // ------------------------------------------ consecutive lines, same tiles

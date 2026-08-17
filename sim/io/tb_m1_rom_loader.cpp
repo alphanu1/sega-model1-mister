@@ -212,6 +212,37 @@ int main(int argc, char** argv) {
     printf("  %zu program words, %ld mismatches\n", h.expect_tgp.size(), bad);
   }
 
+  // THE LOAD-EVIDENCE COUNTER, against the same stream.
+  //
+  // It exists to be read off the board's overlay, because on hardware nothing
+  // else can say whether the HPS ever sent index 1: MiSTer does not log ROM
+  // assembly, /media/fat is mounted noatime so the file read leaves no trace, and
+  // the download is over long before anything can be inspected. A whole round of
+  // diagnosis was spent inferring that the microcode loads from the fact that the
+  // code to load it exists. So this counter has to be right, and it is checked
+  // here rather than trusted.
+  printf("test: the microcode load counter matches the stream\n");
+  {
+    uint16_t want_csum = 0;
+    for (auto& kv : h.expect_tgp)
+      want_csum = (uint16_t)(want_csum ^ (uint16_t)(kv.second >> 16)
+                                      ^ (uint16_t)(kv.second & 0xffff));
+    h.checks++;
+    if (h.d->ucode_words != h.expect_tgp.size()) {
+      printf("  FAIL ucode_words = %u, expected %zu\n",
+             (unsigned)h.d->ucode_words, h.expect_tgp.size());
+      h.fails++;
+    }
+    h.checks++;
+    if (h.d->ucode_csum != want_csum) {
+      printf("  FAIL ucode_csum = %04x, expected %04x\n",
+             (unsigned)h.d->ucode_csum, (unsigned)want_csum);
+      h.fails++;
+    }
+    printf("  %u words, csum %04x\n",
+           (unsigned)h.d->ucode_words, (unsigned)h.d->ucode_csum);
+  }
+
   printf("test: nothing is dropped however late the host reacts to wait\n");
   {
     // Sweep the host's reaction latency. A loader that asserts wait and

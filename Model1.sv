@@ -406,6 +406,9 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [15:0] dbg_ctrl [2];
   wire [11:0] dbg_layer_have [4];
   wire [11:0] dbg_tram_writes [4];
+  wire [11:0] dbg_ucode_words;
+  wire [15:0] dbg_copro_pops;
+  wire [15:0] dbg_ucode_csum;
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -454,7 +457,9 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
     .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
-    .dbg_tram_writes(dbg_tram_writes)
+    .dbg_tram_writes(dbg_tram_writes),
+    .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
+    .dbg_copro_pops(dbg_copro_pops)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -683,8 +688,30 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [31:0] dw [NDW];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
-  assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
-  assign dw[3]  = {8'h03, fa[1]};                  // fetch 1  <- reset vector
+  // ROWS 02 AND 03 WERE BOOT FETCH ADDRESSES 0 AND 1. They found the SDRAM
+  // off-by-one and have shown the same two constants ever since; these two
+  // questions are live and unanswered, which is a better use of the space.
+  //
+  // 02: DID THE MICROCODE ARRIVE? Words loaded (left 12 bits) and a checksum of
+  // both halves of every word (right 16). 800 and a non-zero checksum is a
+  // complete, correct load of 2048 words; 000 means the HPS never delivered
+  // index 1 and the coprocessor has been executing an empty RAM. Nothing
+  // measured this before, and its absence cost a full round of diagnosis — the
+  // RTL path is wired and the MRA element is well formed, so "it loads" had been
+  // inferred from the code existing. The board cannot be asked: MiSTer does not
+  // log ROM assembly and /media/fat is noatime, so the read leaves no trace.
+  // The checksum is folded to 12 bits rather than truncated, so all sixteen bits
+  // of it contribute — a truncation would ignore a difference confined to the top
+  // nibble, which is exactly the sort of near-miss a wrong 8 KB would produce.
+  assign dw[2]  = {8'h02, dbg_ucode_words,
+                   dbg_ucode_csum[11:0] ^ {8'd0, dbg_ucode_csum[15:12]}};
+  // 03: IS THE COPROCESSOR DRAINING ITS COMMAND FIFO? Pushes (left) against
+  // pops (right), 12 bits each, saturating. The retired rows 17/18 showed pushes
+  // at FFFF and returns a constant 0, which has two very different causes: the
+  // TGP not taking the work, or taking it and returning nothing. A full FIFO
+  // HALTS THE V60 — depth 16, measured — so the first would stall the CPU
+  // periodically, which is the shape of the 0.45 s teardown on the board.
+  assign dw[3]  = {8'h03, dbg_copro_pushes[11:0], dbg_copro_pops[11:0]};
   assign dw[4]  = {8'h04, fa[2]};                  // fetch 2
   assign dw[5]  = {8'h05, fa[3]};                  // fetch 3
   assign dw[6]  = {8'h06, fa[4]};                  // fetch 4

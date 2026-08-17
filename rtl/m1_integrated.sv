@@ -169,7 +169,14 @@ module m1_integrated (
 
   // CPU writes into tile RAM by region — see m1_main. The counterpart to
   // dbg_layer_have: one says what was written, the other what was read back.
-  output logic [11:0] dbg_tram_writes [4]
+  output logic [11:0] dbg_tram_writes [4],
+
+  // Microcode load evidence — see m1_rom_loader. 0x800 words is a complete load.
+  output logic [11:0] dbg_ucode_words,
+  output logic [15:0] dbg_ucode_csum,
+
+  // Coprocessor command-FIFO pops — see m1_main.
+  output logic [15:0] dbg_copro_pops
 );
 
   logic [14:0] vid_tram_addr;
@@ -269,6 +276,7 @@ module m1_integrated (
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_copro_pops(dbg_copro_pops),
     .rom_bank(rom_bank)
   );
 
@@ -390,6 +398,7 @@ module m1_integrated (
     .sdr_wr_req(ldr_wr_req), .sdr_wr_addr(ldr_wr_addr),
     .sdr_wr_din(ldr_wr_din), .sdr_wr_be(ldr_wr_be), .sdr_wr_ack(ldr_wr_ack),
     .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
+    .ucode_words(dbg_ucode_words), .ucode_csum(dbg_ucode_csum),
     .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)
   );
 

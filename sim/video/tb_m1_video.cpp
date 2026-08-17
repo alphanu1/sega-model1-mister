@@ -57,8 +57,15 @@ long ref_wins[5] = {0,0,0,0,0};
 static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   int pal[4], transp[4], prio[4];
   for (int L = 0; L < 4; L++) {
-    uint16_t hscr = tile_ram[0x5000 + L];
-    uint16_t vscr = tile_ram[0x5004 + L];
+    // IN WINDOW MODE BOTH MAPS OF A PAIR SCROLL FROM THE EVEN MAP'S REGISTERS.
+    // draw_common reads hscr/vscr before the shift and returns immediately for
+    // the odd map, so only the even map's values reach the window branch — and it
+    // applies them to both maps. Using each layer's own scrolls the odd map of a
+    // window pair wrongly.
+    uint16_t pctrl = tile_ram[0x5004 + (L & 2)];
+    int      inwin = (pctrl & 0x6000) != 0;
+    uint16_t hscr = tile_ram[0x5000 + (inwin ? (L & 2) : L)];
+    uint16_t vscr = tile_ram[0x5004 + (inwin ? (L & 2) : L)];
     uint32_t mx = ((uint32_t)x - (hscr & 0x1ff)) & 0x1ff;
     uint32_t my = ((uint32_t)y + (vscr & 0x1ff)) & 0x1ff;
     uint16_t tw = tile_ram[L * 0x1000 + (my >> 3) * 64 + (mx >> 3)];
@@ -122,7 +129,18 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   for (int L = 0; L < 4; L++) {
     uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
     if (!(ctrl & 0x6000)) { win_off[L] = 0; continue; }
-    if (((ctrl & 0x6000) >> 13) != 1) { win_off[L] = 1; continue; }  // modes 2/3
+    if (((ctrl & 0x6000) >> 13) != 1) {
+      // MODES 2 and 3: horizontal split at h = hscr & 0x1ff. MAME draws `layer`
+      // into the clip left of h and `layer^1` into the clip right of it, having
+      // swapped first when (hscr & 0x200) is clear — so the low bit of the map
+      // owning the LEFT is !(hscr & 0x200).
+      uint16_t hs    = tile_ram[0x5000 + (L & 2)];
+      int h          = hs & 0x1ff;
+      int left_pick  = !(hs & 0x200);
+      int owns_right = ((L & 1) != left_pick);
+      win_off[L]     = ((x < h) == owns_right);
+      continue;
+    }
     uint16_t nv   = (uint16_t)(-(int)ctrl);
     int v         = nv & 0x1ff;
     int swap      = !(nv & 0x200);

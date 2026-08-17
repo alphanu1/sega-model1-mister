@@ -161,6 +161,10 @@ module m1_main #(
   // Per frame and saturating at FFF, latched at vblank. See the counter below
   // for why cumulative does not work.
   output logic [11:0] dbg_tram_writes [4],
+  // Command-FIFO pops, alongside the pushes already brought out. Was internal;
+  // brought out because pushes-without-pops and pops-without-returns are
+  // different faults and the overlay could not tell them apart.
+  output logic [15:0] dbg_copro_pops,
   output logic [2:0]  rom_bank
 );
 
@@ -381,7 +385,6 @@ module m1_main #(
   logic [15:0] dbg_copro_ram_writes;
   assign dbg_copro_pushes = dbg_copro_fifo_pushes;
   logic [15:0] dbg_copro_fifo_pushes;
-  logic [15:0] dbg_copro_pops;   // dbg_copro_returns is a port
   logic        copro_v60_stall;
 
   m1_copro_if copro (

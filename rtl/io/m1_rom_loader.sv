@@ -143,7 +143,20 @@ module m1_rom_loader #(
   output logic [31:0] tgp_din,
 
   output logic        rom_loaded,
-  output logic        overflow      // buffer was written while full
+  output logic        overflow,     // buffer was written while full
+
+  // DID THE MICROCODE ACTUALLY ARRIVE? Nothing measured this, and its absence
+  // cost a whole round of diagnosis: the RTL path from here to the TGP's program
+  // RAM is wired and the MRA element is well formed, so "the microcode loads" was
+  // inferred from the code existing rather than from anything observed. The board
+  // cannot be asked either — MiSTer does not log ROM assembly, and /media/fat is
+  // mounted noatime so the file access leaves no trace.
+  //
+  // ucode_words counts 32-bit words written, so 2048 (0x800) is a complete load.
+  // ucode_csum folds both halves of every word, so a load of the WRONG 8 KB is
+  // distinguishable from the right one rather than merely non-zero.
+  output logic [11:0] ucode_words,
+  output logic [15:0] ucode_csum
 );
 
   localparam int unsigned AW = $clog2(FIFO_DEPTH);
@@ -214,6 +227,7 @@ module m1_rom_loader #(
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
+      ucode_words <= '0; ucode_csum <= '0;
       // THE ARRAYS ARE DELIBERATELY NOT CLEARED HERE.
       //
       // A reset that writes every entry is a second write port on the memory
@@ -251,6 +265,10 @@ module m1_rom_loader #(
             // No base to subtract now that this is its own index.
             tgp_addr <= ioctl_addr[12:2];
             tgp_wr   <= 1'b1;
+            // Counted here rather than on tgp_wr downstream so the count cannot
+            // disagree with what was actually presented to the program RAM.
+            ucode_words <= ucode_words + 12'd1;
+            ucode_csum  <= ucode_csum ^ ioctl_dout ^ tgp_lo;
           end
         end
       end

@@ -1,3 +1,85 @@
+# READ THIS FIRST — 2026-08-18, left ready overnight
+
+The core is built, flashed and running. Everything below was verified before the
+build; the build's own numbers are at the end of `findings.md`.
+
+## What to do first: read three overlay rows
+
+The board is on and loaded. No rebuild or reflash is needed to make progress.
+
+| row | question it answers | what to conclude |
+|---|---|---|
+| **`02`** | did the TGP microcode arrive? | left 12 bits = words loaded. **`800` = a complete 2048-word load**, and the right 12 are a folded checksum. **`000` = the HPS never sent index 1** and the coprocessor has been running an empty RAM all along. |
+| **`03`** | is the coprocessor draining its command FIFO? | pushes (left) against pops (right). Pushes climbing with pops at **`000`** means the TGP is not taking the work — and a full FIFO **halts the V60** (depth 16, measured), which is the shape of the 0.45 s teardown. |
+| **`1B`** | is the CPU writing tile RAM? | tilemap writes (left), scroll-register writes (right). Simulation reads `000 018` and `003 00C`; the board matched both exactly before this build. |
+
+Rows `02` and `03` replaced the two boot fetch-address rows, which had shown the
+same two constants since they found the SDRAM off-by-one.
+
+**Row `02` is the one that matters.** A whole round of diagnosis was spent last
+night inferring that the microcode loads because the code to load it exists. The
+board cannot be asked any other way: MiSTer does not log ROM assembly, `/media/fat`
+is mounted `noatime` so the file read leaves no trace, and the download is over
+before anything can be inspected.
+
+## What is fixed and confirmed on hardware
+
+**Window mode 1's vertical split.** Row `13` reads `02E800` = 190,464 — the whole
+screen — where it read `000000`. The sky and sea are real tilemap 2 content. That
+was the open M1 2D defect and it is closed.
+
+## What is fixed and NOT yet seen on hardware
+
+**Window modes 2 and 3, the horizontal column split**, and **the even-map window
+scroll**. Both are in this build. Measured on real game code, mode 2 is selected on
+pair 0/1 — the pair the TEXT lives on — for **194 frames of 2,478 (7.8%)**, and
+until now that blanked it outright. Expect text to stop dropping out at that rate.
+Verified in simulation by breaking each on purpose: 6,402 checks fail without the
+column split, 9,699 without the even-map scroll.
+
+## The one open defect, precisely characterised
+
+**Every 0.45 s the game tears down and rebuilds the screen**, ~24% duty, about 7
+core frames at a time. During the blank all four layers win nothing, `ctrl` reads
+`0000`, and map 2 reads empty — so its opaque category-0 pass paints palette 0 over
+everything. That is the blue.
+
+Ruled out by measurement, do not re-derive:
+
+- **not the window logic** — window mode is OFF during the blank
+- **not the memory write path** — row `1B` matched simulation exactly
+- **not a V60 reset** — row `01` instruction fetches are monotonic across blanks
+- **not input divergence** — board idle values are identical to the testbench's
+- **not reproduced in simulation** — its 336 `ctrl=0` frames are one contiguous run
+  at frames 1-336, boot, and it never returns
+
+Only **8** non-blank words reach map 0 before each teardown, against simulation's
+552-2,520 at the same `ctrl` state. So the missing text is not a video fault at all:
+the game is being restarted before it draws.
+
+**The leading hypothesis is the coprocessor**, and it came from the user noticing
+that this is exactly where MAME sat until `315-5573.bin` was added — sky and sea, no
+progress. Simulation runs WITH microcode and shows no teardown, which fits. Rows
+`02` and `03` are there to confirm or kill it in one look.
+
+**A dead end, recorded so it is not repeated**: the board had two ROM zips,
+`games/Model1/vr.zip` without the microcode and `games/mame/vr.zip` with it. The
+first was replaced with the second and **nothing changed** — and the user's question
+"would it not error if the file did not exist?" is the reason to doubt the whole
+line: MiSTer very likely resolved to the `mame` copy all along, making that a no-op.
+The old zip is backed up on the board as `vr.zip.bak-no5573`.
+
+## Free experiment not yet tried
+
+`O[5:4] SDRAM read phase`, CL+2 through CL+5, from the OSD. Every V60 instruction
+comes from SDRAM, `RD_LAT` was picked empirically on hardware rather than derived,
+and the model's header says the forwarded-clock phase is deliberately not modelled.
+A rare bad fetch would make the CPU take a wrong branch and restart its screen
+build. Costs a menu click; watch whether the flash rate changes and whether row `19`
+climbs above `008`.
+
+---
+
 # Handoff — 2026-08-16
 
 State of the Sega Model 1 core at the end of the M1 memory/CPU/video work.
