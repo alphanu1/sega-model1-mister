@@ -350,6 +350,7 @@ typedef enum logic [6:0] {
     S_EA_MODE, S_EA_IND, S_EA_IND2, S_EA_VAL, S_EA_DONE,
     S_EXEC, S_OP2_LD, S_MULDIV, S_DIVX, S_WB_MEM, S_NEXT, S_RMW_RD, S_RMW_EX, S_XCH1, S_XCH2, S_ROTC,
     S_MOVD_RL, S_MOVD_RH, S_MOVD_WL, S_MOVD_WH,   // MOVD qword read/write phases
+    S_IN_RD, S_OUT_WR,                            // IN/OUT: real I/O-space access
     S_DIVXM_RH,                                   // DIVX memory dividend high-word read
     S_BR_TAKE,
     S_PUSH, S_POP, S_PUSHM, S_POPM,
@@ -1779,6 +1780,28 @@ else if (ce) begin
     // MOVD 64-bit transfer (audit V60-10): read the source qword low/high, then
     // write the destination qword low/high.  Register ends are handled directly
     // in the exec; only memory ends use these states.
+    // IN: read the I/O address in op1 and write the result to op2. Size comes
+    // from the opcode's low bits, the same encoding the F12 engine uses.
+    S_IN_RD: begin
+        if (!dbus_req) begin
+            dbus_req <= 1; dbus_we <= 0; dbus_size <= cur_op[2:1]; dbus_addr <= op1;
+        end else if (dack) begin
+            dbus_req <= 0;
+            wb_op2(dimext(bus_rdata, cur_op[2:1]), cur_op[2:1]);
+            if (st == S_IN_RD) st <= S_NEXT;   // wb_op2 may divert to S_WB_MEM
+        end
+    end
+
+    // OUT: write op2's value to the I/O address in op1.
+    S_OUT_WR: begin
+        if (!dbus_req) begin
+            dbus_req <= 1; dbus_we <= 1; dbus_size <= cur_op[2:1];
+            dbus_addr <= op1; dbus_wdata <= op2val;
+        end else if (dack) begin
+            dbus_req <= 0; dbus_we <= 0; st <= S_NEXT;
+        end
+    end
+
     S_MOVD_RL: begin
         if (!dbus_req) begin dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= op1; end
         else if (dack) begin dbus_req <= 0; movd_lo <= bus_rdata; st <= S_MOVD_RH; end
@@ -3916,11 +3939,29 @@ task automatic exec_op;
     8'h4d, 8'h4e, 8'h4f: begin // CHKA*: no MMU -> return address valid
         f_z <= 1; f_cy <= 0; f_s <= 0; st <= S_NEXT;
     end
-    8'h20, 8'h22, 8'h24: begin  // IN — read io (mapped to bus, io space unused on S32)
-        wb_op2(32'hffffffff, cur_op[2:1]);
+    // IN/OUT — REAL ACCESSES, onto the ordinary data bus.
+    //
+    // These used to return a hardcoded 0xffffffff and discard writes, with the
+    // comment "io space unused on S32". That is true of System 32 and false of
+    // Model 1: model1_io maps the coprocessor's four registers — RAM address,
+    // RAM data, the command FIFO and the FIFO status — at the SAME addresses as
+    // model1_mem, so an IN or OUT there is a real transaction with real side
+    // effects. Reading the FIFO pops it; writing the address register arms an
+    // auto-increment.
+    //
+    // The consequence of faking it was total: the V60 sat in a three-instruction
+    // poll at fed5a4 — INW, TESTB, BNE — reading a constant that never satisfied
+    // the test, so attract mode never advanced. And because the I/O space carries
+    // no bus traffic, a memory-side trace shows an empty loop and the fault looks
+    // like a CPU bug rather than a missing address space.
+    //
+    // Routed to the same data bus because the two maps coincide on this board. A
+    // machine that mapped them differently would need a separate space here.
+    8'h20, 8'h22, 8'h24: begin  // IN.B/H/W
+        st <= S_IN_RD;
     end
-    8'h21, 8'h23, 8'h25: begin  // OUT — ignore
-        st <= S_NEXT;
+    8'h21, 8'h23, 8'h25: begin  // OUT.B/H/W
+        st <= S_OUT_WR;
     end
 
     default: begin
