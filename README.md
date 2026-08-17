@@ -25,6 +25,8 @@ NetMerc.
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
 what to do next, and the failure modes that have cost time.
+`docs/findings.md` is the durable record of measured facts about the hardware —
+each with the instrument that produced it and what it corrected.
 
 ### M1 progress
 
@@ -180,7 +182,6 @@ resolution path as denormals — real traces, not the host.
 ## Layout
 
 ```
-CLAUDE.md                       agent instructions — read first
 LICENSE                         GPL-3.0
 THIRD-PARTY.md                  component attribution and licence position
 deps.lock                       pinned upstream revisions
@@ -323,7 +324,7 @@ every run.
   diffing and per-opcode fuzzing. **No licence file, so all rights are reserved**: run
   it as an external oracle and read it for understanding, but copy nothing from it,
   its test harness included. The harnesses here are built from MAME's BSD-3-Clause
-  device model instead. This is hard rule 1 in `CLAUDE.md`.
+  device model instead. `THIRD-PARTY.md` records the licence position.
 - CAPS0ff — decapped MB86233 microcode ROMs
 
 Pull current MAME ROM definitions. The 315-5711 copro dump carried two single-bit

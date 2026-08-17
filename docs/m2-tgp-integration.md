@@ -276,7 +276,8 @@ produce those two values, nothing further is worth debugging.
    functions of (operand, table) so they fuzz cleanly the way the FP units did,
    but they are not what is blocking the coprocessor's first move.
 6. **Polygon list capture** off `copro_fifo_out`, diffed frame by frame against
-   MAME. That is the M2 exit criterion in `CLAUDE.md`'s verification model.
+   MAME. That is the M2 exit criterion: bit-exact agreement with the reference,
+   checked in volume, the way every other block here was verified.
 
 ### And it closes M0 exit criterion 2
 

@@ -4,10 +4,9 @@ State of the Sega Model 1 core at the end of the M1 memory/CPU/video work.
 Everything below is committed and pushed; the tree is clean and the full suite
 is green.
 
-`CLAUDE.md` and `README.md` were brought back into agreement with this document
-on 2026-08-15 — both still described M0 as the current milestone, and CLAUDE.md's
-"expected output, exactly" block predated eight harnesses. If those three ever
-disagree again, this file is where the measurements are.
+`README.md` was brought back into agreement with this document on 2026-08-15 — it
+still described M0 as the current milestone. If the two ever disagree again, this
+file is where the measurements are.
 
 ## On hardware, as of 2026-08-16
 
@@ -253,7 +252,7 @@ no V60 upstream and no `sys/`, and nothing below works.
 ROM images and anything derived from them never enter the repository.
 
 `make test` prints a fixed set of counts — the harnesses seed mt19937 with a
-constant, so they do not drift with host or toolchain. `CLAUDE.md` carries the
+constant, so they do not drift with host or toolchain. The build instructions carry the
 expected block; when a change legitimately moves a count, update it in the same
 commit.
 
@@ -339,8 +338,8 @@ This is the next milestone and the largest single piece of work left. It needs
 the TGP wired to the main board, its program and data ROMs added to the MRA
 (`tools/gen_mra.py` already documents where they go and deliberately omits them
 while the blocks do not exist), and the polygon list captured off the output
-FIFO to diff against MAME frame by frame — the verification model in `CLAUDE.md`
-names that as the geometry oracle.
+FIFO to diff against MAME frame by frame, which is the geometry oracle: bit-exact
+agreement with the reference, checked in volume.
 
 ### 2. The I/O board — DONE, and how it was found
 
