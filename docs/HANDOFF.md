@@ -1,7 +1,40 @@
 # READ THIS FIRST — 2026-08-18, left ready overnight
 
-The core is built, flashed and running. Everything below was verified before the
-build; the build's own numbers are at the end of `findings.md`.
+## The new build is READY BUT NOT FLASHED — the board was powered off
+
+`build/mister/output_files/Model1.rbf`, md5 `d00aad37701afbaf21b0b5f0ded49bc1`,
+4,146,352 bytes, built 2026-08-18 00:52. Quartus reported 0 errors.
+
+**Flash it first thing**, then reboot the board before loading the core — a failed
+load stalls it and the next result means nothing:
+
+```
+scp build/mister/output_files/Model1.rbf root@192.168.1.105:/media/fat/_Arcade/cores/Model1.rbf
+ssh root@192.168.1.105 'sync; md5sum /media/fat/_Arcade/cores/Model1.rbf; reboot'
+# after it comes back, and after MiSTer's main is up (it answers MENU too early):
+ssh root@192.168.1.105 'printf "load_core /media/fat/_Arcade/Virtua Racing.mra\n" > /dev/MiSTer_cmd'
+```
+
+Verify by md5, not by timestamp: the board runs UTC and the host BST, so every
+board mtime reads an hour behind and that has looked like a stale flash before.
+
+**The build's numbers**, against the one currently on the board:
+
+| | on the board now | this build |
+|---|---|---|
+| ALM | 29,434 / 41,910 (70%) | 29,491 (70%) |
+| M10K | 452 / 553 (82%) | 452 (82%) |
+| DSP | 50 / 112 (45%) | 50 (45%) |
+| worst setup slack | **-0.019 ns** | **+0.304 ns** |
+
+The timing violation is **gone**, on the same `m1_sdram` path, from placement alone
+— which supports what was recorded last night: that path's cost is one 4.161 ns
+route to a fixed pin, so it moves with the fitter's mood rather than with the
+design. Do not read +0.304 as the SDRAM interface being closed. It still has no
+constraints of its own and the deterministic fix is still the 9 combinational
+levels feeding `sd_a`.
+
+Everything below was verified before the build.
 
 ## What to do first: read three overlay rows
 
