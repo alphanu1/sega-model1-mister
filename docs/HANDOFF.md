@@ -198,8 +198,15 @@ report of the blindness invented two wrong mechanisms for it.
 
 Still owed on this path:
 
-1. **modes 2/3** — per-**pixel** split at `x = h`; a column mask, so the row-mask
-   machinery can carry it. Pair 0/1 takes `ctrl = 0x4000` on 130 frames of 2,065.
+1. **modes 2/3 — THIS IS THE TEXT BLINK, do it next.** Measured over a full
+   2,478-frame run: `ctrl = 0x4000` on pair 0/1 — the pair the text lives on — for
+   **194 frames, 7.8%**. On those frames all four layers win nothing and 99.8% of
+   the screen is backdrop. After the mode 1 fix the sky and sea are steady on them
+   and the text is still gone, which is the "text flashes on and off" reported
+   from the board. Needs a per-**pixel** split at `x = h`; `m1_tile_fetch` is the
+   home, since it writes four pixels at a time with a 4-bit `lb_masked` and knows
+   its own x. The row mask is 8-pixel granular so it cannot be reused directly,
+   but it is the same insertion point.
 2. **`hscr` bit 15 set** — the per-line H-scroll table at `0x4000 + 0x200*layer`.
    Nothing measured reaches it. Last.
 3. **A disabled layer 2/3 still paints.** `cat0` treats them as opaque

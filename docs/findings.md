@@ -543,6 +543,45 @@ unconditionally, so a layer with its `vscr` disable bit set still paints. MAME's
 `if (vscr & 0x8000) return;` skips it before any category decision. The RTL and the
 reference agree, so the suite cannot see it.
 
-Modes 2 and 3 remain suppressed — they split horizontally at `x = h`, which the
-per-scanline suppress cannot express. Measured use: pair 0/1 takes `ctrl = 0x4000`
-on 130 frames of 2,065.
+### Modes 2/3 are the TEXT BLINK, and they are 7.8% of frames — 2026-08-17
+
+Measured over a full 2,478-frame run, every `ctrl` value the game selects:
+
+| `ctrl` (pair 0/1, pair 2/3) | frames | what it means |
+|---|---|---|
+| `0000,2000` | 1,898 | pair 2/3 in **mode 1** — fixed |
+| `0000,0000` | 336 | no window mode |
+| `4000,2000` | **194** | pair 0/1 in **mode 2**, pair 2/3 in mode 1 |
+| `03xx,2000` etc. | 14 | pair 0/1 normal with a vscroll, pair 2/3 mode 1 |
+
+So **mode 1 covers 85% of frames** and is what the fix addressed. **Mode 2 on pair
+0/1 covers 7.8%** and is still suppressed. Pair 0/1 is the pair the text lives on.
+
+On one of those frames, before the fix:
+
+```
+F1936 bd=190080/190464 win=0,0,0,0 have=16,768,1024,1024
+      rtl_have=552,4095,4095,4095 ctrl=4000,2000
+```
+
+All four layers win nothing and 99.8% of the screen is backdrop, with every map
+holding content. After the fix pair 2/3 draws on these frames and pair 0/1 still
+does not — so the sky and sea are steady and **the text disappears on 8% of
+frames**. That is the "coin and other text flash on and off" reported from the
+board, and it now has a number.
+
+**What it needs.** MAME, same `else` branch, cases 2 and 3:
+
+```cpp
+h = hscr & 0x1ff;
+c1.max_x = h-1;  c2.min_x = h;
+if (!(hscr & 0x200)) layer ^= 1;
+draw(layer, c1);  draw(layer^1, c2);
+```
+
+A per-PIXEL split at x = h, not per scanline, so `win_suppress` cannot carry it.
+The natural home is `m1_tile_fetch`: it writes the line buffer four pixels at a
+time with a 4-bit `lb_masked` and knows its own x, so each of the four bits can be
+set from `x < h` against which side this layer owns. The row-mask path is 8-pixel
+granular and cannot be reused directly, but it is the same insertion point.
+
