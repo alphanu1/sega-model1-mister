@@ -401,6 +401,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire       vid_hs, vid_vs, vid_hb, vid_vb;
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
+  wire [15:0] dbg_copro_pushes, dbg_copro_returns;
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -434,6 +435,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .tgp_mem_dout(p_dout[3]), .tgp_mem_ack(p_ack[3]),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
+    .dbg_copro_pushes(dbg_copro_pushes), .dbg_copro_returns(dbg_copro_returns),
 
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
@@ -648,7 +650,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // Every row carries its own number in the top byte. Tagging only some rows
   // meant counting bands from an edge that was sometimes out of frame, and two
   // rows got misread that way.
-  wire [31:0] dw [15];
+  wire [31:0] dw [17];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -669,6 +671,13 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   assign dw[12] = {8'h0C, dbg_overruns, dbg_fetches};
   assign dw[13] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
   assign dw[14] = {8'h0E, fper};                       // frame period, cycles
+  // M2 telemetry. Row 0F: the coprocessor's retire count and its PC — a retire
+  // count that moves means it is executing real microcode, and the PC says where
+  // it stopped if it did. Row 10: the FIFO traffic in both directions, which
+  // separates "the V60 is not sending work" from "the coprocessor is not taking
+  // it" — the two look identical from a screen.
+  assign dw[15] = {8'h0F, dbg_tgp_retires, dbg_tgp_pc[15:8], dbg_tgp_unimpl, 7'd0};
+  assign dw[16] = {8'h10, dbg_copro_pushes, dbg_copro_returns};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -678,7 +687,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // that is perfectly legible and entirely wrong.
   generate
   if (DEBUG_OVERLAY) begin : g_diag
-  m1_diag #(.NWORDS(15)) diag (
+  m1_diag #(.NWORDS(17)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     // Off by default: it is an instrument, not a feature, and it sits on top
     // of the picture. Kept in the build because it has now found four faults

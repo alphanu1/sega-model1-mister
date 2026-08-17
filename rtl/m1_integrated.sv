@@ -128,6 +128,8 @@ module m1_integrated (
   output logic [15:0] dbg_tgp_retires,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
+  output logic [15:0] dbg_copro_pushes,
+  output logic [15:0] dbg_copro_returns,
 
   // Video out
   output logic [7:0]  vid_r, vid_g, vid_b,
@@ -238,6 +240,7 @@ module m1_integrated (
     .tgp_dat_rdata(t_mem_rdata), .tgp_dat_ack(t_dat_ack),
     .dbg_tgp_retires(dbg_tgp_retires), .dbg_tgp_pc(dbg_tgp_pc),
     .dbg_tgp_unimpl(dbg_tgp_unimpl),
+    .dbg_copro_pushes(dbg_copro_pushes), .dbg_copro_returns(dbg_copro_returns),
     .sdr_req(cpu_sdr_req), .sdr_we(cpu_sdr_we), .sdr_addr(cpu_sdr_addr),
     .sdr_din(cpu_sdr_din), .sdr_be(cpu_sdr_be),
     .sdr_dout(cpu_sdr_dout), .sdr_ack(cpu_sdr_ack),

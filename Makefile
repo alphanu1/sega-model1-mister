@@ -30,9 +30,10 @@ SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_cdc_port := rtl/mem/m1_cdc_port.sv
 SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
-SRCS_TOP_CORE := rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
+SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
   rtl/io/m1_rom_loader.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \

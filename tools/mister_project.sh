@@ -43,6 +43,20 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/bw_monitor.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_glue.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_ioboard.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/m1_copro_if.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/m1_tgp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/fp_mul.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/fp_add.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/fp_div.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_agu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_seq.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_mem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_dec.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_xfer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_rom_loader.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_decode.sv

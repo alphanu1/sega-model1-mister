@@ -168,8 +168,28 @@ on the reference finds only the two `d00000` accesses above; nothing at
 supply something it waits for, our V60 is computing a different result and
 branching differently.
 
-That is a different class of problem from everything above, and the instrument
-for it is instruction-level lockstep against the reference, not bus archaeology.
+That is a different class of problem from everything above.
+
+**The instructions themselves, read out of the reference's memory** — the cheapest
+way in, and cheaper than lockstep:
+
+```
+fed588: 80 e0 f2 79 2a d1 ff ba
+fed590: 80 e0 f2 71 2a d1 ff 64
+fed598: 06 d1 60 65 ec 44 21 f2
+fed5a0: 63 2a d3 ff 24 20 61 f1
+fed5a8: 60 65 fb 09 20 f4 ff 1b
+fed5b0: 80 f4 01 80 f2 51 2a d1
+fed5b8: ff ba 80 f4 01 80 f2 47
+fed5c0: 2a d1 ff 64 06 d1 60 65
+fed5c8: e8 24 20 f3 00 00 d2 00
+```
+
+Our loop is `fed5a4` / `fed5a7` / `fed5a9`, so it is within `24 20 61 f1 60 65 fb
+09`. Decoding that names the condition being tested, and MAME's V60 disassembler
+is in the sparse checkout (`src/devices/cpu/v60/v60d.cpp`) if a decode is needed
+rather than a debugger session. Note `-debug -debugger none -debugscript` did not
+produce output in this build; the invocation needs work.
 
 **A number to distrust:** "510 accesses to `0xd00000`" appears in earlier commit
 messages and was measured before the coprocessor interface existed, when that

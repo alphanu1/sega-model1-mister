@@ -94,6 +94,9 @@ module m1_main #(
   output logic [15:0] dbg_tgp_retires,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
+  // Coprocessor FIFO traffic, both directions, for the on-screen instrument.
+  output logic [15:0] dbg_copro_pushes,
+  output logic [15:0] dbg_copro_returns,
   output logic [15:0] dbg_tgp_io_addr,
   output logic        dbg_tgp_io_rd,
   output logic        dbg_tgp_io_wr,
@@ -328,8 +331,10 @@ module m1_main #(
   logic [15:0] copro_q;
   logic        copro_ack;
   wire         to_copro = sel_copro_adr || sel_copro_ram || sel_copro_fifo;
-  logic [15:0] dbg_copro_ram_writes, dbg_copro_fifo_pushes;
-  logic [15:0] dbg_copro_returns, dbg_copro_pops;
+  logic [15:0] dbg_copro_ram_writes;
+  assign dbg_copro_pushes = dbg_copro_fifo_pushes;
+  logic [15:0] dbg_copro_fifo_pushes;
+  logic [15:0] dbg_copro_pops;   // dbg_copro_returns is a port
   logic        copro_v60_stall;
 
   m1_copro_if copro (
