@@ -62,8 +62,8 @@ module emu
   assign BUTTONS   = 0;
 
   // 496x384 is close to 4:3; let the framework letterbox rather than stretch.
-  assign VIDEO_ARX = 12'd4;
-  assign VIDEO_ARY = 12'd3;
+  assign VIDEO_ARX = 13'd4;
+  assign VIDEO_ARY = 13'd3;
 
   // ------------------------------------------------------------------- OSD
   `include "build_id.v"
@@ -402,7 +402,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
   wire [15:0] dbg_copro_pushes, dbg_copro_returns;
-  wire [15:0] dbg_layer_px [4];
+  wire [17:0] dbg_layer_px [4];
+  wire [15:0] dbg_ctrl [2];
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -448,7 +449,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
-    .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px)
+    .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
+    .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -549,10 +551,13 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
       d_if_ack <= p_ack[2];
       if (p_ack[2] && !d_if_ack) begin
         r_if_count <= r_if_count + 1'd1;
+        // fn is four bits so it can hold NFETCH itself as the "full" state, but
+        // the arrays are NFETCH=8 deep, so index with the low three. The guard
+        // makes them equivalent; spelling it out keeps the width lint clean.
         if (fn < 4'(NFETCH)) begin
-          fa[fn] <= ifp_addr;
-          fd[fn] <= p_dout[2][31:0];
-          fn     <= fn + 4'd1;
+          fa[fn[2:0]] <= ifp_addr;
+          fd[fn[2:0]] <= p_dout[2][31:0];
+          fn          <= fn + 4'd1;
         end
       end
     end
@@ -651,7 +656,20 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // Every row carries its own number in the top byte. Tagging only some rows
   // meant counting bands from an edge that was sometimes out of frame, and two
   // rows got misread that way.
-  wire [31:0] dw [19];
+  //
+  // THE TAG IS AN IDENTITY, NOT A POSITION. Row order can change between builds;
+  // a tag must not, or photographs from different builds cannot be compared. So
+  // when two rows were dropped here the remaining tags kept their values and the
+  // sequence simply has gaps.
+  //
+  // EACH ROW IS EXACTLY 32 BITS: an 8-bit tag and 24 bits of payload. Two rows
+  // were written 40 bits wide and silently truncated — and Verilog truncation
+  // discards the HIGH bits, so what those rows lost was their own tag. They
+  // rendered with a wrong row number, which is the one failure this tagging
+  // scheme was supposed to make impossible. `make lint_top` now fails on it.
+  //
+  // TWENTY-FOUR ROWS IS THE CEILING: 384 visible lines at 16 pixels per row.
+  wire [31:0] dw [23];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -661,47 +679,93 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   assign dw[6]  = {8'h06, fa[4]};                  // fetch 4
   assign dw[7]  = {8'h07, fa[5]};                  // fetch 5
   assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
-  assign dw[9]  = {8'h09, fd[4][23:0]};            // fetch 4 data
-  assign dw[10] = {8'h0A, fd[5][23:0]};            // fetch 5 data
-  assign dw[11] = {8'h0B, 2'd0, ldr_overflow, st_s2[17:16],
+  // Tags 09 and 0A — the data words of fetches 4 and 5 — are GONE, to stay under
+  // the 24-row ceiling. They were boot forensics: they proved ROM contents were
+  // arriving, which a core that now boots and runs proves better. Their
+  // ADDRESSES survive as tags 06 and 07.
+  assign dw[9]  = {8'h0B, 2'd0, ldr_overflow, st_s2[17:16],
                    rom_ready, mem_ready, ioctl_download,
                    st_s2[15:0]};                   // flags, I/O replies
   // Fetch deadline misses against the worst layer's fetch count for the last
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
-  assign dw[12] = {8'h0C, dbg_overruns, dbg_fetches};
-  assign dw[13] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
-  assign dw[14] = {8'h0E, fper};                       // frame period, cycles
-  // M2 telemetry. Row 0F: the coprocessor's retire count and its PC — a retire
-  // count that moves means it is executing real microcode, and the PC says where
-  // it stopped if it did. Row 10: the FIFO traffic in both directions, which
-  // separates "the V60 is not sending work" from "the coprocessor is not taking
-  // it" — the two look identical from a screen.
-  assign dw[15] = {8'h0F, dbg_tgp_retires, dbg_tgp_pc[15:8], dbg_tgp_unimpl, 7'd0};
-  assign dw[16] = {8'h10, dbg_copro_pushes, dbg_copro_returns};
-  // Rows 11 and 12: visible pixels per tilemap, per frame. A layer with content
-  // in tile RAM and a zero here is not reaching the screen, which is checkable
-  // without a reference image — and is exactly what both 2D faults looked like.
-  assign dw[17] = {8'h11, dbg_layer_px[0], dbg_layer_px[1]};
-  assign dw[18] = {8'h12, dbg_layer_px[2], dbg_layer_px[3]};
+  assign dw[10] = {8'h0C, dbg_overruns, dbg_fetches};
+  assign dw[11] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
+  assign dw[12] = {8'h0E, fper};                       // frame period, cycles
+  // M2 telemetry, one value per row. A retire count that moves means the
+  // coprocessor is executing real microcode; the PC says where it stopped if it
+  // did. These two were packed into one row each with a second value and both
+  // overflowed 32 bits.
+  assign dw[13] = {8'h0F, 7'd0, dbg_tgp_unimpl, dbg_tgp_retires};
+  assign dw[14] = {8'h10, 8'd0, dbg_tgp_pc};
+  // Visible pixels per tilemap, per frame — ONE PER ROW. A layer with content in
+  // tile RAM and a zero here is not reaching the screen, which is checkable
+  // without a reference image, and a layer reading near 0x2E800 (496 x 384) is
+  // covering the whole picture.
+  //
+  // One per row because the count needs 18 bits and a row carries 24 after its
+  // tag, so two will not fit. They were packed two-up at 16 bits each, which
+  // saturated at 65,535 — a third of one screen — and made a full-screen opaque
+  // fill indistinguishable from a small window.
+  assign dw[15] = {8'h11, 6'd0, dbg_layer_px[0]};
+  assign dw[16] = {8'h12, 6'd0, dbg_layer_px[1]};
+  assign dw[17] = {8'h13, 6'd0, dbg_layer_px[2]};
+  assign dw[18] = {8'h14, 6'd0, dbg_layer_px[3]};
+  // The window/split-scroll control register for each pair, as the renderer read
+  // it. Bits 14:13 nonzero means a split was requested, and -value gives the
+  // scanline it splits at. This says what the GAME asked for, which the census
+  // cannot: a layer covering everything could be our window logic misfiring or
+  // the game genuinely asking for a full-screen fill.
+  assign dw[19] = {8'h15, 8'd0, dbg_ctrl[0]};
+  assign dw[20] = {8'h16, 8'd0, dbg_ctrl[1]};
+  // FIFO traffic in both directions, which separates "the V60 is not sending
+  // work" from "the coprocessor is not taking it" — the two look identical from
+  // a screen.
+  assign dw[21] = {8'h17, 8'd0, dbg_copro_pushes};
+  assign dw[22] = {8'h18, 8'd0, dbg_copro_returns};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
-  // Word 0 is the LOW 32 bits of the port and the top row of the display, so
-  // the concatenation runs bottom row first. Written with explicit indices
-  // rather than as a list, because getting this backwards produces a display
-  // that is perfectly legible and entirely wrong.
+  // PACKED BY A LOOP, NOT BY A HAND-WRITTEN CONCATENATION.
+  //
+  // Word 0 is the LOW 32 bits of the port and the top row of the display, so a
+  // literal concatenation has to run bottom row first. That was written out as
+  // {dw[14], dw[13], ... dw[0]} to keep the order under control — and when rows
+  // 0F to 12 were added, the array and the NWORDS parameter grew while the
+  // concatenation did not. Four words of the port were left undriven, reading as
+  // zero, so those rows rendered as 00000000 including their own row tags. They
+  // looked absent rather than wrong, which sent the diagnosis after the
+  // bitstream instead of the wiring.
+  //
+  // The lint that should have caught it did not. A short pin connection is a
+  // WIDTHEXPAND warning, and `make lint_top` — the only lint that sees this file
+  // — grepped its log for `%Error` alone and discarded every warning, so it
+  // reported clean. That grep now fails on width warnings too.
+  //
+  // The loop removes the drift rather than relying on that check: NDW sizes the
+  // array, the loop bound and the parameter, so adding a row cannot leave the
+  // port half-connected. Note the residual risk is silent — a wrong loop bound
+  // leaves undriven wires, which lint_top does not report — but there is no
+  // second number to keep in step, which is what actually went wrong before.
+  localparam int unsigned NDW = 23;
+  wire [NDW*32-1:0] dw_packed;
+  genvar gi;
+  generate
+    for (gi = 0; gi < NDW; gi = gi + 1) begin : g_pack
+      assign dw_packed[gi*32 +: 32] = dw[gi];
+    end
+  endgenerate
+
   generate
   if (DEBUG_OVERLAY) begin : g_diag
-  m1_diag #(.NWORDS(19)) diag (
+  m1_diag #(.NWORDS(NDW)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     // Off by default: it is an instrument, not a feature, and it sits on top
     // of the picture. Kept in the build because it has now found four faults
     // that nothing else could see, and the next hardware problem will want it.
     .enable(status[3]),
     .hb(vid_hb), .vb(vid_vb),
-    .words({dw[14], dw[13], dw[12], dw[11], dw[10], dw[9], dw[8],
-             dw[7],  dw[6],  dw[5],  dw[4],  dw[3], dw[2], dw[1], dw[0]}),
+    .words(dw_packed),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
     .out_r(dg_r), .out_g(dg_g), .out_b(dg_b)
   );

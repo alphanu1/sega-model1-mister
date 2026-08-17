@@ -158,7 +158,10 @@ module m1_integrated (
 
   // Visible pixels per tilemap, per frame — see m1_video. An alarm for a layer
   // that never reaches the screen, not a proof the composite is right.
-  output logic [15:0] dbg_layer_px [4]
+  output logic [17:0] dbg_layer_px [4],
+
+  // Each pair's window/split-scroll control register, as the renderer read it.
+  output logic [15:0] dbg_ctrl [2]
 );
 
   logic [14:0] vid_tram_addr;
@@ -366,7 +369,8 @@ module m1_integrated (
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
     .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
-    .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px)
+    .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px),
+    .dbg_ctrl(dbg_ctrl)
   );
 
   m1_rom_loader loader (

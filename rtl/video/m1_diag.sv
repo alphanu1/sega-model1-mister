@@ -157,11 +157,26 @@ module m1_diag #(
   assign in_box = enable && !hb && !vb
                 && (x < 10'(BOX_W)) && (y < 10'(BOX_H));
 
-  logic [2:0] digit;                     // 0..7, digit 0 leftmost
-  logic [3:0] row;
-  logic [2:0] fx, fy;                    // pixel within the glyph, after 2x
+  // ROW INDEX WIDTH IS DERIVED, NOT FIXED.
+  //
+  // This was `logic [3:0] row` with `row == 4'(w)`, which is correct for up to
+  // sixteen words and silently wrong above it. At NWORDS=19 the comparison
+  // truncated: 4'(16) is 0, so word 16 matched row 0 as well. The comb loop runs
+  // ascending and the last match wins, so words 16, 17 and 18 OVERWROTE rows 0,
+  // 1 and 2 — and because those high words were also unconnected at the top
+  // level, three rows that had real content went blank. Seven of nineteen rows
+  // were wrong, the four new ones and three old ones, from one truncated index.
+  //
+  // The failure is worse than a missing row: rows 0-2 held the V60's PC and
+  // fetch history, so the instrument reported a dead CPU on a core that was
+  // running. An instrument that lies is worse than one that is absent.
+  localparam int unsigned RW = (NWORDS <= 2) ? 1 : $clog2(NWORDS);
+
+  logic [2:0]    digit;                  // 0..7, digit 0 leftmost
+  logic [RW-1:0] row;
+  logic [2:0]    fx, fy;                 // pixel within the glyph, after 2x
   assign digit = x[6:4];
-  assign row   = y[7:4];
+  assign row   = y[RW+3:4];
   assign fx    = x[3:1];
   assign fy    = y[3:1];
 
@@ -170,7 +185,7 @@ module m1_diag #(
   always_comb begin
     wsel = '0;
     for (int w = 0; w < NWORDS; w++)
-      if (row == 4'(w)) wsel = words[w*32 +: 32];
+      if (row == RW'(w)) wsel = words[w*32 +: 32];
     // Digit 0 is the most significant nibble, so the word reads left to right
     // as it would be written down.
     nib = wsel[(7 - int'(digit))*4 +: 4];

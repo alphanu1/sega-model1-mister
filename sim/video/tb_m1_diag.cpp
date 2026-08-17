@@ -27,7 +27,12 @@
 #include <cstdint>
 #include <vector>
 
-static const int NWORDS = 12;
+// Set from the Makefile so the same source checks both builds. See test_diag:
+// above sixteen the row index widens, and only the wide build exercises it.
+#ifndef NWORDS_CFG
+#define NWORDS_CFG 12
+#endif
+static const int NWORDS = NWORDS_CFG;
 static const int CELL_W = 16;
 static const int CELL_H = 16;
 
@@ -165,14 +170,26 @@ int main(int argc, char** argv) {
   // Between them these cover every glyph in every digit position, which is
   // what catches a font entry that is wrong or a nibble selected from the
   // wrong end of the word.
-  const uint32_t w1[NWORDS] = {0x01234567u, 0x89abcdefu, 0xfedcba98u,
-                               0x76543210u, 0x00000000u, 0xffffffffu,
-                               0x00000001u, 0x80000000u, 0x0bfff8u,
-                               0x104ef3d6u, 0x00300000u, 0x0b0824u};
-  const uint32_t w2[NWORDS] = {0xdeadbeefu, 0x55555555u, 0xaaaaaaaau,
-                               0x0f0f0f0fu, 0xf0f0f0f0u, 0x12345678u,
-                               0x9abcdef0u, 0x13572468u, 0xfedcba98u,
-                               0x02468aceu, 0x11223344u, 0xccddeeffu};
+  // Every word DISTINCT and NON-ZERO, filled programmatically past the twelfth.
+  // Both of these were 12-entry lists, so the wide build would have zero-filled
+  // rows 12 and up — and zero is the one value that hides the aliasing fault,
+  // because the symptom was a high row overwriting a low one WITH zero. A test
+  // whose expected value equals the corrupt value proves nothing.
+  uint32_t w1[NWORDS], w2[NWORDS];
+  {
+    const uint32_t s1[12] = {0x01234567u, 0x89abcdefu, 0xfedcba98u,
+                             0x76543210u, 0x00000000u, 0xffffffffu,
+                             0x00000001u, 0x80000000u, 0x0bfff8u,
+                             0x104ef3d6u, 0x00300000u, 0x0b0824u};
+    const uint32_t s2[12] = {0xdeadbeefu, 0x55555555u, 0xaaaaaaaau,
+                             0x0f0f0f0fu, 0xf0f0f0f0u, 0x12345678u,
+                             0x9abcdef0u, 0x13572468u, 0xfedcba98u,
+                             0x02468aceu, 0x11223344u, 0xccddeeffu};
+    for (int i = 0; i < NWORDS; i++) {
+      w1[i] = (i < 12) ? s1[i] : (0xa0000000u + (uint32_t)i * 0x01111111u);
+      w2[i] = (i < 12) ? s2[i] : (0x5f000000u + (uint32_t)i * 0x00123457u);
+    }
+  }
 
   // Disabled must be perfectly transparent. The overlay defaults to on in the
   // core, so the OSD switch that turns it off has to give the game back an
@@ -188,6 +205,8 @@ int main(int argc, char** argv) {
   // screen one frame at a time.
   run_frame(g, w2, true);
 
-  printf("m1_diag: checks=%ld fails=%ld\n", checks, fails);
+  // Tagged with the width, because this runs twice and two identical lines in
+  // the baseline cannot be told apart when one of them moves.
+  printf("m1_diag[nwords=%d]: checks=%ld fails=%ld\n", NWORDS, checks, fails);
   return fails ? 1 : 0;
 }

@@ -282,6 +282,22 @@ claim about a different game.
   the thing.
 - **"Non-black pixels" is not a liveness metric.** 15.7 M non-black was one flat
   blue field.
+- **The overlay reported four wrong rows, and the wrongness was invisible.** Four
+  faults at once, none of which any test or lint caught — see
+  `debug-overlay.md`. The one to carry forward: three of them made rows read
+  `00000000`, and a blank row looks like *absence* rather than *error*, so the
+  hunt went after the bitstream instead of the wiring.
+- **A single captured frame cannot see an alternation.** The board's picture
+  flashed between a rendered image and a flat colour; the frame test captured
+  one frame at one cycle and rendered correctly, so "simulation is right and
+  hardware is wrong" was believed for two builds. `FRAME_TRACE=1` now prints one
+  line per frame.
+- **A backdrop is not a blank screen.** `m1_tile_mixer` emits source 15 when no
+  layer wins, and the backdrop is palette entry 0 — which in this game is blue.
+  So a frame where every layer declines to draw is a *flat blue picture*, not a
+  black one, and the per-tilemap census reads four zeros because it only counts
+  sources below 8. Two different faults produce that reading and the census
+  alone cannot separate them; the backdrop share can.
 - **Verify against data that can distinguish the fault.** The SDRAM word-late bug
   survived a session because it was checked at word 0, where the ROM is
   `000d 000d 000d 000d` — the one address where a one-word shift cannot show.

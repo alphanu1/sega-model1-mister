@@ -126,7 +126,20 @@ module m1_video #(
   //
   // Saturating: a count that wraps reads as a small number and says the opposite
   // of what happened.
-  output logic [15:0] dbg_layer_px [4]
+  //
+  // EIGHTEEN BITS, NOT SIXTEEN. A full visible frame is 496 x 384 = 190,464
+  // pixels, so a 16-bit counter saturates at 65,535 — barely a third of one
+  // screen. That is not a corner case: a layer painting an opaque fill over
+  // everything, which is the exact fault this was built to find, pins at the
+  // maximum and reads identically to a layer covering a small window. It did,
+  // and the saturated value was quoted as evidence for a frame.
+  output logic [17:0] dbg_layer_px [4],
+
+  // The window/split-scroll control register for each PAIR, latched as the
+  // renderer reads it. dbg_layer_px says a layer covered the screen; this says
+  // whether the game asked for a split and where, which separates "the game set
+  // a mode we implement wrongly" from "we invented a split it never requested".
+  output logic [15:0] dbg_ctrl [2]
 );
 
   // ------------------------------------------------------------- timing
@@ -149,7 +162,7 @@ module m1_video #(
   // Per-tilemap visible-pixel census. mix_src encodes 0-3 as a tilemap's
   // category-1 win and 4-7 as its category-0 win, so both fold onto the same
   // tilemap. 8 is the 3D layer and 15 the backdrop; neither is a tilemap.
-  logic [15:0] px_acc [4];
+  logic [17:0] px_acc [4];
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       for (int i = 0; i < 4; i++) begin px_acc[i] <= '0; dbg_layer_px[i] <= '0; end
@@ -160,8 +173,8 @@ module m1_video #(
           px_acc[i]       <= '0;
         end
       end else if (ce_pix && visible && mix_src < 4'd8) begin
-        if (px_acc[mix_src[1:0]] != 16'hffff)
-          px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 16'd1;
+        if (px_acc[mix_src[1:0]] != 18'h3ffff)
+          px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 18'd1;
       end
     end
   end
@@ -286,6 +299,7 @@ module m1_video #(
     if (!rst_n) begin
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
       hscr_r <= '0; vscr_r <= '0; ctrl_r <= '0; f_start <= 1'b0;
+      dbg_ctrl[0] <= '0; dbg_ctrl[1] <= '0;
       mask_r <= '0; mask_i <= '0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
       bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
@@ -334,6 +348,10 @@ module m1_video #(
         Q_CTRL: q <= Q_CTRL_W;
         Q_CTRL_W: begin
           ctrl_r        <= tram_data;
+          // Same value the window logic is about to act on, kept for the
+          // overlay. Latched here rather than re-read at vblank so it cannot
+          // disagree with what actually drove the decision.
+          dbg_ctrl[cur_layer[1]] <= tram_data;
           seq_tram_addr <= mask_base + {13'd0, 2'd0};
           mask_i        <= 2'd0;
           q             <= Q_MASK;

@@ -42,6 +42,10 @@ module tb_m1_frame #(
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     parameter string  PPMOUT     = "build/frame.ppm",
 
+    // One line per frame: backdrop share, per-tilemap census, window control and
+    // the V60's PC. Off by default because a long run prints hundreds of lines.
+    parameter integer TRACE_FRAMES = 0,
+
     // HOW THE ROM GETS INTO MEMORY, WHICH IS NOT A DETAIL
     //
     // DOWNLOAD=0 pokes the image straight into the SDRAM model before the run.
@@ -212,7 +216,7 @@ m1_integrated core (
     .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
     .dbg_tgp_unimpl(f_tgp_unimpl),
     .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
-    .dbg_layer_px(f_layer_px),
+    .dbg_layer_px(f_layer_px), .dbg_ctrl(f_ctrl),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -249,7 +253,8 @@ wire        tgp_mem_req;
 wire [24:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 wire        f_tgp_unimpl;
-wire [15:0] f_layer_px [4];
+wire [17:0] f_layer_px [4];
+wire [15:0] f_ctrl [2];
 integer i;
 initial begin
     // Progress, flushed. stdout is block buffered when this is redirected to a
@@ -351,8 +356,13 @@ endtask
 // photographing an overlay and guessing which row is which.
 task automatic report_census;
     begin
-        $display("FRAME: layer px per frame  tm0=%0d tm1=%0d tm2=%0d tm3=%0d",
-                 f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3]);
+        // 190464 = 496 x 384, a whole screen. A layer at or near that is
+        // covering everything; the previous 16-bit counters pinned at 65535 and
+        // could not say so.
+        $display("FRAME: layer px per frame  tm0=%0d tm1=%0d tm2=%0d tm3=%0d  (full screen = %0d)",
+                 f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
+                 496 * 384);
+        $display("FRAME: window ctrl  pair01=%04h pair23=%04h", f_ctrl[0], f_ctrl[1]);
         $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d returns=%0d",
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_returns);
     end
@@ -368,6 +378,28 @@ integer px = 0, py = 0;
 integer frames = 0, painted = 0, nonblack = 0;
 reg     prev_vb = 0;
 
+// PER-FRAME, NOT JUST AT THE END.
+//
+// One frame captured at one cycle cannot see an alternation, and the fault being
+// chased is exactly that: hardware showing a picture that flashes to a flat
+// colour and back. A single end-of-run census reported whichever frame the run
+// happened to stop on, which is how "the simulation renders correctly" and "the
+// board flashes" were both true at once and neither explained the other.
+//
+// The backdrop count is the discriminator. m1_tile_mixer emits source 15 when NO
+// layer wins a pixel, and the backdrop is palette entry 0 — so a frame that is
+// uniformly the palette's first colour is not a rendering fault at all, it is
+// every layer declining to draw. The per-tilemap census cannot say this: it only
+// counts sources below 8, so a fully-backdrop frame and a frame the renderer
+// never ran both read as four zeros.
+integer bd_cnt = 0, vis_cnt = 0;
+always @(posedge clk) begin
+    if (rst_n_sys && ce_pix && !vid_hb && !vid_vb) begin
+        vis_cnt = vis_cnt + 1;
+        if (core.video.mix_src == 4'd15) bd_cnt = bd_cnt + 1;
+    end
+end
+
 always @(posedge clk) begin
     if (!rst_n_sys) begin
         px <= 0; py <= 0; prev_vb <= 0;
@@ -377,6 +409,15 @@ always @(posedge clk) begin
         if (vid_vb && !prev_vb) begin
             px <= 0; py <= 0;
             frames = frames + 1;
+            // The census is latched inside m1_video on this same edge, so it
+            // reads as the frame that just finished.
+            if (TRACE_FRAMES)
+                $display("F%0d bd=%0d/%0d tm=%0d,%0d,%0d,%0d ctrl=%04h,%04h pc=%06h",
+                         frames, bd_cnt, vis_cnt,
+                         f_layer_px[0], f_layer_px[1], f_layer_px[2],
+                         f_layer_px[3], f_ctrl[0], f_ctrl[1], core.dbg_pc);
+            bd_cnt  = 0;
+            vis_cnt = 0;
         end
         prev_vb <= vid_vb;
 
