@@ -123,6 +123,22 @@ text blink rate, which no still frame can carry. Simulation rendered "correctly"
 frame it captured was the ranking table, whose text sits on tilemap 1 — the single
 combination the wrong mask formula got right.
 
+**Building the `.rbf` is TWO commands, and `make quartus` is not one of them.**
+There is no `SRCS_Model1`, so `make quartus MOD=Model1` writes a project with no
+source files and fails six seconds in with `Error (12007): Top-level design entity
+"Model1" is undefined`. It cost a build cycle, and this file said otherwise.
+
+```
+bash tools/mister_project.sh                       # stages build/mister
+cd build/mister && quartus_sh --flow compile Model1
+```
+
+The framework's `sys_top` is the real top level; `emu` — our `Model1.sv` — is what
+it instantiates, which is why the project has to be staged rather than generated
+from a module list. `make quartus MOD=<module>` is for single modules, area and
+Fmax on one block; `MOD=m1_integrated` is the largest of them and still produces
+nothing loadable.
+
 **Board access**: SSH key auth stopped working mid-session — the key is offered
 and the host key still matches, so it is the same machine, but
 `/root/.ssh/authorized_keys` does not accept it. Password auth works with the
