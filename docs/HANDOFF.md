@@ -142,7 +142,35 @@ The row-mask and window-mode fixes are **confirmed working on the board** — a
 video of the screen shows the renderer obeying `ctrl` correctly in both states
 (see `findings.md`). They did not put text on screen.
 
-**START HERE: the full-screen blue is tilemap 2 drawn opaque over an empty map.**
+**START HERE — THE OPEN M1 DEFECT IS IDENTIFIED. Window mode with `hscr` bit 15
+clear must draw a SPLIT, and we draw nothing.**
+
+`draw_common`'s inner `if (hscr & 0x8000)` was recorded as having no `else`. **It
+has one, at `segaic24.cpp:418-456`**, and in it MAME splits the screen into two
+rectangles and draws BOTH maps of the pair, one in each. We suppress both.
+
+Virtua Racing's attract sets `ctrl = 0x2000-0x23xx` on pair 2/3 — window mode 1 —
+with `hscr` below `0x0200`, so bit 15 is never set. So the reference draws that
+pair as a **vertical split at scanline `v`, tilemap 2 above and tilemap 3 below**.
+That is a horizon: **it is the sky and the sea.** Suppressing the pair paints
+palette 0 across the screen instead, which is blue, at whatever rate the game
+toggles the mode — which is what the board shows, and what the flash is.
+
+Fix in this order, and change `tb_m1_video.cpp`'s reference model with the RTL or
+the suite will hold the bug in place:
+
+1. **mode 1, `hscr` bit 15 clear** — per-**scanline** layer pick, `y >= v` takes the
+   other map of the pair. Cheap: the renderer is per-scanline and `cur_line` is to
+   hand. This is the sky and sea, and it is the one to do first.
+2. **modes 2/3, bit 15 clear** — per-**pixel** split at `x = h`; a column mask, so
+   the row-mask machinery can carry it.
+3. **bit 15 set** — the per-line H-scroll table at `0x4000 + 0x200*layer`. Nothing
+   measured reaches it. Last.
+
+`findings.md` has the withdrawn entry in full, the MAME excerpt and why two
+rereadings of the source failed to catch it.
+
+**The full-screen blue is tilemap 2 drawn opaque over an empty map.**
 Not the backdrop — `bd=0/190464`, nothing falls through. Tilemap 2 wins 180,790 of
 190,464 pixels, its every tile word reads `0x0000`, and that indexes palette entry
 0, which is blue. The blue and the backdrop are indistinguishable on a photograph

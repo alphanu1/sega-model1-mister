@@ -286,26 +286,48 @@ module m1_video #(
   wire        win_upper = (cur_line < win_v);
   wire        win_pick  = win_upper ? win_swap : ~win_swap;
 
-  // WINDOW MODE WITHOUT hscr BIT 15 DRAWS NOTHING AT ALL.
+  // WRONG, AND KEPT VISIBLE BECAUSE IT IS THE OPEN BUG.
   //
-  // This is the shape of draw_common, and the nesting is the whole point:
+  // What is implemented below suppresses BOTH maps of a pair when window mode is
+  // selected and hscr bit 15 is clear, on the reading that draw_common's inner
+  // `if (hscr & 0x8000)` has no else. **It has one** — segaic24.cpp:418-456 — and
+  // in it MAME splits the screen into two rectangles and draws BOTH maps, one in
+  // each:
   //
-  //   if (ctrl & 0x6000) {              // window mode
-  //       if (layer & 1) return;        // the ODD map never draws directly
-  //       set_scrolly(both maps);
-  //       if (hscr & 0x8000) {          // <-- and ONLY here is anything drawn
-  //           switch ((ctrl & 0x6000) >> 13) { case 1: ...; case 2: case 3: ... }
-  //       }
-  //   } else { ... normal path, with the row mask ... }
+  //   } else {                                    // hscr & 0x8000 clear
+  //     set_scrollx(both maps, -(hscr & 0x1ff));
+  //     switch ((ctrl & 0x6000) >> 13) {
+  //     case 1:                                   // VERTICAL split
+  //       v = (-vscr) & 0x1ff;
+  //       c1.max_y = v-1;  c2.min_y = v;
+  //       if (!((-vscr) & 0x200)) layer ^= 1;
+  //       draw(layer, c1);  draw(layer^1, c2);
+  //     case 2: case 3:                           // HORIZONTAL split
+  //       h = hscr & 0x1ff;
+  //       c1.max_x = h-1;  c2.min_x = h;
+  //       if (!(hscr & 0x200)) layer ^= 1;
+  //       draw(layer, c1);  draw(layer^1, c2);
+  //     }
+  //   }
   //
-  // There is no else on that inner `if`. So with the window mode selected and
-  // hscr bit 15 clear, the pair sets its scroll and draws NEITHER map.
+  // The measurement quoted below is right and the conclusion drawn from it was
+  // not. Virtua Racing's attract does set ctrl = 0x2000-0x23xx on pair 2/3 —
+  // window mode 1 — with hscr below 0x0200 so bit 15 is never set. That does not
+  // mean the pair is not displayed. It means the pair is drawn as a VERTICAL
+  // SPLIT at scanline v, tilemap 2 above and tilemap 3 below, which is a horizon:
+  // it is the sky and the sea. Suppressing the pair paints the screen with
+  // palette 0 instead, which is blue, at whatever rate the game toggles the mode.
   //
-  // Measured in the reference: Virtua Racing's attract sets ctrl = 0x2000-0x23xx
-  // on pair 2/3 — window mode 1 — while hscr for every tilemap stays below 0x0200,
-  // so bit 15 is NEVER set. MAME therefore draws tilemaps 2 and 3 not at all, and
-  // we drew tilemap 2 opaquely across all 190,464 pixels. That is where the sky
-  // and sea came from: a pair the hardware does not display.
+  // Fixing it, in order of what the reference actually uses:
+  //   1. mode 1, hscr bit 15 clear — a per-SCANLINE layer pick, y >= v selects the
+  //      other map of the pair. Cheap here: the renderer is already per-scanline
+  //      and cur_line is to hand.
+  //   2. modes 2/3, hscr bit 15 clear — a per-PIXEL split at x = h, which is a
+  //      column mask and can reuse the row-mask machinery.
+  //   3. hscr bit 15 SET — the per-line H-scroll table at 0x4000 + 0x200*layer.
+  //      Not reached by anything measured so far; do it last.
+  // The reference model in tb_m1_video.cpp encodes the same misreading and has to
+  // change with the RTL, or the suite will hold the bug in place.
   wire        win_hs       = hctrl_r[15];
   wire        win_suppress = win_mode
                            && (!win_hs || (cur_layer[0] != win_pick));

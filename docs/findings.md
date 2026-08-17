@@ -206,10 +206,14 @@ Two differences remain against the reference, neither a 2D fault:
   than missing. Not confirmed either way — the census counts wins per tilemap, not
   per glyph, so it cannot separate the two.
 
-### And a pair in window mode with hscr bit 15 clear draws NOTHING
+### WITHDRAWN: a pair in window mode with hscr bit 15 clear draws NOTHING
 
-The nesting in `draw_common` carries the rule, and there is no `else` on the inner
-`if`:
+**This is wrong and is the open bug.** It is kept in full because the RTL, the
+reference model and this file all still carry it, and because the way it was
+reached is the lesson.
+
+What was claimed: `draw_common`'s inner `if (hscr & 0x8000)` has no `else`, so a
+pair in window mode with that bit clear draws neither map.
 
 ```cpp
 if (ctrl & 0x6000) {           // window mode
@@ -219,14 +223,64 @@ if (ctrl & 0x6000) {           // window mode
 } else { ...normal path, with the row mask... }
 ```
 
-Measured: attract sets `ctrl` to `0x2000`-`0x23xx` on pair 2/3 — window mode 1 —
-while `hscr` for all four tilemaps stays below `0x0200`, so bit 15 is **never**
-set. MAME therefore draws tilemaps 2 and 3 **not at all**. We drew tilemap 2, and
-its category-0 pass is opaque, so it covered all 190,464 pixels. **That is where
-the sky and sea came from: a pair the hardware does not display at all.**
+**There is an `else`, at `segaic24.cpp:418-456`**, and in it MAME splits the screen
+into two rectangles and draws BOTH maps of the pair, one in each:
+
+```cpp
+} else {                                     // hscr & 0x8000 clear
+  set_scrollx(both maps, -(hscr & 0x1ff));
+  switch ((ctrl & 0x6000) >> 13) {
+  case 1:                                    // VERTICAL split
+    v = (-vscr) & 0x1ff;
+    c1.max_y = v-1;  c2.min_y = v;
+    if (!((-vscr) & 0x200)) layer ^= 1;
+    draw(layer, c1);  draw(layer^1, c2);
+  case 2: case 3:                            // HORIZONTAL split
+    h = hscr & 0x1ff;
+    c1.max_x = h-1;  c2.min_x = h;
+    if (!(hscr & 0x200)) layer ^= 1;
+    draw(layer, c1);  draw(layer^1, c2);
+  }
+}
+```
+
+The *measurement* below is right; the conclusion drawn from it was not. Attract
+does set `ctrl` to `0x2000`-`0x23xx` on pair 2/3 — window mode 1 — with `hscr`
+below `0x0200` so bit 15 is never set. That does not mean the pair is undisplayed.
+It means the pair is drawn as a **vertical split at scanline `v`, tilemap 2 above
+and tilemap 3 below** — which is a horizon. **That is the sky and the sea.**
+
+Suppressing the pair instead paints the screen with palette 0, which is blue, at
+whatever rate the game toggles the mode. The user identified this from the board
+before the code was reread: the blue flashed at about the rate the text should
+blink, and *"seems to me that the full maps are being selected instead"*.
 
 The window decision uses the **pair's even** `hscr`, not each map's own, because
-MAME only reaches that branch through the even map's draw call.
+MAME only reaches that branch through the even map's draw call. That part holds.
+
+**How to fix it**, in the order the reference actually exercises:
+
+1. **mode 1, `hscr` bit 15 clear** — a per-**scanline** layer pick: `y >= v`
+   selects the other map of the pair. Cheap, because the renderer is already
+   per-scanline and `cur_line` is to hand. This is the sky and sea.
+2. **modes 2/3, `hscr` bit 15 clear** — a per-**pixel** split at `x = h`. That is a
+   column mask and can reuse the row-mask machinery.
+3. **`hscr` bit 15 set** — the per-line H-scroll table at `0x4000 + 0x200*layer`.
+   Nothing measured so far reaches it; do it last.
+
+`tb_m1_video.cpp`'s reference model encodes the same misreading and must change
+with the RTL, or the suite will hold the bug in place — which is exactly what it
+did for 380,929 checks, below.
+
+**Why rereading did not catch it, twice.** The first pass through `draw_common`
+found the row-mask polarity bug and the `layer & 1` double meaning, and produced
+this wrong rule in the same sitting. The second pass reproduced the wrong rule from
+the notes rather than from the source. What broke it was neither pass: it was a
+user looking at the board and matching the flash rate to the text blink rate.
+**A rate is a measurement that a still frame cannot carry**, and the class of
+evidence that had been relied on — single captured frames — cannot see a blink at
+all. Several earlier "the text is absent" readings came from single frames and are
+worth nothing.
 
 ### Why 380,929 checks agreed with the bug
 
