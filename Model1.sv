@@ -405,6 +405,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [17:0] dbg_layer_px [4];
   wire [15:0] dbg_ctrl [2];
   wire [11:0] dbg_layer_have [4];
+  wire [11:0] dbg_tram_writes [4];
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -452,7 +453,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
     .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
     .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
-    .dbg_layer_have(dbg_layer_have)
+    .dbg_layer_have(dbg_layer_have),
+    .dbg_tram_writes(dbg_tram_writes)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -671,7 +673,14 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // scheme was supposed to make impossible. `make lint_top` now fails on it.
   //
   // TWENTY-FOUR ROWS IS THE CEILING: 384 visible lines at 16 pixels per row.
-  wire [31:0] dw [23];
+  //
+  // NDW sizes this array, the packing loop and m1_diag's parameter, so there is
+  // exactly one number to change when a row is added. It was declared beside the
+  // loop and the array kept its own literal 23 — adding row 1B then wrote past
+  // the end of the array, which is the same class of drift the packing loop was
+  // introduced to stop and cost a second lint run to find.
+  localparam int unsigned NDW = 24;
+  wire [31:0] dw [NDW];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -732,6 +741,28 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // ceiling — 384 visible lines at 16 pixels a row — so something had to go.
   assign dw[21] = {8'h19, dbg_layer_have[0], dbg_layer_have[1]};
   assign dw[22] = {8'h1A, dbg_layer_have[2], dbg_layer_have[3]};
+  // CPU WRITES into tile RAM per frame: the tilemaps on the left, the scroll
+  // and H-scroll registers at word 0x4000-0x5fff on the right.
+  //
+  // The right field is deliberately NOT the other pair of tilemaps. Simulation
+  // measured the game loop writing **no** tilemap words at all — `wr=0,0,12,0`
+  // at frame 92 — while writing 12 to 24 scroll words every frame. So a row
+  // showing both tilemap regions reads `000 000` in a working design, which is
+  // indistinguishable from a counter that does not work. The scroll region is
+  // the liveness control, and it is the only region the game loop touches.
+  //
+  //   left 0, right ~00C-018   matches simulation. The game loop never rewrites
+  //                            the tilemaps, so the content came from init and
+  //                            the divergence is there, not in the loop
+  //   left 0, right 0          the CPU is not writing tile RAM at all. It is
+  //                            further from the reference than anything measured
+  //                            so far, and that is the bug
+  //   left > 0                 the loop does rewrite the maps and they still
+  //                            read blank — then the memory is implicated
+  //
+  // Rows 1B is the last one available: 24 rows at 16 pixels is 384 lines, the
+  // whole visible field.
+  assign dw[23] = {8'h1B, dbg_tram_writes[0], dbg_tram_writes[2]};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -756,7 +787,6 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // port half-connected. Note the residual risk is silent — a wrong loop bound
   // leaves undriven wires, which lint_top does not report — but there is no
   // second number to keep in step, which is what actually went wrong before.
-  localparam int unsigned NDW = 23;
   wire [NDW*32-1:0] dw_packed;
   genvar gi;
   generate

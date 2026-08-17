@@ -149,6 +149,18 @@ module m1_main #(
   // the note on the port in v60.sv.
   output logic        dbg_fp_trap,
   output logic [15:0] dbg_io_replies,
+  // CPU writes into tile RAM, counted by region. The video-side census in
+  // m1_video says what the renderer READS; this says what the CPU WROTE, and
+  // the pair is what separates "the V60 never writes maps 0/1" from "the
+  // writes do not survive the RAM". Neither number alone can tell those apart,
+  // and on hardware maps 0/1 read as empty while maps 2/3 read as full.
+  //   [0] word 0x0000-0x1fff, tilemaps 0 and 1
+  //   [1] word 0x2000-0x3fff, tilemaps 2 and 3
+  //   [2] word 0x4000-0x5fff, per-line H-scroll table and the scroll registers
+  //   [3] word 0x6000-0x7fff, the row masks
+  // Per frame and saturating at FFF, latched at vblank. See the counter below
+  // for why cumulative does not work.
+  output logic [11:0] dbg_tram_writes [4],
   output logic [2:0]  rom_bank
 );
 
@@ -273,6 +285,41 @@ module m1_main #(
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
     .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack)
   );
+
+  // Counted on the CPU's own write strobe, upstream of the RAM, so a fault
+  // inside the memory cannot hide from it.
+  //
+  // PER FRAME, not cumulative, and that is the whole design of the instrument.
+  // Cumulative was tried first and is useless here: the boot self-test writes
+  // and reads back every word of tile RAM, so all four regions saturate before
+  // the game loop starts. Simulation showed FFF on all four by frame 64, which
+  // cannot distinguish "written once at boot" from "rewritten every frame" —
+  // and that distinction is exactly the question. Resetting on vblank measures
+  // the game loop alone.
+  logic tw_vb_d;
+  logic [11:0] tw_cnt [4];
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      for (int r = 0; r < 4; r++) begin
+        tw_cnt[r]           <= 12'd0;
+        dbg_tram_writes[r]  <= 12'd0;
+      end
+      tw_vb_d <= 1'b0;
+    end else begin
+      tw_vb_d <= vblank_irq;
+      // Latch the frame that just ended, so the overlay never shows a count
+      // being accumulated. Same shape as the content census in m1_video.
+      if (vblank_irq && !tw_vb_d) begin
+        for (int r = 0; r < 4; r++) begin
+          dbg_tram_writes[r] <= tw_cnt[r];
+          tw_cnt[r]          <= 12'd0;
+        end
+      end else if (m_req && m_we && sel_tileram) begin
+        if (tw_cnt[m_addr[15:14]] != 12'hfff)
+          tw_cnt[m_addr[15:14]] <= tw_cnt[m_addr[15:14]] + 12'd1;
+      end
+    end
+  end
 
   // ------------------------------------------------------- I/O board
   // Answers the boot handshake through the DPRAM's far side. What it covers

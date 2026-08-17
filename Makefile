@@ -251,10 +251,10 @@ test_palette:
 	  $(SRCS_m1_palette) sim/video/tb_m1_palette.cpp -o tb_pal --Mdir obj_pal
 	./obj_pal/tb_pal
 
-# Built TWICE, at 12 words and at 23. The row index is only as wide as NWORDS
+# Built TWICE, at 12 words and at 24. The row index is only as wide as NWORDS
 # needs, so a build at or below sixteen rows cannot reach the truncation that
 # made words 16+ alias onto rows 0-2 — the twelve-word build passed with seven
-# of the real instrument's nineteen rows wrong. 23 is what the top level
+# of the real instrument's nineteen rows wrong. 24 is what the top level
 # instantiates; keep them equal.
 test_diag:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_diag \
@@ -262,9 +262,9 @@ test_diag:
 	  $(SRCS_m1_diag) sim/video/tb_m1_diag.cpp -o tb_diag --Mdir obj_diag
 	./obj_diag/tb_diag
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_diag \
-	  -GNWORDS=23 -CFLAGS -DNWORDS_CFG=23 \
-	  $(SRCS_m1_diag) sim/video/tb_m1_diag.cpp -o tb_diag23 --Mdir obj_diag23
-	./obj_diag23/tb_diag23
+	  -GNWORDS=24 -CFLAGS -DNWORDS_CFG=24 \
+	  $(SRCS_m1_diag) sim/video/tb_m1_diag.cpp -o tb_diag24 --Mdir obj_diag24
+	./obj_diag24/tb_diag24
 
 test_video_timing:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_video_timing \

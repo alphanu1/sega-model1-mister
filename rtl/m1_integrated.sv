@@ -165,7 +165,11 @@ module m1_integrated (
 
   // Non-blank tile words fetched per layer per frame — see m1_video. Separates a
   // layer that holds nothing from one holding content that is not drawn.
-  output logic [11:0] dbg_layer_have [4]
+  output logic [11:0] dbg_layer_have [4],
+
+  // CPU writes into tile RAM by region — see m1_main. The counterpart to
+  // dbg_layer_have: one says what was written, the other what was read back.
+  output logic [11:0] dbg_tram_writes [4]
 );
 
   logic [14:0] vid_tram_addr;
@@ -264,6 +268,7 @@ module m1_integrated (
     .vblank_irq(vblank_irq_cpu),
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
+    .dbg_tram_writes(dbg_tram_writes),
     .rom_bank(rom_bank)
   );
 

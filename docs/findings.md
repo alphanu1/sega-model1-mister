@@ -268,6 +268,97 @@ Note tile RAM is already **duplicated**, `tram_c_*` for the CPU side and
 `tram_v_*` for the video side, precisely so each is one-write/one-read and fits
 an M10K's two ports. So this is not a port-count overflow. It is the crossing.
 
+### The selectivity fits it. The direction of the error does not. — 2026-08-17
+
+This was argued in both directions before being settled, so both halves are here.
+
+**For it**: the maps that read blank are exactly the maps being written. MAME's
+own census shows tilemaps 2/3 constant at 4096 words at every sample — written
+once at init, static after — while tilemaps 0 and 1 are rewritten every frame
+(205 -> 315 -> 1675 -> 153 -> 663). Reads of a continuously written array collide;
+reads of a static array never can. The sea renders perfectly and the text layers
+read as empty, which is that split exactly.
+
+An earlier dismissal of this — *"maps 2/3 fill perfectly, so the write path works,
+so it cannot be memory"* — is a **non-sequitur** and is withdrawn. The warning is
+about read-during-**write**; the content census measures what the video side
+**reads**. "Maps 0/1 are empty" and "reads of maps 0/1 come back blank" are
+different claims and the census cannot separate them, because the census reads
+through the suspect path. Its zero is not the proof it was presented as.
+
+**Against it**: the *direction* of the error is wrong. Read-during-write returns
+whatever the array holds mid-write. A corrupted word is overwhelmingly non-blank,
+and the census counts non-blank words — so corruption can only push the count
+**up**, or change *which* tiles appear. It cannot turn several hundred non-blank
+words into the `008 000` the board reports. That reading means the words are not
+there to be read, or are never read at all.
+
+So: a real hazard, worth closing on its own merits, but not the explanation for an
+empty layer. The write census (row `1B`) is what separates the two, and it exists
+because neither census alone can.
+
+**The fix, when it is done**, is to move tile RAM to a single clock domain and
+cross the CPU's writes in as `m1_cdc_port` already does for SDRAM. A single-clock
+simple dual-port RAM has *defined* read-during-write — old data — which Quartus
+and Verilator model identically. Registering the read does not help: the
+corruption is inside the RAM block, not at the crossing.
+
+## The write census: what the CPU wrote, against what the renderer read
+## — 2026-08-17
+
+Overlay rows `19`/`1A` count non-blank tile words the renderer **read**. Row `1B`
+counts the words the CPU **wrote**, by tile-RAM region, per frame. Neither alone
+can say whether an empty layer is a CPU fault or a memory fault; together they
+can, and that is the only reason the row exists.
+
+Counted on `m_req && m_we && sel_tileram` in `m1_main.sv` — upstream of the RAM,
+so a fault inside the memory cannot hide from it. Regions are word address bits
+14:13: maps 0/1, maps 2/3, the H-scroll table and scroll registers, the row masks.
+
+**Cumulative was tried first and does not work.** The boot self-test writes and
+reads back every word of tile RAM, so all four regions saturate at `FFF` long
+before the game loop starts — simulation showed exactly that by frame 64. A
+cumulative count cannot distinguish "written once at boot" from "rewritten every
+frame", which is the whole question. It is reset on `vblank_irq` instead, latching
+the completed frame, so it measures the game loop alone.
+
+**The content census is upstream of window suppression**, checked because it would
+otherwise be a confound: `layer_off` reaches only `lb_masked` in
+`m1_tile_fetch.sv`, while the `tw_nonblank` pulse fires at `F_TILE` regardless. A
+suppressed layer is still fetched and still counted. So the board's `008 000` is a
+real "the fetched words were blank", not our own suppression hiding the fetch.
+
+### The game loop never rewrites the tilemaps — 2026-08-17
+
+The first thing the per-frame census measured, and it was not expected.
+`make m1_frame FRAME_TRACE=1`, steady state from about frame 90:
+
+```
+F92 ... have=53,0,0,0 rtl_have=1624,0,0,0 wr=0,0,12,0 ctrl=0000,0000 ...
+F93 ... have=53,0,0,0 rtl_have=1624,0,0,0 wr=0,0,24,0 ...
+```
+
+**Zero writes per frame to any of the four tilemaps.** The only tile-RAM region the
+game loop touches is `0x4000-0x5fff` — the H-scroll table and the scroll registers
+— at 12 to 24 words a frame. Tilemap 0 holds 1,624 fetchable non-blank words at
+the same moment, so its content was written **once during init** and is static
+after.
+
+Two consequences:
+
+1. **It closes read-during-write as the explanation.** There are no writes to
+   collide with. Whatever makes the board's maps 0/1 read blank happens at or
+   before init, not in the steady state that is on screen.
+2. **It moves the question to the init-time writes.** Both the CPU-side copy
+   `tram_c_*` and the video-side copy `tram_v_*` take the same write strobe, so
+   the next discriminator is whether the board's init writes land at all — not
+   whether the steady state corrupts them.
+
+It also decided the shape of overlay row `1B`. Showing both tilemap regions would
+read `000 000` on a *working* design, which cannot be told from a counter that does
+not work, so the right field is the scroll region instead: a live control that
+proves the counter and the game loop are running.
+
 ## What the board does, measured from a video — 2026-08-17
 
 Photographs could not settle this; 471 frames of phone video at 30 fps could.

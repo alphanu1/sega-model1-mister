@@ -61,7 +61,13 @@ not missing.
 | `10` | Coprocessor PC | Where it stopped, if it stopped. |
 | `11`–`14` | Visible pixels won per tilemap, per frame — 0 to 3 | **`02E800` is 190,464 = 496 x 384, the whole screen.** A layer with content in tile RAM reading `000000` is not reaching the screen; a layer reading near `02E800` is covering everything. Latched at vblank, so it is a whole frame's worth. |
 | `15`, `16` | Window/split-scroll control for pairs 0/1 and 2/3 | Bits 14:13 non-zero means the game asked for a split; negate the value and take the low nine bits for the scanline it splits at. `0000` means window mode is off and the window logic is not implicated in whatever is on screen. |
-| `17`, `18` | Coprocessor FIFO pushes, and returns | Separates "the V60 is not sending work" from "the coprocessor is not taking it" — the two look identical from a screen. |
+| `19`, `1A` | Non-blank tile words **read** per frame — two 12-bit fields per row, tilemaps 0/1 then 2/3 | Read against the wins in `11`–`14`. `have 0, won 0` means the layer holds nothing and the fault is upstream; `have > 0, won 0` means content is there and not reaching the screen. Counted at `F_TILE`, upstream of window suppression, so a suppressed layer is still counted. |
+| `1B` | Tile-RAM words **written** by the CPU per frame — the tilemaps, then the scroll registers at word `0x4000`–`0x5fff` | The row that closes the question `19`/`1A` opens. Simulation reads `000` and `00C`–`018`: the game loop rewrites **no** tilemap words and only touches the scroll registers. So the right field is the liveness control — `000 000` means the CPU is not writing tile RAM at all, and a left field above zero means the loop does rewrite the maps and the memory is implicated. |
+
+Rows `17` and `18` held the coprocessor's FIFO pushes and returns and were dropped
+for `19`/`1A`: pushes read a saturated `FFFF` and returns a constant `0`, and will
+keep doing so until there is a rasterizer for the coprocessor to feed. Twenty-four
+rows is the ceiling, so something had to go.
 
 ### What rows `11`–`14` cannot tell you
 

@@ -166,20 +166,61 @@ In order:
    prints both `have=` (the whole map, from the testbench) and `rtl_have=` (words
    fetched on the displayed span, from the RTL). They differ in magnitude by
    design and agree about zero, which is the reading that matters.
-2. **Test the dual-clock tile RAM** — but weigh it honestly. Quartus warns its
-   read-during-write is undefined and Verilator models it as clean, so it is a
-   real sim-versus-hardware divergence in the memory in question (`findings.md`).
-   **It is a weak explanation for a systematically empty layer**, though:
-   read-during-write corrupts only the word being written at the instant it is
-   read, which gives occasional wrong tiles, not a layer that holds nothing all
-   frame. Treat it as a hazard to close rather than the leading suspect, and let
-   the census point first.
+2. **Read the WRITE census against the content census** — overlay row `1B`, CPU
+   writes into tile RAM per frame: the tilemaps on the left, the scroll and
+   H-scroll registers on the right. Counted on `m_req && m_we && sel_tileram` in
+   `m1_main.sv`, upstream of the RAM, so a fault inside the memory cannot hide
+   from it. This is the next thing to look at on hardware:
 
-   Free experiments before any rebuild: the OSD carries
+   | row `1B` | Meaning | Where to look |
+   |---|---|---|
+   | `000` `00C`–`018` | matches simulation exactly | the init-time writes — the loop never rewrites the maps |
+   | `000` `000` | the CPU writes no tile RAM at all | the V60's own behaviour; further off-reference than anything measured yet |
+   | left `> 0` | the loop rewrites the maps and they still read blank | the memory |
+
+   **Simulation already measured the first row of that table**, and it was not
+   expected: the game loop writes **zero** words to any tilemap, and 12–24 words
+   per frame to the scroll region alone (`findings.md`). Tilemap 0 holds 1,624
+   fetchable words at the same moment, so its content came from init. That is why
+   the right field is the scroll region and not the other tilemap pair — a row
+   showing both map regions reads `000 000` on a working design, which cannot be
+   told from a broken counter.
+
+   So the most likely reading on hardware is that row `1B` matches simulation, and
+   the question becomes **whether the board's init-time tile writes land at all**.
+   The next instrument after this one compares the two copies: `tram_c_*` and
+   `tram_v_*` are separate arrays taking the same write strobe, so a CPU-side
+   readback that finds content where the video side finds none isolates the
+   crossing, and one that also finds none says the writes never landed.
+
+   **The dual-clock hazard is real but the arithmetic cuts against it**, and this
+   was argued in both directions before being settled on paper. Quartus warns the
+   tile RAM's read-during-write is undefined while Verilator models it as clean,
+   so it is a genuine sim-versus-hardware divergence in the memory in question
+   (`findings.md`) — and the *selectivity* fits it well: MAME's counts show maps
+   2/3 are written once and static (4096 constant at every sample) while maps 0/1
+   are rewritten every frame (205→315→1675→153→663), so the maps reading blank
+   are exactly the maps being written. That is a good fit.
+
+   What kills it outright is that **there are no writes to collide with**: the
+   game loop rewrites no tilemap words at all, measured above. And what killed it
+   before that measurement was the *direction* of the error. Corruption
+   returns whatever the RAM has mid-write; a garbage word is overwhelmingly
+   non-blank, and the census counts non-blank words. So read-during-write can only
+   push the count **up**, or scramble which tiles appear — it cannot turn several
+   hundred non-blank words into the `008 000` the board reports. A count that low
+   means the words are not there to read, or are never read at all.
+
+   Treat it as a hazard to close on its own merits, not as the explanation. The
+   fix, when it is done, is to move tile RAM to a single clock domain and cross
+   the CPU's writes in as `m1_cdc_port` already does for SDRAM — a single-clock
+   simple dual-port RAM has *defined* read-during-write, which both toolchains
+   model identically. Registering the read does not help; the corruption is inside
+   the RAM block, not at the crossing.
+
+   Free experiment before any rebuild: the OSD carries
    `O[5:4],SDRAM read phase,CL+2..CL+5`, so sweeping it costs a menu click and
-   says whether any memory-timing sensitivity exists at all. The honest fix, if
-   needed, is a registered/synchronised read or moving tile RAM to one clock
-   domain.
+   says whether any memory-timing sensitivity exists at all.
 3. **The test/service switches are CORRECTLY MAPPED** — checked against the
    oracle, `INPUT_PORTS( vr )` in `model1.cpp`:
 
