@@ -160,8 +160,8 @@ reading these.
 
 | Piece | Size | Where it lives |
 |---|---|---|
-| V60-side registers: address, RAM window, FIFO window, status | small | new `m1_copro_if` |
-| copro RAM, shared V60/TGP | 8192 x 32 | **32 M10K** |
+| V60-side registers: address, RAM window, FIFO window, status | small | `m1_copro_if` **(built)** |
+| copro RAM, shared V60/TGP, arbitrated | 8192 x 32 | **32 M10K** — `m1_copro_if` **(built)** |
 | TGP data RAM | 768 x 32 | 3 M10K, or MLAB |
 | two 32-bit FIFOs | shallow | MLAB |
 | microcode ROM | 2048 x 32 | 8 M10K, loaded via MRA |
@@ -179,15 +179,39 @@ sound's 8 MB of samples on DDR3.
 
 ---
 
+## The RAM is shared, so the V60's window is a handshake
+
+One M10K port, two masters — Quartus will not infer a second write port, and
+duplicating 8192x32 would cost 64 blocks against 144 free. So `m1_copro_if`
+arbitrates: a RAM access takes two cycles, register and FIFO accesses take one,
+and the V60 wins contention because it is the side whose CPU stalls. Measured in
+the testbench: V60 acknowledged at cycle 1, TGP at cycle 3, neither starved.
+
+That forced two corrections worth remembering, both caught by the directed test
+rather than by review:
+
+- **Read data cannot be combinational.** The first version tracked the V60's
+  address register continuously so the RAM output was always ready. That stops
+  being true once the TGP can hold the port. The alternative — a second copy
+  that goes stale for one cycle — is correct almost always, which is how this
+  project has acquired its worst bugs.
+- **The action must be a one-shot even though the request is held.** `m1_main`
+  holds `m_req` until it sees `ack`, and the region selects come from the held
+  address, so the state machine would otherwise re-run the access and increment
+  the address once per pass. This is the complement of the project's other
+  handshake lesson: *acknowledges must be held, not pulsed* — and here the
+  request is held, so the action must fire once.
+
 ## Order of work
 
-1. **`m1_copro_if`** — the four V60-side registers and the copro RAM, with a
-   directed testbench asserting the post-increment rule, the commit-on-high-half
-   rule, and the pop-on-low/push-on-high asymmetry. Self-contained and testable
-   with no TGP present.
-2. **Wire it into `m1_main`'s decode** so the V60's existing traffic lands
-   somewhere real. The boot trace already shows 510 accesses to `0xd00000`, so
-   this is immediately observable: those reads should stop returning nothing.
+1. ~~**`m1_copro_if`**~~ — **done**, 211 checks. The four V60-side registers, the
+   8192x32 RAM, both FIFOs and an arbitrated TGP port.
+2. ~~**Wire it into `m1_main`**~~ — **done**. Measured: the V60 pushes **11
+   command words** per block, which agrees with the 22 accesses to `0xd80000` the
+   page histogram showed — two 16-bit accesses per 32-bit word. It writes the RAM
+   zero times and never touches the data window at this stage, so its behaviour
+   here is purely push-commands-and-wait.
+   `tools/build_tgp_rom.py` extracts the microcode and math tables, CRC-checked.
 3. **The FIFOs and the TGP's data space**, still without the math units. At this
    point the TGP can execute microcode and exchange words.
 4. **Microcode load through the MRA**, and the SDRAM regions for tables and

@@ -293,15 +293,21 @@ module m1_main #(
   // increment the address three times per access; m1_copro_if's testbench pins
   // that explicitly.
   logic [15:0] copro_q;
+  logic        copro_ack;
+  wire         to_copro = sel_copro_adr || sel_copro_ram || sel_copro_fifo;
   logic [15:0] dbg_copro_ram_writes, dbg_copro_fifo_pushes;
 
   m1_copro_if copro (
     .clk(clk), .rst_n(rst_n),
     .sel_adr(sel_copro_adr), .sel_ram(sel_copro_ram), .sel_fifo(sel_copro_fifo),
-    .stb(bst == B_LOCAL), .we(m_we), .a1(m_addr[1]), .be(m_be), .wdata(m_wdata),
-    .q(copro_q),
-    // TGP side, absent for now: nothing pops the inbound FIFO and nothing
-    // pushes the outbound one.
+    // The request is held until copro_ack; the interface serves one access per
+    // request however long it is held, so nothing here needs to pulse.
+    .req(m_req), .we(m_we), .a1(m_addr[1]), .be(m_be), .wdata(m_wdata),
+    .q(copro_q), .ack(copro_ack),
+    // TGP side, absent for now: nothing drives the RAM port, nothing pops the
+    // inbound FIFO and nothing pushes the outbound one.
+    .tgp_req(1'b0), .tgp_we(1'b0), .tgp_addr(13'd0), .tgp_wdata(32'd0),
+    .tgp_rdata(), .tgp_ack(),
     .fifo_in_data(), .fifo_in_valid(), .fifo_in_pop(1'b0),
     .fifo_out_data(32'd0), .fifo_out_push(1'b0), .fifo_out_full(),
     .dbg_ram_writes(dbg_copro_ram_writes),
@@ -352,6 +358,17 @@ module m1_main #(
         end
 
         B_LOCAL: begin
+          // The coprocessor interface shares one RAM port with the TGP, so its
+          // reads are not ready in a fixed cycle. Wait for its acknowledge
+          // rather than sampling on faith — everything else here is registered
+          // on-chip memory that is ready now.
+          if (to_copro) begin
+            if (copro_ack) begin
+              rdata_r <= copro_q;
+              ack_r   <= 1'b1;
+              bst     <= B_ACK;
+            end
+          end else begin
           if      (sel_tileram) rdata_r <= tram_q;
           else if (sel_palette) rdata_r <= pram_q;
           else if (sel_dlist0)  rdata_r <= dl0_q;
@@ -359,8 +376,6 @@ module m1_main #(
           else if (sel_colxlat) rdata_r <= cxlat_q;
           else if (sel_dpram)   rdata_r <= dpram_q;
           else if (sel_glue)    rdata_r <= glue_rdata;
-          else if (sel_copro_adr || sel_copro_ram || sel_copro_fifo)
-                                rdata_r <= copro_q;
           // sel_fifo_stat deliberately falls through: MAME's fifoin_status_r
           // returns a constant 0xFFFF and the default below already is that.
           // Everything the board does not decode, plus the regions this does
@@ -368,6 +383,7 @@ module m1_main #(
           else                  rdata_r <= 16'hFFFF;
           ack_r <= 1'b1;
           bst   <= B_ACK;
+          end
         end
 
         // Hold the acknowledge until the requester drops m_req.

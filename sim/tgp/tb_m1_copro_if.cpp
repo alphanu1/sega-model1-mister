@@ -42,7 +42,7 @@ struct Dut {
     d = new Vm1_copro_if;
     d->clk = 0; d->rst_n = 0;
     d->sel_adr = 0; d->sel_ram = 0; d->sel_fifo = 0;
-    d->stb = 0; d->we = 0; d->a1 = 0; d->be = 3; d->wdata = 0;
+    d->req = 0; d->we = 0; d->a1 = 0; d->be = 3; d->wdata = 0;
     d->fifo_in_pop = 0; d->fifo_out_push = 0; d->fifo_out_data = 0;
     d->eval();
     for (int i = 0; i < 4; i++) tick();
@@ -54,25 +54,32 @@ struct Dut {
   void tick() { d->clk = 0; d->eval(); d->clk = 1; d->eval(); }
 
   void idle(int n = 1) {
-    d->stb = 0; d->sel_adr = d->sel_ram = d->sel_fifo = 0; d->we = 0;
+    d->req = 0; d->sel_adr = d->sel_ram = d->sel_fifo = 0; d->we = 0;
     for (int i = 0; i < n; i++) tick();
   }
 
-  // One bus beat. Read data is registered, so it is valid after the tick.
+  // A held request, released on ack — the same discipline m1_main uses for
+  // SDRAM. Holding it is the realistic case, and the one that would expose a
+  // double-pop or a repeated increment if the action were not a one-shot.
+  int run_until_ack(int limit = 16) {
+    for (int i = 0; i < limit; i++) {
+      tick();
+      if (d->ack) return i + 1;
+    }
+    return -1;
+  }
   void wr(int which, int a1, uint16_t data, int be = 3) {
     d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
-    d->stb = 1; d->we = 1; d->a1 = a1; d->be = be; d->wdata = data;
-    tick();
+    d->req = 1; d->we = 1; d->a1 = a1; d->be = be; d->wdata = data;
+    check(run_until_ack() > 0, "write was never acknowledged");
     idle();
   }
-  // q is combinational, so it is sampled DURING the strobe — the same cycle
-  // m1_main latches it — not after the tick.
+  // q is valid with ack.
   uint16_t rd(int which, int a1) {
     d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
-    d->stb = 1; d->we = 0; d->a1 = a1;
-    d->clk = 0; d->eval();
+    d->req = 1; d->we = 0; d->a1 = a1;
+    check(run_until_ack() > 0, "read was never acknowledged");
     uint16_t v = d->q;
-    d->clk = 1; d->eval();
     idle();
     return v;
   }
@@ -211,26 +218,22 @@ int main(int argc, char** argv) {
     }
   }
 
-  printf("test: a held strobe would triple-fire, so it must be one cycle\n");
+  printf("test: a held request acts exactly once\n")
+  ;
   {
-    // m1_main holds m_req across B_IDLE, B_LOCAL and B_ACK. The interface is
-    // driven from B_LOCAL alone for that reason, and this pins what goes wrong
-    // otherwise: three cycles of strobe on an auto-incrementing access advance
-    // the address three times, which reads downstream as the V60 skipping two
-    // words in every three.
+    // req is held until ack, so the guard is no longer "keep it short" but
+    // "act once however long it is held". A held request that incremented per
+    // cycle would read downstream as the V60 skipping words.
     Dut t;
     t.set_adr(0x8200);
-    // one-cycle strobe: exactly one increment
-    (void)t.rd(Dut::RAM, 1);
-    check(t.rd(Dut::ADR, 0) == 0x8201, "one strobe did not advance exactly one word");
-
-    // three cycles of strobe: three increments, which is the bug this guards
     t.d->sel_ram = 1; t.d->sel_adr = 0; t.d->sel_fifo = 0;
-    t.d->stb = 1; t.d->we = 0; t.d->a1 = 1;
-    t.tick(); t.tick(); t.tick();
+    t.d->req = 1; t.d->we = 0; t.d->a1 = 1;
+    (void)t.run_until_ack();
+    // hold it well past the acknowledge
+    for (int i = 0; i < 6; i++) t.tick();
     t.idle();
-    check(t.rd(Dut::ADR, 0) == 0x8204,
-          "a held strobe did not advance three words — the guard is not measuring what it claims");
+    check(t.rd(Dut::ADR, 0) == 0x8201,
+          "a held request incremented more than once");
   }
 
   printf("test: the FIFO pops exactly once per access\n");
@@ -245,6 +248,60 @@ int main(int argc, char** argv) {
     check(t.rd(Dut::FIFO, 0) == 0x1000, "first pop");
     check(t.rd(Dut::FIFO, 0) == 0x2000, "second pop — one access popped more than one word");
     check(t.rd(Dut::FIFO, 0) == 0x3000, "third pop");
+  }
+
+  printf("test: the TGP port reads and writes the same RAM\n");
+  {
+    // One RAM, two masters. The TGP's own four address registers and its
+    // increment rule (always, by 4 when bit 18 is set) live on its side — this
+    // port is plain memory, and what matters here is that both sides see the
+    // same words.
+    Dut t;
+    t.d->tgp_addr = 0x0055; t.d->tgp_wdata = 0xfeedface; t.d->tgp_we = 1;
+    t.d->tgp_req = 1;
+    for (int i = 0; i < 8 && !t.d->tgp_ack; i++) t.tick();
+    check(t.d->tgp_ack == 1, "the TGP write was not acknowledged");
+    t.d->tgp_req = 0; t.d->tgp_we = 0; t.idle();
+
+    // the V60 must see it
+    t.set_adr(0x0055);
+    check(t.rd(Dut::RAM, 0) == 0xface, "the V60 does not see the TGP's low half");
+    check(t.rd(Dut::RAM, 1) == 0xfeed, "the V60 does not see the TGP's high half");
+
+    // and the other direction
+    t.set_adr(0x0056);
+    t.wr(Dut::RAM, 0, 0x1234); t.wr(Dut::RAM, 1, 0x5678); t.idle(2);
+    t.d->tgp_addr = 0x0056; t.d->tgp_we = 0; t.d->tgp_req = 1;
+    for (int i = 0; i < 8 && !t.d->tgp_ack; i++) t.tick();
+    check(t.d->tgp_ack == 1, "the TGP read was not acknowledged");
+    check(t.d->tgp_rdata == 0x56781234u, "the TGP does not see the V60's word");
+    t.d->tgp_req = 0; t.idle();
+  }
+
+  printf("test: the V60 wins the port, and the TGP still completes\n");
+  {
+    // Both asserted at once. The V60 goes first because it is the side whose
+    // CPU stalls; the TGP must not be starved or dropped.
+    Dut t;
+    t.set_adr(0x0060);
+    t.d->tgp_addr = 0x0061; t.d->tgp_wdata = 0xa5a5a5a5; t.d->tgp_we = 1;
+    t.d->tgp_req = 1;
+    t.d->sel_ram = 1; t.d->req = 1; t.d->we = 0; t.d->a1 = 0;
+
+    int v60_at = -1, tgp_at = -1;
+    for (int i = 0; i < 24; i++) {
+      t.tick();
+      if (t.d->ack     && v60_at < 0) v60_at = i;
+      if (t.d->tgp_ack && tgp_at < 0) tgp_at = i;
+    }
+    check(v60_at >= 0, "the V60 access never completed under contention");
+    check(tgp_at >= 0, "the TGP access never completed — starved");
+    check(v60_at <= tgp_at, "the TGP was served before the V60");
+    printf("  V60 acked at cycle %d, TGP at %d\n", v60_at, tgp_at);
+    t.d->req = 0; t.d->tgp_req = 0; t.d->tgp_we = 0; t.idle();
+
+    t.set_adr(0x0061);
+    check(t.rd(Dut::RAM, 0) == 0xa5a5, "the TGP's contended write was lost");
   }
 
   printf("m1_copro_if: checks=%ld fails=%ld\n", checks, fails);
