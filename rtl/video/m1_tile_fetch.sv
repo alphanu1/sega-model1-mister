@@ -433,7 +433,13 @@ module m1_tile_fetch #(
             // category 0 showing and category 1 hidden, which is what MAME's
             // fast paths do: !m draws the whole 128, and the inverted pass
             // sees 0xffff and draws none of it.
-            lb_masked      <= (dec_prio ^ px_mask) | {4{layer_off}};
+            // The mask bit alone, NOT combined with the tile's category. Its
+            // polarity was already applied when the word was read — m1_video
+            // inverts it for the odd tilemap, which is what MAME's `if (win)
+            // m = ~m` does. This was `dec_prio ^ px_mask`, which tied the mask to
+            // the category instead of to the tilemap, and suppressed every
+            // category-1 tile on the even tilemaps. See m1_video's Q_MASK_W.
+            lb_masked      <= px_mask | {4{layer_off}};
 
             sx  <= sx + 10'(gn);
             rem <= rem - gn;

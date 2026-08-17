@@ -57,7 +57,7 @@ struct Fetch {
   long cyc = 0;
   // Line buffer as the DUT writes it.
   uint16_t lb_pal[512];
-  uint8_t  lb_tr[512], lb_pr[512];
+  uint8_t  lb_tr[512], lb_pr[512], lb_mk[512];
   bool     lb_written[512];
 
   // Character port model with latency.
@@ -100,6 +100,7 @@ struct Fetch {
       lb_pal[a] = (d->lb_pal >> (12 * i)) & 0xfff;
       lb_tr[a] = (d->lb_transparent >> i) & 1;
       lb_pr[a] = (d->lb_prio >> i) & 1;
+      lb_mk[a] = (d->lb_masked >> i) & 1;
       lb_written[a] = true;
     }
   }
@@ -111,9 +112,17 @@ struct Fetch {
   }
 
   // Render one scanline; returns cycles taken.
-  long render(int line, int layer, uint16_t hscr, uint16_t vscr) {
+  //
+  // row_mask and layer_off were never driven here and lb_masked was never
+  // checked, so this module's masking was covered only end-to-end through
+  // m1_video — whose reference model was written from the same reading of MAME as
+  // the RTL. When that reading turned out to be wrong, 380,929 checks agreed with
+  // the bug. A module's own outputs need checking at the module.
+  long render(int line, int layer, uint16_t hscr, uint16_t vscr,
+              uint64_t rmask = 0, bool loff = false) {
     for (int i = 0; i < 512; i++) lb_written[i] = false;
     d->line = line; d->layer = layer; d->hscr = hscr; d->vscr = vscr;
+    d->row_mask = rmask; d->layer_off = loff;
     long t0 = cyc;
     d->start = 1; tick(); d->start = 0;
     long guard = 0;
@@ -124,8 +133,18 @@ struct Fetch {
 
 static long checks = 0, fails = 0;
 
+// The mask bit for a screen pixel: four 16-bit words across 512 pixels, bit 15
+// the leftmost eight. The fetch engine applies the bit as given — the odd-tilemap
+// inversion happens in m1_video when the word is read, mirroring MAME's
+// `if (win) m = ~m` — so this must NOT invert.
+static int want_mask_bit(uint64_t rmask, int sx, bool loff) {
+  if (loff) return 1;
+  uint16_t w = (uint16_t)(rmask >> (((sx >> 7) & 3) * 16));
+  return (w >> (15 - ((sx >> 3) & 15))) & 1;
+}
+
 static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
-                   const char* what) {
+                   const char* what, uint64_t rmask = 0, bool loff = false) {
   long bad = 0;
   for (int sx = 0; sx < COLUMNS * 8; sx++) {
     uint32_t map_x = ((uint32_t)sx - (hscr & 0x1ff)) & 0x1ff;
@@ -144,12 +163,13 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
       if (bad < 6) printf("  FAIL %s: pixel %d never written\n", what, sx);
       bad++; fails++; continue;
     }
+    int want_mk = want_mask_bit(rmask, sx, loff);
     if (f.lb_pal[sx] != want_pal || f.lb_tr[sx] != want_tr ||
-        f.lb_pr[sx] != want_pr) {
+        f.lb_pr[sx] != want_pr || f.lb_mk[sx] != want_mk) {
       if (bad < 6)
-        printf("  FAIL %s x=%d got pal=%03x tr=%d pr=%d want pal=%03x tr=%d pr=%d\n",
-               what, sx, f.lb_pal[sx], f.lb_tr[sx], f.lb_pr[sx],
-               want_pal, (int)want_tr, (int)want_pr);
+        printf("  FAIL %s x=%d got pal=%03x tr=%d pr=%d mk=%d want pal=%03x tr=%d pr=%d mk=%d\n",
+               what, sx, f.lb_pal[sx], f.lb_tr[sx], f.lb_pr[sx], f.lb_mk[sx],
+               want_pal, (int)want_tr, (int)want_pr, want_mk);
       bad++; fails++;
     }
   }
@@ -175,6 +195,34 @@ int main(int argc, char** argv) {
              (unsigned)f.d->fetches);
       fails++;
     }
+  }
+
+  // ------------------------------------------------------------- row mask
+  // The mask must reach lb_masked per pixel, unmodified and independent of the
+  // tile's category. Four pixels are emitted per cycle and can straddle an
+  // 8-pixel mask column whenever the scroll is unaligned, so an unaligned hscr
+  // is the case that matters — a per-group lookup instead of a per-pixel one
+  // passes an aligned test and fails this one.
+  printf("test: row mask reaches lb_masked per pixel, category-independent\n");
+  {
+    for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = (uint16_t)rng();
+    Fetch f; f.lat = 3; f.reset();
+    // Mixed: solid, empty, alternating and a single isolated bit, so a wrong
+    // word order or a reversed bit order inside a word both show up.
+    const uint64_t rm = 0xffff0000a5a50100ull;
+    f.render(23, 2, 5, 0, rm, false);
+    verify(f, 23, 2, 5, 0, "mask-unaligned", rm, false);
+    f.render(23, 2, 0, 0, rm, false);
+    verify(f, 23, 2, 0, 0, "mask-aligned", rm, false);
+    // Category must not enter into it: the same mask over tile words with bit 15
+    // set everywhere must give the same lb_masked. This is the fault that hid the
+    // game's text, so it is asserted directly rather than inferred.
+    for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] |= 0x8000;
+    f.render(23, 2, 5, 0, rm, false);
+    verify(f, 23, 2, 5, 0, "mask-cat1", rm, false);
+    // layer_off forces every pixel masked, whatever the table says.
+    f.render(23, 2, 5, 0, rm, true);
+    verify(f, 23, 2, 5, 0, "mask-layer-off", rm, true);
   }
 
   // ------------------------------------------------------ repeated tiles

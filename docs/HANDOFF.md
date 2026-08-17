@@ -80,11 +80,68 @@ The engine work done chasing it was worth keeping anyway — cost per dense laye
 went 1,614 -> 1,182 cycles, text layers ~700 -> 267 — and the current build
 reports **zero** deadline misses on real content.
 
-## The open M1 defect: most of the 2D does not draw — 2026-08-16
+## The open M1 defect: the board and the simulation disagree — 2026-08-17
 
-**This is where to start.** MAME's attract frame shows a ranking table,
-`INSERT COIN(S)`, `CREDIT 0` and the SEGA logo over the road. Ours shows the sky
-and sea and nothing else, and neither scrolls.
+**This is where to start, and the shape of the problem has changed.** The 2D path
+is no longer the suspect: the same RTL, the same ROM and the same V60 render the
+attract ranking table correctly in simulation. What is left is a divergence
+between simulation and silicon.
+
+### What the board does
+
+Sky and sea, no text, and the picture **flashes to a flat blue and back**. Two
+photographs of the same session, seconds apart, show the two states; the overlay
+rows are identical between them except the I/O reply count.
+
+### What simulation does with the same design
+
+`make m1_frame FRAME_CYCLES=900000000 FRAME_TRACE=1`, one line per frame:
+
+- **No flat-blue frame exists.** The backdrop share is `bd=0/190464` on **every**
+  frame of 382. Some tilemap covers every visible pixel, always.
+- **No alternation of any kind.** Frames move through a handful of states and
+  stay: tilemap 0 full-screen while the CPU is in the boot loop at `pc=fffff0`,
+  then tilemap 2 full-screen — that is the sky and sea — and from frame ~330 the
+  text builds up on tilemap 1 a few hundred pixels at a time (240, 545, 1460,
+  2740, 3060...) as the ranking table is drawn on.
+- **Window mode engages and behaves.** `ctrl` reads `0000,2000` from that point:
+  mode 1 on pair 2/3, split at line 0, which suppresses tilemap 3 and draws
+  tilemap 2. `tm3=0` throughout, matching what MAME does at this frame.
+
+So the design renders correctly and does not flash. The board, running a
+bitstream built from that same source tree, does both wrongly.
+
+### What that rules out
+
+The whole 2D composite — the row mask, the window mode, the tilemap order, the
+palette, the mixer priority — is exonerated *as logic*. Any of it can still be
+failing on silicon for reasons simulation cannot model: SDRAM timing, the read
+capture phase, clock domain crossings, or Fmax.
+
+### The measurement that separates them
+
+The overlay's per-tilemap census. Rows `11`-`14`, one tilemap each, 18 bits, so
+`02E800` = 190,464 = the whole screen. Against simulation's `0, N, 190464-N, 0`:
+
+- **census matches, picture wrong** — the renderer is winning the right pixels
+  and something downstream is wrong: scanout, the scaler, or the palette read.
+- **census all zero while the screen is blue** — every layer declined to draw and
+  the picture is the *backdrop*, palette entry 0. Nothing else can produce it,
+  since the 3D layer is tied off. That points at the character fetch or tile RAM
+  returning nothing on hardware.
+- **census large on a tilemap simulation shows as zero** — the V60 is in a
+  different state on silicon; row `00` says where.
+
+Note the census could not answer this before 2026-08-17: it was four wrong rows
+in a half-connected instrument. See `debug-overlay.md`.
+
+### Historical note: what the picture used to be
+
+Before the V60's `IN`/`OUT` fix this section read "most of the 2D does not draw",
+and the suspects were the row mask and then the window mode. Both were real gaps,
+both were fixed, and **neither changed the picture** — because the V60 never got
+far enough to draw the rest. Kept as a warning: two correct fixes in a row
+changed nothing on screen, and the cause was in neither place.
 
 ### Ruled out, by measurement
 
@@ -119,33 +176,29 @@ opaque pass ignores transparency. Cost **+204 ALM, zero M10K**, timing +0.401 ns
 **And the picture did not change.** Record that plainly: the mask was a real
 defect, correctly fixed, and something else is also wrong.
 
-### Full analysis
+### The window mode — implemented, and confirmed in use
 
-**`docs/2d-gap-analysis.md`** is the investigation: what is ruled out by
-measurement, what segas24 does that we do not, a per-tilemap content census from
-the running reference, three ranked hypotheses with the cheapest decisive test
-first, and the MAME harness notes. Read it before touching the video path.
+**`docs/2d-gap-analysis.md`** is the investigation behind it: what was ruled out
+by measurement, what segas24 does, a per-tilemap content census from the running
+reference, and the MAME harness notes.
 
-The headline from it: **the four tilemaps are two pairs, not four peers.** Odd
-maps are *window* maps and in `ctrl` mode are drawn only through their even
-partner. At the attract frame MAME draws tilemap 3 **not at all** — and we draw
-it. That is a confirmed divergence; whether it is *the* cause is the first thing
-to test.
+The headline: **the four tilemaps are two pairs, not four peers.** Odd maps are
+*window* maps and in `ctrl` mode are drawn only through their even partner. At the
+attract frame MAME draws tilemap 3 **not at all**, and we used to draw it.
 
-### The remaining suspect
+`ctrl` is the pair's **even** `vscr` — MAME reads
+`tile_ram[0x5004 + ((layer>>1) & 2)]`, so one register governs both maps of a
+pair, and reading each map's own makes the mode look inactive on the odd one.
 
-**`ctrl & 0x6000` window/split-scroll mode**, unimplemented, and confirmed
-active in the reference — `ctrl` = `tile_ram[0x5004 + ((layer>>1) & 2)]` reads
-**`0x2058`**, so `ctrl & 0x6000` = `0x2000`, mode 1. In that path MAME:
+Mode 1 is implemented: `v = (-ctrl) & 0x1ff` splits the screen, `(-ctrl) & 0x200`
+clear swaps which map is live above the split, and the other map does not draw on
+that line at all. Simulation confirms the game asks for it — `ctrl` reads `0x2000`
+from the attract frame onward — and that our tilemap 3 is then correctly silent.
 
-- returns early for the odd tilemap, drawing only the even one
-- pushes `vscr & 0x1ff` to both the even and odd tilemap
-- takes per-line H-scroll from a table at `0x4000 + 0x200*layer` when
-  `hscr & 0x8000`
-
-We implement none of it, which is also the likeliest home of the missing
-scrolling. `segaic24.cpp` `draw_common` is the reference; read it alongside
-`draw_rect`.
+**Modes 2 and 3 are still unimplemented**: the horizontal split, and per-line
+H-scroll from a table at `0x4000 + 0x200*layer` when `hscr & 0x8000`. The symptom
+would be a vertical seam that moves. `segaic24.cpp` `draw_common` is the
+reference; read it alongside `draw_rect`.
 
 ### How to measure, next session
 

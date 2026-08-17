@@ -80,9 +80,49 @@ start) is bit-identical in all of them.
 correctly: `1st YU. 4'00"00` through `6th MAS`, with the car sprites and banners,
 over the sky and sea. Saved as `docs/images/attract-ranking-2026-08-17.png`.
 
-Census from the same run: **tm0=0, tm1=18933, tm2=65535 (saturated), tm3=0**. So
-tilemap 1 — the text layer that was missing all week — reaches the screen, and
-tilemap 3 contributes nothing, meaning it is not what covers the picture.
+Census from the same run: **tm0=0, tm1=18933, tm2=190464, tm3=0**. So tilemap 1 —
+the text layer that was missing all week — reaches the screen, and tilemap 3
+contributes nothing, meaning it is not what covers the picture.
+
+`tm2` was first recorded here as `65535 (saturated)`, which was the counter's cap
+being quoted as a measurement. It is 190,464 — 496 x 384, the entire screen. The
+counters are 18 bits now.
+
+### And most of what MAME shows on these screens is 3D, not 2D
+
+Measured, MAME 60 s of attract, Lua frame notifier sampling tile RAM at `0x700000`
+every 30 frames with snapshots every 90:
+
+**At the ranking screen MAME's background is the 3D road, not the sky and sea.**
+The sky-and-sea image is in tilemaps 2/3 all along — *behind* the 3D layer, which
+covers it. Our render shows the ranking text over sky and sea because the 3D that
+should be in between is absent. **That output is correct for a core with no
+rasterizer**, not a compositing fault, and it was nearly filed as one.
+
+**The attract loop cycles through screens, and tilemap 1 is empty on several of
+them.** Tilemap 1's content count over 60 s runs `0 -> 144 -> 768 -> 336 -> 0`.
+
+This was first written up here as "screens with no 2D text at all", which is
+**wrong** and was corrected on being challenged: `INSERT COIN(S)`, `CREDIT 0` and
+the SEGA logo are plainly on screen in those snapshots. What is empty is tilemap
+*1*. That text is on **tilemap 0**, which holds 16-432 non-blank words on every
+screen of the loop. Reading "tilemap 1 is empty" as "there is no text" skipped
+straight past the question of which layer the visible text was on — and that
+question was the bug. See below.
+
+**Nothing scrolls, and `ctrl` is not the reason.** `ctrl` — the pair's even
+`vscr` — animates **every frame** in MAME: `2059, 2047, 2033, 201e, 2005, 23e9,
+23ce...`, counting down through a 10-bit wrap, while ours held `2000`. That is a
+real divergence but it is a *consequence*: that register belongs to pair 2/3, and
+pair 2/3 turns out not to be drawn at all (below). Recorded because it was briefly
+treated as the cause.
+
+**Interrupts were suspected and are innocent.** The vblank IRQ reaches the V60 and
+is taken: our PSW reaches `0x10040000` — bit 18, IE — exactly as MAME's does, with
+700+ acknowledges over 200 frames. MAME agrees the game enables interrupts by
+frame 9. A static picture with correct content looks exactly like a vblank handler
+that never runs, and that cost a round of investigation; the measurement is one
+counter at the acknowledge, not the raise.
 
 **Build the local instrument before flashing.** This render was one index-1 ioctl
 pass away from working for days, and in the meantime three hardware round trips
@@ -112,6 +152,83 @@ And the deadline-miss count is identical at 120 M and 800 M cycles (9,417 both),
 so it is entirely boot transient — the same cumulative-counter trap as before, and
 the char-fetch wait average falls from 136 to 19 cycles once the boot phase stops
 dominating it.
+
+## The row mask is keyed to the tilemap, not to the tile category — 2026-08-17
+
+**This is the missing text.** `draw_common` computes two values from the same
+expression, one line apart, either side of a shift:
+
+```cpp
+uint16_t tpri = layer & 1;   // BEFORE the shift -> the tile CATEGORY
+lpri = 1 << lpri;
+layer >>= 1;                 // layer is now the tilemap, 0..3
+...
+int win = layer & 1;         // AFTER the shift  -> the ODD tilemap
+```
+
+`draw_rect` then applies them as two **independent** gates:
+
+```cpp
+uint16_t m = *mask1++;
+if (win) m = ~m;                 // does this 8-pixel column draw from this map?
+if (!(m & 0x8000)) {
+    if (srct[xx] == tpri || ...) // which tiles inside it contribute?
+```
+
+So both categories of one tilemap see the **same** mask polarity, decided by
+whether that tilemap is odd or even. Ours computed `mask ^ category` — the same
+expression read one line too late — which is right for an even tilemap's
+category-0 pass and an odd tilemap's category-1 pass, and inverted for the other
+two. `INSERT COIN(S)`, `CREDIT 0` and the SEGA logo are category-1 tiles on
+tilemap 0, an even map, so they were suppressed wherever the mask bit was clear —
+which the game leaves clear across most of the screen.
+
+**Measured, per frame, over 680 frames:** tilemap 0 held content in **617** frames
+and won a pixel in **47** — and those 47 are the boot frames before the game
+writes a mask table at all. Tilemap 1 won in 329 of the 333 it had content for.
+That asymmetry is the fault's signature: the ranking table is category-1 on an
+**odd** map, the one combination the wrong formula got right by luck, which is why
+that text appeared and made the 2D path look healthy.
+
+After the fix, the same 53 content words on tilemap 0 produce **9,674 visible
+pixels**.
+
+### And a pair in window mode with hscr bit 15 clear draws NOTHING
+
+The nesting in `draw_common` carries the rule, and there is no `else` on the inner
+`if`:
+
+```cpp
+if (ctrl & 0x6000) {           // window mode
+    if (layer & 1) return;     // the odd map never draws directly
+    set_scrolly(both maps);
+    if (hscr & 0x8000) { ...per-line draw... }   // and only here
+} else { ...normal path, with the row mask... }
+```
+
+Measured: attract sets `ctrl` to `0x2000`-`0x23xx` on pair 2/3 — window mode 1 —
+while `hscr` for all four tilemaps stays below `0x0200`, so bit 15 is **never**
+set. MAME therefore draws tilemaps 2 and 3 **not at all**. We drew tilemap 2, and
+its category-0 pass is opaque, so it covered all 190,464 pixels. **That is where
+the sky and sea came from: a pair the hardware does not display at all.**
+
+The window decision uses the **pair's even** `hscr`, not each map's own, because
+MAME only reaches that branch through the even map's draw call.
+
+### Why 380,929 checks agreed with the bug
+
+`m1_video`'s reference model was written from the same reading of `draw_common` as
+the RTL, so both were wrong in the same way and the comparison passed. Worse, the
+comment in the reference stated the wrong rule explicitly and confidently.
+
+- **A reference derived from the same reading of the source as the implementation
+  cannot catch a misreading of the source.** It can only catch a slip between the
+  two. What caught this was a per-layer census against the reference *running*,
+  not against a rereading of it.
+- `tb_m1_tile_fetch` never drove `row_mask` and never checked `lb_masked` at all,
+  so the module owning the logic had no coverage of it. It does now, including a
+  case asserting the mask is independent of the tile category, and reinstating the
+  old expression fails it.
 
 ## The 2D path
 

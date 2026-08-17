@@ -204,7 +204,7 @@ module m1_video #(
   // ---------------------------------------------------------- sequencer
   typedef enum logic [3:0] {
     Q_IDLE, Q_HSCR, Q_HSCR_W, Q_VSCR, Q_VSCR_W,
-    Q_CTRL, Q_CTRL_W, Q_MASK, Q_MASK_W, Q_RUN, Q_NEXT
+    Q_CTRL, Q_CTRL_W, Q_HCTRL, Q_HCTRL_W, Q_MASK, Q_MASK_W, Q_RUN, Q_NEXT
   } qstate_t;
   qstate_t q;
 
@@ -234,7 +234,13 @@ module m1_video #(
   // buries everything underneath it.
   logic [15:0] ctrl_r;
 
-  // Mode 1, the vertical split, from draw_common's `hscr & 0x8000` clear branch:
+  // The PAIR's even hscr, read the same way ctrl is. Needed because the window
+  // decision belongs to the pair, not to each map: MAME reaches that branch only
+  // through the even map's draw call, so it is the even map's hscr bit 15 that
+  // decides for both. Reading each map's own would let the odd one disagree.
+  logic [15:0] hctrl_r;
+
+  // Mode 1, the vertical split, from draw_common's per-line loop:
   //
   //   v = (-vscr) & 0x1ff
   //   rows 0..v-1  show `layer`,  rows v..383 show `layer ^ 1`
@@ -251,12 +257,29 @@ module m1_video #(
   wire        win_upper = (cur_line < win_v);
   wire        win_pick  = win_upper ? win_swap : ~win_swap;
 
-  // This layer is suppressed when the window mode is on and the line belongs to
-  // its partner. Modes 2 and 3 (the horizontal split, and the per-line H-scroll
-  // table at tile_ram 0x4000) are NOT implemented — they are a different split
-  // and this game does not select them at the point reached so far. If a picture
-  // ever shows a vertical seam that moves, look here first.
-  wire        win_suppress = win_mode && (cur_layer[0] != win_pick);
+  // WINDOW MODE WITHOUT hscr BIT 15 DRAWS NOTHING AT ALL.
+  //
+  // This is the shape of draw_common, and the nesting is the whole point:
+  //
+  //   if (ctrl & 0x6000) {              // window mode
+  //       if (layer & 1) return;        // the ODD map never draws directly
+  //       set_scrolly(both maps);
+  //       if (hscr & 0x8000) {          // <-- and ONLY here is anything drawn
+  //           switch ((ctrl & 0x6000) >> 13) { case 1: ...; case 2: case 3: ... }
+  //       }
+  //   } else { ... normal path, with the row mask ... }
+  //
+  // There is no else on that inner `if`. So with the window mode selected and
+  // hscr bit 15 clear, the pair sets its scroll and draws NEITHER map.
+  //
+  // Measured in the reference: Virtua Racing's attract sets ctrl = 0x2000-0x23xx
+  // on pair 2/3 — window mode 1 — while hscr for every tilemap stays below 0x0200,
+  // so bit 15 is NEVER set. MAME therefore draws tilemaps 2 and 3 not at all, and
+  // we drew tilemap 2 opaquely across all 190,464 pixels. That is where the sky
+  // and sea came from: a pair the hardware does not display.
+  wire        win_hs       = hctrl_r[15];
+  wire        win_suppress = win_mode
+                           && (!win_hs || (cur_layer[0] != win_pick));
 
   // Base of this layer's table. MAME picks it with `layer & 4` on the 8-way
   // draw index, which is bit 1 of the tilemap number: 0/1 -> 0x6000,
@@ -352,6 +375,14 @@ module m1_video #(
           // overlay. Latched here rather than re-read at vblank so it cannot
           // disagree with what actually drove the decision.
           dbg_ctrl[cur_layer[1]] <= tram_data;
+          // The pair's even hscr, for the window decision — see win_hs.
+          seq_tram_addr <= 15'h5000 + {13'd0, cur_layer[1], 1'b0};
+          q             <= Q_HCTRL;
+        end
+
+        Q_HCTRL: q <= Q_HCTRL_W;
+        Q_HCTRL_W: begin
+          hctrl_r       <= tram_data;
           seq_tram_addr <= mask_base + {13'd0, 2'd0};
           mask_i        <= 2'd0;
           q             <= Q_MASK;
@@ -362,7 +393,30 @@ module m1_video #(
         // thousands of cycles, so it does not move the deadline.
         Q_MASK: q <= Q_MASK_W;
         Q_MASK_W: begin
-          mask_r[{mask_i, 4'd0} +: 16] <= tram_data;
+          // INVERTED FOR THE ODD TILEMAP, AND ONLY FOR THAT.
+          //
+          // draw_common computes two different things from the same expression
+          // and they are one line apart:
+          //
+          //   uint16_t tpri = layer & 1;   // BEFORE the shift -> tile CATEGORY
+          //   layer >>= 1;                 // now the tilemap, 0..3
+          //   int win = layer & 1;         // AFTER the shift -> ODD tilemap
+          //
+          // and draw_rect then uses them as two independent gates: `if (win)
+          // m = ~m` decides whether the 8-pixel column is drawn from this tilemap
+          // at all, while `srct[xx] == tpri` decides which tiles inside it
+          // contribute. Both categories of one tilemap therefore see the SAME
+          // mask polarity, set by whether that tilemap is odd or even.
+          //
+          // This was implemented as `mask ^ category`, which is the same
+          // expression read one line too late. The effect on an even tilemap is
+          // that its category-1 tiles need the mask bit SET where MAME needs it
+          // clear — so with the tables the game actually writes, every
+          // category-1 tile on tilemaps 0 and 2 was suppressed. That is the
+          // missing text: `INSERT COIN(S)`, `CREDIT 0` and the ranking table live
+          // there, tile RAM held them all along, and the census showed tilemap 0
+          // winning zero pixels for 640 consecutive frames.
+          mask_r[{mask_i, 4'd0} +: 16] <= cur_layer[0] ? ~tram_data : tram_data;
           if (mask_i == 2'd3) begin
             seq_owns_tram <= 1'b0;
             f_start       <= 1'b1;

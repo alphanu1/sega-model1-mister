@@ -67,23 +67,28 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
     transp[L] = (px == 0) || ((vscr >> 15) & 1);
     prio[L] = (tw >> 15) & 1;
   }
-  // The row mask, from segaic24.cpp draw_common/draw_rect. Two tables — 0x6000
-  // for tilemaps 0/1, 0x6800 for 2/3 — four words per SCREEN scanline, one bit
-  // per 8-pixel column, bit 15 leftmost.
-  //
-  // MAME draws each tilemap twice and flips the mask for the second pass
-  // (`win = layer & 1`, `if(win) m = ~m`), so a column shows whichever category
-  // matches its mask bit. Note what that means when the table is all zero: the
-  // category-1 pass sees ~0 = 0xffff and draws nothing at all.
   // Window/split-scroll. `ctrl` is the PAIR's even vscr — MAME reads
   // tile_ram[0x5004 + ((layer >> 1) & 2)] — so one register governs both maps of
-  // a pair. In mode 1 the screen splits at v and each region shows ONE of the
-  // two; the other must not draw on that line at all. Getting this wrong put a
-  // flat opaque fill over the whole picture on hardware.
+  // a pair.
+  //
+  // The nesting in draw_common matters as much as the arithmetic:
+  //
+  //   if (ctrl & 0x6000) {           // window mode
+  //       if (layer & 1) return;     // the odd map never draws directly
+  //       set_scrolly(both);
+  //       if (hscr & 0x8000) { ...draw per line... }   // no else
+  //   } else { ...normal path with the row mask... }
+  //
+  // With the mode selected and hscr bit 15 clear, NEITHER map of the pair draws.
+  // The game does exactly that — ctrl 0x2000 on pair 2/3 with hscr never above
+  // 0x0200 — and drawing the even map anyway put an opaque full-screen fill
+  // (the sky and sea) where the hardware shows nothing.
   int win_off[4];
   for (int L = 0; L < 4; L++) {
     uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
     if (!(ctrl & 0x6000)) { win_off[L] = 0; continue; }
+    uint16_t hs   = tile_ram[0x5000 + (L & 2)];   // the PAIR's even hscr
+    if (!(hs & 0x8000)) { win_off[L] = 1; continue; }   // nothing draws
     uint16_t nv   = (uint16_t)(-(int)ctrl);
     int v         = nv & 0x1ff;
     int swap      = !(nv & 0x200);
@@ -91,25 +96,47 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
     win_off[L]    = ((L & 1) != pick);
   }
 
+  // The row mask, from draw_common/draw_rect. Two tables — 0x6000 for tilemaps
+  // 0/1, 0x6800 for 2/3 — four words per SCREEN scanline, one bit per 8-pixel
+  // column, bit 15 leftmost.
+  //
+  // THE MASK IS KEYED TO THE ODD/EVEN TILEMAP, NOT TO THE TILE CATEGORY. Both
+  // come out of `layer & 1` in draw_common, one line apart and either side of a
+  // shift, which is how they got conflated:
+  //
+  //   uint16_t tpri = layer & 1;   // before the shift -> category
+  //   layer >>= 1;
+  //   int win = layer & 1;         // after the shift  -> odd tilemap
+  //
+  // draw_rect applies them as independent gates: `if (win) m = ~m` decides
+  // whether the column draws from this tilemap at all, `srct[xx] == tpri`
+  // decides which tiles within it. So a set bit hides an even tilemap's column
+  // in BOTH categories, and reveals an odd tilemap's.
+  //
+  // Read as `mask ^ category`, every category-1 tile on an even tilemap was
+  // suppressed wherever the bit was clear — which is where the game's text is.
   int mbit[4];
   for (int L = 0; L < 4; L++) {
     uint16_t m = tile_ram[((L & 2) ? 0x6800 : 0x6000) + y * 4 + (x >> 7)];
+    if (L & 1) m = (uint16_t)~m;
     mbit[L] = (m >> (15 - ((x >> 3) & 15))) & 1;
   }
 
   // Mixer: paint back to front, MAME's draw order 6,4,2,0 then 7,5,3,1.
   int idx = 0;
+  // The mask gate is the same in both passes — it is a property of the tilemap,
+  // not of the category.
   auto cat0 = [&](int i) {
     if (win_off[i]) return;                  // this line belongs to the partner
     if (prio[i]) return;
-    if (mbit[i]) return;                 // this column shows category 1 here
+    if (mbit[i]) return;                 // this column is not drawn from map i
     if (transp[i] && i < 2) return;      // 6 and 4 are opaque, 2 and 0 are not
     idx = pal[i];
   };
   auto cat1 = [&](int i) {
     if (win_off[i]) return;
     if (!prio[i] || transp[i]) return;
-    if (!mbit[i]) return;                // this column shows category 0 here
+    if (mbit[i]) return;                 // same gate, same polarity
     idx = pal[i];
   };
   cat0(3); cat0(2); cat0(1); cat0(0);
@@ -156,6 +183,16 @@ int main(int argc, char** argv) {
   // suites still passed.
   tile_ram[0x5006] = 0x2000 | (uint16_t)(-160 & 0x1ff);   // mode 1, v = 160
   tile_ram[0x5004] = 0x0000;                              // pair 0/1 normal
+  // Window mode has TWO outcomes and they need separate coverage: with hscr bit
+  // 15 set the pair draws one map per region, and with it clear the pair draws
+  // NOTHING. The second is what the game selects, and the first is the logic that
+  // would silently stop being tested if only the second were covered. So this
+  // alternates per frame — see the frame loop.
+  //
+  // Only ever set on the window-mode pair. In the NORMAL path hscr bit 15 selects
+  // the per-line H-scroll table at 0x4000, which is unimplemented, so setting it
+  // on pair 0/1 would be testing against a divergence rather than a fixture.
+  tile_ram[0x5002] = 0x8000 | 0x1f8;                      // pair 2/3 hscr
 
   d->clk = 0; d->rst_n = 0; d->ce_pix = 0; d->tile_mask = TILE_MASK;
   d->tram_data = 0; d->char_data = 0; d->char_ack = 0; d->pal_data = 0;
@@ -197,7 +234,15 @@ int main(int argc, char** argv) {
     if (!d->ce_pix) continue;
 
     // Frame boundary on the rising edge of delayed vblank.
-    if (d->vid_vb && !prev_vb) { frames++; x = 0; y = 0; }
+    if (d->vid_vb && !prev_vb) {
+      frames++; x = 0; y = 0;
+      // Flip the window pair between its two outcomes. Changed on the rising
+      // edge of vblank, which is ~40 blank lines before the first visible line
+      // is rendered, so the RTL and the reference cannot disagree about which
+      // value applied to a line.
+      tile_ram[0x5002] = (frames & 1) ? (uint16_t)(0x8000 | 0x1f8)
+                                      : (uint16_t)0x01f8;
+    }
     prev_vb = d->vid_vb;
 
     if (!d->vid_hb && !d->vid_vb) {

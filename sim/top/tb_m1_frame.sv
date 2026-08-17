@@ -400,6 +400,63 @@ always @(posedge clk) begin
     end
 end
 
+// INTERRUPTS TAKEN, PER FRAME.
+//
+// Scroll registers are animated from the vblank handler, so a picture with the
+// right content that never moves is what a vblank interrupt that never reaches
+// the CPU looks like — the main loop keeps running and the frame flag is never
+// set. m1_glue's own header records that this failed once already, silently,
+// from having the mask backwards.
+//
+// Counted at the acknowledge rather than the raise: a raise that nothing consumes
+// is exactly the failure being looked for, so counting raises would report the
+// interrupt system as healthy in the case that matters.
+// CONTENT, NOT JUST WINS.
+//
+// The census counts which tilemap WON a pixel. That cannot distinguish "this
+// layer holds nothing" from "this layer holds text and something is stopping it
+// reaching the screen", and those need completely different fixes. This counts
+// non-blank tile words per map straight out of tile RAM, by exactly the rule the
+// MAME script uses — non-zero, and not tile 0x20, which is the space character —
+// so the two numbers are directly comparable.
+//
+// Sampling every fourth word of the map's 0x1000, as the MAME script does. It is
+// a presence check, not an inventory.
+integer tm_have [0:3];
+task automatic tram_content_census;
+    integer L, i;
+    reg [15:0] w;
+    begin
+        for (L = 0; L < 4; L = L + 1) begin
+            tm_have[L] = 0;
+            for (i = 0; i < 'h1000; i = i + 4) begin
+                w = {core.main.rams.tram_v_hi[L * 'h1000 + i],
+                     core.main.rams.tram_v_lo[L * 'h1000 + i]};
+                if (w != 16'h0000 && (w & 16'h3fff) != 16'h0020)
+                    tm_have[L] = tm_have[L] + 1;
+            end
+        end
+    end
+endtask
+
+integer irq_acks = 0, irq_raises = 0;
+reg irq_n_d = 1;
+// The V60 takes an interrupt only when PSW bit 18, IE, is set — it resets clear
+// and software must set it, on this CPU through UPDPSW rather than any dedicated
+// enable instruction. So "interrupt never acknowledged" has two very different
+// causes: the line never asserted, or the CPU never enabled them. Tracked as
+// "ever", because a single frame's sample during boot proves nothing: interrupts
+// being off early is correct.
+reg ie_ever = 0;
+always @(posedge clk) begin
+    if (rst_n_cpu && core.main.ce) begin
+        if (core.main.cpu_irq_ack) irq_acks = irq_acks + 1;
+        if (irq_n_d && !core.main.irq_n) irq_raises = irq_raises + 1;
+        irq_n_d <= core.main.irq_n;
+        if (core.main.cpu.psw[18]) ie_ever <= 1'b1;
+    end
+end
+
 always @(posedge clk) begin
     if (!rst_n_sys) begin
         px <= 0; py <= 0; prev_vb <= 0;
@@ -411,11 +468,15 @@ always @(posedge clk) begin
             frames = frames + 1;
             // The census is latched inside m1_video on this same edge, so it
             // reads as the frame that just finished.
-            if (TRACE_FRAMES)
-                $display("F%0d bd=%0d/%0d tm=%0d,%0d,%0d,%0d ctrl=%04h,%04h pc=%06h",
+            if (TRACE_FRAMES) begin
+                tram_content_census();
+                $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
                          frames, bd_cnt, vis_cnt,
-                         f_layer_px[0], f_layer_px[1], f_layer_px[2],
-                         f_layer_px[3], f_ctrl[0], f_ctrl[1], core.dbg_pc);
+                         f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
+                         tm_have[0], tm_have[1], tm_have[2], tm_have[3],
+                         f_ctrl[0], f_ctrl[1], irq_raises, irq_acks,
+                         core.main.cpu.psw, ie_ever, core.dbg_pc);
+            end
             bd_cnt  = 0;
             vis_cnt = 0;
         end
