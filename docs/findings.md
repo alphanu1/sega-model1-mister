@@ -90,6 +90,19 @@ were spent photographing an overlay whose rows could not be identified with
 confidence — one of those builds predated the telemetry it was being asked to
 report, which the photograph revealed by showing tag `00` where `0F` belonged.
 
+**NEVER EDIT RTL WHILE A BUILD IS RUNNING.** `tools/mister_project.sh` SYMLINKS
+`rtl/` and `Model1.sv` into `build/mister` rather than copying them, so synthesis
+reads whatever is on disk at the moment it reads each file. Editing during a build
+therefore produces a bitstream that is part one revision and part another, with
+nothing to indicate it. That is how a build acquired the window mode but not the
+census, and the mixed result was then debugged as though it were a logic fault.
+
+**And check the flow is finished before flashing, by exact process name.** A stale
+`fit.summary` and `.rbf` from the previous run sit in `output_files` looking
+current. `pgrep -f quartus_` is not the check — the pattern matches the checking
+command's own line and always reports something running; `pgrep -x quartus_fit`
+and friends do not.
+
 Also note the frame test's DEFAULT 120 M cycles renders the *wrong moment*:
 `pc=fe143d`, one FIFO push, and only tilemap 2 on screen. The attract content
 needs ~700 M. A render of the wrong program state looks exactly like a rendering
