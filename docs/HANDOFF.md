@@ -140,9 +140,25 @@ running flow by exact process name: `pgrep -x 'quartus_(map|fit|sh|asm|sta)'`.
 
 The row-mask and window-mode fixes are **confirmed working on the board** — a
 video of the screen shows the renderer obeying `ctrl` correctly in both states
-(see `findings.md`). They did not put text on screen, because **tilemaps 0 and 1
-win nothing on hardware** while simulation wins 11,038 and 9,743 from tile RAM
-whose content matches MAME's census exactly.
+(see `findings.md`). They did not put text on screen.
+
+**START HERE: there are two defects, not one, and the first needs no hardware.**
+
+Measured from `make m1_frame FRAME_TRACE=1`, stable frames 90 to 296:
+
+1. **Tilemaps 1, 2 and 3 are empty in SIMULATION.** `have=53,0,0,0`. Correcting
+   for the census's 4x stride, map 0 holds ~212 words — inside MAME's 205-1675
+   range — while maps 1, 2 and 3 hold none at all against MAME's 648-2976 and
+   4096, 4096. Our sea and sky are tilemap 2's opaque category-0 pass over an
+   *empty* map; the reference fills that area from 4,096 real tiles. **This is
+   reproducible for free** and until it is fixed the board has no correct
+   reference to be compared against. Do this one first.
+2. **On hardware, additionally, map 0 reads near-empty** (`008` in overlay row
+   `19`) where simulation has ~212 words. That is the hardware-only part, and it
+   needs the write census below to place it.
+
+The earlier claim that our tile-RAM content "matches MAME's census exactly" came
+from a single frame at the ranking screen and does not hold across the run.
 
 In order:
 

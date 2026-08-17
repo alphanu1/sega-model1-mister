@@ -359,6 +359,39 @@ read `000 000` on a *working* design, which cannot be told from a counter that d
 not work, so the right field is the scroll region instead: a live control that
 proves the counter and the game loop are running.
 
+### Tilemaps 1, 2 and 3 are empty in SIMULATION too — 2026-08-17
+
+From the same trace, stable from frame 90 to frame 296: `have=53,0,0,0`.
+
+**First, the instrument's caveat, because it nearly produced a wrong claim.**
+`tram_content_census` in `tb_m1_frame.sv` strides `i = i + 4` — it samples every
+fourth word, 1,024 of each map's 4,096. So its counts are a **4x undersample** and
+must be multiplied by four before comparing with MAME's. Map 0's `53` is therefore
+about 212 words, which sits inside MAME's 205-1675 range. Map 0 is roughly right.
+
+**Maps 1, 2 and 3 read exactly zero across 1,024 samples each.** A map holding
+4,096 non-blank words — which is what MAME reports for maps 2 and 3 at every
+sample — cannot sample zero in 1,024 tries. So they are genuinely empty, and this
+is a divergence in simulation, reproducible for free, with no hardware round trip
+needed.
+
+MAME, for comparison: map 0 205-1675, map 1 648-2976, maps 2 and 3 constant 4096.
+
+Which means the sea and sky on our screen are **not** what the reference draws.
+Tilemap 2 wins 180,790 of 190,464 pixels while holding no content at all — the
+opaque category-0 pass over an empty map, already documented above as a real state
+worth recognising. The reference fills that area from 4,096 real tiles. We paint it
+flat.
+
+So there are two defects, not one, and they are separable:
+
+1. **In simulation**: maps 1, 2 and 3 are never populated. Only map 0 is.
+2. **On hardware, additionally**: map 0 reads near-empty (`008`) where simulation
+   has ~212 words.
+
+(1) is the one to work on. It needs no board, no bitstream and no photograph, and
+until it is fixed the board cannot be compared against a correct reference.
+
 ## What the board does, measured from a video — 2026-08-17
 
 Photographs could not settle this; 471 frames of phone video at 30 fps could.
