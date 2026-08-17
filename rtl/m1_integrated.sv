@@ -154,7 +154,11 @@ module m1_integrated (
   // that reports a successful load and fails much later as a CPU fault.
   output logic        ldr_overflow,
   output logic [7:0]  dbg_fetches,
-  output logic [15:0] dbg_overruns
+  output logic [15:0] dbg_overruns,
+
+  // Visible pixels per tilemap, per frame — see m1_video. An alarm for a layer
+  // that never reaches the screen, not a proof the composite is right.
+  output logic [15:0] dbg_layer_px [4]
 );
 
   logic [14:0] vid_tram_addr;

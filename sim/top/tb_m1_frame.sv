@@ -72,7 +72,10 @@ module tb_m1_frame #(
     parameter logic [7:0] PRESS_IN0 = 8'hff
 );
 
-localparam integer PRELOAD_WORDS = 32'h300000;
+// Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
+// math tables at 0x400000. Stopping at the V60 image leaves the TGP reading
+// 0xFFFF and the V60 stalls, which is a picture of the wrong machine.
+localparam integer PRELOAD_WORDS = 32'h420000;
 
 // THE CLOCKS ARE THE BOARD'S, NOT ROUND NUMBERS.
 //
@@ -120,7 +123,7 @@ wire [4:0][15:0] p_din;
 wire [4:0][1:0]  p_be;
 wire [4:0][63:0] p_dout;
 
-assign p_req  = {2'b00, ifp_req, char_req,          sdr_req};
+assign p_req  = {1'b0, tgp_mem_req, ifp_req, char_req, sdr_req};
 assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
@@ -128,7 +131,7 @@ assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
 // from word 0, which is V60 program ROM, and every glyph decodes from the same
 // wrong data. 31 distinct tile numbers then render identically and the screen
 // is a uniform pattern that looks like a video bug rather than an address one.
-assign p_addr = {24'd0, 24'd0, ifp_addr,
+assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
 assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
@@ -202,10 +205,14 @@ m1_integrated core (
                40'hffffffffff,     // 0x07..0x03
                8'h01, 8'h01,       // 0x02, 0x01  pedals released
                8'h80}),            // 0x00        steering centred
-    .ucode_clk(clk), .ucode_we(1'b0), .ucode_addr(11'd0), .ucode_data(32'd0),
-    .tgp_tbl_req(), .tgp_tbl_addr(), .tgp_tbl_rdata(32'd0), .tgp_tbl_ack(1'b1),
-    .tgp_dat_req(), .tgp_dat_addr(), .tgp_dat_rdata(32'd0), .tgp_dat_ack(1'b1),
-    .dbg_tgp_retires(), .dbg_tgp_pc(), .dbg_tgp_unimpl(),
+    // m1_integrated's own ports: the microcode arrives through the loader on
+    // index 1, and the coprocessor's read-only regions come off SDRAM port 3.
+    .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),
+    .tgp_mem_dout(p_dout[3]), .tgp_mem_ack(p_ack[3]),
+    .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
+    .dbg_tgp_unimpl(f_tgp_unimpl),
+    .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
+    .dbg_layer_px(f_layer_px),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -217,11 +224,10 @@ m1_integrated core (
     .char_req(char_req), .char_addr(char_addr),
     .char_data(p_dout[1][31:0]), .char_ack(p_ack[1]),
 
-    .ioctl_download(ioctl_download), .ioctl_index(16'd0), .ioctl_wr(ioctl_wr),
+    .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_wr(ioctl_wr),
     .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout), .ioctl_wait(ioctl_wait),
     .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
     .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
-    .tgp_wr(), .tgp_addr(), .tgp_din(),
 
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
@@ -237,6 +243,13 @@ m1_integrated core (
 
 // ----------------------------------------------------- getting the ROM in
 reg [15:0] rom [0:PRELOAD_WORDS-1];
+reg [31:0] ucode [0:2047];
+
+wire        tgp_mem_req;
+wire [24:1] tgp_mem_addr;
+wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
+wire        f_tgp_unimpl;
+wire [15:0] f_layer_px [4];
 integer i;
 initial begin
     // Progress, flushed. stdout is block buffered when this is redirected to a
@@ -247,6 +260,10 @@ initial begin
              DOWNLOAD, HOLD_CPU, ROMHEX);
     $fflush;
     $readmemh(ROMHEX, rom);
+    for (i = 0; i < 2048; i = i + 1) ucode[i] = 32'h0;
+    $readmemh("build/rom/vr_tgp_prog.hex", ucode);
+    if (ucode[0] === 32'h0)
+        $display("tb_m1_frame: *** no TGP microcode — run tools/build_tgp_rom.py ***");
     $display("tb_m1_frame: ROM image read");
     $fflush;
     if (!DOWNLOAD) begin
@@ -267,6 +284,8 @@ end
 // than poking memory: the loader's flow control, the write port's one-at-a-time
 // contract and the arbiter that the video path is also using are all in the
 // path, at the same time, exactly as on hardware.
+reg [15:0] ioctl_index = 16'd0;
+
 integer dl_words = 0;
 task automatic run_download;
     integer w;
@@ -296,7 +315,49 @@ task automatic run_download;
     end
 endtask
 
+// THE MICROCODE IS A SECOND DOWNLOAD, ON INDEX 1.
+//
+// m1_rom_loader routes index 1 to the coprocessor's program RAM instead of to
+// SDRAM. Without this pass the TGP executes zeros, and the V60 then stalls
+// exactly as it did before the IN/OUT fix — so a frame rendered without it is a
+// picture of the wrong machine.
+task automatic run_ucode_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd1;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 4096; w = w + 1) begin      // 2048 words x 2 halves
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= (w[0] == 1'b0) ? ucode[w >> 1][15:0]
+                                         : ucode[w >> 1][31:16];
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: microcode streamed on index 1");
+        $fflush;
+    end
+endtask
+
 // ------------------------------------------------------------ frame capture
+// Reported at the end: which tilemaps reached the screen, and whether the
+// coprocessor ran. This is the whole point of rendering locally — it replaces
+// photographing an overlay and guessing which row is which.
+task automatic report_census;
+    begin
+        $display("FRAME: layer px per frame  tm0=%0d tm1=%0d tm2=%0d tm3=%0d",
+                 f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3]);
+        $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d returns=%0d",
+                 f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_returns);
+    end
+endtask
+
 localparam integer W = 496;
 localparam integer H = 384;
 
@@ -495,6 +556,7 @@ initial begin
 
     if (DOWNLOAD) begin
         run_download();
+        run_ucode_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
         $fflush;
@@ -566,6 +628,7 @@ initial begin
         end
         $fclose(fd);
         $display("FRAME: wrote %s", PPMOUT);
+    report_census();
     end
     $finish;
 end

@@ -74,6 +74,32 @@ start) is bit-identical in all of them.
 
 ---
 
+## The 2D path renders correctly — proven by a local frame
+
+`make m1_frame FRAME_CYCLES=800000000` renders the attract-mode ranking table
+correctly: `1st YU. 4'00"00` through `6th MAS`, with the car sprites and banners,
+over the sky and sea. Saved as `docs/images/attract-ranking-2026-08-17.png`.
+
+Census from the same run: **tm0=0, tm1=18933, tm2=65535 (saturated), tm3=0**. So
+tilemap 1 — the text layer that was missing all week — reaches the screen, and
+tilemap 3 contributes nothing, meaning it is not what covers the picture.
+
+**Build the local instrument before flashing.** This render was one index-1 ioctl
+pass away from working for days, and in the meantime three hardware round trips
+were spent photographing an overlay whose rows could not be identified with
+confidence — one of those builds predated the telemetry it was being asked to
+report, which the photograph revealed by showing tag `00` where `0F` belonged.
+
+Also note the frame test's DEFAULT 120 M cycles renders the *wrong moment*:
+`pc=fe143d`, one FIFO push, and only tilemap 2 on screen. The attract content
+needs ~700 M. A render of the wrong program state looks exactly like a rendering
+fault.
+
+And the deadline-miss count is identical at 120 M and 800 M cycles (9,417 both),
+so it is entirely boot transient — the same cumulative-counter trap as before, and
+the char-fetch wait average falls from 136 to 19 cycles once the boot phase stops
+dominating it.
+
 ## The 2D path
 
 **The missing 2D was never a rendering fault.** Our tile RAM at frame 71 matches
