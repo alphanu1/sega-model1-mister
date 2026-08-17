@@ -154,7 +154,21 @@ module m1_tile_fetch #(
   // Per-line telemetry: how many character fetches were actually issued. With
   // the repeat check this is well below COLUMNS on text screens, and it is the
   // number that says whether the bandwidth budget above holds.
-  output logic [7:0]  fetches
+  output logic [7:0]  fetches,
+
+  // CONTENT CENSUS: one pulse per non-blank tile word read.
+  //
+  // Distinct from anything reaching the screen. The win census in m1_video counts
+  // pixels a layer WON, which cannot separate "this layer holds nothing" from
+  // "this layer holds text that is not being drawn" — both read as zero and they
+  // need opposite fixes. In simulation the pair of numbers is what located the
+  // row-mask fault; hardware had no equivalent, which is why the board could not
+  // be diagnosed from its overlay.
+  //
+  // Taken from a read the engine makes anyway, on the span actually displayed, so
+  // it costs no tile RAM bandwidth. It counts words FETCHED, so the retained-row
+  // optimisation hides repeats of one tile: a presence check, not an inventory.
+  output logic        tw_nonblank
 );
 
   // ------------------------------------------------------------------------
@@ -301,10 +315,12 @@ module m1_tile_fetch #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       fst <= F_IDLE; fx <= '0; tw_f <= '0; ch_f <= '0; f_have <= 1'b0;
+      tw_nonblank <= 1'b0;
       last_tile <= '0; last_char <= '0;
       tile_valid <= 1'b0; char_valid <= 1'b0;
       char_req <= 1'b0; fetches <= '0;
     end else if (start) begin
+      tw_nonblank <= 1'b0;
       // Neither retained value survives a scanline. tile_valid especially: a
       // tile address repeats across lines whenever the map row is unchanged,
       // so without clearing it the first tile of a new line would reuse the
@@ -317,6 +333,7 @@ module m1_tile_fetch #(
       char_req   <= 1'b0;
       fetches    <= '0;
     end else begin
+      tw_nonblank <= 1'b0;   // one-cycle pulse; see the port comment
       case (fst)
         F_IDLE: ;
 
@@ -332,6 +349,10 @@ module m1_tile_fetch #(
           last_tile  <= f_tile_addr;
           tile_valid <= 1'b1;
           fst        <= F_CHAR;
+          // Same rule the MAME script and the frame testbench use: non-zero, and
+          // not tile 0x20, which is the space character.
+          tw_nonblank <= (tram_data != 16'h0000)
+                      && ((tram_data & 16'h3fff) != 16'h0020);
         end
 
         F_CHAR: begin

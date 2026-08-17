@@ -217,6 +217,7 @@ m1_integrated core (
     .dbg_tgp_unimpl(f_tgp_unimpl),
     .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
     .dbg_layer_px(f_layer_px), .dbg_ctrl(f_ctrl),
+    .dbg_layer_have(f_have_rtl),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -255,6 +256,12 @@ wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 wire        f_tgp_unimpl;
 wire [17:0] f_layer_px [4];
 wire [15:0] f_ctrl [2];
+// The RTL's own content census, printed beside the testbench's direct read of
+// tile RAM. They measure different things on purpose — the RTL counts words
+// FETCHED on the displayed span, the testbench counts words PRESENT in the whole
+// map — so they will not be equal. What matters is that they agree about zero,
+// because zero is the reading the hardware instrument exists to give.
+wire [11:0] f_have_rtl [4];
 integer i;
 initial begin
     // Progress, flushed. stdout is block buffered when this is redirected to a
@@ -470,10 +477,11 @@ always @(posedge clk) begin
             // reads as the frame that just finished.
             if (TRACE_FRAMES) begin
                 tram_content_census();
-                $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
+                $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d rtl_have=%0d,%0d,%0d,%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
                          frames, bd_cnt, vis_cnt,
                          f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                          tm_have[0], tm_have[1], tm_have[2], tm_have[3],
+                         f_have_rtl[0], f_have_rtl[1], f_have_rtl[2], f_have_rtl[3],
                          f_ctrl[0], f_ctrl[1], irq_raises, irq_acks,
                          core.main.cpu.psw, ie_ever, core.dbg_pc);
             end

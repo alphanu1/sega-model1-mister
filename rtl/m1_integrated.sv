@@ -161,7 +161,11 @@ module m1_integrated (
   output logic [17:0] dbg_layer_px [4],
 
   // Each pair's window/split-scroll control register, as the renderer read it.
-  output logic [15:0] dbg_ctrl [2]
+  output logic [15:0] dbg_ctrl [2],
+
+  // Non-blank tile words fetched per layer per frame — see m1_video. Separates a
+  // layer that holds nothing from one holding content that is not drawn.
+  output logic [11:0] dbg_layer_have [4]
 );
 
   logic [14:0] vid_tram_addr;
@@ -370,7 +374,7 @@ module m1_integrated (
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
     .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
     .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px),
-    .dbg_ctrl(dbg_ctrl)
+    .dbg_ctrl(dbg_ctrl), .dbg_layer_have(dbg_layer_have)
   );
 
   m1_rom_loader loader (

@@ -139,7 +139,23 @@ module m1_video #(
   // renderer reads it. dbg_layer_px says a layer covered the screen; this says
   // whether the game asked for a split and where, which separates "the game set
   // a mode we implement wrongly" from "we invented a split it never requested".
-  output logic [15:0] dbg_ctrl [2]
+  output logic [15:0] dbg_ctrl [2],
+
+  // NON-BLANK TILE WORDS FETCHED PER LAYER PER FRAME — content, not wins.
+  //
+  // Read alongside dbg_layer_px:
+  //   have 0,   won 0     the layer holds nothing; look upstream at the CPU
+  //   have > 0, won 0     it holds content that is not reaching the screen
+  //   have > 0, won > 0   it is on screen
+  //
+  // That distinction is the whole reason this exists. On hardware the win census
+  // alone could not tell a layer with no content from a layer being masked out,
+  // and those need opposite fixes — the equivalent pair in simulation is what
+  // found the row-mask fault.
+  //
+  // Twelve bits, saturating: a map holds at most 4,096 words, and telling nothing
+  // from something is all this has to do. Two fit in one overlay row.
+  output logic [11:0] dbg_layer_have [4]
 );
 
   // ------------------------------------------------------------- timing
@@ -163,18 +179,31 @@ module m1_video #(
   // category-1 win and 4-7 as its category-0 win, so both fold onto the same
   // tilemap. 8 is the 3D layer and 15 the backdrop; neither is a tilemap.
   logic [17:0] px_acc [4];
+  logic [11:0] tw_acc [4];
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      for (int i = 0; i < 4; i++) begin px_acc[i] <= '0; dbg_layer_px[i] <= '0; end
+      for (int i = 0; i < 4; i++) begin
+        px_acc[i] <= '0; dbg_layer_px[i] <= '0;
+        tw_acc[i] <= '0; dbg_layer_have[i] <= '0;
+      end
     end else begin
       if (vblank_start) begin
         for (int i = 0; i < 4; i++) begin
-          dbg_layer_px[i] <= px_acc[i];
-          px_acc[i]       <= '0;
+          dbg_layer_px[i]   <= px_acc[i];
+          px_acc[i]         <= '0;
+          dbg_layer_have[i] <= tw_acc[i];
+          tw_acc[i]         <= '0;
         end
-      end else if (ce_pix && visible && mix_src < 4'd8) begin
-        if (px_acc[mix_src[1:0]] != 18'h3ffff)
-          px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 18'd1;
+      end else begin
+        if (ce_pix && visible && mix_src < 4'd8) begin
+          if (px_acc[mix_src[1:0]] != 18'h3ffff)
+            px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 18'd1;
+        end
+        // Counted against cur_layer, which is the layer the fetch engine is
+        // rendering when the pulse arrives — not the pixel being scanned out,
+        // which belongs to the previous line and a different layer.
+        if (f_tw_nonblank && tw_acc[cur_layer] != 12'hfff)
+          tw_acc[cur_layer] <= tw_acc[cur_layer] + 12'd1;
       end
     end
   end
@@ -291,6 +320,7 @@ module m1_video #(
   logic        f_busy, f_done;
   logic [14:0] f_tram_addr;
   logic [7:0]  f_fetches;
+  logic        f_tw_nonblank;
 
   logic [3:0]       f_lb_we;
   logic [8:0]       f_lb_addr;
@@ -315,7 +345,7 @@ module m1_video #(
     .lb_we(f_lb_we), .lb_addr(f_lb_addr), .lb_pal(f_lb_pal),
     .lb_transparent(f_lb_transparent), .lb_prio(f_lb_prio),
     .lb_masked(f_lb_masked), .row_mask(mask_r),
-    .fetches(f_fetches)
+    .fetches(f_fetches), .tw_nonblank(f_tw_nonblank)
   );
 
   always_ff @(posedge clk or negedge rst_n) begin

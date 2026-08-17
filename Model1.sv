@@ -404,6 +404,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [15:0] dbg_copro_pushes, dbg_copro_returns;
   wire [17:0] dbg_layer_px [4];
   wire [15:0] dbg_ctrl [2];
+  wire [11:0] dbg_layer_have [4];
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -450,7 +451,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_io_replies(dbg_io_replies),
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
     .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
-    .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl)
+    .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
+    .dbg_layer_have(dbg_layer_have)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -718,11 +720,18 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // the game genuinely asking for a full-screen fill.
   assign dw[19] = {8'h15, 8'd0, dbg_ctrl[0]};
   assign dw[20] = {8'h16, 8'd0, dbg_ctrl[1]};
-  // FIFO traffic in both directions, which separates "the V60 is not sending
-  // work" from "the coprocessor is not taking it" — the two look identical from
-  // a screen.
-  assign dw[21] = {8'h17, 8'd0, dbg_copro_pushes};
-  assign dw[22] = {8'h18, 8'd0, dbg_copro_returns};
+  // CONTENT per tilemap, two per row, against the WINS in rows 11-14.
+  //
+  //   have 0,   won 0     the layer holds nothing; the fault is upstream
+  //   have > 0, won 0     content is there and not reaching the screen
+  //
+  // Rows 17 and 18 held the coprocessor's FIFO pushes and returns and were
+  // dropped for these: pushes read a saturated FFFF and returns a constant 0, and
+  // will keep doing so until there is a rasterizer for the TGP to feed, whereas
+  // this pair is the one measurement the board is missing. Twenty-four rows is the
+  // ceiling — 384 visible lines at 16 pixels a row — so something had to go.
+  assign dw[21] = {8'h19, dbg_layer_have[0], dbg_layer_have[1]};
+  assign dw[22] = {8'h1A, dbg_layer_have[2], dbg_layer_have[3]};
 
   wire [7:0] dg_r, dg_g, dg_b;
 

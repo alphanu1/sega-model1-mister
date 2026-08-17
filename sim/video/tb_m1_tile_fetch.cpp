@@ -62,6 +62,7 @@ struct Fetch {
 
   // Character port model with latency.
   int lat = 0, lat_cnt = 0;
+  long tw_pulses = 0;
 
   Fetch() {
     d = new Vm1_tile_fetch;
@@ -88,6 +89,7 @@ struct Fetch {
     d->clk = 0; d->eval();
     d->clk = 1; d->eval();
     cyc++;
+    if (d->tw_nonblank) tw_pulses++;
 
     // Four pixels a cycle now, with lb_we a per-pixel valid mask: the group is
     // clipped at the tile boundary and at the end of the line, so the first
@@ -121,6 +123,7 @@ struct Fetch {
   long render(int line, int layer, uint16_t hscr, uint16_t vscr,
               uint64_t rmask = 0, bool loff = false) {
     for (int i = 0; i < 512; i++) lb_written[i] = false;
+    tw_pulses = 0;
     d->line = line; d->layer = layer; d->hscr = hscr; d->vscr = vscr;
     d->row_mask = rmask; d->layer_off = loff;
     long t0 = cyc;
@@ -194,6 +197,43 @@ int main(int argc, char** argv) {
       printf("  FAIL fetches=%u is too few for distinct tiles\n",
              (unsigned)f.d->fetches);
       fails++;
+    }
+  }
+
+  // ------------------------------------------------- content census pulse
+  // tw_nonblank must follow the tile WORD and nothing else: blank means zero or
+  // tile 0x20, the space. Asserted directly because the whole value of this
+  // instrument is that a zero means "this layer holds nothing" — an instrument
+  // that pulses on blank tiles would report content everywhere and send the next
+  // investigation at the wrong subsystem.
+  printf("test: content census pulses only on non-blank tile words\n");
+  {
+    struct { uint16_t word; const char* what; bool want; } cases[] = {
+      {0x0000, "all-zero",    false},
+      {0x0020, "all-space",   false},
+      {0x8020, "space+cat1",  false},   // the blank rule masks to 0x3fff first
+      {0x0123, "real tile",   true},
+      {0x3fff, "max tile",    true},
+    };
+    Fetch f; f.lat = 2; f.reset();
+    for (auto& c : cases) {
+      for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = c.word;
+      f.render(5, 0, 0, 0);
+      checks++;
+      bool got = f.tw_pulses > 0;
+      if (got != c.want) {
+        printf("  FAIL %s: %ld pulses, expected %s\n",
+               c.what, f.tw_pulses, c.want ? "some" : "none");
+        fails++;
+      }
+      // A pulse must never outnumber the tile-word reads it comes from, which is
+      // what a level held instead of a one-cycle pulse would do.
+      checks++;
+      if (f.tw_pulses > COLUMNS) {
+        printf("  FAIL %s: %ld pulses exceeds %d columns — held level, not a pulse\n",
+               c.what, f.tw_pulses, COLUMNS);
+        fails++;
+      }
     }
   }
 
