@@ -149,6 +149,33 @@ Nothing in the IO space is optional. To frame 400: DATAROM 70,119 reads, SINCOS
 **deliberate table-bug correction** that MAME reproduces, with a comment saying
 the hardware does something equivalent. Reproduce it; do not tidy it.
 
+### Where the V60 diverges, located to one instruction
+
+The two cores agree exactly at `pc=fed58f`, reading the copro RAM address
+register and getting the same value:
+
+```
+ours   cyc 524303849  d00000 -> 00  be=11  pc=fed58f
+MAME   f272           R d00000 = 0000     pc=fed58f
+```
+
+The reference then reaches `pc=fed5b9`, where it writes `0x8001` and reads it
+back. Ours loops at `fed5a4`/`fed5a7`/`fed5a9` — **between** those two points.
+
+**That loop takes no data reads.** A PC-filtered read tap over `fed580`-`fed5d0`
+on the reference finds only the two `d00000` accesses above; nothing at
+`fed5a4`-`fed5a9`. So it is compute and branch, not a poll — we are not failing to
+supply something it waits for, our V60 is computing a different result and
+branching differently.
+
+That is a different class of problem from everything above, and the instrument
+for it is instruction-level lockstep against the reference, not bus archaeology.
+
+**A number to distrust:** "510 accesses to `0xd00000`" appears in earlier commit
+messages and was measured before the coprocessor interface existed, when that
+region read `0xFFFF`. It is now **2**. Wiring the interface changed the V60's
+behaviour materially, and that was initially mis-read as no change.
+
 ---
 
 ## Instruments, and what each cannot do
