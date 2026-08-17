@@ -304,6 +304,51 @@ the equivalent of the frame test's `have=`. Wins alone cannot separate "the laye
 holds nothing" from "it holds text that is not drawn", and those need opposite
 fixes. In simulation that pair is what located the row-mask fault.
 
+## MAME's tilemap 0 is never empty; ours is — 2026-08-17
+
+Full non-blank word counts (all 4,096 words per map, not sampled), MAME, every
+150 frames through 55 s of attract:
+
+| MAME frame | tm0 | tm1 | tm2 | tm3 | ctrl |
+|---|---|---|---|---|---|
+| 150 | 205 | 0 | 0 | 0 | `0000` |
+| 300-1800 | 231-315 | 648 | 4096 | 4096 | `2059`..`23ce` |
+| 2100 | 1675 | 1302 | 4096 | 4096 | `23d7` |
+| 2400-2850 | 69-153 | 0 | 4096 | 4096 | `23f0`..`20de` |
+| 3000-3150 | 663-747 | 0 | 4096 | 4096 | `2000` |
+
+**Tilemap 0 holds 69 to 1,675 words at every screen after boot — it is never
+empty.** Tilemap 1 empties on the demo-drive screens, which is why "tilemap 1 is
+empty" is not by itself a fault. Tilemaps 2 and 3 are completely full throughout.
+
+The board, from overlay rows `19`/`1A` on the same kind of screen: tilemap 0 **8**
+non-blank words fetched in a whole frame, tilemap 1 **0**, tilemaps 2 and 3
+**saturated at 4,095**. So maps 2/3 match the oracle exactly and maps 0/1 are
+empty where the oracle always has content.
+
+**That proves the tile-RAM write path works** — half the maps fill perfectly — and
+narrows the question to why the low half, tile RAM words `0x0000`-`0x1FFF`, stays
+empty on hardware.
+
+Caveat on comparing the two numbers: MAME's is words PRESENT in the map, the
+board's is words FETCHED on the displayed span per frame, saturating at 4,095. A
+map holding 153 scattered non-blank words would be re-fetched across 384 lines and
+should read large or saturated, not 8 — so the difference is real and not an
+artefact of the two metrics. But they are not the same measurement and should not
+be quoted as though they were.
+
+### And the comparison was being made against the wrong simulation state
+
+Row `0B` shows the board at **2,221 I/O replies**, roughly frame 2,400. Every
+simulation compared against it had stopped near frame 680. The board had been in a
+different attract screen for minutes.
+
+`RUN_CYCLES` was `integer` — 32-bit signed — so a request for 3.6e9 cycles, which
+is what reaching frame 2,400 needs, **wrapped negative and ended the run after 32
+frames while reporting a normal `$finish`**. It is `longint` now. Another silent
+truncation reporting success, in the same family as the saturating counters and the
+32-entry watch tables.
+
 ## The 2D path
 
 **The missing 2D was never a rendering fault.** Our tile RAM at frame 71 matches

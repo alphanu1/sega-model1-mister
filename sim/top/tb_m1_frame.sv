@@ -38,7 +38,12 @@
 `timescale 1ns/1ps
 
 module tb_m1_frame #(
-    parameter integer RUN_CYCLES = 120000000,
+    // LONGINT, NOT INTEGER. `integer` is 32-bit signed, so a request beyond
+    // 2,147,483,647 cycles wraps negative and the run ends immediately while
+    // reporting a perfectly normal $finish — a 3.6e9 request produced 32 frames
+    // and looked like a completed 2,400-frame run. Reaching the state the board
+    // is actually in needs about 3.6e9, so this has to be 64-bit.
+    parameter longint RUN_CYCLES = 120000000,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     parameter string  PPMOUT     = "build/frame.ppm",
 
@@ -652,7 +657,8 @@ always @(posedge clk) begin
 end
 
 // ---------------------------------------------------------------- the run
-integer cycles, fd, x, y;
+longint cycles;
+integer fd, x, y;
 initial begin
     for (i = 0; i < H*W; i = i + 1) begin
         fb_r[i] = 0; fb_g[i] = 0; fb_b[i] = 0;
