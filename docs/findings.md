@@ -191,7 +191,20 @@ That asymmetry is the fault's signature: the ranking table is category-1 on an
 that text appeared and made the 2D path look healthy.
 
 After the fix, the same 53 content words on tilemap 0 produce **9,674 visible
-pixels**.
+pixels**, and the attract screen renders `MEDIUM COURSE RANKING`, the column
+headers, the rank rows with their car sprites, `INSERT COIN(S)`, `CREDIT 0` and
+`© SEGA 1992` — every one of which was absent before. Saved as
+`docs/images/attract-rowmask-fixed-2026-08-17.png`; against MAME's own frame the
+text matches in position and colour throughout.
+
+Two differences remain against the reference, neither a 2D fault:
+
+- **The background is flat**, where MAME has the 3D road. That is the rasterizer,
+  which is not built. 93% of the frame is backdrop.
+- **The blue SEGA logo is not visible.** It is blue on MAME's grey road and would be
+  blue on our blue backdrop, so it is probably drawn and indistinguishable rather
+  than missing. Not confirmed either way — the census counts wins per tilemap, not
+  per glyph, so it cannot separate the two.
 
 ### And a pair in window mode with hscr bit 15 clear draws NOTHING
 
