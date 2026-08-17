@@ -144,7 +144,7 @@ module m1_video #(
   // ---------------------------------------------------------- sequencer
   typedef enum logic [3:0] {
     Q_IDLE, Q_HSCR, Q_HSCR_W, Q_VSCR, Q_VSCR_W,
-    Q_MASK, Q_MASK_W, Q_RUN, Q_NEXT
+    Q_CTRL, Q_CTRL_W, Q_MASK, Q_MASK_W, Q_RUN, Q_NEXT
   } qstate_t;
   qstate_t q;
 
@@ -160,6 +160,43 @@ module m1_video #(
   // rectangle — so this is cur_line, unscrolled.
   logic [63:0] mask_r;
   logic [1:0]  mask_i;
+
+  // ---------------------------------------------- ctrl: window/split-scroll
+  // The four tilemaps are two PAIRS, not four peers — MAME names them 0s/0w and
+  // 1s/1w, scroll map and window map. When the pair's ctrl register has
+  // bits 13:14 set, the two maps are not independent layers: the screen is
+  // split and each region shows ONE of them.
+  //
+  // Unimplemented, this is what put a flat opaque fill over the picture on
+  // hardware. Virtua Racing's attract mode sets ctrl = 0x2000, which is mode 1
+  // with v = 0 — meaning MAME draws tilemap 3 across the whole screen and
+  // tilemap 2 NOT AT ALL. Drawing both, with tilemap 3's category-0 pass opaque,
+  // buries everything underneath it.
+  logic [15:0] ctrl_r;
+
+  // Mode 1, the vertical split, from draw_common's `hscr & 0x8000` clear branch:
+  //
+  //   v = (-vscr) & 0x1ff
+  //   rows 0..v-1  show `layer`,  rows v..383 show `layer ^ 1`
+  //   and layer is swapped first when ((-vscr) & 0x200) is CLEAR
+  //
+  // So per scanline exactly one map of the pair is live and the other must not
+  // draw at all.
+  wire [15:0] neg_vscr = -ctrl_r;
+  wire [8:0]  win_v    = neg_vscr[8:0];
+  wire        win_swap = ~neg_vscr[9];
+  wire        win_mode = (ctrl_r[14:13] != 2'b00);
+
+  // Which map of the pair this scanline belongs to: 0 = the even one.
+  wire        win_upper = (cur_line < win_v);
+  wire        win_pick  = win_upper ? win_swap : ~win_swap;
+
+  // This layer is suppressed when the window mode is on and the line belongs to
+  // its partner. Modes 2 and 3 (the horizontal split, and the per-line H-scroll
+  // table at tile_ram 0x4000) are NOT implemented — they are a different split
+  // and this game does not select them at the point reached so far. If a picture
+  // ever shows a vertical seam that moves, look here first.
+  wire        win_suppress = win_mode && (cur_layer[0] != win_pick);
 
   // Base of this layer's table. MAME picks it with `layer & 4` on the 8-way
   // draw index, which is bit 1 of the tilemap number: 0/1 -> 0x6000,
@@ -187,6 +224,7 @@ module m1_video #(
     .clk(clk), .rst_n(rst_n),
     .start(f_start), .line(cur_line), .layer(cur_layer),
     .hscr(hscr_r), .vscr(vscr_r), .tile_mask(tile_mask),
+    .layer_off(win_suppress),
     .busy(f_busy), .done(f_done),
     .tram_addr(f_tram_addr), .tram_data(tram_data),
     .char_req(char_req), .char_addr(char_addr),
@@ -200,7 +238,7 @@ module m1_video #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
-      hscr_r <= '0; vscr_r <= '0; f_start <= 1'b0;
+      hscr_r <= '0; vscr_r <= '0; ctrl_r <= '0; f_start <= 1'b0;
       mask_r <= '0; mask_i <= '0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
       bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
@@ -237,6 +275,18 @@ module m1_video #(
         Q_VSCR: q <= Q_VSCR_W;
         Q_VSCR_W: begin
           vscr_r        <= tram_data;
+          // ctrl is the PAIR's EVEN vscr, not this layer's own register:
+          // MAME reads tile_ram[0x5004 + ((layer >> 1) & 2)], which for our
+          // 0..3 numbering is 0x5004 + (layer & 2). One register governs both
+          // maps of a pair, and reading each map's own would make the window
+          // mode look inactive on the odd one.
+          seq_tram_addr <= 15'h5004 + {13'd0, cur_layer[1], 1'b0};
+          q             <= Q_CTRL;
+        end
+
+        Q_CTRL: q <= Q_CTRL_W;
+        Q_CTRL_W: begin
+          ctrl_r        <= tram_data;
           seq_tram_addr <= mask_base + {13'd0, 2'd0};
           mask_i        <= 2'd0;
           q             <= Q_MASK;

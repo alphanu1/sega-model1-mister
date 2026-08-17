@@ -108,6 +108,11 @@ module m1_tile_fetch #(
   // unrelated.
   input  logic [63:0] row_mask,
 
+  // Whole-layer suppression for this scanline, from the pair's window mode. Not
+  // the same as vscr bit 15, which disables a layer for the whole frame: this is
+  // per line, because a window splits the screen between the two maps of a pair.
+  input  logic        layer_off,
+
   output logic        busy,
   output logic        done,
 
@@ -428,7 +433,7 @@ module m1_tile_fetch #(
             // category 0 showing and category 1 hidden, which is what MAME's
             // fast paths do: !m draws the whole 128, and the inverted pass
             // sees 0xffff and draws none of it.
-            lb_masked      <= dec_prio ^ px_mask;
+            lb_masked      <= (dec_prio ^ px_mask) | {4{layer_off}};
 
             sx  <= sx + 10'(gn);
             rem <= rem - gn;

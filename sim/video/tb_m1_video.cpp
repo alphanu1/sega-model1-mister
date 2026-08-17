@@ -75,6 +75,22 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   // (`win = layer & 1`, `if(win) m = ~m`), so a column shows whichever category
   // matches its mask bit. Note what that means when the table is all zero: the
   // category-1 pass sees ~0 = 0xffff and draws nothing at all.
+  // Window/split-scroll. `ctrl` is the PAIR's even vscr — MAME reads
+  // tile_ram[0x5004 + ((layer >> 1) & 2)] — so one register governs both maps of
+  // a pair. In mode 1 the screen splits at v and each region shows ONE of the
+  // two; the other must not draw on that line at all. Getting this wrong put a
+  // flat opaque fill over the whole picture on hardware.
+  int win_off[4];
+  for (int L = 0; L < 4; L++) {
+    uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
+    if (!(ctrl & 0x6000)) { win_off[L] = 0; continue; }
+    uint16_t nv   = (uint16_t)(-(int)ctrl);
+    int v         = nv & 0x1ff;
+    int swap      = !(nv & 0x200);
+    int pick      = (y < v) ? swap : !swap;   // which map of the pair is live
+    win_off[L]    = ((L & 1) != pick);
+  }
+
   int mbit[4];
   for (int L = 0; L < 4; L++) {
     uint16_t m = tile_ram[((L & 2) ? 0x6800 : 0x6000) + y * 4 + (x >> 7)];
@@ -84,12 +100,14 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   // Mixer: paint back to front, MAME's draw order 6,4,2,0 then 7,5,3,1.
   int idx = 0;
   auto cat0 = [&](int i) {
+    if (win_off[i]) return;                  // this line belongs to the partner
     if (prio[i]) return;
     if (mbit[i]) return;                 // this column shows category 1 here
     if (transp[i] && i < 2) return;      // 6 and 4 are opaque, 2 and 0 are not
     idx = pal[i];
   };
   auto cat1 = [&](int i) {
+    if (win_off[i]) return;
     if (!prio[i] || transp[i]) return;
     if (!mbit[i]) return;                // this column shows category 0 here
     idx = pal[i];
@@ -131,6 +149,13 @@ int main(int argc, char** argv) {
   tile_ram[0x5001] = 5;      tile_ram[0x5005] = 3;
   tile_ram[0x5002] = 0x1f8;  tile_ram[0x5006] = 0x101;
   tile_ram[0x5003] = 11;     tile_ram[0x5007] = 0x8000;   // layer 3 disabled
+
+  // Pair 2/3 in window mode 1 with a mid-screen split, so the path the game
+  // actually uses is covered. Without this ctrl reads 0x0020, the mode is off,
+  // and the whole window implementation goes untested — which it was, and both
+  // suites still passed.
+  tile_ram[0x5006] = 0x2000 | (uint16_t)(-160 & 0x1ff);   // mode 1, v = 160
+  tile_ram[0x5004] = 0x0000;                              // pair 0/1 normal
 
   d->clk = 0; d->rst_n = 0; d->ce_pix = 0; d->tile_mask = TILE_MASK;
   d->tram_data = 0; d->char_data = 0; d->char_ack = 0; d->pal_data = 0;
