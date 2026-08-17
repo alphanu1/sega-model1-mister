@@ -330,6 +330,26 @@ restructuring is measured against that suite staying green, one shared structure
 at a time, with a Quartus number per step — `SRCS_s32_v60` already exists so a
 V60-only build makes each step minutes rather than half an hour.
 
+**Does sharing cost speed? The sibling project measured it, and no.** Its i960
+registered the register-file read and reported *"Cost: zero cycles. Same 65,630
+cycles, same 3,870 retires"* with Fmax 25.29 -> 27.3 (+8%) and slack 0.451 ->
+3.370. Cycles cannot suffer in a sequential FSM anyway — one state is active at a
+time, so states that never coincide can share a unit for free.
+
+**And the path it fixed is a description of ours**: *"read address through a
+combinational 32:1 multiplexer, through the ALU and FP result muxing, into
+writeback"*. So start there rather than with FP: it is small, contained, and has
+cross-project evidence on the same device at a similar operating point. Note the
+same commit is candid that the gain was less than predicted — the register read
+was half the path — so expect incremental steps, each measured.
+
+**Two inherited cautions.** When a restructuring appears to cost Fmax, check for a
+FALSE PATH before redesigning: that project's decoder change measured a 27.44 ->
+24.63 loss whose cause was a static path no cycle ever uses. And it fixed that
+structurally rather than with an SDC exception, because *"a constraint that stops
+being true fails silently, whereas this cannot rot"* — the same preference applies
+here, where the SDRAM interface is already carrying unconstrained paths.
+
 M10K is the binding resource: **101 blocks free** against the band buffer's ~51.
 Reserves, in order of value: tile RAM and palette
 are each held **twice** (80 blocks of pure redundancy, and the video side has 5:1
