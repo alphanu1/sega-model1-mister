@@ -45,6 +45,9 @@ SRCS_m1_decode := rtl/io/m1_decode.sv
 SRCS_m1_glue := rtl/io/m1_glue.sv
 SRCS_m1_ioboard := rtl/io/m1_ioboard.sv
 SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
+# Deferred (=), not immediate (:=): SRCS_mb86233_core is defined further down,
+# and := would expand it to nothing here.
+SRCS_m1_tgp = rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core)
 SRCS_m1_mainram := rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.
@@ -76,7 +79,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
 
 all: test
 
@@ -260,6 +263,15 @@ test_glue:
 # boot trace established, tested as properties — including the two that have
 # already gone wrong for real, a second handshake with a different code and a
 # poll being mistaken for a request.
+# The coprocessor on REAL microcode. Outside `make test` because it needs
+# 315-5573.bin extracted, the same way m1_boot needs a ROM image:
+#   python3 tools/build_tgp_rom.py vr ~/roms/vr ~/roms/vr.zip -o build/rom
+m1_tgp:
+	verilator --cc --exe --build -O2 -Wno-fatal $(VFLAGS) --top-module m1_tgp \
+	  -CFLAGS "-O2 -std=c++17" \
+	  $(SRCS_m1_tgp) sim/tgp/tb_m1_tgp.cpp -o tb_m1_tgp --Mdir obj_m1_tgp
+	./obj_m1_tgp/tb_m1_tgp
+
 test_copro_if:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_copro_if \
 	  -CFLAGS "-O2 -std=c++17" \

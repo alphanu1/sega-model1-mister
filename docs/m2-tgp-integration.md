@@ -212,8 +212,18 @@ rather than by review:
    zero times and never touches the data window at this stage, so its behaviour
    here is purely push-commands-and-wait.
    `tools/build_tgp_rom.py` extracts the microcode and math tables, CRC-checked.
-3. **The FIFOs and the TGP's data space**, still without the math units. At this
-   point the TGP can execute microcode and exchange words.
+3. ~~**The FIFOs and the TGP's data space**~~ — **done**, `m1_tgp`, `make m1_tgp`.
+   **The coprocessor executes real decapped microcode.** Measured: 65 retires of
+   initialisation, then it parks with the input FIFO empty rather than consuming
+   a stale word, then drains all 11 offered command words and continues to 101
+   retires. `unimplemented` never asserts, which is the first check on the
+   fuzzing from real code rather than generated instructions.
+
+   What that does NOT establish is that any result is right — the math units are
+   not implemented, so this serves their reads from the real tables at the
+   quadrant base instead of a computed index, and anything derived from sincos,
+   atan, inv or isqrt is wrong on purpose. Correctness is step 5 and the polygon
+   diff.
 4. **Microcode load through the MRA**, and the SDRAM regions for tables and
    data.
 5. **The four math units**, each against MAME as oracle — they are pure
