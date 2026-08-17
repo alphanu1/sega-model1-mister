@@ -682,6 +682,53 @@ output. Anything with a hand-maintained
 source list needs running after a file moves — or its list needs to stop being
 hand-maintained.
 
+## When something is unknown, run MAME. Do not reason about it.
+
+The single most useful rule this project has. MAME is not only the correctness
+oracle for finished work — it is the cheapest way to answer a question about the
+hardware, it is available at every moment, and instrumenting it takes minutes.
+
+Reasoning about what the hardware "must" do has been wrong five times, and in
+every case the measurement was available the whole time:
+
+| Question | Reasoning said | Measurement said |
+|---|---|---|
+| where do the inputs live | a mailbox at DPRAM `0x100` | `0x00`-`0x0e`, polled every frame |
+| why is most of the 2D missing | the row mask, then the window mode | neither — the V60 never gets that far |
+| does the V60 read the coprocessor back | it must, to collect results | **never**, in 2,500 accesses |
+| what blocks the coprocessor | the math units returning zero | the **data ROM**, read before any math unit |
+| how deep are the coprocessor FIFOs | 64 seemed like sensible slack | **16**, and full halts the CPU |
+
+Three of those cost a session or more. The pattern is identical every time: a
+plausible mechanism, reasoned from partial evidence, that a five-minute
+instrument would have refuted.
+
+### Which instrument answers which question
+
+- **`install_read_tap` / `install_write_tap`** on a device's address space —
+  what does it actually *touch*. A memory watch cannot answer this: **a read
+  leaves no trace in memory**, and not knowing that cost a day.
+- **A frame notifier polling a region** — what does it *contain*.
+- **`manager.machine.video:snapshot()`** — a reference frame to diff against a
+  photograph of the board.
+- **Any CPU can be tapped, not just the main one.** Tapping `:tgp_copro`'s IO
+  space is what named the data ROM as the coprocessor's first blocker, after the
+  math units had been assumed.
+
+Three setup details, each of which cost a run: **`-skip_gameinfo`** or the
+warning screen blocks autoboot and the script silently never loads;
+**`-autoboot_delay 0`** or the tap installs after the exchange it was meant to
+capture; and **assign every notifier and tap to a global** or the subscription is
+collected and the callback stops with no error. Run from a scratch directory —
+MAME drops `cfg/`, `nvram/` and `snap/` wherever it starts.
+
+### And measure before building
+
+A Quartus build is 25 minutes and a hardware test needs someone watching a
+screen. The boot trace and the board have been shown to reach the same state — the
+same PC, `fed5a4` — so a question simulation can answer should never be sent to
+hardware. Build when simulation says the thing being tested has changed.
+
 ## Method note
 
 Every significant finding this session came from measuring rather than
