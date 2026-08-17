@@ -118,9 +118,23 @@ almost entirely geometry. Simulation rendered "correctly" only because the one
 frame it captured was the ranking table, whose text sits on tilemap 1 — the single
 combination the wrong mask formula got right.
 
-**Board access is currently lost**: SSH offers the key and the host key still
-matches, so it is the same machine, but `/root/.ssh/authorized_keys` no longer
-accepts it. Nothing can be flashed until that is restored.
+**Board access**: SSH key auth stopped working mid-session — the key is offered
+and the host key still matches, so it is the same machine, but
+`/root/.ssh/authorized_keys` does not accept it. Password auth works with the
+stock MiSTer default. No `sshpass`, `paramiko` or `pexpect` on this host, so a
+20-line stdlib helper drives `ssh`/`scp` through a pty instead of installing
+anything; it reads the password from a file so it never reaches argv or shell
+history. Recreate it if needed rather than leaving a credential on disk.
+
+The core can also be loaded remotely, which saves a trip to the machine:
+
+    printf "load_core /media/fat/_Arcade/Virtua Racing.mra\n" > /dev/MiSTer_cmd
+
+Two things that have burned time. **The board runs UTC and the host BST**, so every
+timestamp on the board reads an hour behind — that looked like a stale flash until
+`date` was compared on both ends. Verify by **md5**, not mtime. And check for a
+running flow by exact process name: `pgrep -x 'quartus_(map|fit|sh|asm|sta)'`.
+`pgrep -f quartus_` matches its own command line and always reports something.
 
 ### Where it stands on hardware, and the next three moves
 
@@ -177,11 +191,24 @@ In order:
    Both active low, both in IN.0, which `findings.md` measured as DPRAM `0x08`.
    So bit order, address and polarity are all right and **no edit is warranted**.
 
-   Two things to try instead, both free. The naming is misleading: bit 2 is MAME's
-   *Service Mode* switch — the one that opens the test menu — while bit 3 is the
-   service *coin* button, which does not. And service mode is sampled at boot on
-   this hardware, so set `Test switch` **On** and then `T[0] Reset` rather than
-   expecting a running game to react.
+   The naming is misleading and worth knowing: bit 2 is MAME's *Service Mode*
+   switch — the one that opens the test menu — while bit 3 is the service *coin*
+   button, which does not.
+
+   **Setting `Test switch` On and resetting was tried on hardware and does NOT
+   work.** So with the byte contents confirmed against the oracle, the remaining
+   unknown is **where those bytes land**: `m1_ioboard`'s `INPUT_BASE` is `0x000`
+   and `io-board.md` records that the base address was never confirmed — only the
+   bit layout within a byte was. The contents are right and the address is a
+   guess.
+
+   Measure it, do not adjust it. Install a **read tap** on the I/O board Z80's
+   DPRAM in MAME and log which addresses the V60 actually reads for IN.0 — a
+   memory watch cannot do this, because a read leaves no trace in memory. That
+   instrument is the one that found the fourteen control bytes in the first place.
+   Two candidates worth checking specifically: the game may read the inputs
+   through a different DPRAM window than the sweep publishes to, and the real
+   board's Z80 may transform them rather than copying them straight through.
 
 ### How to see it, and what to expect
 
