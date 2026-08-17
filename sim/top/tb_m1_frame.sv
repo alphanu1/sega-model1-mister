@@ -453,6 +453,33 @@ task automatic tram_content_census;
     end
 endtask
 
+// EVERY word of tile RAM, in 0x1000-word blocks, presupposing no layout at all.
+//
+// The census above reads the four tilemap bases this design believes in. That
+// makes it useless for the one question it was asked — "is there data in the
+// tilemaps at all?" — because a wrong base reads zeros out of a populated array
+// and looks exactly like an empty one. This walks all 32,768 words and reports
+// where the content actually is, so the layout comes out as a result rather than
+// going in as an assumption. Full stride, no sampling; it runs once per frame.
+task automatic tram_block_census;
+    integer b, i, n;
+    reg [15:0] w;
+    begin
+        $write("  tram blocks:");
+        for (b = 0; b < 8; b = b + 1) begin
+            n = 0;
+            for (i = 0; i < 'h1000; i = i + 1) begin
+                w = {core.main.rams.tram_v_hi[b * 'h1000 + i],
+                     core.main.rams.tram_v_lo[b * 'h1000 + i]};
+                if (w != 16'h0000 && (w & 16'h3fff) != 16'h0020)
+                    n = n + 1;
+            end
+            if (n != 0) $write(" %04h:%0d", b * 'h1000, n);
+        end
+        $write("\n");
+    end
+endtask
+
 integer irq_acks = 0, irq_raises = 0;
 reg irq_n_d = 1;
 // The V60 takes an interrupt only when PSW bit 18, IE, is set — it resets clear
@@ -492,6 +519,8 @@ always @(posedge clk) begin
                          f_tram_wr[0], f_tram_wr[1], f_tram_wr[2], f_tram_wr[3],
                          f_ctrl[0], f_ctrl[1], irq_raises, irq_acks,
                          core.main.cpu.psw, ie_ever, core.dbg_pc);
+                // 32,768 reads, so not on every frame.
+                if (frames % 32 == 0) tram_block_census();
             end
             bd_cnt  = 0;
             vis_cnt = 0;

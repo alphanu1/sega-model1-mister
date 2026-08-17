@@ -142,7 +142,18 @@ The row-mask and window-mode fixes are **confirmed working on the board** — a
 video of the screen shows the renderer obeying `ctrl` correctly in both states
 (see `findings.md`). They did not put text on screen.
 
-**START HERE: there are two defects, not one, and the first needs no hardware.**
+**START HERE: the full-screen blue is tilemap 2 drawn opaque over an empty map.**
+Not the backdrop — `bd=0/190464`, nothing falls through. Tilemap 2 wins 180,790 of
+190,464 pixels, its every tile word reads `0x0000`, and that indexes palette entry
+0, which is blue. The blue and the backdrop are indistinguishable on a photograph
+and land in different counters, and the search went to the wrong one for a while.
+
+**And do not trust the simulation as a reference until it has been run long
+enough.** It is 296 frames in where the board is at roughly 2,400 by its own I/O
+reply count. The board shows sky and sea, which an empty map cannot produce — every
+route through one lands on palette 0 — so the board holds map content simulation
+does not, and the first job is a long run (~3.4e9 cycles, free) to find out whether
+that is a real divergence or just a short run. `findings.md` has the argument.
 
 Measured from `make m1_frame FRAME_TRACE=1`, stable frames 90 to 296:
 

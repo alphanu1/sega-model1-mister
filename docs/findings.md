@@ -359,6 +359,29 @@ read `000 000` on a *working* design, which cannot be told from a counter that d
 not work, so the right field is the scroll region instead: a live control that
 proves the counter and the game loop are running.
 
+### The full-screen blue is tilemap 2 drawn opaque over an empty map — 2026-08-17
+
+Not the backdrop, which is where it was looked for. Four numbers already measured
+make the chain, with nothing new needed:
+
+- `bd=0/190464` — **zero** pixels fall through to the backdrop, every frame
+- tilemap 2 wins 180,790 of 190,464 pixels
+- tilemap 2 holds no content, so every tile word reads `0x0000`: tile index 0,
+  colour bits 0
+- tile 0's pixels index **palette entry 0**, which is blue in Virtua Racing
+
+So the blue is tilemap 2's **opaque category-0 pass painting palette 0**. Maps 2/3
+draw their category-0 pass opaque — already recorded above as a state worth
+recognising — and over an empty map that fills the screen with one colour.
+
+This is why the backdrop counter reads zero while the screen is blue. The two
+sources are indistinguishable on a photograph and land in different counters, and
+the search went to the wrong one.
+
+It also says what the flashing is: alternation between frames whose map reads
+content and frames whose map reads blank. The board shows sky and sea part of the
+time, so the content exists — the blue frames are the reads that came back empty.
+
 ### Tilemaps 1, 2 and 3 are empty in SIMULATION too — 2026-08-17
 
 From the same trace, stable from frame 90 to frame 296: `have=53,0,0,0`.
@@ -389,8 +412,46 @@ So there are two defects, not one, and they are separable:
 2. **On hardware, additionally**: map 0 reads near-empty (`008`) where simulation
    has ~212 words.
 
-(1) is the one to work on. It needs no board, no bitstream and no photograph, and
-until it is fixed the board cannot be compared against a correct reference.
+### Confirmed with the layout removed as an assumption — 2026-08-17
+
+The census above reads the four map bases *this design believes in*, which makes it
+worthless for the question "is there data in the tilemaps at all": a wrong base
+reads zeros out of a populated array and looks exactly like an empty one. So
+`tram_block_census` in `tb_m1_frame.sv` walks all 32,768 words at full stride in
+`0x1000`-word blocks and reports where content actually is. At frame 64:
+
+```
+  tram blocks: 0000:203
+```
+
+**One block, and it is tilemap 0.** Nothing at `0x1000`, `0x2000`, `0x3000`, or in
+the scroll and mask regions above `0x4000`. The bases were right and there is no
+tile data hiding at an unexpected offset. Note the scroll region takes 12-24 writes
+a frame and still reads blank, which is consistent: `ctrl=0000`, so it is being
+written zeros.
+
+### But the board shows sky and sea, so the board has content we do not
+
+Raised by the user against this measurement, and it is the right objection.
+
+Two flat colours with a horizon cannot come from an empty map. Every route through
+an empty tilemap arrives at **one** colour: tile word `0x0000` gives colour bits 0,
+so the pixel indexes palette 0 whichever layer wins, and a row-masked map falling
+through to map 3 or to the backdrop lands on palette 0 as well. A distinct sky and
+sea needs either real tile words or two palette bases. Character RAM cannot supply
+it either — an 8x8 pattern repeated across the screen reads as texture, not as a
+horizon.
+
+So the board's tile RAM holds map content that simulation's does not, and
+**simulation is not the good reference it was being treated as**. It is 296 frames
+in where the board is at roughly 2,400 by its own I/O reply count — the same
+wrong-state comparison already recorded under "Instruments, and what each cannot
+do", made again.
+
+That reverses the priority written above. (1) is still a real gap, but it may be
+nothing more than the run being too short, and that has to be settled before any
+time is spent on it. A run to ~2,500 frames is 3.4e9 cycles, which is free and
+needs no board.
 
 ## What the board does, measured from a video — 2026-08-17
 
