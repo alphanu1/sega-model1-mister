@@ -202,6 +202,50 @@ rather than by review:
   handshake lesson: *acknowledges must be held, not pulsed* — and here the
   request is held, so the action must fire once.
 
+## Measured: what the coprocessor actually needs, and in what order
+
+Tapped on the reference's `:tgp_copro` IO space. This was asserted before it was
+measured — the claim "the math units being acked with zero is probably the
+blocker" was a guess, and the measurement both confirms it and corrects the
+ordering.
+
+**The data ROM is the first blocker, not the math units.** The microcode's
+opening move, at frame 0:
+
+```
+W DATABASE 002e = 00000010      set the window base
+R DATAROM  8010 = 00000030      read a word out of it
+R DATAROM  8020 = 00012e00      and another — which becomes the NEXT base
+```
+
+Two data-ROM reads before any math unit is touched, and the second value is
+itself used as a window base. Answering those with zero misdirects the microcode
+on its second instruction, which is exactly where ours parks (pc=0044, 116
+retires).
+
+Nothing in this space is optional. Census to frame 400:
+
+| Unit | reads | writes |
+|---|---|---|
+| DATAROM | **70,119** | — |
+| SINCOS | 21,548 | 13,337 |
+| INV | 11,072 | 5,536 |
+| ISQRT | 9,332 | 4,666 |
+| ATAN | 1,008 | 4,032 |
+| RAMADR / RAMDATA | 1,081 | 8,648 |
+
+**The window arithmetic is confirmed correct.** With `base = 0x12e00` and IO
+address `0xae00`, MAME's `index = (base & ~0x7fff) | (offset & 0x7fff)` gives
+`0x12e00` — which is what `{dat_base[18:15], io_addr[14:0]}` in `m1_tgp` already
+computes. So that logic needs memory behind it, not correcting.
+
+### Test vectors for free
+
+The first three accesses are a ready-made check on the data-ROM path before any
+of the harder work: base `0x10` then reading index `0x10` must give `0x00000030`,
+and index `0x20` must give `0x00012e00`. If a freshly wired data window does not
+produce those two values, nothing further is worth debugging.
+
 ## Order of work
 
 1. ~~**`m1_copro_if`**~~ — **done**, 211 checks. The four V60-side registers, the
@@ -226,8 +270,11 @@ rather than by review:
    diff.
 4. **Microcode load through the MRA**, and the SDRAM regions for tables and
    data.
-5. **The four math units**, each against MAME as oracle — they are pure
-   functions of (operand, table), so they fuzz cleanly the way the FP units did.
+5. **The 2 MB data-ROM window FIRST**, then the four math units. Measured above:
+   the data ROM is read before any math unit and 70,119 times to frame 400, and
+   the microcode's second instruction depends on it. The math units are pure
+   functions of (operand, table) so they fuzz cleanly the way the FP units did,
+   but they are not what is blocking the coprocessor's first move.
 6. **Polygon list capture** off `copro_fifo_out`, diffed frame by frame against
    MAME. That is the M2 exit criterion in `CLAUDE.md`'s verification model.
 
