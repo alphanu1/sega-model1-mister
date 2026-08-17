@@ -647,22 +647,48 @@ bus. **It is inside `m1_sdram` at both ends**, so the window change does not tou
 it; the previous +0.401 ns was on a design ~2,800 ALM smaller and this is placement
 pressure on an interface that has no constraints of its own.
 
-**The fitter names the cause**, 16 times:
+**The pack warning is NOT the cause of this path, and saying so was wrong.** The
+fitter does report it sixteen times —
 
 ```
 Warning (176279): Can't pack register node "...|m1_sdram:sdram|sd_a[8]" into I/O
 pin "SDRAM_A[8]". The node cannot simultaneously use clear and load signals.
 ```
 
-`sd_a` is reset to `'0` at `m1_sdram.sv:433` and conditionally loaded everywhere
-else. A Cyclone V I/O register takes one or the other, not both, so all 13 address
-bits sit in the fabric and pay routing delay to the pin instead of being packed.
+— and `sd_a` is indeed reset to `'0` at `m1_sdram.sv:433` while being
+conditionally loaded elsewhere, which a Cyclone V I/O register cannot do. But the
+violating endpoint `sd_a[12]` **is** packed: its location is
+`DDIOOUTCELL_X40_Y81_N10`. The warning applies to other bits. Attributing the
+violation to it was a guess from the warning text, made before reading the path.
 
-**The fix is to drop the reset on the SDRAM outputs**, which they do not need — the
-bus is don't-care until a command is issued, and `cmd` is separately reset to
-`C_NOP`. That should pack them and recover far more than 19 ps. Not done here: it
-belongs to "close the SDRAM interface", it needs its own build to measure, and
-`m1_sdram`'s 74,729-check suite has to be re-run against it. 19 ps at the slow 85C
-corner is within the model's own noise and the board has run with this interface
-unconstrained throughout, so it is flashable — but it is not clean and should not
-be recorded as if it were.
+**What the path actually says**: 9 logic levels, 12.899 ns of data delay, **73% of
+it interconnect**. Two hops dominate:
+
+```
+sd_a[0]~3 -> sd_a[0]~4      1.355 ns   X82_Y21 -> X51_Y21
+sd_a[0]~4 -> sd_a[12]|ena   4.161 ns   X51_Y21 -> DDIOOUTCELL_X40_Y81
+```
+
+One wire is **4.161 ns, a third of the whole budget**, carrying the enable from
+logic at row 21 to an I/O cell at row 81. The SDRAM pins are fixed by the board, so
+that distance is the fitter having placed the control logic sixty rows from the
+pins it drives, on an interface with no constraints telling it the path matters.
+
+**So the area lever is not the remedy it looks like.** Freeing the V60's FP group
+is -2,984 ALM and would give the fitter room to place that logic nearer the pins —
+but nothing forces it to, and the result is only knowable after a 25-minute build.
+It is a lottery ticket, not a fix.
+
+**The deterministic fix is the 9 combinational levels feeding `sd_a`** — `sel~1`,
+`sel~5`, `Mux118~0`, `always3~1/2`, `sd_ba~1`, `sd_a[0]~3/4` — the state machine
+computing its address mux in the same cycle it drives the pins. Registering the
+address select one cycle earlier removes most of them. Dropping the reset on the
+outputs is still worth doing for the other sixteen bits, but it is a separate,
+smaller thing.
+
+Not done here: it belongs to "close the SDRAM interface", needs its own build to
+measure, and `m1_sdram`'s 74,729-check suite has to be re-run against it. 19 ps at
+the slow 85C corner is within the model's own noise and the board has run with
+this interface unconstrained throughout, so the `.rbf` is flashable — but it is not
+clean and is not recorded as if it were. It will also get worse as M2 and M3 grow
+the design, which is when this becomes a requirement rather than a note.
