@@ -80,68 +80,84 @@ The engine work done chasing it was worth keeping anyway — cost per dense laye
 went 1,614 -> 1,182 cycles, text layers ~700 -> 267 — and the current build
 reports **zero** deadline misses on real content.
 
-## The open M1 defect: the board and the simulation disagree — 2026-08-17
+## The M1 2D defect — FOUND AND FIXED, 2026-08-17
 
-**This is where to start, and the shape of the problem has changed.** The 2D path
-is no longer the suspect: the same RTL, the same ROM and the same V60 render the
-attract ranking table correctly in simulation. What is left is a divergence
-between simulation and silicon.
+**Two faults in `draw_common`, both measured against MAME, both now fixed.** Full
+detail with the source quotes is in `findings.md`; the short version:
 
-### What the board does
+1. **The row mask is keyed to the odd/even tilemap, not to the tile category.**
+   `draw_common` computes `tpri = layer & 1` before a shift and `win = layer & 1`
+   after it — the category and the odd tilemap, one line apart. We used the mask
+   as `mask ^ category`. That is right for two of the four combinations and
+   inverted for the other two, and it suppressed every category-1 tile on the even
+   tilemaps. `INSERT COIN(S)`, `CREDIT 0` and the SEGA logo live there.
+2. **A pair in window mode draws nothing unless `hscr & 0x8000`.** There is no
+   `else` on that inner `if`. Attract selects window mode on pair 2/3 with `hscr`
+   never above `0x0200`, so MAME draws tilemaps 2 and 3 **not at all** — and our
+   tilemap 2, opaque, covered all 190,464 pixels. **The sky and sea were a bug:** a
+   pair the hardware does not display.
 
-Sky and sea, no text, and the picture **flashes to a flat blue and back**. Two
-photographs of the same session, seconds apart, show the two states; the overlay
-rows are identical between them except the I/O reply count.
+Measured before: tilemap 0 held content in 617 of 680 frames and won a pixel in 47,
+all of them boot frames. After: 9,674 pixels, then 7,449 with the full attract
+screen up, and tilemaps 2/3 correctly silent.
 
-### What simulation does with the same design
+**Our tile RAM content now matches MAME's census exactly** at the ranking screen —
+`58, 144, 1024, 1024` non-blank words per map in both. So the V60 is producing the
+right picture data and the 2D path is drawing what MAME draws.
 
-`make m1_frame FRAME_CYCLES=900000000 FRAME_TRACE=1`, one line per frame:
+**What is left on that screen is the 3D.** 93% of the frame is backdrop, because
+the road and cars that fill it are geometry and the rasterizer is not built. Expect
+text on a flat colour, not a full picture. That is M2/M3, not a 2D fault.
 
-- **No flat-blue frame exists.** The backdrop share is `bd=0/190464` on **every**
-  frame of 382. Some tilemap covers every visible pixel, always.
-- **No alternation of any kind.** Frames move through a handful of states and
-  stay: tilemap 0 full-screen while the CPU is in the boot loop at `pc=fffff0`,
-  then tilemap 2 full-screen — that is the sky and sea — and from frame ~330 the
-  text builds up on tilemap 1 a few hundred pixels at a time (240, 545, 1460,
-  2740, 3060...) as the ranking table is drawn on.
-- **Window mode engages and behaves.** `ctrl` reads `0000,2000` from that point:
-  mode 1 on pair 2/3, split at line 0, which suppresses tilemap 3 and draws
-  tilemap 2. `tm3=0` throughout, matching what MAME does at this frame.
+### The board, and why its photographs misled
 
-So the design renders correctly and does not flash. The board, running a
-bitstream built from that same source tree, does both wrongly.
+The board showed sky and sea alternating with a flat blue, and both were
+consistent with these bugs plus the absent 3D: the sky/sea was the wrongly-drawn
+pair, and the flat blue was the backdrop on attract screens whose content is
+almost entirely geometry. Simulation rendered "correctly" only because the one
+frame it captured was the ranking table, whose text sits on tilemap 1 — the single
+combination the wrong mask formula got right.
 
-### What that rules out
+**Board access is currently lost**: SSH offers the key and the host key still
+matches, so it is the same machine, but `/root/.ssh/authorized_keys` no longer
+accepts it. Nothing can be flashed until that is restored.
 
-The whole 2D composite — the row mask, the window mode, the tilemap order, the
-palette, the mixer priority — is exonerated *as logic*. Any of it can still be
-failing on silicon for reasons simulation cannot model: SDRAM timing, the read
-capture phase, clock domain crossings, or Fmax.
+### How to see it, and what to expect
 
-### The measurement that separates them
+    make m1_frame FRAME_CYCLES=900000000 FRAME_TRACE=1
 
-The overlay's per-tilemap census. Rows `11`-`14`, one tilemap each, 18 bits, so
-`02E800` = 190,464 = the whole screen. Against simulation's `0, N, 190464-N, 0`:
+One line per frame: backdrop share, per-tilemap **wins**, per-tilemap **content**,
+window control, interrupts raised/acknowledged, and the PC. The two censuses side
+by side are what found this — "holds nothing" and "holds text that cannot reach
+the screen" read identically from wins alone and need opposite fixes.
 
-- **census matches, picture wrong** — the renderer is winning the right pixels
-  and something downstream is wrong: scanout, the scaler, or the palette read.
-- **census all zero while the screen is blue** — every layer declined to draw and
-  the picture is the *backdrop*, palette entry 0. Nothing else can produce it,
-  since the 3D layer is tied off. That points at the character fetch or tile RAM
-  returning nothing on hardware.
-- **census large on a tilemap simulation shows as zero** — the V60 is in a
-  different state on silicon; row `00` says where.
+At the attract ranking screen, post-fix:
 
-Note the census could not answer this before 2026-08-17: it was four wrong rows
-in a half-connected instrument. See `debug-overlay.md`.
+    F410 bd=177927/190464 win=7449,4704,0,0 have=58,144,1024,1024 ctrl=0000,2000
 
-### Historical note: what the picture used to be
+`have` matches MAME's own census exactly. `bd` is 93% because the 3D is missing.
+
+### Historical note: three wrong turns on this one
+
+Kept because each looked convincing:
+
+- **"The 2D path renders correctly, so the board must be diverging."** One captured
+  frame cannot see an alternation, and the frame it captured — the ranking table —
+  is the one screen whose text sits on the single tilemap/category combination the
+  wrong mask formula got right. Two builds were spent hunting silicon.
+- **"Attract has screens with no text at all."** Said from a census showing
+  tilemap 1 empty, while `INSERT COIN(S)` was plainly in the snapshot. The text was
+  on tilemap **0**. Being challenged on that is what found the bug — the question
+  "which layer is that text on, then?" was the whole investigation.
+- **"The vblank handler never runs."** A static picture with correct content looks
+  exactly like it. Interrupts were fine: PSW reaches `0x10040000` as MAME's does,
+  with 700+ acknowledges over 200 frames. Count at the acknowledge, not the raise.
 
 Before the V60's `IN`/`OUT` fix this section read "most of the 2D does not draw",
-and the suspects were the row mask and then the window mode. Both were real gaps,
-both were fixed, and **neither changed the picture** — because the V60 never got
-far enough to draw the rest. Kept as a warning: two correct fixes in a row
-changed nothing on screen, and the cause was in neither place.
+and the row mask and window mode were each implemented and **changed nothing on
+screen** — because the V60 never got far enough. Both were real gaps and both were
+also implemented *wrongly*, which the picture could not show while the CPU was
+stuck. Three correct-looking fixes in a row changed nothing visible.
 
 ### Ruled out, by measurement
 
@@ -151,7 +167,8 @@ Do not re-derive these.
 |---|---|
 | fetch bandwidth | overlay row `0C` reads **zero** deadline misses; an overrun repeats a scanline anyway, which is not the symptom |
 | the ROM | 26 of 29 parts match MAME 0.289, **no CRC mismatches**, all twelve the MRA loads among them |
-| the row mask alone | implemented, verified, on the board — **changed nothing on screen** |
+| the vblank interrupt | reaches the V60 and is **taken**: PSW `0x10040000` as MAME's, 700+ acknowledges over 200 frames |
+| tile RAM contents | our per-map content census matches MAME's **exactly** — `58, 144, 1024, 1024` at the ranking screen |
 
 ### The row mask: a real gap that was not the whole bug
 
