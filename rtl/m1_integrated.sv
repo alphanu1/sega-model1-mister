@@ -362,7 +362,7 @@ module m1_integrated (
     .vid_r(vid_r), .vid_g(vid_g), .vid_b(vid_b),
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
     .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
-    .dbg_overruns(dbg_overruns)
+    .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px)
   );
 
   m1_rom_loader loader (

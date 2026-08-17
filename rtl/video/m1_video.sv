@@ -99,7 +99,34 @@ module m1_video #(
   // shifts and tears" can be told apart from "the renderer is broken" without
   // guessing, because the two look identical on a screen and have nothing in
   // common as bugs.
-  output logic [15:0] dbg_overruns
+  output logic [15:0] dbg_overruns,
+
+  // WHICH TILEMAPS ARE ACTUALLY REACHING THE SCREEN.
+  //
+  // The mixer already decides which slot wins every pixel, so counting wins per
+  // tilemap per frame turns "is this layer being drawn?" from an inference into a
+  // number. Both of this project's 2D faults would have been obvious at a glance
+  // here: the row mask left one layer painting solid over the others, and the
+  // window mode had tilemap 3 covering the picture while tilemap 2 drew nothing.
+  //
+  // Counted per frame and latched at vblank, so the value is a whole frame's
+  // worth rather than a partial sweep.
+  //
+  // WHAT IT DOES AND DOES NOT PROVE. All four tilemaps are composited every
+  // frame in a FIXED order — tilemap 0 nearest, 3 furthest, the 3D layer between
+  // the two category passes — and each pixel shows the frontmost non-transparent
+  // contributor. So this counts which layer WON a pixel, not whether a layer was
+  // fetched. A layer reading zero may be drawing perfectly and simply be covered
+  // by something in front of it.
+  //
+  // It is therefore an alarm, not a proof: a layer that has content in tile RAM
+  // and wins nothing anywhere is worth investigating, and both of this project's
+  // 2D faults would have shown up that way. Proving the composite is RIGHT needs
+  // a frame diff against the reference, which is a different instrument.
+  //
+  // Saturating: a count that wraps reads as a small number and says the opposite
+  // of what happened.
+  output logic [15:0] dbg_layer_px [4]
 );
 
   // ------------------------------------------------------------- timing
@@ -118,6 +145,26 @@ module m1_video #(
   );
 
   assign vblank_irq  = vblank_start;
+
+  // Per-tilemap visible-pixel census. mix_src encodes 0-3 as a tilemap's
+  // category-1 win and 4-7 as its category-0 win, so both fold onto the same
+  // tilemap. 8 is the 3D layer and 15 the backdrop; neither is a tilemap.
+  logic [15:0] px_acc [4];
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      for (int i = 0; i < 4; i++) begin px_acc[i] <= '0; dbg_layer_px[i] <= '0; end
+    end else begin
+      if (vblank_start) begin
+        for (int i = 0; i < 4; i++) begin
+          dbg_layer_px[i] <= px_acc[i];
+          px_acc[i]       <= '0;
+        end
+      end else if (ce_pix && visible && mix_src < 4'd8) begin
+        if (px_acc[mix_src[1:0]] != 16'hffff)
+          px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 16'd1;
+      end
+    end
+  end
 
   // ------------------------------------------------------- line buffers
   // Double buffered: `bank` is written while ~bank is displayed.

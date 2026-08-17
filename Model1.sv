@@ -402,6 +402,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [23:0] dbg_pc;
   wire        dbg_halted, dbg_fp_trap, ldr_overflow;
   wire [15:0] dbg_copro_pushes, dbg_copro_returns;
+  wire [15:0] dbg_layer_px [4];
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
@@ -447,7 +448,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
-    .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns)
+    .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -650,7 +651,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // Every row carries its own number in the top byte. Tagging only some rows
   // meant counting bands from an edge that was sometimes out of frame, and two
   // rows got misread that way.
-  wire [31:0] dw [17];
+  wire [31:0] dw [19];
   assign dw[0]  = {8'h00, pc_s2};                  // V60 program counter
   assign dw[1]  = {8'h01, r_if_count[23:0]};       // instruction fetches
   assign dw[2]  = {8'h02, fa[0]};                  // fetch 0 address
@@ -678,6 +679,11 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // it" — the two look identical from a screen.
   assign dw[15] = {8'h0F, dbg_tgp_retires, dbg_tgp_pc[15:8], dbg_tgp_unimpl, 7'd0};
   assign dw[16] = {8'h10, dbg_copro_pushes, dbg_copro_returns};
+  // Rows 11 and 12: visible pixels per tilemap, per frame. A layer with content
+  // in tile RAM and a zero here is not reaching the screen, which is checkable
+  // without a reference image — and is exactly what both 2D faults looked like.
+  assign dw[17] = {8'h11, dbg_layer_px[0], dbg_layer_px[1]};
+  assign dw[18] = {8'h12, dbg_layer_px[2], dbg_layer_px[3]};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -687,7 +693,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // that is perfectly legible and entirely wrong.
   generate
   if (DEBUG_OVERLAY) begin : g_diag
-  m1_diag #(.NWORDS(17)) diag (
+  m1_diag #(.NWORDS(19)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     // Off by default: it is an instrument, not a feature, and it sits on top
     // of the picture. Kept in the build because it has now found four faults
