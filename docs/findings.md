@@ -1375,3 +1375,71 @@ None of this is checkable by `make test` — it is a hardware-only change, verif
 builds and by the screen. It changes an interface that currently works at CL+2, so
 the empirically-found phase may need re-finding, and the known-good bitstream above
 is the reference to fall back to.
+
+## The SDRAM output paths need 12.9 ns and have 6.25 ns — 2026-08-18
+
+The first build ever to constrain this interface. `create_generated_clock` on
+`SDRAM_CLK` with `-invert`, plus output and input delays from the device's tSU/tHD
+and tAC/tOH:
+
+```
+clk_sys     -7.192 ns   TNS -112.637
+sdram_clk   -0.150 ns   TNS   -0.221
+```
+
+**Failing by seven nanoseconds, and it always was.** Nothing constrained these
+paths, so nothing analysed them and nothing could report them.
+
+### The arithmetic is exact, which is what makes it certain
+
+`Model1.sv:397` is `assign SDRAM_CLK = ~clk_sys` — the device is clocked on the
+**falling** edge, so data launched on the rising edge has **half a period, 6.25 ns**,
+to reach the pin. The worst path was measured earlier today at **12.899 ns** across
+9 logic levels, `xfer_addr[2] -> sd_a[12]`:
+
+```
+6.25 - 12.9  =  -6.6 ns      against the -7.192 reported
+```
+
+That agreement rules out a bad constraint as the explanation. The path genuinely
+takes about twice the time available.
+
+### So this is structural, not marginal
+
+The interface has never had timing margin. It works because the real SDRAM
+tolerates whatever arrives, and `RD_LAT` was tuned by hand until the result was
+readable. That single fact explains a list of symptoms recorded separately over
+weeks as if they were unrelated:
+
+- `RD_LAT` derived term by term and still needing an empirical fix on hardware
+- CL+2 being the only capture phase that boots, with the other three hanging
+- a build whose only change was a debug counter and a UART producing a garbage
+  picture — placement moved a path that had no margin to move
+- none of it visible to `make test`, `make lint`, or any static check, because the
+  paths were unconstrained and the failure is at the pins
+
+### What the fix has to be
+
+Not tuning, and not constraints on their own — constraints only made it visible.
+
+1. **Register the SDRAM outputs in the I/O cells.** Clock-to-output from an I/O
+   register is a fixed, short, placement-independent number. `sd_a[12]` already sits
+   in a `DDIOOUTCELL`, so the endpoint is right; what is wrong is the ~13 ns of
+   combinational logic arriving at it.
+2. **Cut the depth feeding `sd_a`** — `sel~1`, `sel~5`, `Mux118~0`, `always3~1/2`,
+   `sd_ba~1`, `sd_a[0]~3/4`. The state machine computes its address mux in the same
+   cycle it drives the pins. Registering the address select one cycle earlier
+   removes most of them, which is the fix already identified when that path was
+   first read.
+3. **Then** re-check both numbers, and rebuild twice from identical source to
+   confirm they are stable.
+
+`make test` cannot see any of this. Verification is the timing report plus the
+screen, with `55965cd8d77b2a6443b9d141dea568f8` as the known-good fallback.
+
+### A tooling hazard found on the way
+
+Regenerating the project over a completed build's database made Quartus 17.0 die
+inside `quartus_map` with a stack trace in `write_removed_registers_report` and
+`node_id != 0`. It reads like a source fault and is not one. `rm -rf build/mister/db
+build/mister/incremental_db` before recompiling after `tools/mister_project.sh`.

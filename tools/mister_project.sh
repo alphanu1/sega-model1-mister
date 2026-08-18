@@ -108,6 +108,51 @@ cat > "$stage/Model1.sdc" <<'EOF'
 # The names are checked rather than assumed: an empty get_clocks silently makes
 # set_clock_groups a no-op, which is exactly how this went wrong the first time.
 
+# ---------------------------------------------------------------- the SDRAM
+#
+# NOTHING CONSTRAINED THIS INTERFACE. Not sys_top.sdc, not this file — no
+# generated clock on the port, no output delay, no input delay. The fitter was
+# never told those paths matter and could never report them as bad, which is why
+# RD_LAT had to be found empirically on hardware rather than derived, and why a
+# build whose only change was a debug counter and a UART produced a garbage
+# picture with +0.296 ns reported slack and no new warnings.
+#
+# Device numbers are for the -6 grade part MiSTer's SDRAM boards carry, with a
+# little added for board trace. They are deliberately pessimistic: the point of
+# the first constrained build is to find out how much margin actually exists, and
+# an optimistic number would hide exactly that.
+#
+#   tSU  1.5 ns   address/command setup to the device's clock edge
+#   tHD  0.8 ns   hold after it
+#   tAC  6.0 ns   clock edge to read data valid
+#   tOH  2.5 ns   read data held after the edge
+#
+# SDRAM_CLK is `~clk_sys` assigned to the pin in Model1.sv — combinational fabric
+# driving an output — so -invert on the generated clock describes what the pin
+# does. That the clock's own delay to the pin is a ROUTING RESULT is the deeper
+# fault and constraints cannot fix it; see docs/findings.md. This step is here to
+# measure the interface before changing how the clock is produced.
+set sdram_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
+if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
+    create_generated_clock -name sdram_clk -source $sdram_src -invert \
+        [get_ports {SDRAM_CLK}]
+
+    set sdram_out [get_ports -nowarn {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] \
+                                      SDRAM_DQML SDRAM_DQMH SDRAM_nCS \
+                                      SDRAM_nRAS SDRAM_nCAS SDRAM_nWE SDRAM_CKE}]
+    set_output_delay -clock sdram_clk -max  1.5 $sdram_out
+    set_output_delay -clock sdram_clk -min -0.8 $sdram_out
+
+    # Reads come back on the same forwarded clock.
+    set sdram_in [get_ports -nowarn {SDRAM_DQ[*]}]
+    set_input_delay -clock sdram_clk -max 6.0 $sdram_in
+    set_input_delay -clock sdram_clk -min 2.5 $sdram_in
+
+    post_message "Model1: SDRAM interface constrained (tSU 1.5 / tHD 0.8 / tAC 6.0 / tOH 2.5)"
+} else {
+    post_message -type error "Model1: SDRAM_CLK or the core PLL not found - constraints NOT applied"
+}
+
 set sys_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
 set cpu_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[1].*|divclk}]
 
