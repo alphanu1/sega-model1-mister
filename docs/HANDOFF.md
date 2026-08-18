@@ -52,6 +52,26 @@ make v60_trace          # instruction streams, ours against MAME's
    so `v60_trace`'s results stand, as does the board (the hardware loader presents
    address and data together, which is why row 02's checksum matched).
 
+11. **The TGP's ST was not a register.** The flags lived in the ALU's pipeline and
+   were recomputed for whatever instruction was in it, so a conditional branch after
+   a flag-setting op read a corrupt ST — `subd` set ZRD, the following
+   `brif !zrd` cleared it under itself, and the coprocessor **could never leave
+   command dispatch**. `st_hold` now latches on `alu_out_valid`, MAME's
+   once-per-instruction update. `tb_mb86233_core`'s 8,000-retire lockstep passes
+   either way; it never generated that pairing, which is the argument for
+   `tgp_trace` in one datum.
+12. **`brul`/`bsul` were not implemented** — `seq_branch_val = d_bdata` for every
+   subtype, so the indirect branches jumped to their own immediate field. The one
+   `brul` in the microcode (pc `0x0052`, register form) is the **command dispatch
+   jump**, so nothing past it ran. Register form implemented (`d_bdata[5:0]`, six
+   bits, because MAME's `read_reg` masks to six not the five the disassembler
+   prints); the two `bsul` memory-form sites are **still unimplemented** and now
+   warn in simulation instead of jumping somewhere plausible.
+
+   Together these took the lockstep from 71 instructions (spinning) to **102**, and
+   our stream from 71 lines/1 loop to 322 lines/10 loops against the reference's
+   343/21.
+
 ### Instruments built or repaired on 2026-08-18
 
 `make tgp_trace` (`tools/tgp_trace.sh`) is M0 exit criterion 2, armed at last: our
