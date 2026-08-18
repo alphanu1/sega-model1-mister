@@ -1648,3 +1648,54 @@ from variables, and the divergence is upstream of the write.
 matched point. The addresses are known and the comparison is mechanical, which is a
 much better position than the peripheral hunt — and it is entirely local, needing
 neither the board nor another bitstream.
+
+## The scroll table at wram 0x501400 is never populated — 2026-08-18
+
+Frame 300, same addresses, reference against our simulation:
+
+```
+             wram 0x501400 ...                         0x500500
+MAME    0000 0000 0000 0000 0023 2058 ... 4400 0058    0100 0000
+SIM     0000 0000 0000 0000 0000 0000 ... 0000 0000    0100 0000
+```
+
+`0x50140a` holds the animating `ctrl` value — `2058` at frame 300, `2fce` at 600,
+`20a8` at 900 — with a companion at `0x501408`. **The whole table is zero in ours
+and populated in the reference**, while `0x500500` matches exactly, so this is one
+specific table rather than wholesale corruption.
+
+**Who fills it in the reference**, from a write tap on `0x501408`-`0x50140b` over
+600 frames:
+
+```
+pc=fe48d5 x163    pc=fef3b5 x164    pc=fe1469 x2
+pc=fe6ab0 x2      pc=fe32b7 x1      pc=fe32be x1
+```
+
+Two routines, roughly once every four frames. Whether our V60 ever reaches them is
+the next measurement, and it splits the problem cleanly: writes with wrong values
+means the routines run and their inputs differ; no writes at all means a branch
+earlier is taken differently.
+
+### Unproven, and worth checking: the NVRAM window may be shifted 4 bytes
+
+The same dump shows `e1a9 00ff 0000 00fe` at `0x40ff60` in the reference and at
+`0x40ff5c` in ours — the same four words, four bytes apart:
+
+```
+MAME  40ff5a: 0000 0064 0000 e1a9 00ff 0000 00fe ffbb 1fff ffba
+SIM   40ff5a: 0000 e1a9 00ff 0000 00fe 0101 0000 0100 0000 e1e8
+```
+
+That is either an addressing offset in our NVRAM mapping or simply different game
+state, and the two look identical from one dump. **Flagged, not claimed.** It is
+worth resolving because a four-byte offset in a region the game reads for state
+would make exactly the kind of routine under investigation compute wrong values.
+The test is a wider dump: a mapping error shifts everything, differing state does
+not.
+
+### A method note that cost a run
+
+`(cmd > log) &` inside a foreground tool call is killed when the call returns. The
+log ends at the first instruction fetches and the job reports success. Use the
+harness's own backgrounding, not a shell ampersand.

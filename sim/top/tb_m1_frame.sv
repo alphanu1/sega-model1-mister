@@ -382,10 +382,6 @@ task automatic report_census;
                  f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                  496 * 384);
         $display("FRAME: window ctrl  pair01=%04h pair23=%04h", f_ctrl[0], f_ctrl[1]);
-        for (pi = 0; pi < 16384; pi = pi + 1)
-          if (prd_n[pi] > 0)
-            $display("PERIPH %06h reads=%0d last=%04h",
-                     {prd_seen[pi][22:0], 1'b0}, prd_n[pi], prd_v[pi]);
         $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d pops=%0d returns=%0d",
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
     end
@@ -521,29 +517,41 @@ always @(posedge clk_cpu) begin
     end
 end
 
-// EVERY PERIPHERAL READ, to diff against the same census taken from MAME.
+// THE GAME STATE THE CTRL VALUE COMES FROM, at frames matching the MAME dump.
 //
-// Our game state diverges from the reference on identical ROMs — MAME animates
-// pair 2/3's ctrl every frame (0x20xx-0x23xx, the vertical scroll counting) while
-// we write only 0x0000 and 0x2000 with the scroll stuck at zero. Same code, so a
-// value the V60 READS must differ. Peripherals are a bounded list; this captures
-// them rather than guessing one at a time.
-integer prd_n [0:16383];
-reg [15:0] prd_v [0:16383];
-integer prd_seen [0:16383];
-integer pi;
+// MAME holds the animating value at wram 0x50140a — 2058, 2fce, 20a8 at frames
+// 300/600/900 — with a companion at 0x501408. We write only 0x0000/0x2000, so
+// whatever computes it differs. V60 0x500000 is SDRAM word WRAM_BASE 0xF80000, so
+// byte B maps to word 0xF80000 + (B - 0x500000)/2.
+task automatic dump_wram(input integer fr);
+    integer k;
+    begin
+        $write("=== SIM frame %0d  ctrl=%04h\n", fr,
+               {core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]});
+        $write("  wram1400 501400:");
+        for (k = 0; k < 20; k = k + 1) $write(" %04h", device.mem['hF80A00 + k]);
+        $write("\n  wram1480 501480:");
+        for (k = 0; k < 6;  k = k + 1) $write(" %04h", device.mem['hF80A40 + k]);
+        $write("\n  wram0500 500500:");
+        for (k = 0; k < 6;  k = k + 1) $write(" %04h", device.mem['hF80280 + k]);
+        $write("\n  nvr ff5a 40ff5a:");
+        for (k = 0; k < 10; k = k + 1) $write(" %04h", device.mem['hFA7FAD + k]);
+        $write("\n");
+    end
+endtask
+
+// DOES OUR V60 EVER FILL THE SCROLL TABLE? MAME writes wram 0x501408/0x50140a from
+// pc=fe48d5 (163x) and pc=fef3b5 (164x) over 600 frames — roughly once every four.
+// Ours leaves the whole 0x501400 table at zero. V60 byte 0x501408 is word 0x280a04.
+integer w1400_n = 0;
 always @(posedge clk_cpu) begin
-    if (core.main.m_req && !core.main.m_we && core.main.m_ack) begin
-        // Skip ROM, work RAM/NVRAM, tile RAM, palette — what is left is I/O.
-        if (!((core.main.m_addr[23:1] >= 23'h080000 && core.main.m_addr[23:1] < 23'h180000) ||
-              (core.main.m_addr[23:1] >= 23'h7c0000) ||
-              (core.main.m_addr[23:1] >= 23'h200000 && core.main.m_addr[23:1] < 23'h300000) ||
-              (core.main.m_addr[23:1] >= 23'h480000 && core.main.m_addr[23:1] < 23'h490000))) begin
-            pi = {core.main.m_addr[20:1]} % 16384;
-            prd_n[pi] = prd_n[pi] + 1;
-            prd_v[pi] = core.main.m_rdata;
-            prd_seen[pi] = {8'd0, core.main.m_addr[23:1]};
-        end
+    if (core.main.m_req && core.main.m_we
+        && (core.main.m_addr[23:1] == 23'h280A04
+         || core.main.m_addr[23:1] == 23'h280A05)) begin
+        if (w1400_n < 8)
+            $display("W1400 w=%06h pc=%06h data=%04h", core.main.m_addr[23:1],
+                     core.dbg_pc, core.main.m_wdata);
+        w1400_n = w1400_n + 1;
     end
 end
 
@@ -576,6 +584,10 @@ always @(posedge clk) begin
             frames = frames + 1;
             // The census is latched inside m1_video on this same edge, so it
             // reads as the frame that just finished.
+            if (frames == 300 || frames == 600) begin
+                dump_wram(frames);
+                $display("W1400 total writes so far: %0d", w1400_n);
+            end
             if (TRACE_FRAMES) begin
                 tram_content_census();
                 $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d rtl_have=%0d,%0d,%0d,%0d wr=%0d,%0d,%0d,%0d tgp=%0d/%0d/%04h io=%04h/%0d%0d%0d tbl=%0d%0d dat=%0d%0d frd=%0d fwr=%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
