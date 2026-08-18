@@ -2590,3 +2590,38 @@ unit for the first time.
 
 It deadlocks earlier than the 20:22 one and would freeze rather than draw. The 20:22
 build remains the hardware baseline.
+
+## The deadlock in one line: our V60 pushes four words, the reference pushes five
+
+Counted on both sides rather than inferred (`tb_m1_boot`'s `COPRO PUSH`/`POP`/`RESULT`
+lines against `tools/mame_tgp_fifo.lua`):
+
+| | word | popped at TGP pc |
+|---|---|---|
+| both | `04000000` | `0x0044` |
+| **reference only** | **`00000000`** | dispatch |
+| both | `01000000` | `0x004d` |
+| both | `3f400000` | `0x00a5` |
+| both | `428c0000` | `0x00a5` / `0x00a6` |
+| reference | result `42520000` | written to `0x400` |
+
+**Every word we push matches the reference exactly, in order. One is missing.** The
+TGP is therefore one word short of a complete command and waits; the V60 believes it
+has sent one and waits for the result. That is the whole deadlock.
+
+### Why this is a good place to be
+
+It is a single, findable difference in the V60's instruction stream, and `v60_trace`
+is the tool for exactly that. The pushes happen around `ff97xx`, which is *before*
+the trace's current divergence at 26,945 — so on the face of it our V60 executes the
+same instructions and should push the same words. One of those two statements is
+wrong, and finding out which is a bounded question:
+
+- if the streams really do match there, the missing push is a **bus or decode**
+  problem — a write to `0xd80000` that does not become a push;
+- if they do not, `v60_trace`'s divergence is being masked and the collapse or the
+  window needs attention.
+
+Do not assume which. The last two "obvious" answers here — the coprocessor RAM path,
+and the FIFO not advancing — were both wrong, and both were reasoned from a counter
+rather than read from the design.

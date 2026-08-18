@@ -145,7 +145,17 @@ reasons; speed is not one.
    8192 words. `copro RAM writes=0` meant the V60 never reached that code. It was
    named as the likely cause twice before anyone read the module.
 
-0. **NEXT: does a command carry five words, and does each side agree?** With the
+0. **NEXT, and it is one word: our V60 pushes FOUR, the reference pushes FIVE.**
+   Counted on both sides. Every word we push matches the reference in order; the
+   missing one is **`00000000`**, second in the sequence, popped by the reference's
+   TGP at the dispatch stage. The TGP is one word short of a command and waits; the
+   V60 thinks it has sent one and waits for the result. **That is the entire
+   deadlock.** The pushes happen around `ff97xx`, *before* `v60_trace`'s divergence at
+   26,945 — so either the streams match and this is a bus/decode fault where a write
+   to `0xd80000` does not become a push, or the trace is masking a divergence. Find
+   out which; do not assume.
+
+0. **Superseded: does a command carry five words, and does each side agree?** With the
    interlock in, the V60 stalls at `ff9754` after **4 pushes** while the TGP stalls at
    `0x00a5` wanting more. The reference's command is **five** words in, one out —
    `04000000 00000000 01000000 3f400000 428c0000` -> `42520000`

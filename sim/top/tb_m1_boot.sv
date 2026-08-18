@@ -202,6 +202,34 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// ------------------------------------------- THE COMMAND PROTOCOL, BOTH SIDES
+//
+// The V60 stalls at ff9754 after 4 pushes while the TGP stalls at 0x00a5 wanting
+// more, so the two disagree about how long a command is. The reference's answer is
+// measured — tools/mame_tgp_fifo.lua, five words in and one out:
+//
+//     0x100 ->  04000000 00000000 01000000 3f400000 428c0000
+//     0x400 <-  42520000
+//
+// Print what each side actually moves rather than inferring it from counters. Two
+// counters have been misread as missing features already.
+reg [15:0] pushes_prev = 0;
+reg [15:0] pops_prev   = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu) begin
+        if (main.copro.dbg_fifo_pushes != pushes_prev) begin
+            $display("COPRO PUSH %0d: %04h_%04h",
+                     main.copro.dbg_fifo_pushes, main.m_wdata, main.copro.lat_lo);
+            pushes_prev <= main.copro.dbg_fifo_pushes;
+        end
+        if (main.tgp.fifo_in_pop && main.tgp.fifo_in_valid)
+            $display("COPRO POP      : %08h  (tgp pc %04h)",
+                     main.tgp.fifo_in_data, main.tgp.core.seq_pc);
+        if (main.tgp.fifo_out_push)
+            $display("COPRO RESULT   : %08h", main.tgp.fifo_out_data);
+    end
+end
+
 // ONE LINE PER TGP RETIRE. m1_tgp runs on `clk` in m1_main, which this bench
 // drives as clk_cpu, so the retire strobe is sampled in its own domain.
 integer tgptr_n = 0;
