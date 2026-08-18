@@ -130,6 +130,63 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Report for the morning — 2026-08-18, end of session
+
+**The coprocessor works.** `make tgp_trace` reports `IDENTICAL for 342 instructions`,
+the reference's entire traced window. M0 exit criterion 2 is met for what the game
+executes. The command exchange is byte-identical to the reference — same four words,
+same pop PCs, same `42520000` result — and 21 commands complete.
+
+**On the board** (build `99b9857a`, deployed): stable sky and sea, **no blue
+flashing**, and row `03` reading 11 pushes against 11 drains — the first hardware
+evidence the TGP takes commands. It then deadlocked exactly where simulation said,
+row `10` = `000492`. That deadlock is fixed since; the board has not been reflashed.
+
+**The block now:** the V60 pushes 71 command words and stops. Identical state at
+600 M and 1.5 G cycles, so parked rather than slow.
+
+#### What the reference does in that loop, now fully read off the trace
+
+`FED56F`-`FED5D0`, from an 8-second reference trace (the 2-second `v60_trace` window
+never reaches it):
+
+    FED56F  mov.w #1B010000, [R24]     command word
+    FED577  mov.w R1, [R24]            four more pushes: R1, R5, R0, R2
+    FED587  mov.h #0, D00000[PC]       copro RAM address := 0
+    FED58F  cmp.h #0, D00000[PC]       read it back, confirm it took
+    FED59D  movea.w D20000[PC], R1
+    FED5A4  in.w  [R1], R0             poll copro RAM
+    FED5A7  test.b R0
+    FED5A9  bne   FED5A4               LOOP UNTIL THE LOW BYTE READS ZERO  (~32 times)
+    FED5AF  mov.h #8001, D00000[PC]    then address := 0x8001
+    FED5C9  in.w  D20000, R0           and read the results out
+    FED5D0  in.w  D20000, R1
+
+**So the TGP must WRITE coprocessor RAM, and the V60 spins until it does.** Ours never
+writes it — the TGP's io accesses reach `0x0020` (sincos) and have never touched io
+`0x0001`, the RAM data port. That is the next thing to chase.
+
+#### An anomaly to resolve BEFORE acting on the above
+
+`make m1_boot BOOT_CYCLES=300000000 WATCH_PAGE=0xD2` reports **zero reads of page
+`d20000`** — while the same run reports `pc now fed5a4`, which is the instruction that
+reads exactly that address. **Both cannot mean what they appear to.** Either our V60
+is not where `dbg_pc` says, or the read never completes and so never counts as an
+access, or the watch is not seeing io-space reads. Resolve that first: acting on
+"the TGP never writes copro RAM" while the instrument disagrees with itself is how
+tonight produced seven withdrawn findings.
+
+#### Also worth knowing
+
+- **`CLAUDE.md` is gitignored** (`.gitignore:122`). Several commit messages today say
+  "CLAUDE.md baseline updated" — those edits are on disk but **not in the repository**,
+  and a clone gets none of them. Durable findings belong in `docs/`.
+- **The hardware build grew +2,873 ALM and +43 M10K** against the recorded baseline
+  and today's changes do not account for it. M10K is at 82% with the rasterizer's band
+  buffer wanting ~51 of the remaining 101. Worth a comparison build.
+- **The V60 is not the CPI problem.** 6 CPI in isolation against the reference's ~8;
+  65% of cycles are bus stalls outside the core.
+
 ### Open, in order
 
 0. **FIXED, pending confirmation: the copro FIFOs are a mutual interlock and we
