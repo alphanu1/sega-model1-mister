@@ -1376,7 +1376,8 @@ builds and by the screen. It changes an interface that currently works at CL+2, 
 the empirically-found phase may need re-finding, and the known-good bitstream above
 is the reference to fall back to.
 
-## The SDRAM output paths need 12.9 ns and have 6.25 ns — 2026-08-18
+## PARTLY WITHDRAWN: the SDRAM violation is the READ CAPTURE, not the outputs
+## — 2026-08-18
 
 The first build ever to constrain this interface. `create_generated_clock` on
 `SDRAM_CLK` with `-invert`, plus output and input delays from the device's tSU/tHD
@@ -1443,3 +1444,48 @@ Regenerating the project over a completed build's database made Quartus 17.0 die
 inside `quartus_map` with a stack trace in `write_removed_registers_report` and
 `node_id != 0`. It reads like a source fault and is not one. `rm -rf build/mister/db
 build/mister/incremental_db` before recompiling after `tools/mister_project.sh`.
+
+### Correction, same day: the -7.192 ns is a different path entirely
+
+The entry above attributes the violation to the output path and its 12.9 ns of
+combinational depth. **The report does not say that.** Read properly:
+
+```
+From:  SDRAM_DQ[0]            (input pin)
+To:    m1_sdram:sdram|dq_r[0] (capture register)
+Slack: -7.192 (VIOLATED)
+Data Delay: 2.445 ns    Number of Logic Levels: 1
+```
+
+It is the **read capture**, and the data path is *fast* — 2.4 ns through one level.
+There is no logic to cut. The 12.9 ns output path was measured on the PREVIOUS,
+unconstrained build and had about -0.02 ns slack: marginal, worth fixing, and
+nothing like -7 ns. Two different paths from two different builds were merged into
+one conclusion, and the arithmetic that "confirmed" it — 6.25 - 12.9 = -6.6 against
+-7.192 — was a coincidence between unrelated numbers.
+
+### What the violation actually is
+
+`SDRAM_CLK = ~clk_sys`, so the device launches read data on the **falling** edge and
+`dq_r` captures it on the next **rising** edge. That is half a period, 6.25 ns, for
+tAC plus the clock's round trip to the device and the data's return. A clocking
+margin problem, not a depth problem, and no amount of pipelining inside the
+controller changes it.
+
+### And the verdict currently rests on a guessed number
+
+`tAC` was set to **6.0 ns**, described in the constraint file as "deliberately
+pessimistic". Against a 6.25 ns window that fails almost by construction. A real
+-6 grade part is nearer 5.4 ns, which would be tight but might close.
+
+**So this build does not prove the interface is broken.** It proves the interface has
+almost no read margin by construction, and that the exact verdict depends on a
+device number nobody has looked up. The next step is the actual part on the MiSTer
+SDRAM board and its datasheet tAC/tOH — not another RTL change, and not another
+build on a guess.
+
+If the real numbers still fail, the fix is a **phase-shifted PLL output for
+SDRAM_CLK** rather than `~clk_sys`, which is what gives a tunable, defined capture
+window and is what other MiSTer cores do. Cutting logic depth would not have helped,
+and the plan in the entry above — register the outputs, cut the depth feeding sd_a —
+addresses a real but much smaller problem.
