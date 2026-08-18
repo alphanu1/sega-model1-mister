@@ -59,11 +59,19 @@ fi
 # Our trace logs the PC when it CHANGES, so a branch-to-self delay loop —
 # `dbr R0, FFA6BD[PC]`, 5,000 iterations at one address — appears once. MAME logs
 # every iteration. Comparing them raw reports a divergence at the first such loop
-# and reads exactly like a broken dbr; that false finding was made here. Collapsing
-# runs on both sides compares the same quantity. It costs the ability to see an
-# iteration-count difference, which a register check catches instead.
-awk -F: '/^[0-9A-F]{6}:/{print tolower($1)}' "$out/mame.tr" \
-  | awk 'NR==1||$0!=p{print} {p=$0}' > "$out/mame_pc.txt"
+# and reads exactly like a broken dbr; that false finding was made here.
+#
+# COLLAPSING CONSECUTIVE REPEATS IS NOT ENOUGH. A poll loop alternates two
+# addresses — `test.b C00040` / `bne` — so no two consecutive lines are equal and
+# the run survives intact. That cost a second false finding: the I/O board
+# handshake spins 36,308 times in the reference and 41,147 times here, because our
+# loop takes 18 CPU cycles an iteration against its 17 on a deadline that is
+# correct in CYCLES to within 38. tools/v60_collapse.py finds the shortest
+# repeating period instead, keeps one instance, and WRITES THE ITERATION COUNTS
+# OUT so a real difference is reported rather than silently dropped.
+awk -F: '/^[0-9A-F]{6}:/{print tolower($1)}' "$out/mame.tr" > "$out/mame_pc_raw.txt"
+python3 "$root/tools/v60_collapse.py" "$out/mame_pc_raw.txt" "$out/mame_pc.txt" \
+  --counts "$out/mame_loops.txt"
 echo "  $(wc -l < "$out/mame_pc.txt") instructions"
 
 echo "=== our core (${cycles} cycles) ==="
@@ -73,9 +81,37 @@ make m1_frame FRAME_TRACE=0 FRAME_CYCLES="$cycles" V60_PCTRACE=1 \
 grep '^PCT ' "$out/ours.log" | awk '{print $2}' > "$out/our_pc_raw.txt"
 # Align on the first ROM instruction; our trace starts at the reset vector.
 first=$(head -1 "$out/mame_pc.txt")
-awk -v f="$first" '$0==f{s=1} s' "$out/our_pc_raw.txt" \
-  | awk 'NR==1||$0!=p{print} {p=$0}' > "$out/our_pc.txt"
+awk -v f="$first" '$0==f{s=1} s' "$out/our_pc_raw.txt" > "$out/our_pc_aligned.txt"
+python3 "$root/tools/v60_collapse.py" "$out/our_pc_aligned.txt" "$out/our_pc.txt" \
+  --counts "$out/our_loops.txt"
 echo "  $(wc -l < "$out/our_pc.txt") instructions (aligned on $first)"
+
+# WHAT THE COLLAPSE HID, STATED OUT LOUD. A loop that ran a different number of
+# times is real information; it is just not a divergence. Reporting it keeps the
+# instrument honest about what it stopped comparing.
+python3 - "$out/mame_loops.txt" "$out/our_loops.txt" <<'PYEOF'
+import sys
+def load(p):
+    d = {}
+    for line in open(p):
+        pos, n, period = line.split(None, 2)
+        d[(int(pos), period.strip())] = int(n)
+    return d
+m, o = load(sys.argv[1]), load(sys.argv[2])
+diffs = []
+for k in sorted(set(m) & set(o)):
+    if m[k] != o[k]:
+        diffs.append((abs(m[k] - o[k]), k, m[k], o[k]))
+diffs.sort(reverse=True)
+common = len(set(m) & set(o))
+print("--- loops collapsed on both sides: %d in common, %d with differing counts"
+      % (common, len(diffs)))
+for d, (pos, period), mv, ov in diffs[:8]:
+    pct = 100.0 * (ov - mv) / mv if mv else 0.0
+    print("    at %-8d %-24s MAME %-8d ours %-8d (%+.1f%%)" % (pos, period, mv, ov, pct))
+if not diffs:
+    print("    every collapsed loop ran the same number of times on both sides")
+PYEOF
 
 n=$(wc -l < "$out/our_pc.txt")
 head -"$n" "$out/mame_pc.txt" > "$out/mame_cut.txt"
@@ -87,8 +123,17 @@ fi
 line=$( { cmp "$out/mame_cut.txt" "$out/our_pc.txt" || true; } 2>/dev/null | sed 's/.*line //' | tr -dc '0-9')
 [ -n "$line" ] || line=1
 echo "v60_trace: DIVERGES at instruction $line"
-echo "--- MAME, with disassembly, around the divergence:"
-grep -E "^[0-9A-F]{6}:" "$out/mame.tr" | sed -n "$((line>6?line-6:1)),$((line+6))p"
+# The line number is an index into the COLLAPSED stream, so the raw trace cannot
+# be indexed by it. Show the collapsed PCs and look each one up in the raw trace
+# for its disassembly instead — reporting the wrong instructions here is how two
+# earlier false findings were made plausible.
+echo "--- MAME, collapsed, around the divergence (with disassembly):"
+lo=$((line>6?line-6:1)); hi=$((line+6))
+sed -n "${lo},${hi}p" "$out/mame_pc.txt" | while read -r pc; do
+    up=$(printf '%s' "$pc" | tr 'a-f' 'A-F')
+    dis=$(grep -m1 "^${up}:" "$out/mame.tr" || true)
+    echo "    ${dis:-$pc}"
+done
 echo "--- ours:"
 sed -n "$((line>6?line-6:1)),$((line+6))p" "$out/our_pc.txt" | tr '\n' ' '; echo
 exit 1

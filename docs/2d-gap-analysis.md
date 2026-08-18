@@ -142,10 +142,32 @@ Three things fall out:
 | row mask, `0x6000`/`0x6800`, 4 words/line, bit set = hidden | yes | **yes** (new) |
 | category selected by mask, `win = layer & 1` inverting it | yes | **yes** (new) |
 | tilemaps 2/3 category-0 pass opaque | yes | **yes** |
-| **`ctrl & 0x6000` window/split-scroll modes** | yes | **NO** |
-| **odd map suppressed in `ctrl` mode** | yes | **NO** |
-| **per-line H-scroll table at `0x4000 + 0x200*layer`** | yes | **NO** |
-| **`ctrl` read from the pair's even vscr** | yes | **NO** |
+| `ctrl & 0x6000` window/split-scroll modes | yes | **yes** (2026-08-18) |
+| odd map suppressed in `ctrl` mode | yes | **yes** (2026-08-18) |
+| per-line H-scroll table at `0x4000 + 0x200*layer` | yes | **no — and measured irrelevant, see below** |
+| `ctrl` read from the pair's even vscr | yes | **yes** (2026-08-18) |
+
+### The last row, struck off by measurement — 2026-08-18
+
+`tools/mame_scroll_census.lua`, 2,000 frames of the reference:
+
+    layer 0: hscr bit15 set on 0 frames, hscr CHANGED on 18 frames
+    layer 1: hscr bit15 set on 0 frames, hscr CHANGED on 0 frames
+    layer 2: hscr bit15 set on 0 frames, hscr CHANGED on 1344 frames
+    layer 3: hscr bit15 set on 0 frames, hscr CHANGED on 0 frames
+
+    0x4000 per-line table: max 0 of 2048 words non-zero
+
+**`hscr` bit 15 is never set, so the per-line table is never read, and it is empty
+anyway.** CLAUDE.md named it the likeliest home of the missing scrolling; it is
+not. The RTL comment in `m1_video.sv` that said "nothing measured reaches it" was
+right, and now it is measured rather than inferred.
+
+**The scrolling is tilemap 2's `hscr`** — the only register that moves, on two
+thirds of frames. In window mode both maps of a pair take the even map's `hscr`,
+which for pair 2/3 is that register, and that path is implemented. So every 2D
+rendering rule is now either implemented or measured irrelevant, and what is left
+is a difference in **program state**: which values our V60 writes into tile RAM.
 
 ---
 
