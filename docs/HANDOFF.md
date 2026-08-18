@@ -64,7 +64,9 @@ was the open M1 2D defect and it is closed.
 ## What is fixed and NOT yet seen on hardware
 
 **Window modes 2 and 3, the horizontal column split**, and **the even-map window
-scroll**. Both are in this build. Measured on real game code, mode 2 is selected on
+scroll**. Both are in this build, and both are now **verified on real game code**:
+on a mode-2 frame tilemap 0 wins **2,972 pixels where it won none**, the 7 blue
+frames are unchanged, and the mode-1 frames are byte-identical (`findings.md`). Measured on real game code, mode 2 is selected on
 pair 0/1 — the pair the TEXT lives on — for **194 frames of 2,478 (7.8%)**, and
 until now that blanked it outright. Expect text to stop dropping out at that rate.
 Verified in simulation by breaking each on purpose: 6,402 checks fail without the

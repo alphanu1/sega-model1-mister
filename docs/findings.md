@@ -762,3 +762,35 @@ traceable in the ROM. Candidates not yet tested: a self-test or synchronisation 
 timing out, and the published DPRAM bytes — the DSWs at `0x0b`-`0x0d` and the
 `0x03`-`0x07` block whose contents are recorded as unknown — since simulation feeds
 fixed inputs and the board reads real ones.
+
+## Modes 2/3 verified on real game code — 2026-08-18
+
+`make m1_frame FRAME_TRACE=1 FRAME_CYCLES=3400000000`, the full 2,478-frame run,
+before and after the column split. Same frame, everything else identical:
+
+```
+before   F1936 bd=0/190464 win=0,0,190464,0    ctrl=4000,2000
+after    F1936 bd=0/190464 win=2972,0,187492,0 ctrl=4000,2000
+```
+
+**Tilemap 0 wins 2,972 pixels where it won none.** That is the text pair drawing on
+the frames that previously blanked it.
+
+Across the whole run:
+
+| | before | after |
+|---|---|---|
+| blue frames (`bd` > 100k) | 7 | **7** |
+| mode-1 frame `F1900` wins | `11038,4648,174778,0` | **identical** |
+| tilemap 0 pixels, total | 46,641,138 | **47,250,016** |
+
+The 7 blue frames are the legitimate boot screen-clear in both, so nothing
+regressed. The mode-1 frames are byte-identical, which is the point: `win_vsplit`
+gates the two paths apart and mode 1 was already correct. The extra 608,878 pixels
+divided by 2,972 a frame is ~205 frames, against the 194 mode-2 frames measured —
+consistent.
+
+**Note what this does NOT fix.** The 0.45 s teardown is untouched: the game still
+restarts its screen build, so on hardware the text will draw on more frames but the
+underlying restart remains. Modes 2/3 was a real defect worth closing on its own;
+it is not the open one.
