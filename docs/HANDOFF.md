@@ -179,6 +179,40 @@ most basic instrument error of the session. **Always quote the run length with a
 figure** — this file already says so about `BOOT_CYCLES` scaling, and the same rule
 covers comparing two runs to each other.
 
+#### MEASURED, and this is where to start: our copro RAM reads return 0xff
+
+`make m1_boot BOOT_CYCLES=700000000 WATCH_PAGE=0xD2`:
+
+    d20000  1,120,224 reads
+    cyc 526042741  d20000 -> ff  be=11  pc=fed5a4
+    cyc 526043049  d20000 -> ff  be=11  pc=fed5a4
+    ... 1.1 M more, all identical
+
+**The reference's loop exits when this reads ZERO. Ours reads `ff` forever.** That is
+the whole reason the V60 never leaves `FED5A4`, and it is one value in one read path.
+
+`0xff` is the unmapped default, not RAM contents — so the read is not returning
+`ram[adr]`. **Every layer looks correct on inspection**, which is why this needs
+instrumenting rather than more reading:
+
+- `m1_main:410` — `to_copro = sel_copro_adr || sel_copro_ram || sel_copro_fifo`,
+  so a RAM read is routed to `copro_q`, not to the mux that ends in `16'hFFFF`.
+- `m1_decode` — `hi == 8'hd2 || hi == 8'hd3` asserts `sel_copro_ram`.
+- `m1_copro_if` `S_IDLE` — `if (v60_ram) st <= S_V60_RAM;` is checked **first**,
+  before the register/FIFO branch.
+- `S_V60_RAM` — `if (!we) q <= a1 ? ram_q[31:16] : ram_q[15:0];`
+
+So one of those is not doing what it reads as. **Next step: print
+`main.copro.st`, `main.copro.adr` and `main.copro.ram_q` at each `d20000` access.**
+That says in one run whether the FSM reaches `S_V60_RAM`, whether `adr` is the 0 the
+V60 wrote at `FED587`, and whether the RAM itself holds zero. Do not fix from the
+code-reading above — four layers all looked right and the value is still wrong.
+
+Worth checking early: whether the V60's `mov.h #0, D00000[PC]` at `FED587` actually
+lands in `adr` — `cmp.h #0, D00000[PC]` at `FED58F` reads it straight back, so if
+`adr` were not taking the write the reference's own check would fail too, which
+suggests it does.
+
 #### Also worth knowing
 
 - **`CLAUDE.md` is gitignored** (`.gitignore:122`). Several commit messages today say
