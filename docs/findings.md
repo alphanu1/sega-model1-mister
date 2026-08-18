@@ -1255,3 +1255,47 @@ exactly this symptom.
 better position than any of the four causes named and withdrawn today. The next
 step is a MAME tap on `tile_ram[0x5006]` and the row-mask words at the moment `ctrl`
 goes to zero, to see what the reference has set that we ignore.
+
+## The reference sets window mode ONCE; the board toggles it forever — 2026-08-18
+
+MAME, polling `tile_ram[0x5006]` every frame for 2,400 frames of attract:
+
+```
+f=600   ctrl==0 on 273 frames, window mode on 327
+f=1200  ctrl==0 on 273 frames, window mode on 927
+f=1800  ctrl==0 on 273 frames, window mode on 1527
+f=2400  ctrl==0 on 273 frames, window mode on 2127
+```
+
+**`n_zero` stops at 273 and never rises again.** Every `ctrl == 0` frame is inside
+the first ~300; from then on the reference holds window mode on permanently. It
+does not toggle.
+
+The board toggles it about three times a second, indefinitely, via the two routines
+at `ffe27a` and `ffe466`. Simulation converges the same way MAME does — the long
+runs settle at `ctrl=0000,2000` for 1,898 frames of 2,478.
+
+### So the compositing question was the wrong question
+
+The previous entry narrowed this to "when `ctrl=0` and tilemap 2 is empty, why do we
+paint blue when MAME does not", and listed the row mask, `vscr` bit 15 and priority
+as candidates. **All beside the point.** The reference is never in that state after
+boot, so there is nothing to compare against and nothing in the mixer to fix. Our
+renderer is faithfully drawing a state the game should have left.
+
+Note `vscr` bit 15 was already ruled out by arithmetic and this makes it moot:
+`ctrl` **is** tilemap 2's `vscr`, so a `ctrl` reading of `0x0000` means bit 15 is
+clear and the layer is enabled by definition.
+
+### What is actually left
+
+**Why does the board keep re-entering the `ctrl = 0` path when MAME and simulation
+both leave it after boot?** Hardware only — neither oracle reproduces it. Everything
+downstream of that is a symptom: the periodic blue, the missing text and the absent
+scrolling all follow from the game repeatedly restarting its screen build.
+
+What is already excluded by measurement, and should not be re-derived: the
+coprocessor (healthy, draining, executing during the blanks), its microcode and
+data ROM (complete, correct, verified byte for byte), the command FIFO, the SDRAM
+read phase (CL+2 is right, the others fail hard), the memory write path, a V60
+reset, the PC distribution (100% ROM0, matching the oracle), and input divergence.
