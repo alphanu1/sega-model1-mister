@@ -44,7 +44,22 @@ make v60_trace          # instruction streams, ours against MAME's
 9. **`dbg_pc` was published on entering `S_DECODE`**, above the interrupt check, so
    a preempted instruction's PC appeared in the trace as though it had run.
 
+10. **`tb_m1_boot` loaded the TGP microcode shifted by one word.** `uc_data` and
+   `uc_addr` were both assigned non-blockingly in the same cycle, so `prog[A]` got
+   `ucode[A-1]`; address 0 was right only because the address does not advance on
+   the first cycle. **Every TGP figure that bench printed before this was
+   meaningless.** `tb_m1_frame` drives the real `m1_rom_loader` and was unaffected,
+   so `v60_trace`'s results stand, as does the board (the hardware loader presents
+   address and data together, which is why row 02's checksum matched).
+
 ### Instruments built or repaired on 2026-08-18
+
+`make tgp_trace` (`tools/tgp_trace.sh`) is M0 exit criterion 2, armed at last: our
+TGP's retire stream diffed against MAME's tracer on `:tgp_copro`, over the real
+decapped microcode. It reuses `v60_collapse.py` unchanged. It found the loader bug
+above on its first run. It is shallow so far — our TGP retires only dozens of
+instructions per window because it waits on the input FIFO — so deepen it before
+calling the criterion met.
 
 `tools/v60_collapse.py` collapses periodic wait loops in a PC trace and reports the
 iteration counts instead of dropping them — without it, a two-address poll loop

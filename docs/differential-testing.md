@@ -151,7 +151,7 @@ Past a wait loop, also prefer **write traces** and targeted comparisons over the
 instruction stream, because a write trace tolerates timing differences that a PC
 stream does not.
 
-### Four artifacts this method produced, all withdrawn
+### Five artifacts this method produced, all withdrawn
 
 - **Collapsed loops.** Without `noloop` MAME prints `(loops for N instructions)` and
   the diff reports N phantom extras — read as a branch bug at instruction 83.
@@ -181,7 +181,15 @@ stream does not.
   shortest repeating period instead, and reports the iteration counts rather than
   dropping them.
 
-Each of those cost a wrong diagnosis, and **all four were the instrument, not the
+- **Stimulus, not observation.** `make tgp_trace`'s first run showed our TGP taking
+  a delay slot on `bsif`. The microcode ROM on disk was byte-for-byte identical to
+  the reference's program space, and `brif` was clean, so the sequencer was the only
+  suspect left. `tb_m1_boot` was **writing the microcode one word high** — see
+  `findings.md`. Printing the address the instruction was actually **fetched from**,
+  alongside the opcode, settled it in one run. When a trace and a ROM image
+  disagree, dump what the DUT actually fetched before suspecting either.
+
+Each of those cost a wrong diagnosis, and **all five were the instrument, not the
 design.** That is the shape to expect: a differential tool compares two things
 neither of which was built to be compared, and every mismatch in *how* they are
 observed shows up as a mismatch in *what* they did. Suspect the instrument first

@@ -2172,3 +2172,66 @@ Downstream state, for context: `TGP retires=48356 pc=0044`, `fifo_rd=1`,
 `TGP->V60 returns=0`. The reference's V60 collects results 1,433 times a frame. So
 the coprocessor producing nothing is now the nearest cause in front of the 2D
 question, and its own cause is microcode divergence rather than data.
+
+## FIXED: the boot bench loaded the TGP microcode one word out — 2026-08-18
+
+`make tgp_trace` — microcode-driven lockstep for the coprocessor, M0 exit criterion
+2 — found this on its **first run**, and the symptom pointed squarely at the CPU:
+
+    MAME:  003E: bsif alw #0x7e2   ->  07E2: lid #0x10
+    ours:  003e -> 003f -> 07e2
+
+A `bsif` apparently executing a delay slot. Three things made the CPU look like the
+only suspect: the streams matched for the preceding 48 instructions; `brif alw
+#0x10` a few instructions earlier branched cleanly with no extra instruction; and
+`build/rom/vr_tgp_prog.hex` was **byte-for-byte identical** to the reference's
+program space at those words, checked directly:
+
+    pc 003e  bf6407e2      pc 003f  40000000      pc 0040  41000200
+
+MAME's `bsif` has no delay slot (`case 2: pcs_push(); m_pc = data;`) and our
+`mb86233_seq` implements exactly that (`3'd2: begin pc_exec = data; do_push = 1; end`).
+The decode is right too: for `0xbf6407e2`, `subtype = (opcode>>17)&7 = 2`,
+`cond = (opcode>>20)&0x1f = 0x16` (always), `data = 0x07e2`.
+
+**The bench was writing the microcode to the wrong addresses.**
+
+```
+uc_data <= ucode[uc_addr];
+if (uc_we) uc_addr <= uc_addr + 11'd1;
+```
+
+Both non-blocking, so during any cycle `uc_addr` was already `A` while `uc_data`
+still held `ucode[A-1]`, and `m1_tgp` wrote `prog[A] = ucode[A-1]`. **Address 0 came
+out right by accident** — the address does not advance on the first cycle, because
+`uc_we` is still low — which is why instruction 1 executed correctly and every one
+after it came from the wrong word. That accident is what made the traces agree for
+48 instructions and hid the shift.
+
+What settled it in one run was adding the **fetch address and the opcode** to the
+trace rather than reasoning further:
+
+    TGPPC 0010 fetched_from=0010 ir=bf6e0000     <- hex word 0x0f, not 0x10
+
+`uc_data` is now combinational on `uc_addr`. With that, `003e` holds the `bsif` and
+branches straight to `07e2`, and the lockstep reports IDENTICAL.
+
+### Scope, and what it invalidates
+
+| bench | microcode loader | affected |
+|---|---|---|
+| `tb_m1_boot` | its own, broken | **yes** |
+| `tb_m1_frame` | drives the real `m1_rom_loader` | no — `v60_trace` stands |
+| `tb_m1_tgp.cpp` | sets address and data together | no |
+| hardware | `tgp_din`/`tgp_addr`/`tgp_wr` same cycle | no — hence row 02's checksum matching |
+
+**Every TGP figure `make m1_boot` ever printed came from a coprocessor running
+microcode from the wrong addresses** — `TGP retires=48356 pc=0044`, `fifo_rd=1`,
+`returns=0`, the lot. They were quoted in this session as evidence about the
+coprocessor's output side; they were evidence about nothing.
+
+This is the fifth divergence in two days that was the **instrument** rather than the
+design, and the first where the instrument was a testbench's **stimulus** rather
+than its observation. The others are in `docs/differential-testing.md`; the general
+rule earned here is narrower and worth stating on its own: **when a trace and a ROM
+image disagree, dump what the DUT actually fetched before suspecting either.**
