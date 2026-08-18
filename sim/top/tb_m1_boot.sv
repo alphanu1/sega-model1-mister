@@ -39,7 +39,18 @@ module tb_m1_boot #(
     // Every count this testbench prints scales with RUN_CYCLES. Quote the two
     // together — a set of figures recorded without its run length already read
     // as a regression once, and was not one.
-    parameter [7:0]   WATCH_PAGE = 8'hC0
+    parameter [7:0]   WATCH_PAGE = 8'hC0,
+
+    // Emit one line per TGP instruction retired, for tools/tgp_trace.sh to diff
+    // against MAME's own tracer on :tgp_copro. The counterpart of PCTRACE on the
+    // V60 side, and the thing M0 exit criterion 2 has always owed: what exists is
+    // a whole-CPU reference in lockstep over GENERATED instructions, which cannot
+    // catch the coprocessor running REAL microcode differently — and it is.
+    //
+    // retire/retire_pc come straight out of mb86233_core and are already what the
+    // core considers an instruction boundary, so this is not a new definition of
+    // "retired" invented for the trace.
+    parameter bit     TGPTRACE   = 0
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
@@ -79,12 +90,31 @@ wire rst_n_cpu = rs_cpu[1];
 always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys <= {rs_sys[0], 1'b1};
 
 // Streamed in while reset is asserted, one word per fast cycle.
+//
+// THIS LOADER SHIFTED THE WHOLE MICROCODE IMAGE BY ONE WORD. It read
+//
+//     uc_data <= ucode[uc_addr];
+//     if (uc_we) uc_addr <= uc_addr + 11'd1;
+//
+// with both assignments non-blocking, so during any cycle uc_addr was already A
+// while uc_data still held ucode[A-1], and m1_tgp wrote prog[A] = ucode[A-1].
+// Address 0 came out right BY ACCIDENT — the address does not advance on the
+// first cycle, because uc_we is still low — which is why the first instruction
+// executed correctly and every one after it came from the wrong word.
+//
+// It cost real time: `make tgp_trace` reported our coprocessor branching to
+// 0x07e2 one instruction late, and the microcode ROM on disk was byte-for-byte
+// identical to the reference, so the fault looked like a `bsif` bug in
+// mb86233_seq. The instruction at what we called 0x3f WAS the bsif; it had been
+// loaded one word high.
+//
+// uc_data is now combinational on uc_addr, so the word presented is always the
+// word for the address presented.
 always @(posedge clk) begin
     if (!rst_n) begin
         uc_we <= 1'b0; uc_addr <= '0;
     end else if (uc_addr != 11'd2047 || uc_we) begin
-        uc_we   <= 1'b1;
-        uc_data <= ucode[uc_addr];
+        uc_we <= 1'b1;
         if (uc_we) uc_addr <= uc_addr + 11'd1;
         if (uc_addr == 11'd2047 && uc_we) uc_we <= 1'b0;
     end
@@ -136,6 +166,30 @@ always @(posedge clk_cpu) begin
         if (tio_n <= 14)
             $display("BOOT:   TGP io %0d: %s %04h  waited %0d", tio_n,
                      tio_wr ? "W" : "R", tio_addr, tio_wait);
+    end
+end
+
+// ONE LINE PER TGP RETIRE. m1_tgp runs on `clk` in m1_main, which this bench
+// drives as clk_cpu, so the retire strobe is sampled in its own domain.
+integer tgptr_n = 0;
+// THE ADDRESS THE INSTRUCTION WAS ACTUALLY FETCHED FROM. retire_pc publishes
+// seq_pc, which is not necessarily the address `ir` came from — that is exactly
+// what is in question here, so capture it independently at S_FETCH (state 0)
+// rather than trusting either signal.
+reg [15:0] tgp_fetch_pc = 16'hffff;
+always @(posedge clk_cpu)
+    if (main.tgp.core.state == 4'd0) tgp_fetch_pc <= main.tgp.core.seq_pc;
+
+always @(posedge clk_cpu) begin
+    if (TGPTRACE && rst_n && main.tgp.retire && tgptr_n < 4000000) begin
+        // Extra fields after the PC on purpose: tgp_trace.sh takes field 2 as the
+        // PC and ignores the rest, so the diff still works while a bare eyeball
+        // gets the opcode and the branch decode that produced it.
+        $display("TGPPC %04h fetched_from=%04h ir=%08h br=%b sub=%0d cp=%b",
+                 main.tgp.retire_pc, tgp_fetch_pc, main.tgp.core.ir,
+                 main.tgp.core.d_branch, main.tgp.core.d_bsub,
+                 main.tgp.core.seq_cond_passed);
+        tgptr_n = tgptr_n + 1;
     end
 end
 
@@ -219,7 +273,10 @@ localparam string UCODEHEX = "build/rom/vr_tgp_prog.hex";
 reg [31:0] ucode [0:2047];
 reg        uc_we = 0;
 reg [10:0] uc_addr = 0;
-reg [31:0] uc_data = 0;
+// COMBINATIONAL, NOT REGISTERED. It used to be a reg assigned non-blockingly
+// alongside uc_addr, which shifted the whole microcode image by one word — see
+// the loader below.
+wire [31:0] uc_data = ucode[uc_addr];
 integer    uc_i;
 initial begin
     for (uc_i = 0; uc_i < 2048; uc_i = uc_i + 1) ucode[uc_i] = 32'h0;

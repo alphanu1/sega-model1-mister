@@ -81,7 +81,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace
 
 all: test
 
@@ -559,7 +559,7 @@ m1_boot:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
-	  -GWATCH_PAGE=$(WATCH_PAGE) \
+	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
@@ -568,7 +568,15 @@ m1_boot:
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
 
+# MICROCODE-DRIVEN LOCKSTEP FOR THE TGP — M0 exit criterion 2, finally armed.
+# Diffs our coprocessor's instruction stream against MAME's on the real decapped
+# microcode. Outside `make test` because it builds the whole boot bench and runs
+# MAME. See tools/tgp_trace.sh for what it already found.
+tgp_trace:
+	bash tools/tgp_trace.sh
+
 BOOT_CYCLES ?= 20000000
+TGPTRACE    ?= 0
 WATCH_PAGE  ?= 0xC0
 
 # Real boot code through the real video path, dumped as an image. This is the
