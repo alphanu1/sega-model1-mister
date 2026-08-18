@@ -67,6 +67,33 @@ COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
     'vr':       ['opr14742.bin', 'opr14743.bin'],
     'vformula': ['opr14742.bin', 'opr14743.bin'],
 }
+# THE TGP MICROCODE, on its own download index.
+#
+# m1_rom_loader routes index 1 to the coprocessor's program RAM rather than to
+# SDRAM, so it needs no offset inside the main stream — putting it at the
+# loader's old byte offset would have meant padding 25 MB of filler through the
+# HPS to deliver 8 KB.
+#
+# THIS WAS MISSING FROM THE GENERATOR while being present in the checked-in MRA,
+# so the first regeneration silently dropped it and the coprocessor lost its
+# program entirely. With no microcode the TGP never drains the command FIFO, the
+# FIFO fills at 16, and a full FIFO HALTS THE V60 — the overlay read
+# `02 000000` and `03 010000`, a stopped CPU rather than a stalling one.
+#
+# verify_mra.py cannot catch this: it only expands index 0.
+COPRO_PROG = {
+    'vr':         '315-5573.bin',
+    'vformula':   '315-5573.bin',
+    'vf':         '315-5724.bin',
+    'swa':        '315-5711.bin',
+    'swaj':       '315-5711.bin',
+    'wingwar':    '315-5711.bin',
+    'wingwaru':   '315-5711.bin',
+    'wingwarj':   '315-5711.bin',
+    'wingwar360': '315-5711.bin',
+    'netmerc':    '315-5711.bin',
+}
+
 COPRO_DAT_OFF = 0x600000
 COPRO_TBL_OFF = 0x800000
 
@@ -283,8 +310,24 @@ def emit(setname, chunks, cross_checked):
             out.append('        </interleave>')
             off += sz * 2
 
+    out += ['    </rom>']
+
+    prog = COPRO_PROG.get(setname)
+    if prog:
+        out += [
+            '',
+            '    <!-- Coprocessor microcode, on its own download index.',
+            '         m1_rom_loader routes index 1 to the TGP\'s program RAM rather than to',
+            '         SDRAM, so this needs no offset inside the main stream: putting it at the',
+            '         loader\'s old byte offset would have meant padding 25 MB of filler',
+            '         through the HPS to deliver 8 KB. 2048 words of 32 bits, little-endian,',
+            '         which is exactly the file. -->',
+            f'    <rom index="1" zip="{setname}.zip|{setname}.7z" md5="none">',
+            f'        <part name="{prog}"/>',
+            '    </rom>',
+        ]
+
     out += [
-        '    </rom>',
         '',
         '    <nvram index="255" size="256"/>',
         '',

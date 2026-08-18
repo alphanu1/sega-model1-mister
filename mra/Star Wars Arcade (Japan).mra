@@ -51,6 +51,16 @@
         <part repeat="524288">FF</part>
     </rom>
 
+    <!-- Coprocessor microcode, on its own download index.
+         m1_rom_loader routes index 1 to the TGP's program RAM rather than to
+         SDRAM, so this needs no offset inside the main stream: putting it at the
+         loader's old byte offset would have meant padding 25 MB of filler
+         through the HPS to deliver 8 KB. 2048 words of 32 bits, little-endian,
+         which is exactly the file. -->
+    <rom index="1" zip="swaj.zip|swaj.7z" md5="none">
+        <part name="315-5711.bin"/>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>

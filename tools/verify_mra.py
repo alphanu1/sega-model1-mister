@@ -161,6 +161,30 @@ def main():
     ap.add_argument('game', nargs='?', default='vr')
     args = ap.parse_args()
 
+    # INDEX 1, THE COPROCESSOR MICROCODE, checked separately because it is not
+    # part of the stream and nothing else looks at it.
+    #
+    # The generator did not emit this element for a while, so regenerating a
+    # hand-maintained MRA silently dropped it. With no microcode the TGP never
+    # drains the command FIFO, the FIFO fills at 16, and a full FIFO halts the
+    # V60 — a dead machine rather than a visibly broken one. Everything else here
+    # passed while that was true, because everything else here reads index 0.
+    root = ET.parse(args.mra).getroot()
+    ucode = [r for r in root.iter('rom') if r.get('index') == '1']
+    if not ucode:
+        print("FAIL no <rom index=\"1\"> — the TGP microcode is not sent at all")
+        return 1
+    parts = [p for p in ucode[0] if p.tag == 'part']
+    if len(parts) != 1:
+        print(f"FAIL index 1 has {len(parts)} parts, expected exactly 1")
+        return 1
+    with zipfile.ZipFile(args.zip) as zf:
+        u = load(zf, parts[0].get('name'))
+    if len(u) != 0x2000:
+        print(f"FAIL microcode is {len(u)} bytes, expected 8192")
+        return 1
+    print(f"index 1 microcode  {parts[0].get('name')}, {len(u):,} bytes  OK")
+
     got = expand(args.mra, args.zip)
     want = pack_stream(args.zip, args.game)
 
