@@ -594,6 +594,49 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     st_s2 <= st_s1;
   end
 
+  // ------------------------------------------------- where the CPU actually is
+  //
+  // Row 00 samples the PC once a frame at the same point, so it reads ffe59c
+  // whatever is happening and cannot distinguish a tight loop from a frame
+  // -synchronised wait. These answer the two questions it cannot.
+  //
+  // THE TEARDOWN EDGE. The screen rebuilds every 0.45 s on hardware and never
+  // after boot in simulation. ctrl for pair 2/3 drops 0x2000 -> 0x0000 at exactly
+  // that moment, so latching the PC there names the code doing it — traceable in
+  // the ROM, unlike a value sampled at an unrelated instant.
+  reg [23:0] pc_at_teardown;
+  reg [23:0] teardown_count;
+  reg        ctrl1_was_set;
+  always @(posedge clk_sys) begin
+    if (!rst_n) begin
+      pc_at_teardown <= '0; teardown_count <= '0; ctrl1_was_set <= 1'b0;
+    end else begin
+      ctrl1_was_set <= (dbg_ctrl[1][14:13] != 2'b00);
+      if (ctrl1_was_set && (dbg_ctrl[1][14:13] == 2'b00)) begin
+        pc_at_teardown <= pc_s2;
+        teardown_count <= teardown_count + 24'd1;
+      end
+    end
+  end
+
+  // A COARSE PC HISTOGRAM, two buckets, both WRAPPING so their rates can be
+  // compared by watching the digits move. Saturating counters cannot express
+  // "still going", which is the failure mode of three instruments today.
+  //
+  // ROM0 is the boot vector region the V60 maps at 0xf80000-0xffffff. Everything
+  // else — ROMX at 0x2xxxxx, the banked window at 0x1xxxxx, and RAM — is the
+  // game proper. If the board sits almost entirely in ROM0 it is looping in boot;
+  // if it is spread, it is running code simulation never reaches and "stuck in
+  // boot" is the wrong reading.
+  reg [23:0] cyc_rom0, cyc_other;
+  wire       in_rom0 = (pc_s2[23:19] == 5'b11111);   // 0xf80000-0xffffff
+  always @(posedge clk_sys) begin
+    if (!rst_n) begin
+      cyc_rom0 <= '0; cyc_other <= '0;
+    end else if (in_rom0) cyc_rom0  <= cyc_rom0  + 24'd1;
+    else                  cyc_other <= cyc_other + 24'd1;
+  end
+
   // FRAME RATE, MEASURED RATHER THAN ASSUMED.
   //
   // The core is meant to emit MAME's 57.52 Hz and MiSTer's own Information
@@ -714,10 +757,13 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // HALTS THE V60 — depth 16, measured — so the first would stall the CPU
   // periodically, which is the shape of the 0.45 s teardown on the board.
   assign dw[3]  = {8'h03, dbg_copro_pushes[11:0], dbg_copro_drains[11:0]};
-  assign dw[4]  = {8'h04, fa[2]};                  // fetch 2
-  assign dw[5]  = {8'h05, fa[3]};                  // fetch 3
-  assign dw[6]  = {8'h06, fa[4]};                  // fetch 4
-  assign dw[7]  = {8'h07, fa[5]};                  // fetch 5
+  // ROWS 04-07 WERE BOOT FETCH ADDRESSES 2 TO 5. They were captured once at boot
+  // and have read the same four constants ever since. The four questions below
+  // are the ones the board cannot currently answer.
+  assign dw[4]  = {8'h04, pc_at_teardown};         // PC when the screen tore down
+  assign dw[5]  = {8'h05, teardown_count};         // how many times it has
+  assign dw[6]  = {8'h06, cyc_rom0};               // cycles with PC in boot ROM
+  assign dw[7]  = {8'h07, cyc_other};              // cycles anywhere else
   assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
   // Tags 09 and 0A — the data words of fetches 4 and 5 — are GONE, to stay under
   // the 24-row ceiling. They were boot forensics: they proved ROM contents were

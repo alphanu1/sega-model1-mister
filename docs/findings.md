@@ -1083,3 +1083,43 @@ PC row samples at the same point every frame so `ffe59c` is a frame-synchronised
 wait, not necessarily a hang — the useful next instrument is a PC histogram or a
 capture of the PC at the moment the screen tears down, which the frame-synchronised
 sample cannot give.
+
+## The SDRAM read phase is settled: CL+2, and the others fail hard — 2026-08-18
+
+Swept from the OSD, `O[5:4]`, all four settings. **CL+3, CL+4 and CL+5 all hang on
+the test screen.** Only CL+2 boots.
+
+That is a useful negative. A marginal capture phase would show as occasional wrong
+data — rare bad fetches, wrong branches, the sort of thing that could explain the
+board diverging from simulation on identical code. This is not that: a wrong phase
+reads a *different word entirely*, the machine fails its own self-test, and the
+failure is immediate and total rather than intermittent.
+
+So the setting is right, its margin is not the question, and the periodic teardown
+is not a memory-timing effect. Do not sweep it again.
+
+Cost: one menu click, no build. It should have been run hours earlier — it was
+recorded as an available free experiment in `HANDOFF.md` and repeatedly deferred in
+favour of instrument builds.
+
+### Turning a V60 address from the overlay into ROM contents
+
+`tools/rom_at.py` takes an **SDRAM word address**, not a V60 address, and rejects
+a V60 one as "past the end of the image" — which reads like the address is wrong
+rather than in the wrong units. The map is `m1_decode.sv`'s packed layout:
+
+| V60 | stream | word address |
+|---|---|---|
+| `0x200000-0x2fffff` ROMX | `0x000000` | `(0x000000 + (a - 0x200000)) >> 1` |
+| `0xf80000-0xffffff` ROM0 | `0x100000` | `(0x100000 + (a - 0xf80000)) >> 1` |
+| `0x100000-0x1fffff` banked | `0x180000 + bank*0x100000` | `(that + (a - 0x100000)) >> 1` |
+
+So the PC the board reports on row `00`:
+
+```
+V60 0xffe59c -> word 0xbf2ce -> 885a 8975 8976 ea6a f4e4 0200 0070 e0e2
+```
+
+Real code in the boot ROM, and simulation sits at the same address during its own
+boot phase — so the address is not itself suspicious. What differs is that
+simulation leaves and the board does not.
