@@ -165,16 +165,63 @@ module m1_tgp #(
   // ------------------------------------------------------- data-space FIFOs
   // mb86233_mem forwards exactly two data addresses out here: 0x0100 reads the
   // inbound FIFO and 0x0400 writes the outbound one. Both are held until ack.
-  assign fifo_in_pop   = fifo_rd && fifo_in_valid;
-  assign fifo_out_push = fifo_wr && !fifo_out_full;
+  //
+  // ONE POP PER ACCESS, NOT ONE PER CYCLE.
+  //
+  // `fifo_in_pop = fifo_rd && fifo_in_valid` popped on EVERY cycle the request
+  // was held, and mb86233_core asserts mem_req in BOTH S_SRC and S_SRC_W — it has
+  // to, because a RAM read is registered and the address must stay put. A RAM read
+  // does not care: reading twice returns the same word. A FIFO read does. Every
+  // `mov (x1), b` therefore consumed TWO command words.
+  //
+  // Measured: the microcode at 0x00a5/0x00a6 is two consecutive FIFO reads, and
+  // both of the last two words were popped at pc 0x00a5 — the reference pops one at
+  // 0x00a5 and one at 0x00a6, then multiplies at 0x00a7 and writes its result. Ours
+  // ate the command and waited forever for a word the V60 had already sent.
+  //
+  // `popped` clears when the request drops, so it is one pop per access however
+  // long the access is held, and it fires on the first cycle the data is actually
+  // there — an access that arrives at an empty FIFO still pops when the V60 fills
+  // it. The word is latched because the head moves on as soon as it is taken.
+  logic        popped;
+  logic [31:0] pop_data;
+  logic        pushed;
+
+  assign fifo_in_pop   = fifo_rd && fifo_in_valid && !popped;
+  // AND THE SAME ON THE WRITE SIDE. mem_req is asserted in both S_DST and S_DST_W
+  // for the same reason, so every `mov p, (bx1)` pushed its result into the
+  // outbound FIFO TWICE — visible the moment the first correct result appeared,
+  // as `COPRO RESULT: 42520000` printed twice for one multiply. The V60 would then
+  // read a duplicate for its next result and go wrong a command later.
+  assign fifo_out_push = fifo_wr && !fifo_out_full && !pushed;
   assign fifo_out_data = fifo_wdata;
-  assign fifo_rdata    = fifo_in_data;
+  assign fifo_rdata    = popped ? pop_data : fifo_in_data;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      popped   <= 1'b0;
+      pop_data <= 32'd0;
+    end else if (!fifo_rd) begin
+      popped   <= 1'b0;
+    end else if (fifo_in_pop) begin
+      popped   <= 1'b1;
+      pop_data <= fifo_in_data;
+    end
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)               pushed <= 1'b0;
+    else if (!fifo_wr)        pushed <= 1'b0;
+    else if (fifo_out_push)   pushed <= 1'b1;
+  end
 
   // A read of an empty inbound FIFO must NOT acknowledge, or the microcode
   // proceeds on a stale word. MAME's generic_fifo blocks the same way; that is
-  // how the TGP waits for the V60 without a status register.
-  assign fifo_ack = fifo_rd ? fifo_in_valid
-                  : fifo_wr ? !fifo_out_full
+  // how the TGP waits for the V60 without a status register. Once the word has
+  // been taken the access is complete even though the FIFO may now be empty,
+  // which is what `popped` carries.
+  assign fifo_ack = fifo_rd ? (fifo_in_valid || popped)
+                  : fifo_wr ? (!fifo_out_full || pushed)
                   : 1'b0;
 
   // ------------------------------------------------------------- IO space
