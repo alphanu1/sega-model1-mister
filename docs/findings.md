@@ -2545,3 +2545,48 @@ Simulation predicts the deadlock, so a hardware round trip would only confirm wh
 already known and would look like a step backwards on screen. Fix the copro RAM path
 first. The `.rbf` is kept because its resource numbers are wanted — 29,536 ALM,
 452 M10K, +0.301 ns — but it is not an improvement to run.
+
+## The interlock fix turns a spin into an honest deadlock — 2026-08-18
+
+With the empty-outbound-FIFO stall in place, the boot sim changes character
+completely:
+
+| | before | after |
+|---|---|---|
+| V60 | spinning at `fed5a4` on stale data | **stalled at `ff9754`**, the `in.w` result read |
+| ifetch lines | 6,253,201 | **70,369** |
+| CPI | 30.5 | **516**, and 97% data-stalled |
+| TGP | parked `0x0492` | **stalled `0x00a5`**, `mov (x1), a` on an empty FIFO |
+| pushes | 71 | **4** |
+
+Both sides now stall where the hardware stalls, instead of one of them running on
+rubbish. **That is the fix working.** It is also a hang: 97% of CPU cycles hold a bus
+request that never acknowledges, so this build would freeze on the board rather than
+show sky and sea. Better to diagnose, worse to run.
+
+### The imbalance it exposes, stated precisely
+
+**The V60 believes it has sent a complete command after 4 pushes. The TGP is still
+waiting for input.** One of the two is wrong about how many words a command is, and
+the reference's own answer is already measured — `tools/mame_tgp_fifo.lua` shows one
+command as **five** words in and one out:
+
+    0x100 ->  04000000  00000000  01000000  3f400000  428c0000
+    0x400 <-  42520000
+
+So the next question is exactly: does our V60 push five words per command, and does
+our TGP consume five? Both are countable with instruments that now exist. Do not
+guess at it — a zero counter has been misread as a missing feature twice today
+already.
+
+### Also new, and mildly encouraging
+
+The TGP's io accesses have changed shape: six reads of io `0x0000` and then **io
+`0x0020`**, which is the **sincos unit** (`copro_io_map`, `0x0020-0x0023`). It was
+reading `0x8000`, the data ROM window, before. The coprocessor is reaching for a math
+unit for the first time.
+
+### Do not flash this build
+
+It deadlocks earlier than the 20:22 one and would freeze rather than draw. The 20:22
+build remains the hardware baseline.

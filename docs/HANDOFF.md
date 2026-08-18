@@ -145,6 +145,13 @@ reasons; speed is not one.
    8192 words. `copro RAM writes=0` meant the V60 never reached that code. It was
    named as the likely cause twice before anyone read the module.
 
+0. **NEXT: does a command carry five words, and does each side agree?** With the
+   interlock in, the V60 stalls at `ff9754` after **4 pushes** while the TGP stalls at
+   `0x00a5` wanting more. The reference's command is **five** words in, one out —
+   `04000000 00000000 01000000 3f400000 428c0000` -> `42520000`
+   (`tools/mame_tgp_fifo.lua`). Count both sides rather than guessing; a zero counter
+   has been misread as a missing feature twice in one day.
+
 0. **The deadlock this replaced, for reference.** With the ST
    and `brul` fixes in, the coprocessor round-trip works (`returns=20`, `pops=20`) and
    then both sides stop. Identical state at 600 M and 1.5 G cycles — `TGP retires=501
