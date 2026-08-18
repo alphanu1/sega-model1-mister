@@ -132,7 +132,20 @@ reasons; speed is not one.
 
 ### Open, in order
 
-0. **DEADLOCK: the TGP waits for a command, the V60 waits for a result.** With the ST
+0. **FIXED, pending confirmation: the copro FIFOs are a mutual interlock and we
+   implemented one half.** `model1_m.cpp:29-44` halts each processor when the FIFO it
+   reads is empty and releases it when the other side fills it. A push into a full
+   inbound FIFO correctly withheld its acknowledge; a **read of an empty outbound
+   FIFO did not** — it acknowledged and returned `fout_head`, stale on an empty FIFO.
+   The V60 took that for a result and span at `fed5a4` while the TGP waited at
+   `0x0492`. Only offset 0 stalls: offset 1 returns the high half of the already
+   latched word and must always complete. `m1_copro_if` 254 checks.
+
+   **The coprocessor RAM path is NOT missing** — `m1_copro_if` implements it in full,
+   8192 words. `copro RAM writes=0` meant the V60 never reached that code. It was
+   named as the likely cause twice before anyone read the module.
+
+0. **The deadlock this replaced, for reference.** With the ST
    and `brul` fixes in, the coprocessor round-trip works (`returns=20`, `pops=20`) and
    then both sides stop. Identical state at 600 M and 1.5 G cycles — `TGP retires=501
    pc=0492`, `fifo_rd=1` on an empty input FIFO, V60 spinning at `fed5a4` polling the
@@ -180,7 +193,21 @@ reasons; speed is not one.
    `MODEL1_SDRAM_SDC=1` and default off.
 3. M2 rasterizer, M4 sound.
 
-### On the board right now
+### On the board right now — 2026-08-18 evening
+
+`99b9857a048af436f91cdb52b5921475`, built 20:22, deployed to
+`/media/fat/_Arcade/cores/Model1.rbf`. **29,536 ALM, 452/553 M10K, 50 DSP, +0.301 ns.**
+
+What it shows: **sky and sea, stable, no blue flashing** — window mode is off
+(rows `15`/`16` = `000000`) and tilemap 2 covers the whole screen (row `13` =
+`02E800`). No text. The coprocessor is alive — row `03` reads 11 pushes against 11
+drains, the first hardware evidence the TGP takes commands — and then deadlocked, row
+`10` = `000492` matching the simulation exactly.
+
+**This build predates the FIFO interlock fix above.** It is a good baseline for the
+next hardware comparison, not a target to beat.
+
+### The previous "on the board right now"
 
 `3851ff10ac6a4839d01668bb9a0b4330` — confirmed working, sky and sea with the blue
 flash. `55965cd8d77b2a6443b9d141dea568f8` is the previous known-good fallback.
