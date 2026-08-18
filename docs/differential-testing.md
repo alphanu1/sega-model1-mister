@@ -107,3 +107,46 @@ Two habits follow:
   different address" turned out to be MAME's later iterations against our first.
 - **A saturating counter cannot show liveness.** Prefer wrapping counters for
   anything you will read off a screen to answer "is this still running".
+
+---
+
+## Where the instruction-trace method stops
+
+**At the first timing-dependent wait loop.** Beyond that point the PC streams
+legitimately differ and the diff reports a divergence that is not a bug.
+
+The boundary on this core is the I/O board handshake at instruction ~206,307:
+
+```
+FE03FD: mov.b  #1, C00040      ; V60 writes a command flag
+FE022C: test.b C00040
+FE0232: bne    FE022C          ; wait for the I/O board to clear it
+```
+
+MAME's Z80 takes real time — its census counted 36,131 polls of `c00040` — while
+`m1_ioboard` answers after `LATENCY = 64` cycles, whose own comment admits "the
+exact figure is not known". Our V60's first read already sees zero, so the loop runs
+once. Both complete the handshake; only the duration differs.
+
+**Two things follow.** Raise `LATENCY` and the traces will agree further, but that
+is tuning a number to match an emulator rather than hardware, so it needs a reason
+beyond the diff. And past this point, prefer **write traces** and targeted
+comparisons over the instruction stream, because a write trace tolerates timing
+differences that a PC stream does not.
+
+### Two artifacts this method produced, both withdrawn
+
+- **Collapsed loops.** Without `noloop` MAME prints `(loops for N instructions)` and
+  the diff reports N phantom extras — read as a branch bug at instruction 83.
+- **Branch-to-self loops.** Our trace logs the PC on CHANGE, so `dbr R0, FFA6BD[PC]`
+  — 5,000 iterations at one address — appears once while MAME logs all 5,000. Read
+  as a broken `dbr`. The script now collapses consecutive repeats on **both** sides;
+  the register check (`R0 = 0x1388` then `0x1387`) showed the loop was fine.
+- **Warm NVRAM.** MAME saves `nvram/` on exit and reloads it, so a reused directory
+  boots with battery-backed RAM the game has already written while our core is
+  always cold. That alone produced a "divergence at 197,251" chased as a CPU bug:
+  `0x40e8fe` read `0x0000` there and `0xffff` here, and with the file deleted MAME
+  reads `0xffff` too. The script now deletes `nvram/` every run.
+
+Each of those cost a wrong diagnosis. The method is sound; the instrument needs the
+same scepticism as the design.

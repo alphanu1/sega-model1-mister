@@ -2017,3 +2017,26 @@ against the oracle's map; the suite is green at the same count.
 
 That is the third time in one day a reference written from the same reading as the
 implementation hid a bug from its own test. See `docs/differential-testing.md`.
+
+## Trace-diff progress, and where it stops — 2026-08-18
+
+Memory agreement between our core and the reference, by first differing write:
+
+| after | first differing write |
+|---|---|
+| (start) | 28,698 |
+| `OUT` operand fix | 77,904 |
+| GLUE decode fix | **266,496** |
+
+The instruction-stream divergence moved 197,251 -> 205,156 -> 206,307 as the
+comparison itself was corrected (cold NVRAM, collapsed repeats).
+
+**It now stops at the I/O board handshake**, which is a timing difference rather
+than a fault — see `docs/differential-testing.md`. `m1_ioboard`'s `LATENCY = 64`
+answers faster than MAME's Z80, so the V60's poll loop runs once instead of many
+times. Both complete; only the duration differs.
+
+**Three divergences chased today turned out to be instrument artifacts**: collapsed
+loops in MAME's tracer, branch-to-self loops invisible to a log-on-change PC trace,
+and MAME's saved NVRAM making its boot warm while ours is cold. All three are now
+handled by `tools/v60_trace.sh` and documented.

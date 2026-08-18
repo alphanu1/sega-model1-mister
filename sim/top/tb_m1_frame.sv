@@ -627,6 +627,20 @@ always @(posedge clk_cpu) begin
 end
 
 // The GLUE irq_mask read that returns 0 where the reference returns 0xff.
+// The DPRAM handshake at 0xC00040. The V60 writes 1 and waits for the I/O board
+// to clear it; ours reads 0 immediately. Word index is addr[11:1] = 0x20.
+integer dp_n = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && core.main.m_ack && core.main.sel_dpram
+        && core.main.m_addr[11:1] == 11'h020 && dp_n < 10) begin
+        $display("DPRAM %s pc=%06h be=%02h wdata=%04h rdata=%04h lo=%02h",
+                 core.main.m_we ? "WR" : "RD", core.dbg_pc, core.main.m_be,
+                 core.main.m_wdata, core.main.m_rdata,
+                 core.main.rams.dpram_lo['h020]);
+        dp_n = dp_n + 1;
+    end
+end
+
 integer gw_n = 0;
 reg [7:0] gw_prev = 8'h00;
 always @(posedge clk_cpu) begin

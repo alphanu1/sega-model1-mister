@@ -35,9 +35,11 @@ make v60_trace          # instruction streams, ours against MAME's
 
 ### Open, in order
 
-1. **`make v60_trace` still diverges at instruction 197,251** — `cmp.h R0, FE[R11]`
-   / `be`, where the reference branches and we fall through. The write-trace diff is
-   the way in: it advanced from write 28,698 to 77,904 after the `OUT` fix.
+1. **`make v60_trace` diverges at ~206,307, and that one is TIMING, not a fault** —
+   the I/O board handshake at `0xC00040`. `m1_ioboard`'s `LATENCY = 64` answers
+   faster than MAME's Z80, so our poll loop runs once. Past this point use **write
+   traces**, which tolerate timing differences. Memory agreement is at write
+   **266,496** and rising with each fix (28,698 -> 77,904 -> 266,496).
 2. The SDRAM read path has never been analysed — Quartus 17.0's fitter segfaults on
    the multicycle it needs. Try 24.1, which is installed. Constraints are opt-in via
    `MODEL1_SDRAM_SDC=1` and default off.
