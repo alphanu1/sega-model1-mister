@@ -145,7 +145,15 @@ reasons; speed is not one.
    8192 words. `copro RAM writes=0` meant the V60 never reached that code. It was
    named as the likely cause twice before anyone read the module.
 
-0. **NEXT, and it is one word: our V60 pushes FOUR, the reference pushes FIVE.**
+0. **NEXT: a FIFO read at TGP pc `00a5` pops without retiring.** Our TGP consumes all
+   four command words — the same four the reference pushes, from the same PCs — but
+   never advances past `00a5`, where the reference does `00a5` then `00a6` and reaches
+   the multiply at `00a7`. Look at `fifo_ack` against `fifo_in_pop` in `m1_tgp`, and
+   at how `mb86233_mem` holds `ext_rd` across the memory states: a request held for
+   more than one cycle pops more than once, and an acknowledge on the wrong cycle
+   retires nothing.
+
+0. **WITHDRAWN: "our V60 pushes FOUR, the reference pushes FIVE."**
    Counted on both sides. Every word we push matches the reference in order; the
    missing one is **`00000000`**, second in the sequence, popped by the reference's
    TGP at the dispatch stage. The TGP is one word short of a command and waits; the

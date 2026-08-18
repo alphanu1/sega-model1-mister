@@ -2625,3 +2625,49 @@ wrong, and finding out which is a bounded question:
 Do not assume which. The last two "obvious" answers here — the coprocessor RAM path,
 and the FIFO not advancing — were both wrong, and both were reasoned from a counter
 rather than read from the design.
+
+## WITHDRAWN: "our V60 pushes four words, the reference pushes five" — 2026-08-18
+
+Wrong, and wrong in the way this file keeps warning about.
+
+`tools/mame_copro_pushes.lua` taps the reference's **writes** to `0xd80000` and names
+the PC of every push:
+
+    push 1  pc=fe69d3  0400_0000
+    push 2  pc=ff9741  0100_0000
+    push 3  pc=ff9749  3f40_0000
+    push 4  pc=ff9751  428c_0000
+
+**Four words, the same four we push, from the same instructions.** There is no
+`00000000` push.
+
+The `00000000` entries that finding rested on came from the FIFO **read** log
+(`tools/mame_tgp_fifo.lua`). Per `gen_fifo.cpp:109`, **a pop on an empty FIFO returns
+`T()` — zero** — and fires the stall callback. So those entries are stall-and-retry
+attempts, and that tap cannot distinguish "read a zero" from "read nothing and
+retried". They were read as data.
+
+Seventh instrument artifact of the day, and the first written *after* the rule about
+this was added to `docs/differential-testing.md`. Reading the rule is not the same as
+applying it.
+
+### What the comparison actually shows
+
+| | ours | reference |
+|---|---|---|
+| pop 1 | `04000000` @ TGP pc `0044` | `0044` |
+| pop 2 | `01000000` @ `004d` | `004d` |
+| pop 3 | `3f400000` @ `00a5` | `00a5` |
+| pop 4 | `428c0000` @ **`00a5`** | **`00a6`** |
+| next | **stalled at `00a5`** | `00a7 fml` then `00a8` writes `42520000` |
+
+The microcode at `00a5`/`00a6` is two consecutive FIFO reads — `mov (x1), a` then
+`mov (x1), b`. Ours consumes both words but **never advances past `00a5`**: it pops,
+does not retire, and comes back for another word. The reference retires each read and
+reaches the multiply.
+
+So the question is no longer about the protocol's length. It is: **why does a FIFO
+read at `00a5` pop without retiring?** Look at `fifo_ack` against `fifo_in_pop` in
+`m1_tgp`, and at how `mb86233_mem` holds `ext_rd` across the memory states — a
+request held for more than one cycle pops more than once, and an acknowledge that
+arrives on the wrong cycle retires nothing.
