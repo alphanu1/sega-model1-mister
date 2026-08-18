@@ -1,0 +1,109 @@
+# Differential testing against MAME
+
+**When behaviour diverges from the reference, diff against the oracle before
+theorising. This is the first tool, not the last.**
+
+On 2026-08-18 five causes were named and withdrawn in a day — the M10K crossing,
+a FIFO-full halt, the coprocessor data ROM, "stuck in boot", the SDRAM output
+paths — every one reasoned from a plausible mechanism and refuted by measurement.
+The same afternoon, differential tracing found **three real defects in about two
+hours**, two of them CPU bugs that had survived every test in the suite.
+
+`CLAUDE.md` already said "when something is unknown, run MAME, do not reason about
+it". This is what that looks like in practice.
+
+---
+
+## The tools
+
+### `make v60_trace` — instruction streams
+
+```
+make v60_trace                                # 2 emulated seconds
+make v60_trace SECONDS_RUN=5 CYCLES=200000000
+```
+
+MAME's debugger emits a disassembled instruction trace; our core emits the same PC
+stream from `dbg_pc`; the script aligns and diffs them and prints MAME's
+disassembly around the first divergence.
+
+**`noloop` is not optional.** Without it MAME's tracer collapses loops and prints
+`(loops for 620 instructions)`. Diffing against that reports phantom extra
+instructions in our trace and reads exactly like a CPU branch bug — that false
+finding was made here and withdrawn only when the trace file was read by eye. The
+script warns if the flag fails to take.
+
+### Write traces — memory effects
+
+When the instruction streams match but behaviour differs, the CPUs are executing
+the same code and producing different memory. Diff the writes:
+
+```
+# MAME: install_write_tap over the whole space, log "addr data pc"
+# ours: make m1_frame V60_WRTRACE=1, log the same
+# then: cmp the two
+```
+
+**Filter I/O-space writes from our side before comparing.** Our design routes
+`IN`/`OUT` to the same bus as memory, while MAME keeps a separate I/O space that a
+program-space tap cannot see. Leaving them in reports every `out` as a phantom
+extra write.
+
+### MAME Lua taps — everything else
+
+`install_read_tap` / `install_write_tap` on any device's address space, plus
+frame notifiers. Assign every tap and notifier to a **global** or the subscription
+is collected and the callback silently stops. Always pass `-skip_gameinfo` and
+`-autoboot_delay 0`. Run from a scratch directory; MAME drops `cfg/`, `nvram/` and
+`snap/` where it starts.
+
+`tools/mame_pcdist.lua`, `tools/mame_pconly.lua` and `tools/mame_ctrl_toggle.lua`
+are kept examples.
+
+---
+
+## What it found, and what the suites missed
+
+| Defect | Found by | Why the suite missed it |
+|---|---|---|
+| `OUT` operands transposed — the immediate became the address | write-trace diff | per-opcode fuzzing hands the instruction its operands the same way the implementation reads them, so both are wrong together |
+| GLUE decode aliased the whole `0xe0` page onto 16 bytes, clearing `irq_mask` | write-trace diff | `tb_m1_decode`'s reference model said the same thing the RTL did |
+| tilemap window mode blanked a pair instead of splitting it | census + oracle reread | `tb_m1_video`'s reference was written from the same misreading |
+
+The V60 defects survived **29/29 unit tests, every fuzz suite, a full `make test`,
+boot traces, frame renders and months of use.**
+
+---
+
+## The trap this keeps exposing
+
+**A reference model written from the same reading of the source as the
+implementation cannot catch a misreading of the source.** It only catches a slip
+between the two. Three of today's bugs were invisible to their own tests for
+exactly this reason, and each test kept passing with impressive numbers —
+466,714 checks, 380,929 checks — while agreeing with the bug.
+
+Two habits follow:
+
+1. **Derive reference models from the oracle's source, and cite the file and
+   function in a comment.** If the citation is wrong, the model is wrong, and a
+   future reader can check the citation.
+2. **Break the RTL on purpose and confirm the count moves.** A test that does not
+   fail when the logic is inverted is not testing that logic. Doing this found a
+   fixture feeding an input the game never presents, which had made the whole
+   window implementation untestable.
+
+---
+
+## Method notes that cost time
+
+- **Check what a counter increments on, not what its name suggests.** `dbg_fifo_pops`
+  counted the V60 reading results, not the TGP taking commands; its correct zero
+  was read as a stall and produced a whole wrong diagnosis.
+- **Compare like with like.** A PC-distribution comparison against MAME's *memory
+  accesses* is not the same measurement and reported a divergence that did not
+  exist.
+- **Beware comparing different points in a loop.** "The same instruction reads a
+  different address" turned out to be MAME's later iterations against our first.
+- **A saturating counter cannot show liveness.** Prefer wrapping counters for
+  anything you will read off a screen to answer "is this still running".

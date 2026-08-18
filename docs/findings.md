@@ -1980,3 +1980,40 @@ was first presented: that repair got **IN** right and left **OUT** with its oper
 transposed. The claim that `findings.md`'s "the V60 never reads the coprocessor
 back" needed correcting is also softer than stated — that entry measured the program
 space, and the header already noted `model1_io` maps the coprocessor's registers.
+
+## FIXED: the GLUE decode aliased a whole page onto sixteen bytes — 2026-08-18
+
+`m1_glue` decodes `a = addr[3:1]` — three bits, sixteen bytes — but `m1_decode`
+asserted `sel_glue` for the **entire 0xe0 page**. Everything above `0xe0000f`
+aliased back onto it.
+
+Boot writes a run of bytes upward from `0xe00010`:
+
+```
+FE0060: movea.b 10[R0], R1     ; R1 = 0xE00010
+FE006C: mov.b   #0, [R1+]      ; writes 0xE00012
+
+MAME:  e00012 0000 00ff fe006c    -> unmapped, discarded
+OURS:  glue a=1                   -> wrote 0xE00002, clearing irq_mask
+```
+
+The game sets `irq_mask` to `0xff` at `fe003f`; we cleared it at `fe006c`; the
+read-modify-write at `fe01f6`/`fe01fd` then wrote `0x00` where the reference writes
+`0xfd`. Traced by logging every change of `irq_mask` with the PC that caused it.
+
+MAME maps these individually, with no mirror:
+
+```
+e00000 irq_control_w   e00004 bank_w         e00008 timer_period_w
+e00002 irq_mask_r/w    e00006 timer_mode_w   e0000c timer_r
+```
+
+Fix: `sel_glue` additionally requires `addr[15:4] == 0`.
+
+**The testbench encoded the same wrong assumption** — `tb_m1_decode`'s reference
+model said `if (hi == 0xe0) return GLUE;`, the whole page — so implementation and
+reference were wrong together and **466,714 checks passed regardless**. Corrected
+against the oracle's map; the suite is green at the same count.
+
+That is the third time in one day a reference written from the same reading as the
+implementation hid a bug from its own test. See `docs/differential-testing.md`.
