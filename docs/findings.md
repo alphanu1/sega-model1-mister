@@ -965,3 +965,58 @@ field shows it instead. Needs a rebuild to reach the board.
 name suggested rather than for what it increments on, and a whole diagnosis was
 built on it. The previous instance was `dbg_layer_have` measuring reads while being
 read as content. Check the increment condition, not the identifier.
+
+## WITHDRAWN: the copro data ROM fixed the teardown — 2026-08-18
+
+It did not. Claimed after the MRA fix on a video analysis that was wrong twice
+over: the crop offset was changed for a differently framed video and ran off the
+right edge of the picture, and the blank test required texture to be exactly zero
+when blank frames read 1-2 from camera noise. It reported "0 blank frames in 466".
+The user said the flashing was still there every half second, and it is:
+
+```
+low-texture runs: (2,4) (16,18) (29,31) (43,45) (57,59) (70,72) (84,86) ...
+102 of 466 frames, period ~14 at 30 fps
+```
+
+Same 0.45 s period, same ~22% duty, unchanged by the data ROM.
+
+**Two crop mistakes in one day on the same instrument.** The rule that came out of
+the first one — measure texture in the picture region, not blueness, because the
+correct picture is also blue — is right, but a fixed crop is not portable between
+videos shot at different distances. Derive the picture region from the frame, or
+check the crop lands on the picture before trusting the result.
+
+### What the data ROM fix DID buy, measured
+
+The coprocessor is now provably healthy, which it was not before:
+
+| overlay | before | now |
+|---|---|---|
+| `02` microcode | `800 B9A` | `800 B9A` complete and correct |
+| `03` pushes / **drains** | `FFF 000` (mislabelled) | **`FFF FFF`** — thousands of commands taken |
+| `0F` retires | `FFFF` pinned | `0058D7` -> `00FEBD` over 5 s, churning |
+
+And all three hold **during the blank frames too**. So the coprocessor executes
+continuously and consumes work throughout the teardown, which eliminates it as a
+cause rather than leaving it a suspect. That is worth the fix on its own, and the
+microcode-dropped experiment separately proved the TGP does halt the V60 without a
+program — that reading was real.
+
+### The teardown's signature, unchanged
+
+```
+picture   16=002000  1A=FFFFFF  13=02E7FB  11=000005
+blank     16=000000  1A=000FFF  13=000000  all wins zero
+```
+
+During the blank, pair 2/3's `ctrl` reads 0 and **tilemap 2's content census reads
+000 while tilemap 3 still reads FFF**. Map 2 is words `0x2000-0x2fff` and map 3
+`0x3000-0x3fff`, so whatever happens is confined to one 4,096-word map.
+
+**And row `1B` reads `000` tilemap writes on every frame sampled**, blank or not,
+which does not sit with map 2's content changing. Either the writes come in a
+burst no sampled frame caught, or the content is not changing and the FETCH is
+reading somewhere else. That contradiction is the next thing to resolve, and it is
+resolvable in simulation — the blank state reproduces there (`ctrl=0000,0000`,
+`have=0,0,0,0`, `bd=190080`) at frames 328-332.
