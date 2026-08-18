@@ -99,6 +99,37 @@ about it.
    select — read as 1 forever. Now `rtl/video/m1_listctl.sv` with its own suite,
    including the bit-6 mirror and the two-frame toggle. Trace 26,283 -> 26,945.
 
+### The regression protocol for the V60 split
+
+The split is planned as **one change at a time, hardware-tested after each**. That is
+right, and a hardware round trip is 25 minutes of Quartus plus a person at the
+screen — so run the cheap gates first. Roughly twelve minutes of simulation catches
+essentially any behavioural regression before a build is spent.
+
+| gate | baseline to hold | cost |
+|---|---|---|
+| `make lint && make test` | every suite, 0 fails | ~2 min |
+| `bash tools/run_v60_tests.sh` | **29/29** | ~3 min |
+| `make v60_trace` | diverges at **26,945** — later is fine, EARLIER IS A REGRESSION | ~5 min |
+| `make m1_boot BOOT_CYCLES=100000000` | 819,812 instrs, 30.49 CPI, 65% bus-stalled | ~2 min |
+| `make area`, or `make quartus MOD=m1_integrated` | ALM delta | mins / 25 min |
+| `make rbf` + board | overlay rows `02`, `03`, `0B`, `11`-`14` | 25 min + a person |
+
+**`v60_trace`'s divergence point is the gate that matters for a refactor.** It diffs
+the instruction stream against MAME from reset, so a change that alters behaviour
+moves it earlier. Treat 26,945 the way the test counts in `CLAUDE.md` are treated:
+when a change legitimately moves it, update the number in the same commit.
+
+**Before dropping the FP group**, note what the `-2,984 ALM` figure does and does not
+rest on. `dbg_fp_trap` has never fired — but only through boot and attract, and it is
+inert by construction in a build that HAS FP, so that is not yet evidence. The honest
+gate is a long run under the no-FP define with `tb_m1_boot`'s explicit warning armed.
+
+**And throughput is not a reason for the split.** The V60 is ~6 CPI in isolation
+against the reference's implied ~8, and 65% of its cycles are bus stalls that live
+outside the core. Area, maintainability and sharing with the i960 project are good
+reasons; speed is not one.
+
 ### Open, in order
 
 0. **A measured CPI gap of 3.2x, and it is NOT in the V60.** The reference completes
