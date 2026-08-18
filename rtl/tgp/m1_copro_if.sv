@@ -277,16 +277,39 @@ module m1_copro_if #(
         S_IDLE: begin
           if (v60_ram) begin
             st <= S_V60_RAM;               // address presented this cycle
-          end else if (v60_acc && !(we && sel_fifo && a1 && fin_full)) begin
-            // Register or FIFO: no RAM, so complete now — EXCEPT a push into a
-            // full FIFO, which must not be acknowledged. The board halts the
-            // V60 there; withholding the acknowledge is the bus equivalent, and
-            // the access simply retries when the TGP drains.
+          end else if (v60_acc && !(we && sel_fifo && a1 && fin_full)
+                                 && !(!we && sel_fifo && !a1 && fout_empty)) begin
+            // Register or FIFO: no RAM, so complete now — EXCEPT the two ends of
+            // the interlock, neither of which may be acknowledged.
             //
-            // If the coprocessor never drains, the V60 hangs. That is the
-            // correct failure: MAME hangs it too, and a hung CPU with a stuck
-            // counter is diagnosable, whereas silently dropping the word gives
-            // a wrong picture and no counter moves at all.
+            // THE FIFOS ARE A MUTUAL HARDWARE INTERLOCK. model1_m.cpp:29-44 wires
+            // both of them symmetrically:
+            //
+            //   copro_fifo_in ->setup(16, TGP stalls on empty, TGP HALTED on
+            //                             empty, V60 HALTED on full)
+            //   copro_fifo_out->setup(16, V60 stalls on empty, V60 HALTED on
+            //                             empty, TGP HALTED on full)
+            //
+            // Each processor is halted when the FIFO it reads is empty and
+            // released when the other side fills it. Withholding the acknowledge
+            // is the bus equivalent: the access retries until the data is there.
+            //
+            // A PUSH INTO A FULL FIFO was already handled. A READ OF AN EMPTY ONE
+            // WAS NOT — it acknowledged and returned `fout_head`, which on an
+            // empty FIFO is stale. The V60 took that for a result, branched on it
+            // and span at `fed5a4` forever while the TGP sat at pc 0x0492 waiting
+            // for a command that was never going to come. Confirmed on hardware
+            // 2026-08-18: row 10 = 000492, row 00 parked in the poll loop.
+            //
+            // Only offset 0 stalls. Offset 1 returns the HIGH half of the word
+            // offset 0 already latched (`v60_copro_fifo_r`: offset 0 pops and
+            // returns the low half, offset 1 returns `m_v60_copro_fifo_r >> 16`
+            // without touching the FIFO), so it must always complete.
+            //
+            // If the coprocessor never produces, the V60 now hangs rather than
+            // spinning on stale data. That is the correct failure: MAME hangs it
+            // too, and a hung CPU with a stuck counter is diagnosable, whereas
+            // reading rubbish gives a wrong picture and no counter moves at all.
             if (we && sel_adr) begin
               if (be[0]) adr[7:0]  <= wdata[7:0];
               if (be[1]) adr[15:8] <= wdata[15:8];

@@ -304,6 +304,49 @@ int main(int argc, char** argv) {
     check(t.rd(Dut::RAM, 0) == 0xa5a5, "the TGP's contended write was lost");
   }
 
+  printf("test: an EMPTY outbound FIFO stalls the V60 instead of returning stale data\n");
+  {
+    // The other end of the same interlock, and the one that was missing.
+    // model1_m.cpp:37-44 wires copro_fifo_out symmetrically with copro_fifo_in:
+    // the V60 stalls and is HALTED when the FIFO it reads is empty, and is
+    // released when the TGP pushes.
+    //
+    // Without this the read acknowledged and returned `fout_head`, which on an
+    // empty FIFO is stale. The V60 took that for a result, branched on it, and
+    // span at fed5a4 forever while the TGP sat at pc 0x0492 waiting for a
+    // command — confirmed on hardware 2026-08-18, overlay row 10 = 000492.
+    Dut t;
+
+    // Offset 0 on an empty outbound FIFO must NOT be acknowledged.
+    t.d->sel_fifo = 1; t.d->sel_adr = 0; t.d->sel_ram = 0;
+    t.d->req = 1; t.d->we = 0; t.d->a1 = 0;
+    bool acked = false;
+    for (int i = 0; i < 12; i++) { t.tick(); if (t.d->ack) acked = true; }
+    check(!acked, "a read of an empty outbound FIFO was acknowledged");
+    t.idle();
+
+    // Push a result from the TGP side; the read must then complete.
+    t.d->fifo_out_push = 1; t.d->fifo_out_data = 0x11223344;
+    t.tick();
+    t.d->fifo_out_push = 0; t.idle();
+
+    uint16_t lo = t.rd(Dut::FIFO, 0);
+    check(lo == 0x3344, "the low half after the stall lifted is wrong");
+    uint16_t hi = t.rd(Dut::FIFO, 1);
+    check(hi == 0x1122, "the high half is wrong");
+
+    // OFFSET 1 MUST NEVER STALL. v60_copro_fifo_r's offset 1 returns the high
+    // half of the word offset 0 already latched and does not touch the FIFO, so
+    // it has to complete even with the FIFO empty — stalling it would hang the
+    // second half of every 32-bit read.
+    t.d->sel_fifo = 1; t.d->req = 1; t.d->we = 0; t.d->a1 = 1;
+    bool acked1 = false;
+    for (int i = 0; i < 8; i++) { t.tick(); if (t.d->ack) acked1 = true; }
+    check(acked1, "offset 1 stalled on an empty FIFO — it must not");
+    t.idle();
+    printf("  empty stalls offset 0, offset 1 always completes\n");
+  }
+
   printf("test: a full inbound FIFO stalls the V60 instead of dropping a word\n");
   {
     // The board's flow control: model1_m.cpp halts the V60 on
