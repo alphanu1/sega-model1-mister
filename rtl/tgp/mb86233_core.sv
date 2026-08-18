@@ -228,7 +228,44 @@ module mb86233_core (
     .cond_passed(seq_cond_passed), .unimplemented(seq_unimpl)
   );
 
-  assign st = {seq_zc1, seq_zc0, alu_st_out[29:0]};
+  // ST IS AN ARCHITECTURAL REGISTER, NOT A COMBINATIONAL VIEW OF THE ALU.
+  //
+  // This used to be `assign st = {seq_zc1, seq_zc0, alu_st_out[29:0]}`, and
+  // alu_st_out is combinational — `(s2_st & ~st_mask) | st_set`, where s2_st is
+  // st_in pipelined through ALU_LAT stages. So ST was carried in the ALU's
+  // pipeline registers and RECOMPUTED for whatever instruction happened to be in
+  // the ALU. A conditional branch immediately after an ALU op therefore read a
+  // corrupted ST.
+  //
+  // Found by `make tgp_trace` in the coprocessor's command-dispatch loop:
+  //
+  //   0048: subd       d=00000000  st=c0000002  zrd=1    correct
+  //   0049: brif !zrd  d=00000000  st=c0000008  zrd=0    ST changed under it
+  //
+  // subd sets ZRD on its zero result; the branch then cleared ZRD and set SGD
+  // before the condition was evaluated, so `!zrd` read true and the TGP spun in
+  // the loop forever — 41 iterations against the reference's one, which is why
+  // the coprocessor never got past dispatch and never wrote a result.
+  //
+  // MAME keeps m_st as state and updates it exactly once per instruction:
+  //   mb86233.cpp:201  m_st = F_ZRC|F_ZRD|F_ZX0|F_ZX1|F_ZX2|F_ZC0|F_ZC1;
+  //   mb86233.cpp:499  m_st = (m_st & ~m_alu_stmask) | m_alu_stset;
+  // That is what this now is. alu_out_valid marks the one cycle an ALU result
+  // retires, so flags update then and hold otherwise.
+  //
+  // ZC0/ZC1 (bits 31/30) stay with the sequencer, which owns the loop counters —
+  // see its header. Only bits 29:0 live here.
+  //
+  // Reset value is MAME's, minus the two the sequencer owns:
+  //   F_ZRC(0) | F_ZRD(1) | F_ZX0(27) | F_ZX1(28) | F_ZX2(29) = 0x38000003
+  logic [29:0] st_hold;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)              st_hold <= 30'h3800_0003;
+    else if (alu_out_valid)  st_hold <= alu_st_out[29:0];
+  end
+
+  assign st = {seq_zc1, seq_zc0, st_hold};
 
   // The AGU is shared between the two transfer sides, so it is driven from the
   // FSM's current step rather than hardwired to one of them.

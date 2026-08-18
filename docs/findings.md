@@ -2235,3 +2235,58 @@ design, and the first where the instrument was a testbench's **stimulus** rather
 than its observation. The others are in `docs/differential-testing.md`; the general
 rule earned here is narrower and worth stating on its own: **when a trace and a ROM
 image disagree, dump what the DUT actually fetched before suspecting either.**
+
+## FIXED: ST was not a register — the TGP's flags lived in the ALU pipeline — 2026-08-18
+
+`make tgp_trace`'s second use found this, and it explains why the coprocessor never
+produced anything.
+
+The command-dispatch loop reads a word from the input FIFO, masks it and compares:
+
+    0043: ldi #0x100, x1      the input FIFO in data space
+    0044: mov (x1), b
+    0045: mov bh, d
+    0046: lia #0x3f
+    0047: andd : mov $0xb, a
+    0048: subd
+    0049: brif !zrd #0x44     loop until the compare matches
+
+Our TGP went round 41 times where the reference goes round once. The FIFO word was
+right — `04000000`, the same word the reference reads — so the flag was wrong:
+
+    0048: subd       d=00000000  st=c0000002  zrd=1     correct, ZRD set
+    0049: brif !zrd  d=00000000  st=c0000008  zrd=0     ST CHANGED under the branch
+
+**The branch instruction recomputed ST before its own condition was evaluated.**
+
+    assign st = {seq_zc1, seq_zc0, alu_st_out[29:0]};      // what it was
+
+`alu_st_out` is combinational — `(s2_st & ~st_mask) | st_set`, where `s2_st` is
+`st_in` pipelined through `ALU_LAT` stages. So the architectural flags were being
+carried in the **ALU's pipeline registers** and recomputed for whatever instruction
+happened to be in the ALU. Any conditional branch immediately after a flag-setting
+ALU op read a corrupted ST.
+
+MAME keeps ST as state and updates it exactly once per instruction:
+
+    mb86233.cpp:201   m_st = F_ZRC|F_ZRD|F_ZX0|F_ZX1|F_ZX2|F_ZC0|F_ZC1;
+    mb86233.cpp:499   m_st = (m_st & ~m_alu_stmask) | m_alu_stset;
+
+`st_hold` is now that register, latched on `alu_out_valid`, reset to `0x38000003` —
+MAME's value minus ZC0/ZC1, which the sequencer owns.
+
+### Why the existing lockstep never caught it
+
+`tb_mb86233_core` reports `lockstep_regs=8000 diverged=0` **both before and after
+this fix.** Its 8,000 retires are *generated* instructions, and it never happened to
+put a conditional branch straight after a flag-setting ALU op with a zero result.
+That is the exact blind spot generated-instruction lockstep has and real microcode
+does not, and it is the whole argument for `make tgp_trace` in one datum. Do not read
+`diverged=0` there as coverage of the flag path.
+
+### What it cost
+
+The TGP could never leave command dispatch, so it never read a command, never
+computed and never wrote a result. Every conclusion drawn from `returns=0`,
+`V60 pops=0` and `copro RAM writes=0` was downstream of this. With the fix the
+lockstep advances from 71 instructions (spinning) to 77 (progressing).

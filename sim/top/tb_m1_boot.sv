@@ -185,10 +185,18 @@ always @(posedge clk_cpu) begin
         // Extra fields after the PC on purpose: tgp_trace.sh takes field 2 as the
         // PC and ignores the rest, so the diff still works while a bare eyeball
         // gets the opcode and the branch decode that produced it.
-        $display("TGPPC %04h fetched_from=%04h ir=%08h br=%b sub=%0d cp=%b",
-                 main.tgp.retire_pc, tgp_fetch_pc, main.tgp.core.ir,
-                 main.tgp.core.d_branch, main.tgp.core.d_bsub,
-                 main.tgp.core.seq_cond_passed);
+        // a/b/d as well: the command-dispatch loop at 0x44-0x49 compares a FIFO
+        // word against data RAM 0xb, and which of the two is wrong is not
+        // decidable from the PC stream. tgp_trace reads field 2 only, so extra
+        // fields cost nothing.
+        // ST too, and ZRD broken out (bit 1). The dispatch loop at 0x44-0x49 ends
+        // in `brif !zrd`, and our core takes that branch with d == 0 — so either
+        // ZRD is not set when it should be, or the condition is misread. Printing
+        // both settles which without reading any more RTL.
+        $display("TGPPC %04h ir=%08h a=%08h b=%08h d=%08h st=%08h zrd=%b",
+                 main.tgp.retire_pc, main.tgp.core.ir,
+                 main.tgp.core.dbg_a, main.tgp.core.dbg_b, main.tgp.core.dbg_d,
+                 main.tgp.core.dbg_st, main.tgp.core.dbg_st[1]);
         tgptr_n = tgptr_n + 1;
     end
 end
