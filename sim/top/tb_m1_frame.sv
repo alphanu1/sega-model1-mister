@@ -509,7 +509,7 @@ always @(posedge clk_cpu) begin
         && core.main.m_addr[15:1] >= 15'h4000) begin
         if (core.main.m_wdata !== ctrl23_prev
             || core.main.m_addr[15:1] !== last_w) begin
-            if (core.main.m_addr[15:1] == 15'h5006)
+            if (1'b0 && core.main.m_addr[15:1] == 15'h5006)
               $display("W5006 pc=%06h data=%04h", core.dbg_pc, core.main.m_wdata);
             ctrl23_prev <= core.main.m_wdata;
             last_w      <= core.main.m_addr[15:1];
@@ -564,10 +564,31 @@ integer lp_n = 0;
 always @(posedge clk_cpu) begin
     if (core.main.m_req && !core.main.m_we && core.main.m_ack
         && core.dbg_pc[23:8] == 16'hFE14) begin
-        if (lp_n < 40)
-            $display("LOOPRD pc=%06h addr=%06h data=%04h", core.dbg_pc,
+        if (lp_n < 0)
+            $display("SEQ %0d R pc=%06h a=%06h d=%04h", lp_n, core.dbg_pc,
                      {core.main.m_addr[23:1], 1'b0}, core.main.m_rdata);
         lp_n = lp_n + 1;
+    end
+end
+
+// V60 INSTRUCTION TRACE, to diff against MAME's own debugger trace.
+//
+// MAME's `trace <file>,maincpu` emits a disassembled instruction stream. This
+// emits the same PC stream from our core, so the FIRST DIVERGENT PC names the
+// instruction that behaves differently — which per-opcode fuzzing cannot find,
+// because it proves each instruction correct only for the state it was handed.
+//
+// The V60 arrived from the s32 project with a 29/29 unit suite and has never been
+// checked against the oracle on real code. Today's bug has the exact signature
+// that gap would produce: 400 consecutive identical memory accesses, then a branch
+// taken the other way.
+integer pctr = 0;
+reg [23:0] pc_prev = 24'hffffff;
+always @(posedge clk_cpu) begin
+    if (core.main.ce && core.dbg_pc !== pc_prev) begin
+        pc_prev <= core.dbg_pc;
+        if (pctr < 400000) $display("PCT %06h", core.dbg_pc);
+        pctr = pctr + 1;
     end
 end
 

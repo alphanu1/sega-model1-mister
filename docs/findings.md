@@ -1785,3 +1785,66 @@ It went from "the screen flashes blue" to a named stalled step in about an hour,
 after several hours of theorising had produced nothing but withdrawals.
 
 `CLAUDE.md` opens with exactly that rule.
+
+## V60 vs MAME, instruction by instruction: they diverge at 197,251 — 2026-08-18
+
+Built at the user's suggestion, after they asked why the V60 and TGP both have
+"verified per-opcode, never checked on real code" gaps.
+
+**Why those gaps exist**, honestly: per-opcode fuzzing is cheap to build and
+produces impressive counts — `mb86233_dec: checked=3,000,000` — and it only proves
+each instruction correct *for the state it was handed*. Lockstep on real code needs
+a shared memory model and identically stubbed peripherals, so it was written down as
+owed and never done. The V60 arrived from the s32 project with a 29/29 unit suite
+and this core is the first thing to run Virtua Racing through it. `CLAUDE.md` warns
+"do not let the green suite imply otherwise", and the warning was written and then
+not acted on.
+
+### The instrument
+
+MAME's debugger emits a full disassembled instruction trace:
+
+```
+trace vrfull.tr,maincpu,noloop
+```
+
+**`noloop` is essential.** Without it the tracer collapses loops — it printed
+`(loops for 620 instructions)` — and diffing against that reports 620 phantom extra
+instructions in our trace. That produced a confident, wrong claim of a V60
+conditional-branch bug at instruction 83, withdrawn when the trace file was read
+properly. The traces were identical there.
+
+Our side emits the same PC stream from `dbg_pc`. The diff is then mechanical.
+
+### The result
+
+**The first 197,250 instructions are identical.** Then:
+
+```
+FE0DCC: cmp.h   R0, FE[R11]
+FE0DD1: be      FE0E36
+
+MAME:  branch taken     -> FE0E36
+OURS:  falls through    -> FE0DD3
+```
+
+`R11 = 0x40e800`, so the operand is **`0x40e8fe`**, in NVRAM, and MAME reads
+**`0x0000`** there and branches.
+
+So either the memory operand differs or the compare's flags do. That is exactly the
+class of fault per-opcode fuzzing cannot reach, and the trace-diff found it in one
+run.
+
+**This connects to the NVRAM shift flagged earlier and left unproven**: our NVRAM
+window appeared offset by four bytes against the reference. If our `0x40e8fe` is
+non-zero, this is a data divergence rather than a CPU bug — and the earlier
+observation stops being a coincidence.
+
+### The tool is worth keeping
+
+Two commands and a diff, and it localised in one run what hours of hand-comparing
+access sequences did not. It applies unchanged to any future divergence, and the
+same approach is what the TGP's outstanding M0 exit criterion needs — noting that
+`sim/tgp/mb86233_ref.cpp` is a hand TRANSCRIPTION of MAME's `execute_run`, so even
+the existing TGP lockstep compares against a copy of the oracle rather than the
+oracle itself.
