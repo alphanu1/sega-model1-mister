@@ -408,6 +408,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_tram_writes [4];
   wire [11:0] dbg_ucode_words;
   wire [15:0] dbg_copro_pops;
+  wire [15:0] dbg_copro_drains;
   wire [15:0] dbg_ucode_csum;
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
@@ -459,7 +460,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_layer_have(dbg_layer_have),
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
-    .dbg_copro_pops(dbg_copro_pops)
+    .dbg_copro_pops(dbg_copro_pops),
+    .dbg_copro_drains(dbg_copro_drains)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -711,7 +713,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // TGP not taking the work, or taking it and returning nothing. A full FIFO
   // HALTS THE V60 — depth 16, measured — so the first would stall the CPU
   // periodically, which is the shape of the 0.45 s teardown on the board.
-  assign dw[3]  = {8'h03, dbg_copro_pushes[11:0], dbg_copro_pops[11:0]};
+  assign dw[3]  = {8'h03, dbg_copro_pushes[11:0], dbg_copro_drains[11:0]};
   assign dw[4]  = {8'h04, fa[2]};                  // fetch 2
   assign dw[5]  = {8'h05, fa[3]};                  // fetch 3
   assign dw[6]  = {8'h06, fa[4]};                  // fetch 4

@@ -165,6 +165,9 @@ module m1_main #(
   // brought out because pushes-without-pops and pops-without-returns are
   // different faults and the overlay could not tell them apart.
   output logic [15:0] dbg_copro_pops,
+  // The TGP taking a command — see m1_copro_if. dbg_copro_pops is the V60
+  // reading results back, which it never does; this is the live one.
+  output logic [15:0] dbg_copro_drains,
   output logic [2:0]  rom_bank
 );
 
@@ -404,6 +407,7 @@ module m1_main #(
     .dbg_ram_writes(dbg_copro_ram_writes),
     .dbg_fifo_pushes(dbg_copro_fifo_pushes),
     .dbg_fifo_returns(dbg_copro_returns), .dbg_fifo_pops(dbg_copro_pops),
+    .dbg_fifo_drains(dbg_copro_drains),
     .v60_stall(copro_v60_stall)
   );
 

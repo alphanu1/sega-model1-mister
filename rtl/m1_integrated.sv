@@ -176,7 +176,10 @@ module m1_integrated (
   output logic [15:0] dbg_ucode_csum,
 
   // Coprocessor command-FIFO pops — see m1_main.
-  output logic [15:0] dbg_copro_pops
+  output logic [15:0] dbg_copro_pops,
+
+  // The TGP taking a command — see m1_copro_if.
+  output logic [15:0] dbg_copro_drains
 );
 
   logic [14:0] vid_tram_addr;
@@ -277,6 +280,7 @@ module m1_integrated (
     .dbg_io_replies(dbg_io_replies),
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_copro_pops(dbg_copro_pops),
+    .dbg_copro_drains(dbg_copro_drains),
     .rom_bank(rom_bank)
   );
 

@@ -126,7 +126,15 @@ module m1_copro_if #(
   // tell "the coprocessor is not answering" from "the coprocessor answered and
   // the V60 did not like it", which are completely different problems.
   output logic [15:0] dbg_fifo_returns,
-  output logic [15:0] dbg_fifo_pops
+  output logic [15:0] dbg_fifo_pops,
+
+  // THE TGP TAKING A COMMAND. Counted because nothing counted it, and the gap
+  // produced a confident wrong diagnosis: dbg_fifo_pops above counts the V60
+  // reading RESULTS out of the output FIFO, which findings.md measured as never
+  // happening — 0 in 2,500 accesses — so its zero is correct behaviour and was
+  // read as "the coprocessor never drains its input". The two are opposite ends
+  // of the interface and only one of them was instrumented.
+  output logic [15:0] dbg_fifo_drains
 );
 
   localparam int AW = $clog2(RAM_WORDS);
@@ -236,7 +244,7 @@ module m1_copro_if #(
       q <= 16'hffff; ack <= 1'b0; served <= 1'b0;
       tgp_rdata <= '0; tgp_ack <= 1'b0;
       dbg_ram_writes <= '0; dbg_fifo_pushes <= '0;
-      dbg_fifo_returns <= '0; dbg_fifo_pops <= '0;
+      dbg_fifo_returns <= '0; dbg_fifo_pops <= '0; dbg_fifo_drains <= '0;
     end else begin
       ack     <= 1'b0;
       tgp_ack <= 1'b0;
@@ -249,7 +257,11 @@ module m1_copro_if #(
         if (dbg_fifo_returns != 16'hffff)
           dbg_fifo_returns <= dbg_fifo_returns + 16'd1;
       end
-      if (fifo_in_pop && !fin_empty) fin_rd <= fin_rd + 1'd1;
+      if (fifo_in_pop && !fin_empty) begin
+        fin_rd <= fin_rd + 1'd1;
+        if (dbg_fifo_drains != 16'hffff)
+          dbg_fifo_drains <= dbg_fifo_drains + 16'd1;
+      end
 
       case (st)
         S_IDLE: begin

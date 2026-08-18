@@ -922,3 +922,46 @@ present in simulation the whole time behind a push count too low to fill the FIF
 individually, and the core has **never been run in lockstep on real microcode**.
 A single wrong opcode on the path through `0x49` would produce exactly this and
 would be invisible to every test that currently passes.
+
+## WITHDRAWN: "the TGP never drains its command FIFO" — 2026-08-18
+
+Stated this morning as the diagnosis, from overlay row `03` reading `FFF 000`. It
+is wrong, and the counter is why.
+
+**`dbg_fifo_pops` counts the V60 reading RESULTS out of the OUTPUT FIFO**, not the
+TGP taking commands from the input one. It increments on `!we && sel_fifo && !a1`,
+advancing `fout_rd`. The TGP's own consumption is
+`if (fifo_in_pop && !fin_empty) fin_rd <= fin_rd + 1'd1` and **was not counted at
+all**.
+
+So a zero there is **correct behaviour**, and this file already said so: *"does the
+V60 read the coprocessor back — **never**, in 2,500 accesses."* The row was built
+on a wrong assumption about what the signal meant, and then its expected value was
+read as a fault.
+
+**The trace shows the opposite of the claim.** With the FIFO read strobe added:
+
+```
+F35  tgp=0/0/0043  frd=1   FIFO empty   correctly blocked on an empty FIFO
+F37  tgp=1/0/0049  frd=1   pushes=1     PC MOVED 0x43 -> 0x49
+```
+
+The TGP asserted its read, took the command, advanced, and is now blocked at `0x49`
+waiting for the next one — which is exactly right when only one command has been
+sent. Nothing is stuck.
+
+So the "full FIFO halts the V60" chain is unsupported. `FFF` is a saturating count
+of total pushes, not FIFO occupancy, and it does not mean full.
+
+**What still holds** from that episode: `010` — sixteen pushes, the exact FIFO
+depth — read after the microcode was accidentally dropped. With no program the TGP
+genuinely never drains, the FIFO genuinely fills, and the V60 genuinely halts. That
+reading was real; the one before it was not.
+
+**Fixed**: `dbg_fifo_drains` now counts `fifo_in_pop`, and overlay row `03`'s right
+field shows it instead. Needs a rebuild to reach the board.
+
+**The lesson is the same one twice in a day.** A counter was trusted for what its
+name suggested rather than for what it increments on, and a whole diagnosis was
+built on it. The previous instance was `dbg_layer_have` measuring reads while being
+read as content. Check the increment condition, not the identifier.
