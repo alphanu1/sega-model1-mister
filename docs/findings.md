@@ -1123,3 +1123,41 @@ V60 0xffe59c -> word 0xbf2ce -> 885a 8975 8976 ea6a f4e4 0200 0070 e0e2
 Real code in the boot ROM, and simulation sits at the same address during its own
 boot phase — so the address is not itself suspicious. What differs is that
 simulation leaves and the board does not.
+
+## WITHDRAWN: "the board never leaves boot" — ROM0 is where the game LIVES
+## — 2026-08-18
+
+MAME, tapped on the V60's program space and bucketed by region, 30 s of attract:
+
+```
+f=1800 total=240,967,154  rom0=89.7%  romx=0.3%  bank=0.3%  other=9.6%
+```
+
+**The real machine spends ~90% of its time in ROM0.** `0xf80000-0xffffff` holds
+`epr-14878a.4` and `epr-14879a.5` — the main program — not merely a boot vector.
+So a PC of `0xffe59c` says nothing about being stuck.
+
+And the comparison it rested on was worse than unsupported. Simulation's two states
+were read as "`ffe59c` = boot ROM" against "`fe02bc` = game code" — **both are
+inside ROM0**. Two addresses in the same ROM, presented as two different phases of
+execution. There was never a boot-versus-game distinction in that data.
+
+### What that does to the instrument just built
+
+Rows `06`/`07` count cycles in ROM0 against everything else, on the reading that
+"mostly ROM0" would mean a boot loop. That interpretation is dead. The rows are
+still worth having, but only **against this reference**: the real machine is
+`89.7 / 10.3`, so a board reading near that is behaving normally and one reading
+`99.9 / 0.1` is genuinely pinned. Without the oracle number the rows would have
+been read as damning whatever they said.
+
+Row `04` — the PC latched at the teardown edge — is unaffected and remains the
+useful one, because it names a specific instant rather than a distribution.
+
+### The rule this keeps proving
+
+`CLAUDE.md` says: when something is unknown, run MAME, do not reason about it. Four
+wrong causes today — the M10K crossing, the FIFO halt, the copro data ROM, and now
+this — every one reasoned from a plausible mechanism, and this one was refuted by a
+five-minute Lua script that could have been written at any point. The instrument
+was available the whole time.
