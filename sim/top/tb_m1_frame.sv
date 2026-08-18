@@ -485,6 +485,27 @@ task automatic tram_block_census;
     end
 endtask
 
+// WHO WRITES pair 2/3's ctrl, and with what.
+//
+// The board latches the PC when the RENDERER observes ctrl change, which is up to
+// a frame after the CPU wrote it — so the captured PC scatters and names nothing.
+// This catches the CPU's own write instead, in the CPU's own domain, which is the
+// event that matters. tile_ram word 0x5006 is pair 2/3's ctrl and also tilemap 2's
+// vscr; bits 14:13 select the window mode, and the teardown is that field going to
+// zero.
+reg [15:0] ctrl23_prev = 16'hffff;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && core.main.m_we && core.main.sel_tileram
+        && core.main.m_addr[15:1] == 15'h5006) begin
+        if (core.main.m_wdata !== ctrl23_prev) begin
+            $display("CTRL23 WRITE t=%0t pc=%06h data=%04h mode=%0d",
+                     $time, core.dbg_pc, core.main.m_wdata,
+                     core.main.m_wdata[14:13]);
+            ctrl23_prev <= core.main.m_wdata;
+        end
+    end
+end
+
 integer irq_acks = 0, irq_raises = 0;
 reg irq_n_d = 1;
 // The V60 takes an interrupt only when PSW bit 18, IE, is set — it resets clear

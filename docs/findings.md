@@ -1161,3 +1161,49 @@ wrong causes today — the M10K crossing, the FIFO halt, the copro data ROM, and
 this — every one reasoned from a plausible mechanism, and this one was refuted by a
 five-minute Lua script that could have been written at any point. The instrument
 was available the whole time.
+
+## The board's PC distribution is CORRECT — and row 04 cannot do its job
+## — 2026-08-18
+
+Board readings from the instrument build:
+
+```
+04  FFE46d, last three digits constantly changing
+05  001FAB, rising            ~8,100 teardowns, ~3/s over 43 minutes
+06  unreadable, churning fast
+07  000000, always
+```
+
+### 07 = 0 is right, not a fault
+
+The first reading of `07 = 000000` — zero cycles outside ROM0 — looked like a hard
+divergence from the MAME reference of 10.3%. It is not, and the reference was
+measuring something else: that tap counted **all program-space accesses**, data
+reads included, while rows `06`/`07` count **the PC**. Measured properly, sampling
+MAME's PC alone:
+
+```
+samples=3600  rom0=3600  other=0   0.00% outside ROM0
+```
+
+**The real machine's PC is 100% in ROM0 too.** The board matches the oracle
+exactly. That would have been the fifth wrong cause of the day, and the only thing
+that stopped it was checking that the two instruments measured the same quantity
+before comparing them.
+
+### Row 04 captures the wrong event
+
+It latches the PC when `dbg_ctrl[1]` changes — and `dbg_ctrl[1]` is latched by the
+**video renderer** when it reads tile RAM, once per layer per scanline. The CPU may
+have written `ctrl` up to a frame earlier. So the captured PC is wherever the CPU
+happens to be when the *renderer notices*, which is why it scatters across
+`FFE4xx` rather than naming one instruction.
+
+A design error, not a wiring one: the event is in the video domain and the question
+is about the CPU domain. The instrument that answers it watches the CPU's own write
+to tile RAM word `0x5006` — pair 2/3's `ctrl`, which is also tilemap 2's `vscr` —
+and latches the PC there.
+
+**Row 05 is sound** and worth keeping: ~8,100 teardowns at about 3 per second over
+43 minutes, which matches the observed flash rate and confirms the event is real
+and periodic rather than drifting.
