@@ -731,10 +731,14 @@ initial begin
              dbg_io_replies);
     $display("BOOT: sdram violations flags=%04h", v_flags);
     if (v_cyc > 0)
+        // DIVIDE BEFORE MULTIPLYING. `count * 100` overflows a 32-bit signed
+        // integer above ~21.5 M, and these counters reach 40 M on a 600 M-cycle
+        // run — the first version printed "data-stalled 40234185 (-1%)". The
+        // 100 M-cycle numbers happened to fit, which is worse than failing.
         $display("BOOT: CPU cycles %0d: data-stalled %0d (%0d%%), fetch-stalled %0d (%0d%%), either %0d (%0d%%)",
-                 v_cyc, v_dstall, (v_dstall * 100) / v_cyc,
-                 v_fstall, (v_fstall * 100) / v_cyc,
-                 v_anystall, (v_anystall * 100) / v_cyc);
+                 v_cyc, v_dstall, v_dstall / (v_cyc / 100),
+                 v_fstall, v_fstall / (v_cyc / 100),
+                 v_anystall, v_anystall / (v_cyc / 100));
     // ------------------------------------------------------ tile RAM census
     //
     // Is the missing 2D even IN the tile RAM? The picture on hardware shows the
