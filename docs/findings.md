@@ -1733,3 +1733,55 @@ same instruction, which is how this was narrowed in the first place.
 
 This supersedes the peripheral hunt: no peripheral answers differently, the game
 simply computes an address from state it built earlier.
+
+## ROOT CAUSE: the game's sequencer is stuck on step 0xfe105f — 2026-08-18
+
+NVRAM `0x40fffc` holds a **continuation pointer**: each step of the game's
+boot/attract sequence stores the address of the next step there. A write tap on it
+in the reference:
+
+```
+f=0  data=f000  pc=fe01e5      0x00fff000
+f=0  data=105f  pc=fe105c      0x00fe105f   <- ours reaches here too
+f=4  data=1065  pc=fe105f      0x00fe1065   <- MAME ADVANCES
+f=4  data=1068  pc=fe1065
+f=5  data=106b  pc=fe1068
+...  834 writes over 400 frames, ending at 0x00fe1387
+```
+
+**Ours is frozen at `0x00fe105f`**, the value written at frame 0. The reference
+completes that step in about four frames and walks hundreds more.
+
+So the sequencer stalls on one step, and everything visible follows from it:
+
+```
+step fe105f never completes
+  -> fe48d5 / fef3b5 never run
+  -> wram 0x501400 scroll table stays zero
+  -> ctrl written as 0x0000 / 0x2000 instead of an animating 0x2xxx
+  -> the blue flash (mode off) and nothing scrolling (field stuck)
+```
+
+The routine that step runs is the `fe14xx` loop, where the same instruction reads
+different addresses in the two machines:
+
+```
+MAME:  pc=fe14f3  addr=40b906 -> 0100      addr=40ba06 -> 0280
+OURS:  pc=fe14f3  addr=400006 -> 0080
+```
+
+**Next**: find what that step is waiting on. It completes in ~4 frames in the
+reference, so it is waiting for something that arrives — an interrupt, a
+coprocessor result, a counter, or a device flag — and does not arrive for us. The
+technique that got this far works here too: tap the same PC in both and compare.
+
+### How this was found, which is the transferable part
+
+Five causes were named and withdrawn today — the M10K crossing, the FIFO halt, the
+copro data ROM, "stuck in boot", the SDRAM output paths — every one reasoned from a
+plausible mechanism and refuted by measurement. What worked was **differential
+measurement against the oracle**: same instruction, same address, compare the two.
+It went from "the screen flashes blue" to a named stalled step in about an hour,
+after several hours of theorising had produced nothing but withdrawals.
+
+`CLAUDE.md` opens with exactly that rule.
