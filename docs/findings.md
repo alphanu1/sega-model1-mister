@@ -2353,3 +2353,52 @@ A `$display` block that tested `rst_n` under `posedge clk` tripped `SYNCASYNCNET
 resets to `S_FETCH` so it cannot be `S_RETIRE` in reset. Then the comment explaining
 that contained the word "verilator", which the linter read as a pragma and rejected
 with `BADVLTPRAGMA`. **Do not name the linter in a comment.**
+
+## FIXED: 0x680000 had no read handler — the display-list buffer select read 0xFFFF — 2026-08-18
+
+`make v60_trace` found this at instruction 26,283, once the identity-block fix had
+carried the trace past 25,682:
+
+    FF96F7: mov.h  680000, R0
+    FF96FE: test1  #6, R0
+    FF9701: be     FF970C        the reference takes it; we fell through
+
+`0x680000` is the display-list control register. `m1_decode` asserted `sel_listctl`
+and `m1_main` handled **writes only** — reads fell through the mux to
+`rdata_r <= 16'hFFFF`. So bit 6, the **display-list buffer select**, read as 1
+forever and we never followed the reference's double-buffer handshake.
+
+### It is not a plain latch
+
+From `model1_v.cpp`, three functions together define it:
+
+| | |
+|---|---|
+| `model1_listctl_r` (:1358) | offset 0 returns `listctl[0] \| 0x30` — bits 4 and 5 **forced set**; offset 1 is plain |
+| `set_current_render_list` / `get_list_number` (:1338, :1344) | when bit 2 is **clear**, bit 6 **mirrors bit 3** — software picks the buffer |
+| `end_frame` (:1351) | when bit 2 is **set**, bit 6 **toggles every second frame** — automatic double buffer |
+
+So a register that reads back what was written would still have been wrong.
+
+### Built as its own module, with its own suite
+
+`rtl/video/m1_listctl.sv` and `sim/video/tb_m1_listctl.cpp`, 26 checks, per hard
+rule 5 — rather than a few lines buried in `m1_main`, because the behaviour is not
+obvious and is worth testing exhaustively. The mirror is applied **combinationally
+on the read path** instead of by mutating the stored value on a schedule: MAME
+applies it inside the render functions, so it has always happened before anything
+reads the register, and doing it on read is the same observable behaviour without
+inventing a point in the frame to do it at.
+
+**The testbench computes its expectations from `model1_v.cpp` in its own
+`ref_read0()`** rather than from the RTL. That is deliberate after the
+identity-block lesson, where one reading became the RTL table, the testbench's
+expected values and the docs at once — and the testbench even carried a comment
+explaining why it was typed out separately, which did not help because it was still
+one reading.
+
+### Also visible in the same trace
+
+The loop census reports we spend far **less** time at `fe1433` than the reference —
+1,819 iterations against 9,546. That is the wait loop immediately before this code,
+so it is plausibly the same cause, and it is a useful confirmation signal.

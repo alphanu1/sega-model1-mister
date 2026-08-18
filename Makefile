@@ -38,6 +38,7 @@ SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/video/m1_diag.sv \
+  rtl/video/m1_listctl.sv \
   rtl/m1_mainram.sv rtl/m1_main.sv rtl/m1_integrated.sv \
   rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
@@ -59,6 +60,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
+  rtl/video/m1_listctl.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
 SRCS_m1_tile_mixer := rtl/video/m1_tile_mixer.sv
@@ -66,6 +68,7 @@ SRCS_m1_tile_fetch := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv
 SRCS_m1_video_timing := rtl/video/m1_video_timing.sv
 SRCS_m1_palette := rtl/video/m1_palette.sv
 SRCS_m1_diag := rtl/video/m1_diag.sv
+SRCS_m1_listctl := rtl/video/m1_listctl.sv
 SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv rtl/video/m1_palette.sv rtl/video/m1_video.sv
 SRCS_m1_raster_div := rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
@@ -81,7 +84,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace
 
 all: test
 
@@ -116,6 +119,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_video_timing) --top-module m1_video_timing
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_palette) --top-module m1_palette
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_diag) --top-module m1_diag
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_listctl) --top-module m1_listctl
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_video) --top-module m1_video
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_raster_div) --top-module m1_raster_div
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_raster_fill) --top-module m1_raster_fill
@@ -187,7 +191,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -267,6 +271,14 @@ test_diag:
 	  -GNWORDS=24 -CFLAGS -DNWORDS_CFG=24 \
 	  $(SRCS_m1_diag) sim/video/tb_m1_diag.cpp -o tb_diag24 --Mdir obj_diag24
 	./obj_diag24/tb_diag24
+
+# The display-list control register. Its own module and suite because it is not a
+# plain latch — the video hardware maintains bit 6 — and because it had no read
+# handler at all until v60_trace found the game testing that bit.
+test_listctl:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_listctl \
+	  $(SRCS_m1_listctl) sim/video/tb_m1_listctl.cpp -o tb_listctl --Mdir obj_listctl
+	./obj_listctl/tb_listctl
 
 test_video_timing:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_video_timing \
@@ -565,6 +577,7 @@ m1_boot:
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
 	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
+	  rtl/video/m1_listctl.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv
 	./build/m1boot/m1boot
 

@@ -328,6 +328,29 @@ module m1_main #(
     end
   end
 
+  // -------------------------------------------- display-list control register
+  //
+  // 0x680000-0x680003. This was decoded for writes and had NO READ HANDLER, so
+  // reads fell through the mux below and returned 0xFFFF — which makes bit 6, the
+  // display-list buffer select, read as 1 forever. `make v60_trace` caught it at
+  // instruction 26,283, where the game does `test1 #6` on it and branches.
+  //
+  // vblank_irq is the frame pulse. It is a level here, so the rising edge is what
+  // counts — tw_vb_d already tracks it for the tile census, so reuse that rather
+  // than add a second delay register that could disagree with it.
+  logic [15:0] listctl_q;
+  logic        listctl_sel;
+
+  m1_listctl u_listctl (
+    .clk(clk), .rst_n(rst_n),
+    .we(m_req & m_we & sel_listctl),
+    .offset(m_addr[1]),
+    .wdata(m_wdata), .be(m_be),
+    .rdata(listctl_q),
+    .frame_pulse(vblank_irq & ~tw_vb_d),
+    .list_sel(listctl_sel)
+  );
+
   // ------------------------------------------------------- I/O board
   // Answers the boot handshake through the DPRAM's far side. What it covers
   // and what it deliberately does not is in m1_ioboard.sv's header.
@@ -505,6 +528,7 @@ module m1_main #(
           else if (sel_colxlat) rdata_r <= cxlat_q;
           else if (sel_dpram)   rdata_r <= dpram_q;
           else if (sel_glue)    rdata_r <= glue_rdata;
+          else if (sel_listctl) rdata_r <= listctl_q;
           // sel_fifo_stat deliberately falls through: MAME's fifoin_status_r
           // returns a constant 0xFFFF and the default below already is that.
           // Everything the board does not decode, plus the regions this does
