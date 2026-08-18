@@ -37,12 +37,15 @@
 //
 // WHAT IS PARAMETERISED AND WHY
 //
-// The reply value and the turnaround delay are both unknown properties of the
-// real hardware, so per docs/rtl-conventions.md they are parameters rather than
-// guesses buried in the logic. Clearing the flag to zero is what boot has been
-// observed to accept; a real Z80 at 4 MHz would take microseconds to notice and
-// answer, and anything non-instant works, so the default is a plausible delay
-// rather than a measured one.
+// The reply value and the turnaround delay are both parameters rather than
+// guesses buried in the logic, per docs/rtl-conventions.md. Clearing the flag to
+// zero is what boot has been observed to accept.
+//
+// THE DELAY IS NOW MEASURED. It was a guess — 64 cycles, on the reasoning that
+// "a real Z80 at 4 MHz would take microseconds and anything non-instant works".
+// The reference says 38,577 us, once, and never again; the reasoning was wrong
+// in both magnitude and shape. See the LATENCY comment below for the numbers and
+// the instruments, and docs/io-board.md for the protocol they establish.
 module m1_ioboard #(
   // Byte address of the request/status flag inside the DPRAM. 0xc00040 on the
   // V60 bus is word address 0x20, low byte lane.
@@ -51,10 +54,36 @@ module m1_ioboard #(
   // What to write back. Zero clears the flag, which is what boot accepts.
   parameter logic [7:0]  REPLY = 8'h00,
 
-  // Cycles between seeing the request and answering it. Stands in for a 4 MHz
-  // Z80 noticing a mailbox; the V60 polls, so any non-zero value works and the
-  // exact figure is not known.
-  parameter int          LATENCY = 64,
+  // Cycles between seeing the request and answering it. MEASURED, not guessed —
+  // see tools/mame_iohandshake.lua and tools/mame_flag_state.lua.
+  //
+  // This was 64, with a comment saying "the V60 polls, so any non-zero value
+  // works and the exact figure is not known". Both halves of that were wrong,
+  // and running the reference answered it in minutes:
+  //
+  //   The V60 raises the flag at pc=fe03fd and polls it 36,308 times over
+  //   38,577.3 us before the Z80 clears it. That is 617,236 V60 cycles at
+  //   16 MHz, or 740,684 of this domain's at 19.2 MHz. It is not a mailbox
+  //   turnaround at all — it is the I/O board's Z80 powering up and running its
+  //   own self-test before it ever looks at the flag, which is why the figure is
+  //   enormous and why it happens exactly once.
+  //
+  //   AND AFTER BOOT THE FLAG IS NEVER CLEARED AGAIN. The V60 re-raises it once
+  //   a frame as a fire-and-forget doorbell and never reads it back: sampled
+  //   eight times a frame for 1,200 frames, it reads set in 1,194 of them and
+  //   clear only in the six frames of boot. We were clearing it every frame.
+  //
+  // ONE NUMBER REPRODUCES BOTH BEHAVIOURS, which is why there is no second
+  // parameter and no one-shot rule here. A request re-arms the counter (see
+  // `pending` below), the doorbell arrives every 333,913 cycles, and 333,913 is
+  // less than 740,684 — so once the game is running the count never expires and
+  // the flag stays set on its own. At boot the V60 raises it once and then only
+  // polls, so the count does expire and the single reply lands.
+  //
+  // A CONSEQUENCE FOR THE OVERLAY: `replies` now reaches 1 and stops, which is
+  // the healthy value rather than a stalled counter. docs/debug-overlay.md row
+  // 0B is corrected to say so.
+  parameter int          LATENCY = 740684,
 
   // PUBLISHING INPUT STATE INTO THE SHARED RAM
   //

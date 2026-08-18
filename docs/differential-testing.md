@@ -128,11 +128,23 @@ MAME's Z80 takes real time — its census counted 36,131 polls of `c00040` — w
 exact figure is not known". Our V60's first read already sees zero, so the loop runs
 once. Both complete the handshake; only the duration differs.
 
-**Two things follow.** Raise `LATENCY` and the traces will agree further, but that
-is tuning a number to match an emulator rather than hardware, so it needs a reason
-beyond the diff. And past this point, prefer **write traces** and targeted
-comparisons over the instruction stream, because a write trace tolerates timing
-differences that a PC stream does not.
+**RESOLVED, by measuring rather than tuning.** The concern above was that raising
+`LATENCY` to make the traces agree would be fitting a number to an emulator. It
+is not, because the reference can simply be asked: `tools/mame_iohandshake.lua`
+times the exchange at **38,577 us — 740,684 cycles of our 19.2 MHz domain** — and
+`tools/mame_flag_state.lua` shows the flag is then **never cleared again**, set in
+1,194 of 1,200 frames sampled. `LATENCY` is now that measurement, and the same
+number reproduces both behaviours because the once-a-frame doorbell re-arms the
+deadline faster than it expires. See `docs/io-board.md`.
+
+The general lesson is worth more than the fix: **a guessed constant in a
+peripheral produced a false CPU-bug report**, and it survived because the
+peripheral's behaviour was invisible to the game. When the diff points at a wait
+loop, measure the thing being waited on before suspecting the CPU.
+
+Past a wait loop, also prefer **write traces** and targeted comparisons over the
+instruction stream, because a write trace tolerates timing differences that a PC
+stream does not.
 
 ### Two artifacts this method produced, both withdrawn
 

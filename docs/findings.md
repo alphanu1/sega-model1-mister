@@ -2040,3 +2040,40 @@ times. Both complete; only the duration differs.
 loops in MAME's tracer, branch-to-self loops invisible to a log-on-change PC trace,
 and MAME's saved NVRAM making its boot warm while ours is cold. All three are now
 handled by `tools/v60_trace.sh` and documented.
+
+## The I/O board handshake, timed against the reference — 2026-08-18
+
+`m1_ioboard` waited `LATENCY = 64` cycles before clearing the flag at `0xc00040`,
+on the stated reasoning that "the V60 polls, so any non-zero value works and the
+exact figure is not known". Two Lua instruments — `tools/mame_iohandshake.lua` and
+`tools/mame_flag_state.lua` — replaced that with measurement:
+
+| | reasoning said | reference says |
+|---|---|---|
+| time to answer | "microseconds, anything non-instant works" | **38,577 us** = 617,236 V60 cycles = **740,684** of our 19.2 MHz domain |
+| how often | every request, forever | **once**, at boot, and never again |
+| flag after boot | cleared each frame | **left set** — 1,194 of 1,200 frames sampled |
+
+It is that long because it is not a mailbox turnaround: it is the I/O board's Z80
+powering up and running its self-test. The 36,308 polls the V60 makes during it
+account for essentially all 36,131 `c00040` reads in the earlier peripheral census.
+
+**One number reproduces both behaviours.** A request re-arms the deadline, the
+V60's doorbell arrives every 333,913 cycles, and 333,913 < 740,684 — so after boot
+the count never expires and the flag stays set on its own, while at boot the V60
+raises it once and only polls, so the single reply lands. No one-shot rule and no
+second parameter.
+
+**Why it mattered even though the game cannot see it.** The V60 never reads the
+flag after boot, so clearing it was invisible on screen. It was not invisible to
+`make v60_trace`: our V60 left the boot poll loop after one read where the
+reference loops 36,308 times, and the diff reported that as a divergence at
+instruction ~206,307, which was chased as a CPU bug. **A guessed constant in a
+peripheral produced a false CPU-bug report.** That is the argument for measuring
+peripherals whose behaviour the game cannot observe.
+
+Also found while checking the baseline: `m1_uart_tx` and its testbench existed with
+**no Makefile target at all**, so `make test` never ran them and `make lint` never
+saw them — while CLAUDE.md's baseline listed `m1_uart_tx: checks=69` as though it
+had. Now wired in. The module stays instantiated nowhere by intent; it is parked
+for hardware monitoring if that is ever needed.

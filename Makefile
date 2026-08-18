@@ -45,6 +45,7 @@ SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
 SRCS_m1_glue := rtl/io/m1_glue.sv
 SRCS_m1_ioboard := rtl/io/m1_ioboard.sv
+SRCS_m1_uart_tx := rtl/io/m1_uart_tx.sv
 SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
 # Deferred (=), not immediate (:=): SRCS_mb86233_core is defined further down,
 # and := would expand it to nothing here.
@@ -80,7 +81,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace
 
 all: test
 
@@ -108,6 +109,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_decode) --top-module m1_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_glue) --top-module m1_glue
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_ioboard) --top-module m1_ioboard
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_uart_tx) --top-module m1_uart_tx
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_decode) --top-module m1_tile_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_mixer) --top-module m1_tile_mixer
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_fetch) --top-module m1_tile_fetch
@@ -185,7 +187,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -317,16 +319,37 @@ test_copro_if:
 	  --Mdir obj_copro_if
 	./obj_copro_if/tb_copro_if
 
+# BUILT TWICE, at LATENCY 64 and at the measured 740,684 — the same reason
+# bw_monitor and m1_diag are built twice. The narrow build cannot reach the 20-bit
+# deadline counter the real figure needs, and it cannot express the property the
+# measurement establishes at all: a doorbell arriving every 333,913 cycles only
+# outruns a deadline that is longer than that. Keep -GLATENCY and -DLATENCY_CFG
+# equal, and keep the wide one equal to the module's default.
 test_ioboard:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
-	  -GPUBLISH_INPUTS=0 \
+	  -GPUBLISH_INPUTS=0 -GLATENCY=64 -CFLAGS -DLATENCY_CFG=64 \
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard --Mdir obj_ioboard
 	./obj_ioboard/tb_ioboard
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
-	  -GPUBLISH_INPUTS=1 \
+	  -GPUBLISH_INPUTS=0 -GLATENCY=740684 -CFLAGS -DLATENCY_CFG=740684 \
+	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard_slow \
+	  --Mdir obj_ioboard_slow
+	./obj_ioboard_slow/tb_ioboard_slow
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
+	  -GPUBLISH_INPUTS=1 -GLATENCY=64 -CFLAGS -DLATENCY_CFG=64 \
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_iopublish.cpp -o tb_iopublish \
 	  --Mdir obj_iopublish
 	./obj_iopublish/tb_iopublish
+
+# WIRED IN LATE. This module and its testbench were written during the UART
+# investigation and never given a target, so `make test` did not run them and
+# `make lint` did not see them — while CLAUDE.md's baseline listed their results
+# as though it had. An untested module that looks tested is the worst of the three
+# states, so the target exists even though nothing instantiates m1_uart_tx yet.
+test_uart_tx:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_uart_tx \
+	  $(SRCS_m1_uart_tx) sim/io/tb_m1_uart_tx.cpp -o tb_uart_tx --Mdir obj_uart_tx
+	./obj_uart_tx/tb_uart_tx
 
 test_decode:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_decode \

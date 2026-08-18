@@ -35,11 +35,17 @@ make v60_trace          # instruction streams, ours against MAME's
 
 ### Open, in order
 
-1. **`make v60_trace` diverges at ~206,307, and that one is TIMING, not a fault** —
-   the I/O board handshake at `0xC00040`. `m1_ioboard`'s `LATENCY = 64` answers
-   faster than MAME's Z80, so our poll loop runs once. Past this point use **write
-   traces**, which tolerate timing differences. Memory agreement is at write
-   **266,496** and rising with each fix (28,698 -> 77,904 -> 266,496).
+1. **`make v60_trace` — re-run it.** It diverged at ~206,307 on the I/O board
+   handshake at `0xC00040`, which turned out to be a **guessed constant in a
+   peripheral, not a CPU fault**: `m1_ioboard`'s `LATENCY` was 64 cycles where the
+   reference takes **740,684** (38,577 us, measured — `tools/mame_iohandshake.lua`),
+   so our poll loop ran once where MAME's runs 36,308 times. `LATENCY` is now the
+   measured figure, so the trace should carry past this point; **the next divergence
+   it reports has not been looked at yet.** Memory agreement is at write **266,496**
+   and rising with each fix (28,698 -> 77,904 -> 266,496).
+
+   When the diff next points at a wait loop, measure the thing being waited on
+   before suspecting the CPU. That mistake cost a session here.
 2. The SDRAM read path has never been analysed — Quartus 17.0's fitter segfaults on
    the multicycle it needs. Try 24.1, which is installed. Constraints are opt-in via
    `MODEL1_SDRAM_SDC=1` and default off.

@@ -719,3 +719,65 @@ analog channel count varies from two (`netmerc`) to five (`swa`). That makes the
 per-game part a mux on the bit packing, selectable from the MRA, rather than an
 RTL change per title. Not worth building until there is a second game, and the
 others need the TGP and the rasterizer first regardless.
+
+---
+
+## How long the board takes to answer, measured — 2026-08-18
+
+`m1_ioboard` waited `LATENCY = 64` cycles before clearing the flag, and its own
+comment said "the V60 polls, so any non-zero value works and the exact figure is
+not known". Both halves of that were wrong, and two Lua instruments settled it in
+minutes: `tools/mame_iohandshake.lua` times the exchange from the V60's bus, and
+`tools/mame_flag_state.lua` samples the flag byte directly.
+
+### The boot handshake takes 38.6 milliseconds
+
+    hs 1  frame 6  cmd=01   38577.3 us = 617,236 V60 cycles  polls=36308
+
+One handshake in 1,800 frames. 38,577 us is **740,684 cycles of our 19.2 MHz
+domain** against the 64 we used — a factor of 11,600. And the 36,308 polls
+account for essentially all 36,131 reads of `c00040` in the earlier census: that
+single boot exchange *is* the traffic.
+
+It is that long because it is **not a mailbox turnaround at all**. It is the I/O
+board's Z80 powering up and running its own self-test before it ever looks at the
+flag. That is also why it happens exactly once.
+
+### After boot the flag is NEVER cleared again
+
+Sampled eight times a frame for 1,200 frames:
+
+| samples reading | frames |
+|---|---|
+| non-zero (set) | **1,194** |
+| zero (clear) | 6 — the boot frames only |
+
+The V60 writes `01` to the flag at `pc=fe03fd` once per frame — 1,794 times in
+1,800 frames — and **never reads it back**: all 36,308 reads fall inside the first
+handshake. So after boot the flag is a fire-and-forget doorbell, and the board
+leaves it set. We were clearing it every frame.
+
+### One number reproduces both behaviours
+
+There is no one-shot rule in `m1_ioboard` and no second parameter, because none
+is needed. A request re-arms the deadline; the doorbell arrives every 333,913
+cycles; 333,913 < 740,684. So once the game is running the count never expires and
+the flag stays set by itself, while at boot the V60 raises it once and only polls,
+the count does expire, and the single reply lands. The measured number *is* the
+protocol.
+
+`test_ioboard` is built twice for this, at 64 and at 740,684 — the narrow build
+cannot reach the 20-bit deadline counter, and it cannot express the steady-state
+property at all, since a doorbell only outruns a deadline longer than itself. The
+narrow build asserts the *opposite* behaviour, so the difference the number makes
+is on record rather than implied.
+
+### Why it was worth fixing even though nothing on screen changes
+
+The V60 never reads the flag after boot, so clearing it was invisible. What it was
+not invisible to was `make v60_trace`: our V60 left the boot poll loop after one
+read where the reference loops 36,308 times, and the instruction-stream diff
+reported that as a divergence at instruction ~206,307. A session went into
+chasing it as a CPU bug. **A guessed constant in a peripheral produced a false
+CPU-bug report** — which is the argument for measuring the peripheral even when
+its behaviour is unobservable to the game.

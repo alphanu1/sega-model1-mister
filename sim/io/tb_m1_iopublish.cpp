@@ -39,6 +39,17 @@ static const int BASE   = 0x00;
 static const int NBYTES = 15;
 static const int PASS   = NBYTES * 2048 + 4096;   // a full pass, plus slack
 
+// This binary is built with a SHORT handshake deadline on purpose. The module's
+// real default is 740,684 cycles — measured off the reference, see
+// rtl/io/m1_ioboard.sv — and the one handshake test in this file is about port
+// ARBITRATION against the input sweep, not about the deadline's length. Waiting
+// out the real figure here would add 740k cycles to prove nothing extra;
+// test_ioboard covers the deadline itself, at both widths.
+#ifndef LATENCY_CFG
+#define LATENCY_CFG 64
+#endif
+static const long LAT = LATENCY_CFG;
+
 static long checks = 0, fails = 0;
 static void check(bool ok, const char* what) {
   checks++;
@@ -216,7 +227,7 @@ int main(int argc, char** argv) {
     t.d->v60_req = 0; t.d->v60_we = 0; t.d->v60_sel_dpram = 0;
 
     long answered = -1;
-    for (long i = 0; i < 20000; i++) {
+    for (long i = 0; i < LAT + 20000; i++) {
       t.tick();
       if (t.d->replies == 1) { answered = i; break; }
     }
