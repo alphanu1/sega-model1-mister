@@ -626,6 +626,32 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// The GLUE irq_mask read that returns 0 where the reference returns 0xff.
+integer gw_n = 0;
+reg [7:0] gw_prev = 8'h00;
+always @(posedge clk_cpu) begin
+    // Every CHANGE of irq_mask, with the PC — it reaches 0xff and is zero by the
+    // time the game reads it back.
+    if (core.main.glue.irq_mask !== gw_prev && gw_n < 20) begin
+        $display("IRQMASK %02h -> %02h at pc=%06h (sel_glue=%0d we=%0d a=%0d be=%02h)",
+                 gw_prev, core.main.glue.irq_mask, core.dbg_pc,
+                 core.main.sel_glue, core.main.m_we, core.main.m_addr[3:1],
+                 core.main.m_be);
+        gw_n = gw_n + 1;
+    end
+    gw_prev <= core.main.glue.irq_mask;
+end
+
+integer g_n = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && !core.main.m_we && core.main.m_ack
+        && core.main.m_addr[23:1] == 23'h700001 && g_n < 8) begin
+        $display("GLUERD pc=%06h rdata=%04h irq_mask=%02h",
+                 core.dbg_pc, core.main.m_rdata, core.main.glue.irq_mask);
+        g_n = g_n + 1;
+    end
+end
+
 integer irq_acks = 0, irq_raises = 0;
 reg irq_n_d = 1;
 // The V60 takes an interrupt only when PSW bit 18, IE, is set — it resets clear

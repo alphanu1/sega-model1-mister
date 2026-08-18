@@ -69,7 +69,16 @@ static Sel ref_sel(uint32_t a) {
   if (hi == 0xd2 || hi == 0xd3) return COPRO_RAM;   // mirror 0x1fffc
   if (hi == 0xd8 || hi == 0xd9) return COPRO_FIFO;  // mirror 0x1fffc
   if (hi == 0xdc || hi == 0xdd) return FIFO_STAT;   // mirror 0x1fffc
-  if (hi == 0xe0) return GLUE;
+  // GLUE IS SIXTEEN BYTES, NOT A PAGE. MAME maps e00000..e0000f individually and
+  // nothing else in the page, with no mirror:
+  //   e00000 irq_control_w  e00004 bank_w       e00008 timer_period_w
+  //   e00002 irq_mask_r/w   e00006 timer_mode_w e0000c timer_r
+  //
+  // This model said the whole 0xe0 page, matching the RTL, so both were wrong
+  // together and 466,714 checks passed anyway. Boot writes a run of bytes from
+  // 0xe00010 upward and 0xe00012 aliased onto 0xe00002, clearing irq_mask right
+  // after the game set it — found by diffing our write trace against MAME's.
+  if (hi == 0xe0 && (a & 0xfff0) == 0) return GLUE;
   return NONE;
 }
 

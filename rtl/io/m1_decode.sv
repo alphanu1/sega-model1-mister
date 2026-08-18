@@ -183,7 +183,21 @@ module m1_decode (
       sel_fifo_stat = 1'b1;
 
     // --------------------------------------------------------------- GLUE
-    end else if (hi == 8'he0) begin
+    //
+    // ONLY THE FIRST SIXTEEN BYTES. m1_glue decodes `a = addr[3:1]`, three bits,
+    // so selecting the whole 0xe0 page aliased everything above 0xe0000f back onto
+    // it — 0xe00012 landed on 0xe00002 and cleared irq_mask, which the game had
+    // just set to 0xff.
+    //
+    // MAME maps these individually and nothing else in the page:
+    //   e00000 irq_control_w   e00006 timer_mode_w
+    //   e00002 irq_mask_r/w    e00008 timer_period_w (..e0000b)
+    //   e00004 bank_w          e0000c timer_r        (..e0000f)
+    //
+    // Boot writes a run of bytes from 0xe00010 upward with `mov.b #x, [R1+]`,
+    // which the reference discards as unmapped. Found by diffing our write trace
+    // against MAME's: the reference has no write to e00002 at pc=fe006c and we did.
+    end else if (hi == 8'he0 && addr[15:4] == 12'd0) begin
       sel_glue = 1'b1;
     end
   end
