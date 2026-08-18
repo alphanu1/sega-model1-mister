@@ -409,6 +409,32 @@ module mb86233_core (
   assign dbg_mem_rdata = mem_rdata;
   assign dbg_c0 = seq_c0; assign dbg_c1 = seq_c1; assign dbg_rep = seq_rep;
 
+  // Which indirect form a brul/bsul is using. Bit 14 of the instruction's low
+  // half selects register over memory, exactly as MAME's `opcode & 0x4000` does.
+  logic brul_regform, brul_memform;
+  always_comb begin
+    brul_regform = d_branch & ((d_bsub == 3'd1) | (d_bsub == 3'd3)) &  d_bdata[14];
+    brul_memform = d_branch & ((d_bsub == 3'd1) | (d_bsub == 3'd3)) & ~d_bdata[14];
+  end
+
+  // THE MEMORY FORM IS NOT IMPLEMENTED and says so out loud rather than jumping
+  // somewhere plausible. Resolving it needs a data-memory read before the branch,
+  // which is another FSM state. Two sites exist in the vr microcode, both bsul at
+  // 0x04c5 and 0x04da, and neither has been reached yet. Reported the way v60.sv
+  // reports a skipped BRK: visible in simulation, no effect on synthesis.
+  // synthesis translate_off
+  always @(posedge clk) begin
+    // rst_n deliberately NOT tested here: reading it in a posedge-clk block trips
+    // SYNCASYNCNET, "flopped as both synchronous and async", and the test is
+    // redundant anyway — state resets to S_FETCH, so it cannot be S_RETIRE during
+    // reset. (Do not name the linter in a comment either; it reads the next word
+    // as a pragma and fails with BADVLTPRAGMA. That cost a build.)
+    if ((state == S_RETIRE) && brul_memform)
+      $display("TGP: brul/bsul MEMORY form at pc %04h is not implemented (op %08h)",
+               seq_pc, ir);
+  end
+  // synthesis translate_on
+
   assign retire    = (state == S_RETIRE);
   assign retire_pc = seq_pc;
   assign unimplemented = d_unimpl | x_unimpl | rf_rd_unimpl | rf_wr_unimpl
@@ -545,7 +571,33 @@ module mb86233_core (
         seq_valid     = 1'b1;
         seq_is_rep    = d_repgrp & (d_fsub == 3'd2);
         seq_rep_count = d_repreg ? rf_rd_data[7:0] : d_repimm;
-        seq_branch_val = d_bdata;
+        // brul/bsul TAKE THEIR TARGET FROM A REGISTER OR FROM DATA MEMORY, not
+        // from the immediate field. This was `seq_branch_val = d_bdata` for every
+        // subtype, so the register- and memory-indirect branches jumped to their
+        // own immediate field instead — a computed jump turned into a constant one.
+        //
+        // MAME, mb86233.cpp case 1 (brul) and case 3 (bsul):
+        //     if(opcode & 0x4000) { v = read_reg(opcode); }        // register
+        //     else { ea = ea_pre_0(opcode); v = read_dword(ea); }  // memory
+        // and read_reg masks its argument to SIX bits (`r &= 0x3f`), so the index
+        // is d_bdata[5:0] — not the five the disassembler prints.
+        //
+        // Found by `make tgp_trace` at pc 0x0052, `brul alw d`: the microcode
+        // computes d = 8 + 0x53 = 0x5b and dispatches through it, and we jumped to
+        // 0x4019 — the instruction's own low half. That is the command dispatch
+        // table, so nothing past it ran.
+        //
+        // The vr microcode has exactly one brul (0x0052, register form, reg 0x19 =
+        // d) and two bsul (0x04c5 and 0x04da, both MEMORY form, addresses 0x35 and
+        // 0x36). The register form is implemented here; the memory form needs a
+        // data read before the branch resolves, which means another FSM state, and
+        // is not built yet — see the warning below.
+        if (brul_regform) begin
+          rf_rd_addr     = d_bdata[5:0];
+          seq_branch_val = rf_rd_data[15:0];
+        end else begin
+          seq_branch_val = d_bdata;
+        end
 
         // Immediate-form writes all land here, after any transfer.
         if (d_ldi) begin

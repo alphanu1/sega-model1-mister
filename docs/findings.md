@@ -2290,3 +2290,66 @@ The TGP could never leave command dispatch, so it never read a command, never
 computed and never wrote a result. Every conclusion drawn from `returns=0`,
 `V60 pops=0` and `copro RAM writes=0` was downstream of this. With the fix the
 lockstep advances from 71 instructions (spinning) to 77 (progressing).
+
+## FIXED: brul/bsul were not implemented — the dispatch jump was a constant — 2026-08-18
+
+`seq_branch_val = d_bdata` unconditionally, for every branch subtype. So `brul` and
+`bsul` — the register- and memory-indirect branches — jumped to **their own
+immediate field**, turning a computed jump into a constant one.
+
+MAME, `mb86233.cpp` case 1 (`brul`) and case 3 (`bsul`):
+
+    if(opcode & 0x4000) { v = read_reg(opcode); }         // register form
+    else { ea = ea_pre_0(opcode); v = read_dword(ea); }   // memory form
+
+and `read_reg` masks its argument to **six** bits (`r &= 0x3f`), not the five the
+disassembler prints — so the index is `d_bdata[5:0]`.
+
+`make tgp_trace` found it at pc `0x0052`, `brul alw d`:
+
+    0050: lia #0x53
+    0051: addd : mov $0, p     d = 8 + 0x53 = 0x5b   (ours, correct)
+    0052: brul alw d           MAME -> 0x005b,  ours -> 0x4019
+
+`0x4019` is the instruction's own low half. **That instruction is the command
+dispatch table**, so nothing past it ever ran.
+
+### Sizing it before touching the FSM
+
+Scanning the microcode for the branch group (`opcode >> 26` in `{0x2f, 0x3f}`,
+subtype `(opcode >> 17) & 7`):
+
+| subtype | | count |
+|---|---|---|
+| 0 | `brif` | 196 |
+| 1 | `brul` | **1** — pc `0x0052`, register form, reg `0x19` = `d` |
+| 2 | `bsif` | 23 |
+| 3 | `bsul` | **2** — pc `0x04c5`, `0x04da`, both MEMORY form |
+| 5 | `rtif` | 12 |
+| 6 | `ldif` | 2 |
+| 7 | — | 4 (no case in MAME's switch either; no PC change) |
+
+So the register form is one site and the thing blocking dispatch; the memory form is
+two sites, neither reached yet. The register form is implemented. **The memory form
+is not** — it needs a data-memory read before the branch resolves, which is another
+FSM state — and it now prints a warning in simulation rather than jumping somewhere
+plausible, the way `v60.sv` reports a skipped `BRK`.
+
+### Result
+
+The lockstep advances **77 -> 102** instructions, and our stream goes from 71 lines
+with 1 loop to 322 lines with 10 loops against the reference's 343 with 21. The
+coprocessor is executing real work for the first time.
+
+The next divergence is at the same instruction for a different reason: `brul alw d`
+with `d = 0x85 + 0x53` where the reference has `0x02 + 0x53`. `d` comes from the FIFO
+word via `mov bh, d`, so **the command word we read differs** — the dispatch itself
+now works. That points at the V60 side or at FIFO ordering, not at the branch.
+
+### Two self-inflicted build failures worth remembering
+
+A `$display` block that tested `rst_n` under `posedge clk` tripped `SYNCASYNCNET`
+("flopped as both synchronous and async"), and the test was redundant — `state`
+resets to `S_FETCH` so it cannot be `S_RETIRE` in reset. Then the comment explaining
+that contained the word "verilator", which the linter read as a pragma and rejected
+with `BADVLTPRAGMA`. **Do not name the linter in a comment.**
