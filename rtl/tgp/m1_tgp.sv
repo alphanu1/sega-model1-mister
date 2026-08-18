@@ -258,7 +258,15 @@ module m1_tgp #(
 
       if (retire) begin
         dbg_pc <= retire_pc;
-        if (dbg_retires != 16'hffff) dbg_retires <= dbg_retires + 16'd1;
+        // WRAPS, DELIBERATELY, rather than saturating.
+        //
+        // A saturated counter cannot answer the only question worth asking of
+        // it on a running board — is this thing still executing? It read FFFF
+        // for two sessions while the coprocessor's state was in doubt, and
+        // could not distinguish "retired 65,535 instructions and stopped" from
+        // "still going". A wrapping counter visibly churns when it is alive and
+        // sits still when it is not.
+        dbg_retires <= dbg_retires + 16'd1;
       end
     end
   end
