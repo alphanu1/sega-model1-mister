@@ -1598,3 +1598,53 @@ in a row.
 one build each and left nothing to argue about. That is the difference between these
 and the four causes named and withdrawn earlier today, every one of which turned on
 interpreting a number.
+
+## The blue flash and the missing scroll are ONE bug, and it is in simulation
+## — 2026-08-18
+
+MAME, write tap on tile RAM word `0x5006` (pair 2/3's `ctrl`, tilemap 2's `vscr`):
+
+```
+ffe27a data=23dd x21    ffe27a data=23ce x292   ffe466 data=23ec x123
+ffe27a data=23d1 x9     ffe466 data=2050 x1     ffe466 data=2016 x3
+ffe27a data=209d x1     ffe466 data=205e x2     ffe27a data=2064 x2
+```
+
+**Every steady-state value is `0x2xxx`**: window mode 1 always on, with the low nine
+bits — the vertical scroll — animating. That animation IS the scrolling.
+
+Ours writes only **`0x0000` and `0x2000`**: the mode toggling on and off, the scroll
+permanently zero. **Simulation does the same** — 287 writes of `0x0000` and 4 of
+`0x2000` in 410 frames — so this is not a hardware fault and needs no board.
+
+### One bug, two symptoms
+
+- the `0x0000` writes are the **blue flash**: window mode off, tilemap 2 drawn
+  opaque over an empty map, palette 0
+- the scroll field never moving is **nothing scrolling**
+
+Both are the same wrong value written by the same two routines, `ffe27a` and
+`ffe466`, which the reference also uses. Same ROM, same code path, different data.
+
+### Ruled out today
+
+- **`c00040`**, polled 36,131 times and read as `0x0001`, looked like a missing I/O
+  board value. It is not: **the V60 writes it itself** at `pc=fe03fd`, once a frame.
+  Its own scratch flag.
+- **the timers at `e0000c`/`e0000e`**, polled 164,185 times and always `0x0000` in
+  the reference. Ours match: `m1_glue` only counts when `timer_period != 0`, exactly
+  as `timer_r` only computes when `m_timer_period[offset]` is set.
+- **the peripheral list generally** — 152 addresses, and nothing yet found that
+  answers differently.
+
+### Where the value comes from
+
+The reads immediately before each `ctrl` write are all game state: work RAM
+`0x501400`-`0x501424`, `0x501480`-`0x501484`, `0x500500`, and NVRAM `0x40ff5a`-
+`0x40ff6e` where a counter steps `e1d9 -> e1dc -> e1df`. So the scroll is computed
+from variables, and the divergence is upstream of the write.
+
+**Next**: diff those specific work-RAM locations between simulation and MAME at a
+matched point. The addresses are known and the comparison is mechanical, which is a
+much better position than the peripheral hunt — and it is entirely local, needing
+neither the board nor another bitstream.

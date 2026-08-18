@@ -382,6 +382,10 @@ task automatic report_census;
                  f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                  496 * 384);
         $display("FRAME: window ctrl  pair01=%04h pair23=%04h", f_ctrl[0], f_ctrl[1]);
+        for (pi = 0; pi < 16384; pi = pi + 1)
+          if (prd_n[pi] > 0)
+            $display("PERIPH %06h reads=%0d last=%04h",
+                     {prd_seen[pi][22:0], 1'b0}, prd_n[pi], prd_v[pi]);
         $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d pops=%0d returns=%0d",
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
     end
@@ -513,6 +517,32 @@ always @(posedge clk_cpu) begin
               $display("W5006 pc=%06h data=%04h", core.dbg_pc, core.main.m_wdata);
             ctrl23_prev <= core.main.m_wdata;
             last_w      <= core.main.m_addr[15:1];
+        end
+    end
+end
+
+// EVERY PERIPHERAL READ, to diff against the same census taken from MAME.
+//
+// Our game state diverges from the reference on identical ROMs — MAME animates
+// pair 2/3's ctrl every frame (0x20xx-0x23xx, the vertical scroll counting) while
+// we write only 0x0000 and 0x2000 with the scroll stuck at zero. Same code, so a
+// value the V60 READS must differ. Peripherals are a bounded list; this captures
+// them rather than guessing one at a time.
+integer prd_n [0:16383];
+reg [15:0] prd_v [0:16383];
+integer prd_seen [0:16383];
+integer pi;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && !core.main.m_we && core.main.m_ack) begin
+        // Skip ROM, work RAM/NVRAM, tile RAM, palette — what is left is I/O.
+        if (!((core.main.m_addr[23:1] >= 23'h080000 && core.main.m_addr[23:1] < 23'h180000) ||
+              (core.main.m_addr[23:1] >= 23'h7c0000) ||
+              (core.main.m_addr[23:1] >= 23'h200000 && core.main.m_addr[23:1] < 23'h300000) ||
+              (core.main.m_addr[23:1] >= 23'h480000 && core.main.m_addr[23:1] < 23'h490000))) begin
+            pi = {core.main.m_addr[20:1]} % 16384;
+            prd_n[pi] = prd_n[pi] + 1;
+            prd_v[pi] = core.main.m_rdata;
+            prd_seen[pi] = {8'd0, core.main.m_addr[23:1]};
         end
     end
 end
