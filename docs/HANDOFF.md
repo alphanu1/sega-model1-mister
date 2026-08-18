@@ -166,15 +166,18 @@ never reaches it):
 writes it — the TGP's io accesses reach `0x0020` (sincos) and have never touched io
 `0x0001`, the RAM data port. That is the next thing to chase.
 
-#### An anomaly to resolve BEFORE acting on the above
+#### The anomaly flagged here was mine, and it is resolved
 
-`make m1_boot BOOT_CYCLES=300000000 WATCH_PAGE=0xD2` reports **zero reads of page
-`d20000`** — while the same run reports `pc now fed5a4`, which is the instruction that
-reads exactly that address. **Both cannot mean what they appear to.** Either our V60
-is not where `dbg_pc` says, or the read never completes and so never counts as an
-access, or the watch is not seeing io-space reads. Resolve that first: acting on
-"the TGP never writes copro RAM" while the instrument disagrees with itself is how
-tonight produced seven withdrawn findings.
+`WATCH_PAGE=0xD2` reported zero reads of page `d20000` while `pc now fed5a4` said the
+V60 was on the instruction that reads it. **Those were two different runs.** The page
+census came from a 300 M-cycle run and the PC from a 600 M one, and at 300 M the V60
+is still in the `fe1433` wait loop — its last 128 distinct PCs are `fe1433`/`fe1435`/
+`fe143d` and nothing else. It does not reach `fed5a4` until later.
+
+No contradiction, no instrument fault: an apples-to-oranges comparison, the eighth and
+most basic instrument error of the session. **Always quote the run length with a boot
+figure** — this file already says so about `BOOT_CYCLES` scaling, and the same rule
+covers comparing two runs to each other.
 
 #### Also worth knowing
 
