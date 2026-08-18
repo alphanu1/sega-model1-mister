@@ -2124,3 +2124,51 @@ properties to preserve**. `m1_boot BOOT_CYCLES=600000000` has the TGP retiring
 48,356 instructions and pushing nothing back, with `copro RAM writes=0`, while the
 reference's V60 is reading results 1,433 times a frame. That is the next thing in
 front of the 2D question, not behind it.
+
+## CORRECTED: our coprocessor data ROM is fine; the ADDRESS is wrong — 2026-08-18
+
+`tb_m1_boot` printed `first two data words: 3f800000 00012e00 (MAME: 00000030
+00012e00)`, which reads as a broken `copro_data` image and points at the packer.
+
+**The packer is correct.** The four ROM files byte-interleaved exactly as
+`ROM_LOAD32_BYTE` specifies give word 0 = `3f800000`:
+
+    mpr-14898.39  00 00 00 00 ...      -> byte 0 of each file, little-endian:
+    mpr-14899.40  00 00 00 00 ...         00 | 00<<8 | 80<<16 | 3f<<24
+    mpr-14900.41  80 00 00 00 ...       = 3f800000
+    mpr-14901.42  3f 00 00 00 ...
+
+**The reference gets `00000030` because it reads a different word.** Its TGP makes
+exactly three io accesses in its first 30 frames (`tools/mame_tgp_io.lua`):
+
+    W io 002e <- 00000010        set copro_data_base
+    R io 8010 -> 00000030        data word 0x10
+    R io 8020 -> 00012e00        data word 0x20
+
+and `copro_data_r` computes `index = (base & ~0x7fff) | offset`, where `0x10 &
+~0x7fff` is **0** — so the base write does not move the window at all. The reference
+simply reads word `0x10`. Ours reads word `0x00`. Word `0x20` matches because both
+ask for it.
+
+So the mismatch was never in the data. **A wrong expectation in a testbench accused
+the right code**, and it would have sent the next session into the ROM packer — the
+one place that had two independent implementations checking each other
+(`verify_mra.py`).
+
+### What it really exposes: our TGP runs different microcode
+
+Our TGP's first io accesses are **five reads of io `0x0000`** — `copro_ramadr` —
+which the reference never makes, followed by `R 8000` where the reference does
+`R 8010`. The divergence is there, at the very start, not in any ROM.
+
+That is the concrete form of what M0 exit criterion 2 has always owed:
+**microcode-driven lockstep for the TGP.** What exists is a whole-CPU reference in
+lockstep over 8,000 retires of *generated* instructions, which cannot catch this.
+The technique that made the V60 tractable today — MAME's tracer, periodic-loop
+collapsing, diff the streams — applies directly, and `:tgp_copro` can be traced the
+same way `maincpu` can.
+
+Downstream state, for context: `TGP retires=48356 pc=0044`, `fifo_rd=1`,
+`TGP->V60 returns=0`. The reference's V60 collects results 1,433 times a frame. So
+the coprocessor producing nothing is now the nearest cause in front of the 2D
+question, and its own cause is microcode divergence rather than data.

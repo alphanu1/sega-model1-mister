@@ -127,6 +127,12 @@ always @(posedge clk_cpu) begin
     if (tio_ack && tio_seen) begin
         tio_seen <= 1'b0;
         tio_n = tio_n + 1;
+        // COMPARE THIS LIST AGAINST THE REFERENCE'S, WHICH IS THREE LINES LONG:
+        // W 002e, R 8010, R 8020, and nothing else in 30 frames. Ours opens with
+        // five reads of io 0000 — copro_ramadr — that the reference never makes,
+        // and then reads 8000 where it reads 8010. So our TGP is running the
+        // microcode differently from its first accesses, which is the concrete
+        // form of the microcode-driven lockstep M0 exit criterion 2 still owes.
         if (tio_n <= 14)
             $display("BOOT:   TGP io %0d: %s %04h  waited %0d", tio_n,
                      tio_wr ? "W" : "R", tio_addr, tio_wait);
@@ -668,8 +674,28 @@ initial begin
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (reference: none before frame 276, 528 by frame 900)", nz);
     end
 
-    $display("BOOT: TGP data reads=%0d tables=%0d  first two data words: %08h %08h (MAME: 00000030 00012e00)",
+    // THE OLD EXPECTATION HERE WAS WRONG, AND IT ACCUSED THE PACKER.
+    //
+    // It read "(MAME: 00000030 00012e00)", so our 3f800000 looked like a broken
+    // copro_data image. It is not: the four ROM files byte-interleaved exactly as
+    // ROM_LOAD32_BYTE specifies give 3f800000 at word 0, which is what we read and
+    // what the hardware holds.
+    //
+    // The reference gets 00000030 because IT READS A DIFFERENT WORD. Its TGP makes
+    // exactly three io accesses in its first 30 frames (tools/mame_tgp_io.lua):
+    //
+    //     W io 002e <- 00000010        set copro_data_base
+    //     R io 8010 -> 00000030        data word 0x10
+    //     R io 8020 -> 00012e00        data word 0x20
+    //
+    // and copro_data_r does index = (base & ~0x7fff) | offset, where 0x10 & ~0x7fff
+    // is 0 — so the base write does not even move the window. It simply reads word
+    // 0x10. We read word 0x00. So the difference is the ADDRESS our TGP asks for,
+    // not the data it gets back, and the value printed here is correct for the
+    // address we used.
+    $display("BOOT: TGP data reads=%0d tables=%0d  first two data words: %08h %08h",
              tgp_dat_reads, tgp_tbl_reads, first_dat0, first_dat1);
+    $display("BOOT:   reference: W io 002e<-10, R io 8010->00000030, R io 8020->00012e00 (3 io accesses in 30 frames)");
     $display("BOOT: TGP stuck? io_rd=%0d io_wr=%0d io_ack=%0d io_addr=%04h fifo_rd=%0d fifo_wr=%0d  (io accesses completed=%0d)",
              tio_rd, tio_wr, tio_ack, tio_addr, tfifo_rd, tfifo_wr, tio_n);
     $display("BOOT: TGP retires=%0d pc=%04h unimplemented=%0d",
