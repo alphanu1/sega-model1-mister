@@ -207,7 +207,11 @@ module m1_sdram #(
   // cycles. Registered off the selector to keep a slow OSD bit out of the
   // command path.
   logic [3:0] cap_depth;
-  always_ff @(posedge clk or negedge rst_n) begin
+  // Synchronous, like the command block below — see the note there. Mixing the two
+  // disciplines on one reset net is what verilator's SYNCASYNCNET flags, and it is
+  // a real smell rather than a nuisance: half the module would reset on a different
+  // event from the other half.
+  always_ff @(posedge clk) begin
     if (!rst_n) cap_depth <= 4'(RD_LAT_DEF);
     else case (rd_lat_sel)
       2'd0:    cap_depth <= 4'(CL + 3);   // unconnected lands here, by design
@@ -261,7 +265,7 @@ module m1_sdram #(
   assign dbg_req = pend;
 
   int unsigned i;
-  always_ff @(posedge clk or negedge rst_n) begin
+  always_ff @(posedge clk) begin
     if (!rst_n) begin
       pend <= '0; wr_pend <= 1'b0;
       req_d <= '0; ack_d <= '0; wr_req_d <= 1'b0; wr_ack_d <= 1'b0;
@@ -428,9 +432,35 @@ module m1_sdram #(
   // the telemetry is there to show.
   assign dbg_grant = inflight;
 
-  always_ff @(posedge clk or negedge rst_n) begin
+  // SYNCHRONOUS RESET, DELIBERATELY, and it is about the pins rather than style.
+  //
+  // Template.qsf asks for `Fast Output Register=ON` on `SDRAM_*` so the command and
+  // address registers sit in the I/O cells, where clock-to-output is short and
+  // fixed. With an ASYNC reset the fitter refuses, sixteen times:
+  //
+  //   Warning (176279): Can't pack register node "sd_a[8]" into I/O pin
+  //     "SDRAM_A[8]". The node cannot simultaneously use clear and load signals.
+  //
+  // A Cyclone V I/O register has one or the other. `sd_a` needs the load, so the
+  // asynchronous clear is what has to go — as a synchronous reset it becomes part
+  // of the D-side logic and the register itself can live in the pin.
+  //
+  // Safe here because clk_sys free-runs from the PLL and rst_n is held through
+  // lock, so the first clocked edges after lock perform the reset. Nothing in this
+  // controller needs to be reset while its clock is stopped.
+  always_ff @(posedge clk) begin
     if (!rst_n) begin
-      cmd <= C_NOP; sd_ba <= '0; sd_a <= '0; sd_dqm <= 2'b11;
+      // cmd IS RESET AND THE OTHERS ARE NOT, deliberately.
+      //
+      // A synchronous reset did not let these pack into the I/O cells either —
+      // Quartus counts it as a clear just the same, and the warning stayed at
+      // sixteen. The clear has to be gone, not merely synchronous.
+      //
+      // cmd keeps its reset because a garbage command at power-up would be issued
+      // to the device. sd_a, sd_ba and sd_dqm are don't-care whenever cmd is NOP,
+      // and the init sequence writes all three before the first real command, so
+      // their power-up value is unobservable.
+      cmd <= C_NOP;
       sd_dq_o <= '0; sd_dq_oe <= 1'b0;
       state <= S_INIT; ready <= 1'b0;
       init_cnt <= 16'(INIT_NOP);

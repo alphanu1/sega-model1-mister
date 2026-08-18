@@ -1559,3 +1559,42 @@ was". Neither survives reading the report properly. What survives is narrower:
 (bounded, testable, one build); then the read path on Quartus 24.1, which is
 installed and may not crash on a multicycle; and only then any thought of a
 phase-shifted PLL output for `SDRAM_CLK`.
+
+## m1_sdram's reset cost 0.95 ns of margin and 217 ALM — 2026-08-18
+
+Chasing the I/O packing warning produced no packing and a real improvement anyway.
+
+| | known-good | synchronous reset | + no reset on sd_a/sd_ba/sd_dqm |
+|---|---|---|---|
+| `clk_sys` slack | +0.296 ns | +0.934 ns | **+1.246 ns** |
+| ALM | 29,644 | 29,514 | **29,427** |
+| packing warnings | 16 | 16 | 16 |
+
+`m1_sdram` passes **74,729 checks with identical counts** at every step, so the
+change is functionally transparent. Flashed as
+`3851ff10ac6a4839d01668bb9a0b4330`.
+
+**Why the margin matters more than the packing.** This morning an unrelated edit —
+a debug counter and a UART — shifted placement and destroyed the picture on a design
+carrying 0.3 ns of headroom. Quadrupling that headroom is the most direct defence
+against a repeat, and it came from deleting reset logic rather than from any
+cleverness.
+
+### Two theories refuted, both cheaply
+
+1. **A synchronous reset will let the outputs pack into the I/O cells.** No.
+   Quartus counts a synchronous clear as a clear, the warning stayed at sixteen.
+2. **Removing the reset will.** Also no, and for a reason worth knowing: the init
+   sequence assigns `sd_a <= 13'h000` at line 599, which Quartus implements as a
+   **synchronous clear** regardless of the reset branch. The register acquires the
+   control signal from ordinary code.
+
+So the remaining route is a fitter assignment, `ALLOW_SYNCH_CTRL_USAGE OFF` on
+`sd_a[*]`, forcing the clear into the data path. Not attempted: the gain is
+speculative, and a tested improvement is worth more than a fourth unverified change
+in a row.
+
+**Both refutations were binary** — sixteen warnings or none — which is why they cost
+one build each and left nothing to argue about. That is the difference between these
+and the four causes named and withdrawn earlier today, every one of which turned on
+interpreting a number.
