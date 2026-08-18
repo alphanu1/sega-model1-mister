@@ -470,6 +470,15 @@ task automatic tram_block_census;
     integer b, i, n;
     reg [15:0] w;
     begin
+        // What tile RAM ACTUALLY holds in the scroll region, read directly,
+        // against what the renderer latched as ctrl. They should agree; the
+        // renderer reports ctrl[1]=0x2000 while the CPU writes 0x5006 exactly
+        // once, with 0x0000.
+        $write("  scrollregs:");
+        for (b = 0; b < 8; b = b + 1)
+          $write(" %04h", {core.main.rams.tram_v_hi['h5000 + b],
+                           core.main.rams.tram_v_lo['h5000 + b]});
+        $write("   ctrl_latched=%04h,%04h\n", f_ctrl[0], f_ctrl[1]);
         $write("  tram blocks:");
         for (b = 0; b < 8; b = b + 1) begin
             n = 0;
@@ -494,14 +503,16 @@ endtask
 // vscr; bits 14:13 select the window mode, and the teardown is that field going to
 // zero.
 reg [15:0] ctrl23_prev = 16'hffff;
+reg [14:0] last_w = 15'h7fff;
 always @(posedge clk_cpu) begin
     if (core.main.m_req && core.main.m_we && core.main.sel_tileram
-        && core.main.m_addr[15:1] == 15'h5006) begin
-        if (core.main.m_wdata !== ctrl23_prev) begin
-            $display("CTRL23 WRITE t=%0t pc=%06h data=%04h mode=%0d",
-                     $time, core.dbg_pc, core.main.m_wdata,
-                     core.main.m_wdata[14:13]);
+        && core.main.m_addr[15:1] >= 15'h4000) begin
+        if (core.main.m_wdata !== ctrl23_prev
+            || core.main.m_addr[15:1] !== last_w) begin
+            if (core.main.m_addr[15:1] == 15'h5006)
+              $display("W5006 pc=%06h data=%04h", core.dbg_pc, core.main.m_wdata);
             ctrl23_prev <= core.main.m_wdata;
+            last_w      <= core.main.m_addr[15:1];
         end
     end
 end

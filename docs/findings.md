@@ -1207,3 +1207,51 @@ and latches the PC there.
 **Row 05 is sound** and worth keeping: ~8,100 teardowns at about 3 per second over
 43 minutes, which matches the observed flash rate and confirms the event is real
 and periodic rather than drifting.
+
+## The teardown is the GAME toggling ctrl, and the code is named — 2026-08-18
+
+Traced in simulation by watching the CPU's own writes to tile RAM word `0x5006`,
+which is pair 2/3's `ctrl` and tilemap 2's `vscr`:
+
+```
+pc=ffe27a   145 writes
+pc=ffe466   144 writes
+data:  287 x 0x0000,  4 x 0x2000
+```
+
+**Two routines alternate it**, and the board's row `04` — the PC latched at the
+teardown — read `FFE46d` churning in the low digits. `ffe466` is one of the two
+writers, so that capture was pointing at the right code despite being latched on
+the video-side observation. The earlier note calling it noise was too pessimistic;
+the delay is evidently small enough that the PC is still inside the routine.
+
+**So the teardown is not a fault.** The game deliberately toggles window mode off
+and on, clearing and refilling tilemap 2 in step with it. Roughly 3 times a second,
+which is the observed flash rate.
+
+### Which makes the real question much narrower
+
+**When `ctrl = 0x0000` and tilemap 2 is empty, why do we paint the screen blue
+when MAME does not?**
+
+With window mode off, `draw_common` takes the normal path and all four tilemaps
+draw. Maps 2 and 3 draw their category-0 pass **opaque** — recorded here already —
+so an empty map 2 covers all 190,464 pixels in palette 0, which is blue. MAME
+plainly does not do that, so something suppresses map 2 there that we do not
+reproduce. Candidates, in the order the source suggests:
+
+1. **the row mask** — the normal path applies it and the window path does not, so
+   this is the first place a difference of exactly this shape would live
+2. **`vscr` bit 15, layer disable** — `draw_common` returns before drawing, and
+   this design's mixer treats maps 2/3 as opaque *unconditionally*, so a disabled
+   map still paints. Recorded as a suspected bug in `tb_m1_video.cpp` and
+   deliberately not folded into the window change
+3. a priority rule in the category-0 pass
+
+Candidate 2 is already written down as suspected and never chased. It would produce
+exactly this symptom.
+
+**This is a compositing question with a definite oracle answer**, which is a much
+better position than any of the four causes named and withdrawn today. The next
+step is a MAME tap on `tile_ram[0x5006]` and the row-mask words at the moment `ctrl`
+goes to zero, to see what the reference has set that we ignore.
