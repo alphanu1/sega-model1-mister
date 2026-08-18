@@ -168,15 +168,6 @@ module m1_main #(
   // The TGP taking a command — see m1_copro_if. dbg_copro_pops is the V60
   // reading results back, which it never does; this is the live one.
   output logic [15:0] dbg_copro_drains,
-
-  // TRACE TAP: the CPU writing pair 2/3's window control, tile RAM word 0x5006.
-  // One-cycle strobe with the data and the PC that did it, for the UART channel.
-  // This register is the open question on hardware — the reference sets window
-  // mode once during boot and holds it, and the board toggles it about three
-  // times a second forever.
-  output logic        dbg_ctrlw,
-  output logic [15:0] dbg_ctrlw_data,
-  output logic [23:0] dbg_ctrlw_pc,
   output logic [2:0]  rom_bank
 );
 
@@ -333,25 +324,6 @@ module m1_main #(
       end else if (m_req && m_we && sel_tileram) begin
         if (tw_cnt[m_addr[15:14]] != 12'hfff)
           tw_cnt[m_addr[15:14]] <= tw_cnt[m_addr[15:14]] + 12'd1;
-      end
-    end
-  end
-
-  // The tap itself. m_req is held until ack, so it is edged to one strobe per
-  // access rather than one per cycle of a held request.
-  logic ctrlw_d;
-  always_ff @(posedge clk) begin
-    if (!rst_n) begin
-      ctrlw_d <= 1'b0; dbg_ctrlw <= 1'b0;
-      dbg_ctrlw_data <= '0; dbg_ctrlw_pc <= '0;
-    end else begin
-      logic hit;
-      hit = m_req && m_we && sel_tileram && (m_addr[15:1] == 15'h5006);
-      ctrlw_d   <= hit;
-      dbg_ctrlw <= hit && !ctrlw_d;
-      if (hit && !ctrlw_d) begin
-        dbg_ctrlw_data <= m_wdata;
-        dbg_ctrlw_pc   <= dbg_pc;
       end
     end
   end

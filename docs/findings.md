@@ -1299,3 +1299,79 @@ coprocessor (healthy, draining, executing during the blanks), its microcode and
 data ROM (complete, correct, verified byte for byte), the command FIFO, the SDRAM
 read phase (CL+2 is right, the others fail hard), the memory write path, a V60
 reset, the PC distribution (100% ROM0, matching the oracle), and input divergence.
+
+## Quartus is deterministic; the SDRAM interface is placement-SENSITIVE
+## — 2026-08-18
+
+The UART build broke the picture completely — green and pink swirls, the raster
+shifted right — from a change that cannot touch the video path: a debug counter
+that drives only debug outputs, and a transmitter emitting ~40 bytes a second.
+Static checks were clean: `+0.296 ns` worst slack, no violation, and **no new
+warning classes** against the previous build.
+
+Reverting those three files and rebuilding produced a bitstream **bit-identical**
+to the last known-good one, `55965cd8d77b2a6443b9d141dea568f8`.
+
+**So builds ARE reproducible.** "Placement roulette" and "no two builds are
+behaviourally equivalent", said earlier in this session, are wrong: identical source
+gives identical bits. The accurate statement is narrower and still serious —
+**an unrelated edit shifts placement enough to break the SDRAM interface**, which is
+deterministic but fragile.
+
+### Why, and it is not only the missing constraints
+
+```
+Model1.sv:397   assign SDRAM_CLK = ~clk_sys;
+```
+
+The memory's clock is **combinational fabric logic driving an output pin**. Its
+delay to the pin is a routing result, so the edge arriving at the device moves with
+placement relative to the data pins. That is why `RD_LAT` had to be found
+empirically on hardware rather than derived, and why an unrelated edit can shift the
+sampling point past the margin.
+
+Neither the framework's `sys_top.sdc` nor our generated `Model1.sdc` contains a
+single SDRAM constraint — no `create_generated_clock` on the port, no
+`set_output_delay`, no `set_input_delay`. The fitter has never been told those paths
+matter or been able to report them as bad.
+
+### What the broken build's overlay showed, which is worth keeping
+
+The corruption was informative rather than just noise:
+
+```
+row 11  001740   tilemap 0 wins 5,952 pixels   (had been 000005)
+row 13  02D0C0   tilemap 2 wins 184,512
+row 16  002000   window mode on
+row 04  FFE29D   teardown PC — ffe27a, one of the two writers simulation named
+```
+
+**The overlay was legible while the picture was garbage.** The overlay renders from
+on-chip data; the picture reads character RAM from SDRAM. Clean on-chip graphics
+with corrupt SDRAM-sourced graphics is the signature of the read path, not the
+renderer.
+
+And **tilemap 0 won 5,952 pixels against 5 before** — the text is being drawn now.
+The coprocessor data ROM fix moved the game forward; it was hidden behind a broken
+picture. Row `04` also proved itself: `FFE29D` is `ffe27a`, so the entry calling
+that instrument "noise" is withdrawn a second time.
+
+Sweeping the SDRAM read phase through all four settings changed nothing on the
+broken build, so the fault is not the capture phase alone.
+
+### The fix, in order
+
+1. **Generate `SDRAM_CLK` through a DDIO output register** clocked by `clk_sys`, so
+   its phase is fixed by construction instead of by routing. Standard MiSTer
+   practice and the part constraints alone cannot fix.
+2. **Constrain the interface**: `create_generated_clock` on the port, plus
+   `set_output_delay`/`set_input_delay` from the device's setup, hold and access
+   times.
+3. **Verify by rebuilding twice from identical source and comparing the reported
+   SDRAM slack**, because the failure mode is sensitivity to unrelated edits, not a
+   single bad number.
+
+None of this is checkable by `make test` — it is a hardware-only change, verified by
+builds and by the screen. It changes an interface that currently works at CL+2, so
+the empirically-found phase may need re-finding, and the known-good bitstream above
+is the reference to fall back to.
