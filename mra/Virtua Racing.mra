@@ -23,7 +23,8 @@
         V60 0xf80000-0xffffff  ROM0, the boot vector -> stream 0x100000
         V60 0x100000-0x1fffff  banked data, +bank    -> stream 0x180000
 
-      Not sent yet: the TGP program and data ROMs, the polygon ROMs and the
+      The TGP microcode goes on index 1 and its data ROM and sincos tables
+      are appended to this stream. Not sent yet: the polygon ROMs and the
       sound board. Those blocks do not exist in the core, so sending them would
       only slow the load. They belong here as M2 and M4 land.
     -->
@@ -61,49 +62,35 @@
         </interleave>
         <!-- stream 0x580000: 524288 bytes unpopulated -->
         <part repeat="524288">FF</part>
-
-        <!-- stream 0x600000: THE COPROCESSOR'S DATA ROM, 2 MB.
-             MAME's "copro_data" region for vr. The TGP reads it through its IO
-             space at 0x8000-0xffff and it is read BEFORE any math unit, so
-             without it the coprocessor stalls at microcode 0x49 and never drains
-             its command FIFO — which fills, and a full FIFO halts the V60.
-             That was the 0.45 s screen teardown on hardware.
-             0x600000 is COPRO_DAT_BASE in m1_integrated.sv (word 0x300000).
-             ROM_LOAD32_BYTE at offsets 0,1,2,3 is a four-way byte interleave
-             into little-endian 32-bit words. -->
+        <!-- stream 0x600000: the coprocessor's DATA ROM, 2 MB.
+             MAME's copro_data. The TGP reads it through IO 0x8000-0xffff
+             and it is read BEFORE any math unit, so without it the
+             coprocessor stalls at microcode 0x49, never drains its command
+             FIFO, and a full FIFO halts the V60 — a screen that tears down
+             and rebuilds every 0.45 s. COPRO_DAT_BASE in m1_integrated.sv.
+             ROM_LOAD32_BYTE x4 is a four-way byte interleave. -->
         <interleave output="32">
             <part name="mpr-14898.39" map="0001"/>
             <part name="mpr-14899.40" map="0010"/>
             <part name="mpr-14900.41" map="0100"/>
             <part name="mpr-14901.42" map="1000"/>
         </interleave>
+        <!-- stream 0x800000: the sincos tables, 256 KB.
+             MAME's copro_tables, from MODEL1_CPU_BOARD. COPRO_TBL_BASE in
+             m1_integrated.sv. ROM_LOAD32_WORD x2 is a two-way 16-bit
+             interleave into the same 32-bit words.
 
-        <!-- stream 0x800000: the sincos table, 256 KB.
-             MAME's "copro_tables", from MODEL1_CPU_BOARD. 0x800000 is
-             COPRO_TBL_BASE (word 0x400000). ROM_LOAD32_WORD at offsets 0 and 2
-             is a two-way 16-bit interleave into the same 32-bit words.
-
-             MAME's other_data region — opr-14744..14747, the 1/x and 1/sqrt
-             tables — is deliberately NOT here. This design computes those in
-             fp_div rather than reading them, so there is no port for them, and
-             the files are not in the ROM set either. -->
+             MAME's other_data — opr-14744..14747, the 1/x and 1/sqrt
+             tables — is deliberately absent: this design computes those in
+             fp_div rather than reading them, so there is no port for them
+             and the files are not in the ROM set. -->
         <interleave output="32">
             <part name="opr14742.bin" map="0021"/>
             <part name="opr14743.bin" map="2100"/>
         </interleave>
     </rom>
 
-    <!-- Coprocessor microcode, on its own download index.
-         m1_rom_loader routes index 1 to the TGP's program RAM rather than to
-         SDRAM, so this needs no offset inside the main stream: putting it at the
-         loader's old byte offset would have meant padding 25 MB of filler
-         through the HPS to deliver 8 KB. 2048 words of 32 bits, little-endian,
-         which is exactly the file. -->
-    <rom index="1" zip="vr.zip|vr.7z" md5="none">
-        <part name="315-5573.bin"/>
-    </rom>
-
     <nvram index="255" size="256"/>
 
-    <buttons names="Accel,Brake,Shift Up,Shift Down,VR1 Red,VR2 Blue,VR3 Yellow,VR4 Green,Start,Coin,Service,Test" default="A,B,R,L,X,Y,R2,L2,Start,Select,L3,R3" count="8"/>
+    <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>
 </misterromdescription>

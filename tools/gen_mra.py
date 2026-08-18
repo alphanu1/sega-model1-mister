@@ -43,6 +43,33 @@ PACK = [
     (0x380000, 0x1200000, 0x100000),   # banked data 2
     (0x480000, 0x1300000, 0x100000),   # banked data 3
 ]
+# THE COPROCESSOR'S READ-ONLY REGIONS, appended after the V60 image.
+#
+# These were absent for two sessions and it presented as a hardware bug. The TGP
+# reads its data ROM through IO 0x8000-0xffff BEFORE any math unit, so without it
+# the coprocessor stalls at microcode 0x49, never drains its command FIFO, the
+# FIFO fills, and a full FIFO HALTS THE V60 — which is a screen that tears down
+# and rebuilds every 0.45 s. tools/build_rom_image.py had both regions all along,
+# so simulation worked and hardware did not.
+#
+# Kept as explicit tables rather than parsed out of model1.cpp, exactly as
+# build_rom_image.py does, so the two sources stay directly comparable —
+# tools/verify_mra.py diffs them byte for byte.
+#
+# Bases are COPRO_DAT_BASE and COPRO_TBL_BASE in rtl/m1_integrated.sv. They sit
+# immediately after the V60 image on purpose, so no padding is needed to reach
+# them.
+COPRO_DATA = {                       # ROM_LOAD32_BYTE x4, 2 MB
+    'vr':       ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
+    'vformula': ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
+}
+COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
+    'vr':       ['opr14742.bin', 'opr14743.bin'],
+    'vformula': ['opr14742.bin', 'opr14743.bin'],
+}
+COPRO_DAT_OFF = 0x600000
+COPRO_TBL_OFF = 0x800000
+
 STREAM_LEN = 0x600000
 
 TITLES = {
@@ -88,8 +115,13 @@ def parse_sets(path):
     return sets
 
 
-def build_chunks(loads):
-    """Stream-ordered chunks: ('pad', n) | ('rom', name) | ('pair', lo, hi)."""
+def build_chunks(loads, setname=None):
+    """Stream-ordered chunks.
+
+    ('pad', n) | ('rom', name) | ('pair', lo, hi, sz)
+    | ('quad', [4 names])  - ROM_LOAD32_BYTE, the coprocessor's data ROM
+    | ('wpair', [2 names]) - ROM_LOAD32_WORD, the coprocessor's sincos tables
+    """
     # Pair the 16-bit halves by their word address.
     byoff = {}
     for off, size, name, is16 in loads:
@@ -143,6 +175,18 @@ def build_chunks(loads):
     if total != STREAM_LEN:
         warnings.append(f"stream is {total} bytes, expected {STREAM_LEN}")
         return None, warnings
+
+    # The coprocessor's regions, for the sets that have them. A set without them
+    # simply ends at STREAM_LEN as before.
+    if setname in COPRO_DATA:
+        chunks.append(('quad', COPRO_DATA[setname]))
+        total = COPRO_TBL_OFF
+    if setname in COPRO_TABLES:
+        if total != COPRO_TBL_OFF:
+            warnings.append(f"tables would land at 0x{total:x}, not 0x{COPRO_TBL_OFF:x}")
+            return None, warnings
+        chunks.append(('wpair', COPRO_TABLES[setname]))
+
     return chunks, warnings
 
 
@@ -182,7 +226,8 @@ def emit(setname, chunks, cross_checked):
         '        V60 0xf80000-0xffffff  ROM0, the boot vector -> stream 0x100000',
         '        V60 0x100000-0x1fffff  banked data, +bank    -> stream 0x180000',
         '',
-        '      Not sent yet: the TGP program and data ROMs, the polygon ROMs and the',
+        '      The TGP microcode goes on index 1 and its data ROM and sincos tables',
+        '      are appended to this stream. Not sent yet: the polygon ROMs and the',
         '      sound board. Those blocks do not exist in the core, so sending them would',
         '      only slow the load. They belong here as M2 and M4 land.',
         '    -->',
@@ -199,6 +244,36 @@ def emit(setname, chunks, cross_checked):
             out.append(f'        <!-- stream 0x{off:06x} -->')
             out.append(f'        <part name="{c[1]}"/>')
             off += c[2]
+        elif c[0] == 'quad':
+            out.append(f'        <!-- stream 0x{off:06x}: the coprocessor\'s DATA ROM, 2 MB.')
+            out.append("             MAME's copro_data. The TGP reads it through IO 0x8000-0xffff")
+            out.append('             and it is read BEFORE any math unit, so without it the')
+            out.append('             coprocessor stalls at microcode 0x49, never drains its command')
+            out.append('             FIFO, and a full FIFO halts the V60 — a screen that tears down')
+            out.append('             and rebuilds every 0.45 s. COPRO_DAT_BASE in m1_integrated.sv.')
+            out.append('             ROM_LOAD32_BYTE x4 is a four-way byte interleave. -->')
+            out.append('        <interleave output="32">')
+            for i, n in enumerate(c[1]):
+                m = ['0'] * 4
+                m[4 - 1 - i] = '1'
+                out.append(f'            <part name="{n}" map="{"".join(m)}"/>')
+            out.append('        </interleave>')
+            off = COPRO_TBL_OFF
+        elif c[0] == 'wpair':
+            out.append(f'        <!-- stream 0x{off:06x}: the sincos tables, 256 KB.')
+            out.append("             MAME's copro_tables, from MODEL1_CPU_BOARD. COPRO_TBL_BASE in")
+            out.append('             m1_integrated.sv. ROM_LOAD32_WORD x2 is a two-way 16-bit')
+            out.append('             interleave into the same 32-bit words.')
+            out.append('')
+            out.append("             MAME's other_data — opr-14744..14747, the 1/x and 1/sqrt")
+            out.append('             tables — is deliberately absent: this design computes those in')
+            out.append('             fp_div rather than reading them, so there is no port for them')
+            out.append('             and the files are not in the ROM set. -->')
+            out.append('        <interleave output="32">')
+            out.append(f'            <part name="{c[1][0]}" map="0021"/>')
+            out.append(f'            <part name="{c[1][1]}" map="2100"/>')
+            out.append('        </interleave>')
+            off += 0x40000
         else:
             _, lo, hi, sz = c
             out.append(f'        <!-- stream 0x{off:06x}, ROM_LOAD16_BYTE -->')
@@ -262,7 +337,7 @@ def main():
             skipped += 1
             continue
 
-        chunks, warnings = build_chunks(sets[name])
+        chunks, warnings = build_chunks(sets[name], name)
         if chunks is None:
             print(f"  {name:11s} SKIPPED: {'; '.join(warnings)}")
             skipped += 1

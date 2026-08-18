@@ -23,7 +23,8 @@
         V60 0xf80000-0xffffff  ROM0, the boot vector -> stream 0x100000
         V60 0x100000-0x1fffff  banked data, +bank    -> stream 0x180000
 
-      Not sent yet: the TGP program and data ROMs, the polygon ROMs and the
+      The TGP microcode goes on index 1 and its data ROM and sincos tables
+      are appended to this stream. Not sent yet: the polygon ROMs and the
       sound board. Those blocks do not exist in the core, so sending them would
       only slow the load. They belong here as M2 and M4 land.
     -->

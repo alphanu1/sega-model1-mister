@@ -48,11 +48,23 @@ def part_bytes(zf, el):
 
 
 def interleave_bytes(zf, el):
-    """<interleave output="16">: two 8-bit halves into 16-bit words.
+    """<interleave>: parts combined into wider words, by their map strings.
 
-    map="01" means that part supplies the low byte of each word and "10" the
-    high byte, which is MAME's ROM_LOAD16_BYTE with the .even file first.
+    A map string has one character per OUTPUT byte, most significant first, and
+    each character says which byte of that part supplies it — 1-based, 0 for
+    none. So for output="16", map="01" is the low byte and "10" the high, which
+    is MAME's ROM_LOAD16_BYTE with the .even file first.
+
+    output="32" is the same rule with four positions, and it is what the
+    coprocessor's regions need: copro_data is four ROM_LOAD32_BYTE parts
+    ("0001".."1000") and copro_tables two ROM_LOAD32_WORD halves ("0021",
+    "2100"). Rejecting it outright is why this check could not see either region
+    — and this check comparing the MRA against build_rom_image.py's packing is
+    exactly what would have caught the data ROM being absent from the MRA for two
+    sessions. It is a manual target and was never run.
     """
+    if el.get('output') == '32':
+        return interleave_generic(zf, el, 4)
     if el.get('output') != '16':
         raise SystemExit(f"unsupported interleave output={el.get('output')}")
 
@@ -77,6 +89,47 @@ def interleave_bytes(zf, el):
     out = bytearray(len(lo) * 2)
     out[0::2] = lo
     out[1::2] = hi
+    return out
+
+
+def interleave_generic(zf, el, width):
+    """Any output width, driven by the map strings rather than by special cases."""
+    parts = []
+    for p in el:
+        if p.tag != 'part':
+            raise SystemExit(f"unsupported element inside interleave: {p.tag}")
+        m = p.get('map')
+        if m is None or len(m) != width:
+            raise SystemExit(f"map={m} is not {width} characters")
+        parts.append((m, part_bytes(zf, p)))
+
+    # Every part must cover the same number of output words.
+    words = None
+    for m, data in parts:
+        taken = sum(1 for c in m if c != '0')
+        if taken == 0:
+            raise SystemExit(f"map={m} selects no bytes")
+        if len(data) % taken:
+            raise SystemExit(f"part length {len(data)} is not a multiple of {taken}")
+        w = len(data) // taken
+        if words is None:
+            words = w
+        elif words != w:
+            raise SystemExit(f"interleave parts cover {words} and {w} words")
+
+    out = bytearray(words * width)
+    for m, data in parts:
+        taken = sum(1 for c in m if c != '0')
+        # Map characters run most-significant output byte first, and the DIGIT
+        # names which byte of the part supplies it — 1-based. Using a running
+        # counter instead is identical when a part supplies one byte and
+        # inverted when it supplies two, which is exactly how copro_tables came
+        # out byte-swapped while copro_data was right.
+        for pos, c in enumerate(m):
+            if c == '0':
+                continue
+            obyte = width - 1 - pos
+            out[obyte::width] = data[int(c) - 1::taken]
     return out
 
 
