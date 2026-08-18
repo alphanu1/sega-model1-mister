@@ -1931,3 +1931,52 @@ traces, frame renders, and months of use. It was found in one run by diffing aga
 the oracle on real code. Per-opcode verification cannot find an instruction whose
 *operands* are transposed, because the test feeds operands the same way the
 implementation reads them.
+
+## Next divergence: a byte READ of the GLUE irq_mask returns 0 — 2026-08-18
+
+With the OUT fix in, the write-trace diff advances from write 28,698 to **77,904**
+— the fix genuinely moved memory agreement a long way. The next difference is a
+different KIND of bug: same address, same PC, **different data**.
+
+```
+MAME:  e00002 00fd fe01fd
+OURS:  e00002 0000 fe01fd
+```
+
+The code is a read-modify-write of the interrupt mask:
+
+```
+FE01EF: movea.b E00000, R0
+FE01F6: mov.b   2[R0], R2      ; read irq_mask
+FE01FA: clr1    #1, R2         ; clear bit 1
+FE01FD: mov.b   R2, 2[R0]      ; write back
+```
+
+MAME writes `0xfd` = `0xff` with bit 1 cleared. We write `0x00`, so **our read
+returned `0x00`**.
+
+And the register genuinely holds `0xff` — both machines write it identically during
+boot, and our own trace confirms it:
+
+```
+ours:  WRT e00002 00ff 01 fe003f
+MAME:  e00002 00ff 00ff fe003f
+```
+
+`m1_glue`'s read path is correct on inspection (`3'd1: rdata = {8'd0, irq_mask}`),
+and the following write at `fe0045` targets the HIGH byte (`be=02`), which the
+`be[0]` guard correctly ignores. So the value is there and the read loses it —
+a byte-lane extraction on the read path is the obvious suspect, since `0xE00002` is
+even and the byte wanted is the LOW one.
+
+**Not yet chased.** Recorded with the evidence so it can be picked up directly.
+
+### On the IN/OUT framing, corrected
+
+The `in`/`out` I/O-space problem was **already known and already half-fixed** —
+`v60.sv`'s header records that a faked IN "left the CPU polling a constant forever"
+and that they are real bus accesses now. Today's contribution is narrower than it
+was first presented: that repair got **IN** right and left **OUT** with its operands
+transposed. The claim that `findings.md`'s "the V60 never reads the coprocessor
+back" needed correcting is also softer than stated — that entry measured the program
+space, and the header already noted `model1_io` maps the coprocessor's registers.
