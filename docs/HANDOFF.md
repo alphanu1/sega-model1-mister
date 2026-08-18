@@ -132,6 +132,16 @@ reasons; speed is not one.
 
 ### Open, in order
 
+0. **DEADLOCK: the TGP waits for a command, the V60 waits for a result.** With the ST
+   and `brul` fixes in, the coprocessor round-trip works (`returns=20`, `pops=20`) and
+   then both sides stop. Identical state at 600 M and 1.5 G cycles — `TGP retires=501
+   pc=0492`, `fifo_rd=1` on an empty input FIFO, V60 spinning at `fed5a4` polling the
+   output FIFO. **This is further back than the pre-fix core reached**, which got to
+   `ff7d7e` with tilemap 1's 648 category-1 tiles — because it was ignoring a
+   coprocessor that never answered. Most likely missing piece: **`copro RAM
+   writes=0`** while the reference's V60 reads `0xd20000` 148,896 times per 600
+   frames. **Do not flash the 20:22 build**; simulation already predicts the result.
+
 0. **A measured CPI gap of 3.2x, and it is NOT in the V60.** The reference completes
    11,506 iterations of the `fe1433` wait loop where we complete 3,619. `make m1_boot`
    now breaks the cycles down: **65% have a bus request outstanding** (data 38%,

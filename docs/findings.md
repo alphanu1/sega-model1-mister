@@ -2501,3 +2501,47 @@ the Model 1 and Model 2 projects than the core itself.
 The split is still worth doing for the reasons it was proposed. It just is not the
 lever on this number, and it would have been easy to spend the effort there and find
 that out afterwards.
+
+## The TGP fixes expose a deadlock: each side waits for the other — 2026-08-18
+
+With the ST register and `brul` implemented, the coprocessor round-trip works for the
+first time — and the core then **stops further back than it did before**.
+
+    600 M cycles   pc fed5a4  TGP retires=501 pc=0492  pushes=71 returns=20 pops=20
+    1.5 G cycles   pc fed5a4  TGP retires=501 pc=0492  pushes=71 returns=20 pops=20
+
+**Identical.** The TGP retired nothing between 150 M and 375 M CPU cycles while the
+V60 executed 8.8 M more instructions, all of them spinning at `fed5a4`. 862 frames,
+well past the frame 276 the reference needs — this is a deadlock, not slow progress,
+and an earlier "it is just pacing" reading of the 600 M run was wrong.
+
+    TGP stuck? io_rd=0 io_wr=0 io_ack=0  fifo_rd=1  fifo_wr=0
+
+`fifo_rd=1`: the TGP is blocked reading a command from an **empty input FIFO**, while
+the V60 polls the **output FIFO** at `fed5a4` for a result. Each waits for the other.
+The unimplemented `bsul` memory form is not involved — its warning never fired.
+
+### This is a regression, and the fixes are still right
+
+Before them the core reached `ff7d7e` with tilemap 1 holding its 648 category-1
+tiles, `[5006] = 0x2000` and 96 row-mask words. It got there **because the V60 was
+ignoring a coprocessor that never answered anything**. The fixes moved us from
+"coprocessor absent, so the game skips it" to "coprocessor present but incomplete, so
+the game waits for it" — the standard hazard of a partial implementation, and not a
+reason to revert work that is verified against the reference instruction for
+instruction.
+
+### The most likely missing piece
+
+`copro RAM writes=0`, while `tools/mame_v60_iospace.lua` measured the reference's V60
+reading `0xd20000` — the coprocessor RAM data port — **148,896 times per 600 frames**,
+second only to the output FIFO itself. That path is not implemented here, and a
+coprocessor whose RAM the host can neither fill nor read back is a plausible reason
+the exchange stops after twenty results.
+
+### Do not flash the 2026-08-18 20:22 build
+
+Simulation predicts the deadlock, so a hardware round trip would only confirm what is
+already known and would look like a step backwards on screen. Fix the copro RAM path
+first. The `.rbf` is kept because its resource numbers are wanted — 29,536 ALM,
+452 M10K, +0.301 ns — but it is not an improvement to run.
