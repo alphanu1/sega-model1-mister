@@ -28,7 +28,7 @@ Kept as a table because the pattern is the point, not the individual entries.
 |---|---|---|
 | where do the inputs live | a mailbox at DPRAM `0x100` | `0x00`-`0x0e`, polled every frame |
 | why is most of the 2D missing | the row mask, then the window mode | neither — the V60 never gets that far |
-| does the V60 read the coprocessor back | it must, to collect results | **never**, in 2,500 accesses |
+| does the V60 read the coprocessor back | it must, to collect results | **constantly, 710,722 FIFO reads per 600 frames** — see the correction below. The "never" here was a census of the wrong address space. |
 | what blocks the coprocessor | the math units returning zero | the **data ROM**, read before any math unit |
 | how deep are the coprocessor FIFOs | 64 seemed like sensible slack | **16**, and full halts the CPU |
 
@@ -934,10 +934,15 @@ advancing `fout_rd`. The TGP's own consumption is
 `if (fifo_in_pop && !fin_empty) fin_rd <= fin_rd + 1'd1` and **was not counted at
 all**.
 
-So a zero there is **correct behaviour**, and this file already said so: *"does the
-V60 read the coprocessor back — **never**, in 2,500 accesses."* The row was built
-on a wrong assumption about what the signal meant, and then its expected value was
-read as a fault.
+The row was built on a wrong assumption about what the signal meant, and then its
+expected value was read as a fault.
+
+**But "a zero there is correct behaviour" — which this entry originally concluded,
+citing *"does the V60 read the coprocessor back — never, in 2,500 accesses"* — is
+ITSELF WRONG, and that is corrected further down: the V60 reads the coprocessor
+back constantly, through its I/O space. A zero in `dbg_fifo_pops` is a real gap.**
+Two wrong readings of the same counter, in opposite directions, from two different
+mistakes.
 
 **The trace shows the opposite of the claim.** With the FIFO read strobe added:
 
@@ -2077,3 +2082,45 @@ Also found while checking the baseline: `m1_uart_tx` and its testbench existed w
 saw them — while CLAUDE.md's baseline listed `m1_uart_tx: checks=69` as though it
 had. Now wired in. The module stays instantiated nowhere by intent; it is parked
 for hardware monitoring if that is ever needed.
+
+## CORRECTED: "the V60 never reads the coprocessor back" — 2026-08-18
+
+This was recorded as a measurement, carried into `CLAUDE.md`'s table of things
+reasoning got wrong, quoted in `docs/debug-overlay.md` row `03` to justify reading
+`dbg_fifo_pops`'s zero as healthy, and written into `m1_copro_if.sv`'s own comments.
+**It is false.**
+
+`tools/mame_v60_iospace.lua`, 600 frames of the reference:
+
+    V60 I/O SPACE: 859,618 reads, 5 writes
+      reads by address:   d80000  710,722      the coprocessor output FIFO
+                          d20000  148,896      coprocessor RAM data
+      reads by PC:        fed5a4  138,224
+                          ff850c   35,924  ...
+
+About **1,433 I/O reads a frame**. The first ones appear at frame 9, from
+`pc=ff9754` — the `in.w [R23], R2` that `v60_trace` had just walked into.
+
+**Why the original census returned zero: it looked at the program space.**
+`model1.cpp` maps the coprocessor interface into `AS_IO` *and* program space with
+identical addresses (lines 1016-1019 and 1033-1036), but the game reaches it with
+`in.w`/`out.w`, so all the traffic is in `AS_IO`. A census of the other space sees
+nothing and **that nothing reads exactly like an answer**.
+
+There is a second reason it went unchallenged: for much of this project our own V60
+faked `IN`, returning a constant, so our core genuinely made zero readback accesses.
+The measurement of the reference and the behaviour of our stub agreed, which made
+the wrong conclusion look confirmed from two directions. `IN` is real now (and `OUT`
+had transposed operands until today), so that agreement is gone.
+
+**When a measurement says "never", check that the instrument could have seen it.**
+And when a measurement of the reference agrees with a known stub in our own core,
+that is not corroboration.
+
+### What it means for M2
+
+Our core's `TGP->V60 returns=0` and `V60 pops=0` are therefore **gaps to close, not
+properties to preserve**. `m1_boot BOOT_CYCLES=600000000` has the TGP retiring
+48,356 instructions and pushing nothing back, with `copro RAM writes=0`, while the
+reference's V60 is reading results 1,433 times a frame. That is the next thing in
+front of the 2D question, not behind it.

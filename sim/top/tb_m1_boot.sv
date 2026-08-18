@@ -659,7 +659,13 @@ initial begin
         for (i = 0; i < 2048; i = i + 1)
             if ({main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]} != 0)
                 nz = nz + 1;
-        $display("BOOT: row mask 0x6000: %0d/2048 nonzero (MAME sees 72)", nz);
+        // THE REFERENCE WRITES NO MASK CONTENT UNTIL FRAME 276, measured with
+        // tools/mame_mask_writers.lua: the first non-zero write is pc=fc4076 into
+        // word 0x6160, line 88. At BOOT_CYCLES=150000000 this run is 86 frames, so
+        // a zero here says the run is short, NOT that the core is wrong — and it
+        // was read as a defect for exactly that reason. 600000000 reaches frame
+        // 345 and our core has 96 words; the reference has 528 by frame 900.
+        $display("BOOT: row mask 0x6000: %0d/2048 nonzero (reference: none before frame 276, 528 by frame 900)", nz);
     end
 
     $display("BOOT: TGP data reads=%0d tables=%0d  first two data words: %08h %08h (MAME: 00000030 00012e00)",

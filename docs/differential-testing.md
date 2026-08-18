@@ -97,6 +97,11 @@ Two habits follow:
 
 ## Method notes that cost time
 
+- **A measurement that agrees with your own stub is not corroboration.** "The V60
+  never reads the coprocessor back" survived because the reference census (of the
+  wrong address space) matched our core's faked `IN`, which returned a constant and
+  made no accesses at all. Two sources, one of them a stub, both saying zero.
+
 - **Check what a counter increments on, not what its name suggests.** `dbg_fifo_pops`
   counted the V60 reading results, not the TGP taking commands; its correct zero
   was read as a stall and produced a whole wrong diagnosis.

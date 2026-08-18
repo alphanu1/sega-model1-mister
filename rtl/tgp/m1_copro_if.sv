@@ -130,10 +130,20 @@ module m1_copro_if #(
 
   // THE TGP TAKING A COMMAND. Counted because nothing counted it, and the gap
   // produced a confident wrong diagnosis: dbg_fifo_pops above counts the V60
-  // reading RESULTS out of the output FIFO, which findings.md measured as never
-  // happening — 0 in 2,500 accesses — so its zero is correct behaviour and was
-  // read as "the coprocessor never drains its input". The two are opposite ends
-  // of the interface and only one of them was instrumented.
+  // reading RESULTS out of the output FIFO, and its zero was read as "the
+  // coprocessor never drains its input". The two are opposite ends of the
+  // interface and only one of them was instrumented.
+  //
+  // THE JUSTIFICATION THAT USED TO SIT HERE WAS WRONG. It said dbg_fifo_pops's
+  // zero "is correct behaviour" because findings.md had measured the V60 as never
+  // reading the coprocessor back — 0 in 2,500 accesses. That census was of the
+  // PROGRAM space; the game uses in.w, so the traffic is in the V60's I/O space,
+  // where the reference reads 0xd80000 710,722 times per 600 frames. It agreed
+  // with our own faked IN, which returned a constant and made zero accesses, so
+  // the wrong conclusion looked confirmed from two directions at once.
+  //
+  // A ZERO HERE IS A GAP TO CLOSE, NOT A PROPERTY TO PRESERVE. See findings.md,
+  // "CORRECTED: the V60 never reads the coprocessor back".
   output logic [15:0] dbg_fifo_drains
 );
 

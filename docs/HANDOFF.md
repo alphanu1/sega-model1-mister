@@ -32,8 +32,44 @@ make v60_trace          # instruction streams, ours against MAME's
 5. **V60 `OUT` had its operands transposed** — the immediate became the address.
 6. **The GLUE decode aliased the whole `0xe0` page** onto sixteen bytes, clearing
    `irq_mask` moments after the game set it.
+7. **`m1_ioboard`'s handshake latency was a guess, 64 cycles.** Measured: the
+   reference takes **38,577 us = 740,684 cycles** of the 19.2 MHz domain, answers
+   **once**, and then never clears the flag again while the V60 doorbells it every
+   frame. One number reproduces both, because the doorbell re-arms the deadline
+   faster than it expires. `tools/mame_iohandshake.lua`, `tools/mame_flag_state.lua`.
+8. **Six wrong bytes in the I/O board's identity block**, from a dump taken while
+   the Z80 was still filling the window. One of them, offset `0x0b`, is copied to
+   `0x40DC8B` and tested at `FF9737` to decide whether the game uses a coprocessor
+   path at all — so we were skipping it. `tools/mame_idblock.lua`.
+9. **`dbg_pc` was published on entering `S_DECODE`**, above the interrupt check, so
+   a preempted instruction's PC appeared in the trace as though it had run.
+
+### Instruments built or repaired on 2026-08-18
+
+`tools/v60_collapse.py` collapses periodic wait loops in a PC trace and reports the
+iteration counts instead of dropping them — without it, a two-address poll loop
+reads as a divergence. Seven Lua instruments were added: `mame_iohandshake`,
+`mame_flag_state`, `mame_dpram_census`, `mame_scroll_census`, `mame_tileram_writes`,
+`mame_mask_writers`, `mame_idblock`, `mame_watch_byte`.
+
+**Four of the divergences chased today were the instrument, not the design** — see
+`docs/differential-testing.md`. Two more measurements retired suspicions rather
+than confirming them: the per-line H-scroll table is never reached (`hscr` bit 15
+never set in 2,000 frames) and the row mask is not written by the reference until
+**frame 276**, so `m1_boot`'s 86-frame run was never long enough to say anything
+about it.
 
 ### Open, in order
+
+0. **`[5002]` — tilemap 2's H-scroll — is zero here and moving in the reference.**
+   That is the missing scrolling, measured on both sides: the reference changes it
+   on 1,344 of 2,000 frames (`000b -> 000e -> 0101 -> 01dc`), and `m1_boot` at
+   `BOOT_CYCLES=600000000` (frame 345) reports `[5002]=0000`. It is the most
+   specific open difference and the likeliest single cause of what is on screen.
+   Suspected chain, not yet confirmed: block offset `0x0b` was 0, so we branched
+   past `FF9741`, which writes `0x1000000` and the float `0x3F400000` to a port and
+   reads a result back with `in.w` — a transform whose output is a plausible source
+   for that register. Re-run the 600M boot with fix 8 in and compare `[5002]`.
 
 1. **`make v60_trace` — re-run it.** It diverged at ~206,307 on the I/O board
    handshake at `0xC00040`, which turned out to be a **guessed constant in a
@@ -1053,7 +1089,7 @@ every case the measurement was available the whole time:
 |---|---|---|
 | where do the inputs live | a mailbox at DPRAM `0x100` | `0x00`-`0x0e`, polled every frame |
 | why is most of the 2D missing | the row mask, then the window mode | neither — the V60 never gets that far |
-| does the V60 read the coprocessor back | it must, to collect results | **never**, in 2,500 accesses |
+| does the V60 read the coprocessor back | it must, to collect results | **constantly — 710,722 FIFO reads per 600 frames, in the I/O space.** The "never" was a census of the program space, agreeing with our own faked `IN`. Corrected 2026-08-18. |
 | what blocks the coprocessor | the math units returning zero | the **data ROM**, read before any math unit |
 | how deep are the coprocessor FIFOs | 64 seemed like sensible slack | **16**, and full halts the CPU |
 
