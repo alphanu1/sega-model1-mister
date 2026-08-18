@@ -878,12 +878,23 @@ Do this before trusting the design on a second board or a different SDRAM
 module. It is also the honest explanation for why the derivation in
 `m1_sdram`'s header is correct term by term and still gives the wrong total.
 
-### 5. M4 — sound, over a UART rather than the I/O board
+### 5. M4 — sound, over the main board's uPD71051C serial port at 0xC40000
 
 Entirely unbuilt, and worth recording how it attaches because it is not
-obvious: the main board talks to the sound board through an **i8251 UART**, not
-through the I/O board or a shared latch. `model1.cpp` wires `m1uart`'s txd to
-`segam1audio`'s rxd and back, with `rxrdy`/`txrdy` driving `sound_ready_w`.
+obvious: the main board talks to the sound board through a **uPD71051C USART —
+i8251-compatible — mapped at `0xC40000`**, not through the I/O board or a shared
+latch. `model1.cpp:1014` maps it `umask16(0x00ff)`; `:1852` instantiates it; the
+clock is `16_MHz_XTAL / 2 / 16`, i.e. 31.25 kHz x 16, the standard Sega/MIDI sound
+data rate. MAME wires `m1uart`'s txd to `segam1audio`'s rxd and back, with
+`rxrdy`/`txrdy` driving `sound_ready_w`. `m1_decode` already asserts `sel_uart`
+for the `0xc4` page, so the decode side of this exists.
+
+**Do not confuse this with the other two UARTs in the repo.** This one is arcade
+hardware on the main board. `rtl/io/m1_uart_tx.sv` is a debug printf channel into
+the HPS's `ttyS0`, instantiated nowhere and parked for hardware monitoring. The
+DE10-Nano's physical UART header is a third thing. The one-line summaries in
+`README.md` and `CLAUDE.md` used to say only "a UART", which read as though M4
+needed the MiSTer's; both now name the chip and the address.
 
 The sound board itself is a 68000, a YM3438 and two MultiPCMs, with its own ROM
 regions (`M1AUDIO_CPU_REGION`, `M1AUDIO_MPCM1/2_REGION`). `tools/gen_mra.py`

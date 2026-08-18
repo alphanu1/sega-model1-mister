@@ -21,7 +21,7 @@ NetMerc.
 | M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls; segas24 window/split-scroll mode still owed |
 | M2 — geometry pipeline | **in the design and running real microcode on hardware.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built; the four math units and the polygon-list capture are not |
 | M3 — rasterizer and video | fill path built and measured; band buffer, binning, writeback and scanout not built |
-| M4 — sound | not started — 68000, YM3438 and two MultiPCMs, over a UART rather than the I/O board |
+| M4 — sound | not started — 68000, YM3438 and two MultiPCMs on a separate sound PCB, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
 what to do next, and the failure modes that have cost time.
