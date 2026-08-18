@@ -221,6 +221,7 @@ m1_integrated core (
     .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
     .dbg_tgp_unimpl(f_tgp_unimpl),
     .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
+    .dbg_copro_pops(f_pops),
     .dbg_layer_px(f_layer_px), .dbg_ctrl(f_ctrl),
     .dbg_layer_have(f_have_rtl),
     .dbg_tram_writes(f_tram_wr),
@@ -259,6 +260,10 @@ reg [31:0] ucode [0:2047];
 wire        tgp_mem_req;
 wire [24:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
+// POPS is the question: on hardware the V60 pushes and the TGP never takes one,
+// and a full 16-deep FIFO halts the CPU. m1_tgp's own suite pops 11 of 11 on this
+// microcode, so if the whole system pops here the fault is hardware-only.
+wire [15:0] f_pops;
 wire        f_tgp_unimpl;
 wire [17:0] f_layer_px [4];
 wire [15:0] f_ctrl [2];
@@ -377,8 +382,8 @@ task automatic report_census;
                  f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                  496 * 384);
         $display("FRAME: window ctrl  pair01=%04h pair23=%04h", f_ctrl[0], f_ctrl[1]);
-        $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d returns=%0d",
-                 f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_returns);
+        $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d pops=%0d returns=%0d",
+                 f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
     end
 endtask
 
@@ -511,12 +516,26 @@ always @(posedge clk) begin
             // reads as the frame that just finished.
             if (TRACE_FRAMES) begin
                 tram_content_census();
-                $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d rtl_have=%0d,%0d,%0d,%0d wr=%0d,%0d,%0d,%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
+                $display("F%0d bd=%0d/%0d win=%0d,%0d,%0d,%0d have=%0d,%0d,%0d,%0d rtl_have=%0d,%0d,%0d,%0d wr=%0d,%0d,%0d,%0d tgp=%0d/%0d/%04h io=%04h/%0d%0d%0d tbl=%0d%0d dat=%0d%0d frd=%0d fwr=%0d ctrl=%04h,%04h irq=%0d/%0d psw=%08h ie_ever=%0d pc=%06h",
                          frames, bd_cnt, vis_cnt,
                          f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                          tm_have[0], tm_have[1], tm_have[2], tm_have[3],
                          f_have_rtl[0], f_have_rtl[1], f_have_rtl[2], f_have_rtl[3],
                          f_tram_wr[0], f_tram_wr[1], f_tram_wr[2], f_tram_wr[3],
+                         f_pushes, f_pops, f_tgp_pc,
+                         // WHAT THE COPROCESSOR IS STUCK ON. It sits at pc=0049
+                         // with a command queued and never pops, in simulation
+                         // and on the board alike, so the question is which
+                         // external access is not completing.
+                         core.main.dbg_tgp_io_addr, core.main.dbg_tgp_io_rd,
+                         core.main.dbg_tgp_io_wr,   core.main.dbg_tgp_io_ack,
+                         core.main.tgp_tbl_req,     core.main.tgp_tbl_ack,
+                         core.main.tgp_dat_req,     core.main.tgp_dat_ack,
+                         // frd distinguishes the two ways pops can stay zero:
+                         // the TGP not asking for a word, or asking and the
+                         // handshake failing. fifo_in_valid is !fin_empty, so
+                         // with a command queued it must be high.
+                         core.main.dbg_tgp_fifo_rd, core.main.dbg_tgp_fifo_wr,
                          f_ctrl[0], f_ctrl[1], irq_raises, irq_acks,
                          core.main.cpu.psw, ie_ever, core.dbg_pc);
                 // 32,768 reads, so not on every frame.

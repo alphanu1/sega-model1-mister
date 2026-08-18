@@ -873,3 +873,52 @@ knew about two of the three regions. Nothing checked them against each other, an
 the difference presented as a hardware bug for two sessions. The overlay row that
 finally caught it exists only because the user asked why a missing ROM file would
 not produce an error.
+
+## The coprocessor stall REPRODUCES IN SIMULATION — 2026-08-18
+
+The data ROM was necessary and **not sufficient**. With `copro_data` and
+`copro_tables` both present, `make m1_frame FRAME_TRACE=1` settles from frame 85
+onwards at:
+
+```
+F95 ... tgp=1/0/0049 io=0000/000 tbl=00 dat=00 ... pc=fe02bc
+        ^^^^^^^^^^^^ pushes=1, pops=0, TGP pc = 0x0049
+```
+
+**`0x0049` is exactly the PC the board reports**, in two videos minutes apart. So
+the stall is not a hardware effect at all and no board is needed to work on it.
+
+**And it is not waiting on memory.** `io=0000/000` is the coprocessor's IO port
+idle with no read, write or ack; `tbl=00 dat=00` are the table and data-ROM ports
+with no request outstanding. It sits at `0x49` with a command queued in the input
+FIFO and simply does not take it.
+
+That matters because it eliminates the whole class of explanation the data ROM
+belonged to. The remaining possibilities are narrow:
+
+- the TGP never asserts its FIFO read at `0x49` — it is doing something else
+- it asserts it and the handshake fails
+
+`m1_copro_if` drives `fifo_in_valid = !fin_empty` and the TGP pops on
+`fifo_rd && fifo_in_valid`, so with one word queued `valid` must be high. And
+`m1_tgp`'s own suite pops **11 of 11** when its valid is driven. Both halves work
+in isolation, which points at what the microcode is actually executing at `0x49`
+rather than at the plumbing.
+
+**Note the push counts differ between board and simulation**: the board's
+saturates (`FFF`, and `010` = the full 16-deep FIFO once the CPU halted), while
+simulation pushes **once** and stops. Same stall, different amount of work offered
+before the CPU gives up. Not yet explained.
+
+### What this says about the earlier fix
+
+Loading `copro_data` was still right — `tb_m1_frame`'s own header records that
+stopping at the V60 image "leaves the TGP reading 0xFFFF and the V60 stalls" — but
+it was not the cause of the teardown. The teardown is this stall, and it was
+present in simulation the whole time behind a push count too low to fill the FIFO.
+
+**M0 exit criterion 2 is the relevant gap.** `mb86233_core`'s baseline says
+"microcode-driven lockstep still owed": every opcode is fuzz-verified against MAME
+individually, and the core has **never been run in lockstep on real microcode**.
+A single wrong opcode on the path through `0x49` would produce exactly this and
+would be invisible to every test that currently passes.
