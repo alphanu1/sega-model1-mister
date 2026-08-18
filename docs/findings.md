@@ -1489,3 +1489,73 @@ SDRAM_CLK** rather than `~clk_sys`, which is what gives a tunable, defined captu
 window and is what other MiSTer cores do. Cutting logic depth would not have helped,
 and the plan in the entry above — register the outputs, cut the depth feeding sd_a —
 addresses a real but much smaller problem.
+
+## Constraining the SDRAM: what was learned, and why it is opt-in — 2026-08-18
+
+Three builds, ~75 minutes, and the honest outcome is a smaller result than the
+attempt.
+
+### The one number worth keeping
+
+With **only the output side constrained** the build completes and reports:
+
+```
+sdram_clk   -0.150 ns   TNS -0.221
+```
+
+Our commands and addresses reaching the memory are marginally late. Small, real,
+and on a path the framework is already trying to improve — `Template.qsf` asks for
+`Fast Output Register=ON` on `SDRAM_*`, and ours are **refused**:
+
+```
+Warning (176279): Can't pack register node "sd_a[8]" into I/O pin "SDRAM_A[8]".
+  The node cannot simultaneously use clear and load signals.   m1_sdram.sv:449
+```
+
+`sd_a` is reset to `'0` in an `always_ff @(posedge clk or negedge rst_n)` **and**
+conditionally loaded, and a Cyclone V I/O register does one or the other. So the
+output registers sit in the fabric paying routing delay to the pin, when the
+intended design puts them in the I/O cell.
+
+**That is a real, bounded fix**: split the pin registers into their own `always_ff`
+without an async reset. Not attempted here — it changes a controller with a
+74,729-check suite at the end of a long session, and it needs its own build and
+board test.
+
+### The read path could not be modelled, and the tool crashed trying
+
+`SDRAM_DQ -> dq_r` reports **-7.192 ns** on a path with 2.4 ns of delay and one
+logic level. That is a mis-model, not a failure: `dq_r` registers the pin every
+cycle and a tag pipeline selects which sample to use, at a depth chosen CL+2..CL+5
+from the OSD. **That selectable depth is the read phase.** The data is allowed to
+arrive later by design.
+
+The correct expression is a multicycle, and **Quartus 17.0's FITTER SEGFAULTS on
+one** — `Fatal Error: Segment Violation`, twice, in both the
+`-from <ports> -to <registers>` form and the conventional clock-to-clock form.
+Twenty-five minutes per attempt to discover.
+
+### So the constraints are OPT-IN and default OFF
+
+`export MODEL1_SDRAM_SDC=1`. Default builds emit the text but skip it, so they stay
+identical to the known-good bitstream.
+
+Leaving them on by default would put a **-7.192 ns known false alarm** at the top of
+every timing report, which would bury a genuine regression. A report nobody can
+trust is worse than no report.
+
+### What this did NOT establish
+
+Two claims made earlier today and withdrawn: that the output paths "need 12.9 ns and
+have 6.25 ns", and that the interface is "failing by seven nanoseconds and always
+was". Neither survives reading the report properly. What survives is narrower:
+
+- the output side is marginally late, `-0.150 ns`, with a known and specific cause
+- the read side has never been analysed at all and still is not
+- `SDRAM_CLK = ~clk_sys` gives the read half a period, which is genuinely little
+  margin, but whether it fails is still unmeasured
+
+**Next, in order**: the `sd_a` reset split so the outputs can pack into I/O cells
+(bounded, testable, one build); then the read path on Quartus 24.1, which is
+installed and may not crash on a multicycle; and only then any thought of a
+phase-shifted PLL output for `SDRAM_CLK`.

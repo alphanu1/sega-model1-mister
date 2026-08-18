@@ -110,6 +110,29 @@ cat > "$stage/Model1.sdc" <<'EOF'
 
 # ---------------------------------------------------------------- the SDRAM
 #
+# OPT-IN, DEFAULT OFF: export MODEL1_SDRAM_SDC=1 to emit these.
+#
+# They are correct as far as they go and they are NOT usable yet, because the read
+# path cannot be modelled without a multicycle and Quartus 17.0's FITTER SEGFAULTS
+# on one — "Fatal Error: Segment Violation", twice, in both the -from <ports> -to
+# <registers> spelling and the conventional clock-to-clock one. Twenty-five minutes
+# each to find out.
+#
+# Without the multicycle the build completes and reports clk_sys at -7.192 ns on
+# SDRAM_DQ -> dq_r, which is a MIS-MODELLED path rather than a real failure: dq_r
+# registers the pin every cycle and a tag pipeline picks the sample, at a depth
+# selectable CL+2..CL+5 from the OSD. Leaving that in every report would bury a
+# genuine regression under a known false alarm, so it is off by default.
+#
+# What IS worth having from it: with only the output side constrained, sdram_clk
+# reported -0.150 ns. Small, real, and on the path the framework already tries to
+# improve — Template.qsf asks for Fast Output Register=ON on SDRAM_*, and ours are
+# REFUSED because sd_a is reset to '0 at m1_sdram.sv:449 while also being
+# conditionally loaded, which a Cyclone V I/O register cannot do. Fixing that needs
+# the pin registers split into their own always_ff without an async reset, which is
+# a real change to a controller with a 74,729-check suite and was not attempted at
+# the end of a long session.
+#
 # NOTHING CONSTRAINED THIS INTERFACE. Not sys_top.sdc, not this file — no
 # generated clock on the port, no output delay, no input delay. The fitter was
 # never told those paths matter and could never report them as bad, which is why
@@ -132,10 +155,14 @@ cat > "$stage/Model1.sdc" <<'EOF'
 # does. That the clock's own delay to the pin is a ROUTING RESULT is the deeper
 # fault and constraints cannot fix it; see docs/findings.md. This step is here to
 # measure the interface before changing how the clock is produced.
+if {[info exists ::env(MODEL1_SDRAM_SDC)]} {
 set sdram_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
 if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
     create_generated_clock -name sdram_clk -source $sdram_src -invert \
         [get_ports {SDRAM_CLK}]
+
+    set sys_clk_for_sdram [get_clocks -nowarn \
+        {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
 
     set sdram_out [get_ports -nowarn {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] \
                                       SDRAM_DQML SDRAM_DQMH SDRAM_nCS \
@@ -148,9 +175,38 @@ if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
     set_input_delay -clock sdram_clk -max 6.0 $sdram_in
     set_input_delay -clock sdram_clk -min 2.5 $sdram_in
 
+    # THE READ IS MULTICYCLE BY DESIGN, and leaving that out reported -7.192 ns on
+    # a path with 2.4 ns of delay and one logic level.
+    #
+    # dq_r registers the pin EVERY cycle and a tag pipeline selects which sample to
+    # use, at a depth of CL+2..CL+5 chosen from the OSD. That selectable depth IS
+    # the read phase. So the data is not required to arrive by the next clk_sys
+    # edge — it is allowed a further cycle, and the pipeline accounts for it.
+    # Without a multicycle, STA analyses the very next edge and reports a failure
+    # the design never intended to avoid.
+    #
+    # Two periods, not more: the capture register must still be stable at the edge
+    # the tag depth expects, so this describes the real requirement rather than
+    # relaxing it until the numbers look pleasant.
+    # Expressed CLOCK TO CLOCK. The -from <ports> -to <registers> form made
+    # Quartus 17.0's fitter die with "Fatal Error: Segment Violation at 0xc" —
+    # a tool crash, not a constraint error, and it takes twenty-five minutes to
+    # discover. Clock-to-clock is the conventional spelling and is what the STA
+    # engine wants.
+    if {[llength $sys_clk_for_sdram] > 0} {
+        set_multicycle_path -setup 2 -from [get_clocks sdram_clk] \
+                            -to $sys_clk_for_sdram
+        set_multicycle_path -hold  1 -from [get_clocks sdram_clk] \
+                            -to $sys_clk_for_sdram
+        post_message "Model1: SDRAM read capture is multicycle 2 (tag depth CL+2..CL+5)"
+    } else {
+        post_message -type error "Model1: clk_sys not found - read path left single-cycle"
+    }
+
     post_message "Model1: SDRAM interface constrained (tSU 1.5 / tHD 0.8 / tAC 6.0 / tOH 2.5)"
 } else {
     post_message -type error "Model1: SDRAM_CLK or the core PLL not found - constraints NOT applied"
+}
 }
 
 set sys_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
