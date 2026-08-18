@@ -555,6 +555,22 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// WHAT IS THE fe14xx LOOP POLLING? Our V60 writes wram 0x501408 only from
+// pc=fe1469, 2,607 times by frame 600, while the reference executes that address
+// exactly twice and fills the table from fe48d5/fef3b5 — which we never reach. So
+// we are stuck in a loop the reference passes through. This logs what the CPU
+// READS while its PC is in that region, which names the value we answer wrongly.
+integer lp_n = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && !core.main.m_we && core.main.m_ack
+        && core.dbg_pc[23:8] == 16'hFE14) begin
+        if (lp_n < 40)
+            $display("LOOPRD pc=%06h addr=%06h data=%04h", core.dbg_pc,
+                     {core.main.m_addr[23:1], 1'b0}, core.main.m_rdata);
+        lp_n = lp_n + 1;
+    end
+end
+
 integer irq_acks = 0, irq_raises = 0;
 reg irq_n_d = 1;
 // The V60 takes an interrupt only when PSW bit 18, IE, is set — it resets clear

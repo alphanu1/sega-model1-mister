@@ -1699,3 +1699,37 @@ not.
 `(cmd > log) &` inside a foreground tool call is killed when the call returns. The
 log ends at the first instruction fetches and the job reports success. Use the
 harness's own backgrounding, not a shell ampersand.
+
+## Localised: the same instruction computes a different address — 2026-08-18
+
+Our V60 writes wram `0x501408` **only** from `pc=fe1469`, always `data=0000`, and
+does it **2,607 times by frame 600**. The reference executes that address exactly
+**twice** and fills the table from `fe48d5` and `fef3b5`, which our CPU never
+reaches. So we are stuck in a loop around `fe14xx` that the reference passes
+through.
+
+Reads taken while the PC is in that region:
+
+```
+MAME:  pc=fe14f3  addr=40b906  -> 0100     addr=40ba06 -> 0280
+OURS:  pc=fe14f3  addr=400006  -> 0080
+```
+
+**The same instruction reads a different address**, and the difference is exactly
+`0xb900`. A pointer or index feeding that access is **zero in ours and 0xb900 in the
+reference**. Everything downstream follows: different state, `fe48d5`/`fef3b5` never
+reached, the scroll table never filled, and `ctrl` written as `0x0000`/`0x2000`
+instead of an animating `0x2xxx`.
+
+So the blue flash and the absent scrolling both trace to one wrong pointer.
+
+Ours also walks a ROM table at `0xfd26e0`-`0xfd26fe` in that loop — `00c5 0000 0000
+8000 0000 0080 0000 8657 00ff 136c 0050` — which is where the index most plausibly
+comes from.
+
+**Next**: find what writes the pointer. It is a register at the point of use, so the
+question is which earlier read supplied it — and both machines can be tapped at the
+same instruction, which is how this was narrowed in the first place.
+
+This supersedes the peripheral hunt: no peripheral answers differently, the game
+simply computes an address from state it built earlier.
