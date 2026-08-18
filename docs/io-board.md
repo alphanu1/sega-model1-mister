@@ -565,16 +565,47 @@ that window before the V60 reads it — not the V60, which is still spinning on
 the flag — so the board supplies it. Reading it as zeros is what kept our core
 looping at `fe1433` while every input byte underneath it was already correct.
 
-Its contents, measured:
+Its contents, **re-measured 2026-08-18** and confirmed stable at frames 10, 120
+and 900 (`tools/mame_idblock.lua`):
 
-    0x100: 53 45 47 41  1c 82 01 00  3e 9d ff 00  00 00 00 00
-    0x110: 00 01 01 01  00 01 01 ff  ff ff 03 00  00 00 00 00
-    0x120: 01 00 00 00  00 ... 00                 zero to 0x17f
+    0x100: 53 45 47 41  1c 82 01 00  88 9a ff 01  00 00 00 00
+    0x110: 00 01 01 01  00 01 01 ff  ff ff 01 02  00 00 00 00
+    0x120: 01 00 00 00  00 ... 00                 zero to 0x17b
+    0x17c: 02 00 00 00
 
 Bytes 0-3 are `"SEGA"` — the same signature the V60 writes at `0x1a`, returned
-so the exchange is symmetric. The remaining twenty-three non-zero bytes are
-version and configuration state and **are not decoded**; they are reproduced
-because the V60 requires them, not because they are understood.
+so the exchange is symmetric. Most of the remaining non-zero bytes are version and
+configuration state and are not decoded; they are reproduced because the V60
+requires them.
+
+**Offset `0x0b` is decoded, and it matters.** The V60 copies this whole window into
+work RAM at `0x40DC80` — `FE08DD`-`FE08F5`, 128 bytes, 256 instructions — and then
+tests `cmp.b #1, 40DC8B` at `FF9737`. That address is block offset `0x0b`. With `1`
+it falls into a block that writes `0x1000000` and the float `0x3F400000` to a port
+and reads a result back with `in.w`; with anything else it branches straight past
+it. So this byte gates a coprocessor path.
+
+### The first transcription of this block was taken mid-push
+
+The values above replace an earlier dump that was wrong in **six** bytes — `0x08`,
+`0x09`, `0x0b`, `0x1a`, `0x1b` and `0x7c`. It was taken from a single snapshot just
+after the handshake, while the Z80 was **still filling the window**, so it caught a
+partially written block.
+
+What makes this worth recording is how far the error travelled. The same reading
+became the RTL table in `m1_ioboard.sv`, the expected values in
+`tb_m1_iopublish.cpp` and the dump in this file. The testbench even carries a
+comment explaining that it types the table out separately from the RTL so that "a
+table checked against itself proves only that it is self-consistent" — **and that
+safeguard did not work, because typing one reading out twice is still one
+reading.** Three independent-looking artefacts, one measurement, one error.
+`tb_m1_iopublish`'s table also stopped at `0x120`, so it could not have expressed
+`0x7c = 0x02` even had the reading been right.
+
+**A single snapshot of a window another processor is filling is not a
+measurement.** Sample it more than once and check it has settled. That is now what
+the instrument does, and it is why the replacement is quoted with the frames it was
+confirmed at.
 
 `m1_ioboard` pushes this block at startup, ahead of the sweep and at full rate
 rather than the sweep's gap — 128 bytes at one per 2048 cycles would not be

@@ -25,8 +25,13 @@ wtap = sp:install_write_tap(0x70c000, 0x70dfff, "mw", function(offset, data, mas
     total = total + 1
     pcs[pc] = (pcs[pc] or 0) + 1
     addrs[w] = data
-    if #first < 24 then
-        first[#first+1] = string.format("  f=%-4d pc=%06x  word %04x <- %04x", frames, pc, w, data)
+    -- THE FIRST NON-ZERO WRITES ARE THE INTERESTING ONES. Most of the 28,432
+    -- writes are zeros, so a log of "the first writes" is a log of clearing.
+    -- Which frame the mask first gains content bounds how long a simulation has
+    -- to run before its absence means anything.
+    if data ~= 0 and #first < 20 then
+        first[#first+1] = string.format("  f=%-4d pc=%06x  word %04x (line %d) <- %04x",
+                                        frames, pc, w, (w & 0x7ff) >> 2, data)
     end
     return data
 end)
@@ -42,21 +47,28 @@ notif = emu.add_machine_frame_notifier(function()
         for i = 1, math.min(#ks, 10) do
             print(string.format("  pc=%06x  %d writes", ks[i], pcs[ks[i]]))
         end
-        local nz, words = 0, {}
+        -- ONLY THE NON-ZERO WORDS. Printing all 4096 buries the answer: most of
+        -- the reference's 28,432 writes are ZEROS, so the write count and the
+        -- end state say different things and it is the end state our tile RAM
+        -- census compares against.
+        local nz_lo, nz_hi, words = 0, 0, {}
         for w, v in pairs(addrs) do
-            if v ~= 0 then nz = nz + 1 end
-            words[#words+1] = w
+            if v ~= 0 then
+                words[#words+1] = w
+                if w < 0x6800 then nz_lo = nz_lo + 1 else nz_hi = nz_hi + 1 end
+            end
         end
         table.sort(words)
-        print(string.format("\n%d distinct words touched, %d currently non-zero", #words, nz))
-        print("current contents of the touched words:")
+        print(string.format("\nnon-zero: %d in 0x6000-0x67ff (pair 0/1), %d in 0x6800-0x6fff (pair 2/3)",
+              nz_lo, nz_hi))
+        print("the non-zero words:")
         local line = {}
         for _, w in ipairs(words) do
             line[#line+1] = string.format("%04x:%04x", w, addrs[w])
-            if #line == 6 then print("  "..table.concat(line, " ")); line = {} end
+            if #line == 8 then print("  "..table.concat(line, " ")); line = {} end
         end
         if #line > 0 then print("  "..table.concat(line, " ")) end
-        print("\nfirst writes seen:")
+        print("\nfirst NON-ZERO writes:")
         for _, v in ipairs(first) do print(v) end
         manager.machine:exit()
     end

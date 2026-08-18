@@ -215,7 +215,16 @@ module m1_ioboard #(
   // The board's identity block, as the reference presents it at DPRAM
   // 0x100-0x17f. Every byte here was read off MAME running the real Z80 against
   // the real ROM — see docs/io-board.md — rather than reasoned about, because
-  // only four of the twenty-seven non-zero bytes have a known meaning.
+  // only five of the twenty-three non-zero bytes have a known meaning.
+  //
+  // THE FIRST TRANSCRIPTION CAUGHT THE BLOCK MID-PUSH. It was dumped once, just
+  // after the handshake, while the Z80 was still writing — so six bytes were
+  // wrong and stayed wrong in the RTL, in tb_m1_iopublish's expected values and
+  // in docs/io-board.md together, because all three came from that one reading.
+  // Re-dumped at frames 10, 120 and 900 (tools/mame_idblock.lua) the block is
+  // stable and differs from what we had at 0x08, 0x09, 0x0b, 0x1a, 0x1b and 0x7c.
+  // A single snapshot of a window another processor is filling is not a
+  // measurement; sample it more than once and check it has settled.
   //
   // Bytes 0-3 are "SEGA", the same signature the V60 writes at 0x1a to announce
   // itself, returned here so the exchange is symmetric. The rest is version and
@@ -235,9 +244,17 @@ module m1_ioboard #(
       7'h04: blk_byte = 8'h1c;
       7'h05: blk_byte = 8'h82;
       7'h06: blk_byte = 8'h01;
-      7'h08: blk_byte = 8'h3e;
-      7'h09: blk_byte = 8'h9d;
+      7'h08: blk_byte = 8'h88;
+      7'h09: blk_byte = 8'h9a;
       7'h0a: blk_byte = 8'hff;
+      // 0x0b DECIDES WHETHER THE GAME USES THE COPROCESSOR. The V60 copies this
+      // whole window into work RAM at 0x40DC80 (FE08DD-FE08F5, 128 bytes) and
+      // then tests `cmp.b #1, 40DC8B` — block offset 0x0b — at FF9737. With 1 it
+      // falls into a block that writes 0x1000000 and the float 0x3F400000 to a
+      // port and reads back with `in.w`; with anything else it branches past it.
+      // We had no entry here, so we pushed 0x00 and skipped that path. Found by
+      // v60_trace at instruction 25,682.
+      7'h0b: blk_byte = 8'h01;
       7'h11: blk_byte = 8'h01;
       7'h12: blk_byte = 8'h01;
       7'h13: blk_byte = 8'h01;
@@ -246,8 +263,10 @@ module m1_ioboard #(
       7'h17: blk_byte = 8'hff;
       7'h18: blk_byte = 8'hff;
       7'h19: blk_byte = 8'hff;
-      7'h1a: blk_byte = 8'h03;
+      7'h1a: blk_byte = 8'h01;
+      7'h1b: blk_byte = 8'h02;
       7'h20: blk_byte = 8'h01;
+      7'h7c: blk_byte = 8'h02;
       default: blk_byte = 8'h00;
     endcase
   end
