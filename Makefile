@@ -30,7 +30,7 @@ SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_cdc_port := rtl/mem/m1_cdc_port.sv
 SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
-SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
+SRCS_TOP_CORE = rtl/io/m1_uart_tx.sv rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
   rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
@@ -185,7 +185,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_uart
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -256,6 +256,11 @@ test_palette:
 # made words 16+ alias onto rows 0-2 — the twelve-word build passed with seven
 # of the real instrument's nineteen rows wrong. 24 is what the top level
 # instantiates; keep them equal.
+test_uart:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_uart_tx \
+	  rtl/io/m1_uart_tx.sv sim/io/tb_m1_uart_tx.cpp -o tb_uart --Mdir obj_uart
+	./obj_uart/tb_uart
+
 test_diag:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_diag \
 	  -GNWORDS=12 -CFLAGS -DNWORDS_CFG=12 \

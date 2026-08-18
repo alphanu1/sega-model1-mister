@@ -179,7 +179,12 @@ module m1_integrated (
   output logic [15:0] dbg_copro_pops,
 
   // The TGP taking a command — see m1_copro_if.
-  output logic [15:0] dbg_copro_drains
+  output logic [15:0] dbg_copro_drains,
+
+  // Trace tap for the UART channel — see m1_main.
+  output logic        dbg_ctrlw,
+  output logic [15:0] dbg_ctrlw_data,
+  output logic [23:0] dbg_ctrlw_pc
 );
 
   logic [14:0] vid_tram_addr;
@@ -281,6 +286,8 @@ module m1_integrated (
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_copro_pops(dbg_copro_pops),
     .dbg_copro_drains(dbg_copro_drains),
+    .dbg_ctrlw(dbg_ctrlw), .dbg_ctrlw_data(dbg_ctrlw_data),
+    .dbg_ctrlw_pc(dbg_ctrlw_pc),
     .rom_bank(rom_bank)
   );
 

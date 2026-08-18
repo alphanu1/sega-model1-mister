@@ -58,6 +58,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_dec.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_xfer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_rom_loader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_uart_tx.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_fetch.sv

@@ -38,7 +38,7 @@ module emu
   // ------------------------------------------------------------- unused ports
   assign ADC_BUS  = 'Z;
   assign USER_OUT = '1;
-  assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+  assign {UART_RTS, UART_DTR} = 0;
   assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
   assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN,
           DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
@@ -409,6 +409,9 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_ucode_words;
   wire [15:0] dbg_copro_pops;
   wire [15:0] dbg_copro_drains;
+  wire        dbg_ctrlw;
+  wire [15:0] dbg_ctrlw_data;
+  wire [23:0] dbg_ctrlw_pc;
   wire [15:0] dbg_ucode_csum;
   wire        tgp_mem_req;
   wire [24:1] tgp_mem_addr;
@@ -461,8 +464,83 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_copro_pops(dbg_copro_pops),
-    .dbg_copro_drains(dbg_copro_drains)
+    .dbg_copro_drains(dbg_copro_drains),
+    .dbg_ctrlw(dbg_ctrlw), .dbg_ctrlw_data(dbg_ctrlw_data),
+    .dbg_ctrlw_pc(dbg_ctrlw_pc)
   );
+
+  // ------------------------------------------------------- the UART trace channel
+  //
+  // A printf out of the fabric. sys_top wires UART_TXD to the HPS UART's RECEIVE
+  // line, so what is written here lands on the Linux side. This port was tied to
+  // zero and unconsidered; the overlay's twenty-four rows cannot show SEQUENCE,
+  // and every question left on this core is about sequence.
+  //
+  // Read it on the board with the console's getty out of the way, since
+  // /proc/cmdline has console=ttyS0,115200 and it will eat the bytes:
+  //
+  //   kill $(pgrep -f 'agetty.*console'); cat /dev/ttyS0
+  //
+  // One record per CPU write to pair 2/3's window control:
+  //
+  //   C ffe466 2000\n      13 bytes, ~3 a second — nowhere near the 11.5 KB/s
+  //                          the line carries, so it cannot flood.
+  wire       u_full, u_ovf;
+  reg        u_wr;
+  reg  [7:0] u_din;
+
+  m1_uart_tx #(.CLK_HZ(80_000_000), .BAUD(115_200)) uart_tx (
+    .clk(clk_sys), .rst_n(rst_n),
+    .wr(u_wr), .din(u_din), .full(u_full), .overflow(u_ovf),
+    .tx(UART_TXD)
+  );
+
+  // The tap is in the CPU domain and the transmitter in clk_sys, so the strobe
+  // crosses as a toggle rather than a pulse — a one-cycle pulse in a 19.2 MHz
+  // domain can be missed entirely by an 80 MHz sampler only if it is narrower
+  // than a period, which it is not, but the toggle is free and cannot be wrong.
+  reg  ctrlw_tog_cpu;
+  always @(posedge clk_cpu) if (dbg_ctrlw) ctrlw_tog_cpu <= ~ctrlw_tog_cpu;
+  reg [2:0] ctrlw_sync;
+  always @(posedge clk_sys) ctrlw_sync <= {ctrlw_sync[1:0], ctrlw_tog_cpu};
+  wire ctrlw_evt = ctrlw_sync[2] ^ ctrlw_sync[1];
+
+  // Format: "C" pc(6) " " data(4) "\n" — 13 bytes, emitted one per clk_sys cycle
+  // into the FIFO, which is 256 deep and cannot be filled by a 3 Hz event.
+  reg  [3:0]  fmt;
+  reg  [23:0] fmt_pc;
+  reg  [15:0] fmt_data;
+  function [7:0] hexch(input [3:0] n);
+    hexch = (n < 4'd10) ? (8'h30 + {4'd0, n}) : (8'h41 + {4'd0, n} - 8'd10);
+  endfunction
+
+  always @(posedge clk_sys) begin
+    u_wr <= 1'b0;
+    if (!rst_n) fmt <= 4'd0;
+    else if (ctrlw_evt && fmt == 4'd0) begin
+      fmt      <= 4'd1;
+      fmt_pc   <= dbg_ctrlw_pc;
+      fmt_data <= dbg_ctrlw_data;
+    end else if (fmt != 4'd0) begin
+      u_wr <= 1'b1;
+      fmt  <= (fmt == 4'd13) ? 4'd0 : fmt + 4'd1;
+      case (fmt)
+        4'd1:  u_din <= "C";
+        4'd2:  u_din <= hexch(fmt_pc[23:20]);
+        4'd3:  u_din <= hexch(fmt_pc[19:16]);
+        4'd4:  u_din <= hexch(fmt_pc[15:12]);
+        4'd5:  u_din <= hexch(fmt_pc[11:8]);
+        4'd6:  u_din <= hexch(fmt_pc[7:4]);
+        4'd7:  u_din <= hexch(fmt_pc[3:0]);
+        4'd8:  u_din <= " ";
+        4'd9:  u_din <= hexch(fmt_data[15:12]);
+        4'd10: u_din <= hexch(fmt_data[11:8]);
+        4'd11: u_din <= hexch(fmt_data[7:4]);
+        4'd12: u_din <= hexch(fmt_data[3:0]);
+        default: u_din <= 8'h0a;
+      endcase
+    end
+  end
 
   // -------------------------------------------------------------- diagnostics
   //
