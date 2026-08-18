@@ -1020,3 +1020,66 @@ burst no sampled frame caught, or the content is not changing and the FETCH is
 reading somewhere else. That contradiction is the next thing to resolve, and it is
 resolvable in simulation — the blank state reproduces there (`ctrl=0000,0000`,
 `have=0,0,0,0`, `bd=190080`) at frames 328-332.
+
+## The blue detector in simulation was wrong, and the board never leaves boot
+## — 2026-08-18
+
+### The detector
+
+Blue frames were counted in simulation as `bd > 100000` — backdrop share. That is
+the wrong test and this file already said why: **the full-screen blue is tilemap 2
+drawn opaque over an empty map, and `bd` reads 0 while it happens.** The mechanism
+was written down and then the wrong counter was used to look for it anyway.
+
+The correct test is layer 2 covering the screen while its content census is empty:
+
+| test | blue frames of 407 |
+|---|---|
+| `bd > 100000` | 7 |
+| `win[2] > 150000 && rtl_have[2] == 0` | **289** |
+
+So "simulation shows no blue" was false. It is blue for most of boot.
+
+### What the correct test shows
+
+```
+frames 1-39     not drawing yet
+frames 40-328   BLUE, 289 frames contiguous
+frames 329+     picture, and it never returns
+```
+
+Over the full 2,478-frame run: **289 blue, 2,189 picture**, the blue one contiguous
+block during boot. The board oscillates between the same two states every 0.45 s,
+indefinitely.
+
+### And the PC separates them
+
+| | sim, blue | sim, picture | board |
+|---|---|---|---|
+| `pc` | `ffe59c` | `fe02bc` | **`ffe59c` always** |
+
+`0xffexxx` is the boot ROM; `0xfe02bc` is game code. **The board's V60 never leaves
+the boot state that simulation passes through in about five seconds.** It keeps
+re-running boot's screen build, which is why tilemaps 0/1 never accumulate the text
+and why the blue returns on a cycle.
+
+That reframes every symptom chased today. The missing text, the missing scrolling
+and the periodic blue are one thing: the machine is stuck in boot. The video path,
+the window modes, the memory and the coprocessor are all doing what they are told.
+
+**What is NOT the reason**, all measured today:
+
+- the coprocessor — microcode complete and correct, executing continuously,
+  draining thousands of commands, *including during the blank frames*
+- the copro data ROM and tables — now loaded, verified byte for byte
+- the command FIFO — drains saturated, so it is not full and not halting the CPU
+- the memory write path — row `1B` matches simulation exactly
+- a V60 reset — instruction fetches are monotonic across the blanks
+- input divergence — board idle values identical to the testbench's
+
+**The open question** is what boot waits on that the board does not get, given the
+I/O board is replying (`0B` climbs) and memory and the coprocessor both work. The
+PC row samples at the same point every frame so `ffe59c` is a frame-synchronised
+wait, not necessarily a hang — the useful next instrument is a PC histogram or a
+capture of the PC at the moment the screen tears down, which the frame-synchronised
+sample cannot give.

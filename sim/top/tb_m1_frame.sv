@@ -538,8 +538,14 @@ always @(posedge clk) begin
                          core.main.dbg_tgp_fifo_rd, core.main.dbg_tgp_fifo_wr,
                          f_ctrl[0], f_ctrl[1], irq_raises, irq_acks,
                          core.main.cpu.psw, ie_ever, core.dbg_pc);
-                // 32,768 reads, so not on every frame.
-                if (frames % 32 == 0) tram_block_census();
+                // 32,768 reads, so not on every frame — EXCEPT on a frame
+                // that came out mostly backdrop, which is the teardown this is
+                // chasing. rtl_have is the FETCHER's census and this one reads
+                // tile RAM directly, so the pair separates "the content was
+                // cleared" from "the content is there and the fetch went
+                // somewhere else". Those are different bugs.
+                if (frames % 32 == 0 || bd_cnt > (vis_cnt / 2))
+                    tram_block_census();
             end
             bd_cnt  = 0;
             vis_cnt = 0;
