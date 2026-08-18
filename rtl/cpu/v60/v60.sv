@@ -1803,11 +1803,27 @@ else if (ce) begin
         end
     end
 
-    // OUT: write op2's value to the I/O address in op1.
+    // OUT: write op1's VALUE to the I/O address in op2. THE OPERANDS WERE SWAPPED.
+    //
+    // MAME, op12.hxx opOUTB:
+    //     F12DecodeOperands(&ReadAM, 0, &ReadAMAddress, 2);
+    //     m_io->write_byte(m_op2, (uint8_t)m_op1);
+    //
+    // Address is op2, data is op1 — and IN is the OTHER WAY ROUND, which is how
+    // this was got wrong: opINB decodes its first operand with ReadAMAddress, so
+    // for IN op1 IS the address. f12_op1_is_addr already encodes that difference
+    // correctly and lists IN but not OUT, so op1 here has always held the value;
+    // only this state used it as an address.
+    //
+    // Found by tools/v60_trace.sh. The instruction streams matched MAME for
+    // 197,250 instructions, then memory diverged — `out.b #40, 10002[R0]` wrote to
+    // address 0x000040, the immediate, instead of sending 0x40 to port 0xC10002.
+    // Virtua Racing configures its I/O board through those ports during boot, so
+    // every one of them was lost.
     S_OUT_WR: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= cur_op[2:1];
-            dbus_addr <= op1; dbus_wdata <= op2val;
+            dbus_addr <= op2; dbus_wdata <= op1;
         end else if (dack) begin
             dbus_req <= 0; dbus_we <= 0; st <= S_NEXT;
         end

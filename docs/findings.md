@@ -1848,3 +1848,86 @@ same approach is what the TGP's outstanding M0 exit criterion needs — noting t
 `sim/tgp/mb86233_ref.cpp` is a hand TRANSCRIPTION of MAME's `execute_run`, so even
 the existing TGP lockstep compares against a copy of the oracle rather than the
 oracle itself.
+
+## A REAL V60 BUG: OUT had its operands swapped — 2026-08-18
+
+Found by `make v60_trace`, the tool built an hour earlier, on its first real use.
+
+The instruction streams match MAME for 197,250 instructions, so a **write** trace
+was diffed next. First difference at write 28,698:
+
+```
+MAME:                       OURS:
+680000 0000 fe010a          000000 0000 fe00c4   <- five writes MAME never makes
+                            000000 0000 fe00d1
+                            000000 0000 fe00de
+                            000040 0000 fe00eb
+                            00004e 0000 fe00fa
+                            680000 0000 fe010a
+```
+
+Those PCs are `out` instructions:
+
+```
+FE00B4: movea.h C00000, R0
+FE00C4: out.b   R1, 10002[R0]
+FE00EB: out.b   #40, 10002[R0]
+```
+
+MAME's program-space tap never sees them because `out` writes the **I/O space**. We
+wrote them to *memory*, at the wrong address: `out.b #40, ...` wrote to address
+`0x000040` — **the immediate had become the address**.
+
+### The oracle is unambiguous
+
+```cpp
+// op12.hxx
+uint32_t v60_device::opOUTB() {
+    F12DecodeOperands(&ReadAM, 0, &ReadAMAddress, 2);
+    m_io->write_byte(m_op2, (uint8_t)m_op1);      // address op2, data op1
+}
+uint32_t v60_device::opINB() {
+    F12DecodeFirstOperand(&ReadAMAddress, 0);     // for IN, op1 IS the address
+```
+
+**IN and OUT have opposite operand roles**, which is how it was got wrong. Our
+`f12_op1_is_addr` already encodes the difference correctly — it lists IN and not
+OUT — so `op1` always held the value; only `S_OUT_WR` used it as an address:
+
+```systemverilog
+dbus_addr <= op1; dbus_wdata <= op2val;   // was
+dbus_addr <= op2; dbus_wdata <= op1;      // is
+```
+
+### Verified
+
+```
+before:  000040 0000 fe00eb
+after:   c10002 0040 fe00eb
+```
+
+`out.b #40, 10002[R0]` with `R0 = 0xC00000` now sends `0x40` to port `0xC10002`.
+V60 unit suite still **29/29**, `make test` still green.
+
+**Virtua Racing configures its I/O board through those ports during boot**, so every
+one of those writes was being thrown at the wrong address instead.
+
+### What it did NOT fix
+
+`make v60_trace` still reports **DIVERGES at instruction 197,251**. At least one
+more difference remains. That is expected rather than disappointing: the tool
+measures whether a fix moved the boundary, and this one did not, so the next bug is
+independent of it.
+
+Note `0xC10002` is outside the DPRAM window our decode maps at
+`0xc00000`-`0xc00fff`, so those writes now go to an unmapped address and are
+discarded. Whether Model 1 has something there is the next question — MAME maps
+`model1_io` in that region.
+
+### The lesson, which is the point
+
+This bug survived: 29/29 V60 unit tests, every fuzz suite, a full `make test`, boot
+traces, frame renders, and months of use. It was found in one run by diffing against
+the oracle on real code. Per-opcode verification cannot find an instruction whose
+*operands* are transposed, because the test feeds operands the same way the
+implementation reads them.

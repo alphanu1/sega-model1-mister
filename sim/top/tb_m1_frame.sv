@@ -82,7 +82,12 @@ module tb_m1_frame #(
 
     // Emit one line per retired instruction, for tools/v60_trace.sh to diff
     // against MAME's own debugger trace. Off by default: it is a firehose.
-    parameter bit     PCTRACE    = 0
+    parameter bit     PCTRACE    = 0,
+
+    // Every CPU write, in order, with the PC that made it — the counterpart to
+    // PCTRACE. Identical instruction streams with different memory means a write
+    // went somewhere different, and this is what finds it.
+    parameter bit     WRTRACE    = 0
 );
 
 // Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
@@ -608,6 +613,16 @@ always @(posedge clk_cpu) begin
         $display("CMPOP #%0d a=%06h d=%04h", cmpn,
                  {core.main.m_addr[23:1], 1'b0}, core.main.m_rdata);
         cmpn = cmpn + 1;
+    end
+end
+
+integer wtn = 0;
+always @(posedge clk_cpu) begin
+    if (WRTRACE && core.main.m_req && core.main.m_we && core.main.m_ack
+        && wtn < 300000) begin
+        $display("WRT %06h %04h %02h %06h", {core.main.m_addr[23:1], 1'b0},
+                 core.main.m_wdata, core.main.m_be, core.dbg_pc);
+        wtn = wtn + 1;
     end
 end
 
