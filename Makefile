@@ -80,7 +80,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace
 
 all: test
 
@@ -570,6 +570,7 @@ m1_frame:
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GTRACE_FRAMES=$(FRAME_TRACE) \
+	  -GPCTRACE=$(V60_PCTRACE) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
 	./build/m1frame/m1frame
@@ -587,6 +588,10 @@ FRAME_CYCLES ?= 120000000
 # PC. This is how an alternating picture is diagnosed — a single captured frame
 # shows one side of a flash and looks either perfect or completely broken.
 FRAME_TRACE ?= 0
+
+# One line per retired V60 instruction, for tools/v60_trace.sh. A firehose; off
+# unless that script asks for it.
+V60_PCTRACE ?= 0
 
 # The ROM arrives over ioctl by default, because that is what hardware does and
 # a preloaded memory hides an entire class of fault. FRAME_DOWNLOAD=0 restores
@@ -641,6 +646,12 @@ rbf:
 # it builds the CPU a dozen times and takes minutes.
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh
+
+# Our V60's instruction stream against MAME's, from reset. See the script header;
+# the short version is that per-opcode fuzzing cannot show the machine reaches the
+# right state on real code, and this can.
+v60_trace:
+	@bash tools/v60_trace.sh
 
 quartus_list:
 	@echo "Quartus installs found:"; \

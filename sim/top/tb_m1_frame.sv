@@ -78,7 +78,11 @@ module tb_m1_frame #(
     // publishes at DPRAM 0x08 (IN.0). Idle is 0xFF and a press is a bit going
     // low: 0xEF holds START, 0xFE COIN, 0xFB TEST. Whether the menu reacts is
     // the only test of the recovered layout that means anything.
-    parameter logic [7:0] PRESS_IN0 = 8'hff
+    parameter logic [7:0] PRESS_IN0 = 8'hff,
+
+    // Emit one line per retired instruction, for tools/v60_trace.sh to diff
+    // against MAME's own debugger trace. Off by default: it is a firehose.
+    parameter bit     PCTRACE    = 0
 );
 
 // Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
@@ -587,8 +591,23 @@ reg [23:0] pc_prev = 24'hffffff;
 always @(posedge clk_cpu) begin
     if (core.main.ce && core.dbg_pc !== pc_prev) begin
         pc_prev <= core.dbg_pc;
-        if (pctr < 400000) $display("PCT %06h", core.dbg_pc);
+        if (PCTRACE && pctr < 4000000) $display("PCT %06h", core.dbg_pc);
         pctr = pctr + 1;
+    end
+end
+
+// THE COMPARE THAT DIVERGES. MAME and our core run 197,250 identical instructions,
+// then at FE0DCC `cmp.h R0, FE[R11]` the reference branches and we do not. R11 is
+// 0x40e800, so the operand is 0x40e8fe in NVRAM, and MAME reads 0x0000 there.
+// A different value here means a DATA divergence; the same value means the compare
+// or its flags are wrong in our V60.
+integer cmpn = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && !core.main.m_we && core.main.m_ack
+        && core.dbg_pc == 24'hFE0DCC && cmpn < 8) begin
+        $display("CMPOP #%0d a=%06h d=%04h", cmpn,
+                 {core.main.m_addr[23:1], 1'b0}, core.main.m_rdata);
+        cmpn = cmpn + 1;
     end
 end
 
