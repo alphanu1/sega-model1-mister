@@ -94,7 +94,19 @@ never set in 2,000 frames) and the row mask is not written by the reference unti
 **frame 276**, so `m1_boot`'s 86-frame run was never long enough to say anything
 about it.
 
+13. **`0x680000` had no read handler.** The display-list control register was
+   decoded for writes only, so reads returned `0xFFFF` and bit 6 — the buffer
+   select — read as 1 forever. Now `rtl/video/m1_listctl.sv` with its own suite,
+   including the bit-6 mirror and the two-frame toggle. Trace 26,283 -> 26,945.
+
 ### Open, in order
+
+0. **A measured CPI gap of 3.2x.** The reference completes 11,506 iterations of the
+   `fe1433` wait loop where we complete 3,619 — ~8 cycles/instruction against our
+   ~30. `make m1_boot`'s long-standing "29.27 avg" was read as a property of the
+   design; against the reference it is a shortfall. It is why an asynchronous
+   interrupt lands at a different point in a wait loop, which is where `v60_trace`
+   now stops. Not a correctness fault by itself. `tools/v60_cpi_sweep.sh` exists.
 
 0. **`[5002]` — tilemap 2's H-scroll — is zero here and moving in the reference.**
    That is the missing scrolling, measured on both sides: the reference changes it

@@ -2402,3 +2402,45 @@ one reading.
 The loop census reports we spend far **less** time at `fe1433` than the reference —
 1,819 iterations against 9,546. That is the wait loop immediately before this code,
 so it is plausibly the same cause, and it is a useful confirmation signal.
+
+## The V60 trace's second resolution limit, and a CPI gap worth its own look — 2026-08-18
+
+With `0x680000` implemented the trace advances 26,283 -> **26,945**, and stops on a
+difference that is again **timing, not function**:
+
+    MAME:  fe1433 fe1435 fe143d  fe1433 fe1435 fe143d  -> fe02bc   (interrupt)
+    ours:  fe1433 fe1435 fe143d  fe1433 fe1435         -> fe02bc
+
+`fe1433`/`fe1435`/`fe143d` is `inc.w R0` / `cmp.b #2, 500501` / `blt` — a wait loop
+on a byte the vblank handler advances. The interrupt lands **one instruction earlier
+in the loop** for us. `v60_collapse.py` reduces the loop to one instance, but it
+cannot absorb a **trailing partial iteration** of differing length, so the streams
+are offset by one from there.
+
+Two ways past it, neither done: teach the collapser to skip a partial final
+iteration of a loop it has just collapsed, or move to **write-trace** diffing, which
+tolerates this by construction.
+
+### The CPI gap
+
+The loop census makes the cause measurable rather than inferred:
+
+    fe1433,fe1435,fe143d    MAME 11,506 iterations    ours 3,619    (-68.5%)
+
+Consistent at every position it appears. That is the reference completing **3.2x**
+as many iterations of the same three instructions in the same wall time:
+
+| | instructions/frame in that loop | implied cycles/instruction |
+|---|---|---|
+| reference, 16 MHz | 11,506 x 3 = 34,518 | ~8 |
+| ours, 19.2 MHz | 3,619 x 3 = 10,857 | ~30 |
+
+`make m1_boot` has printed that ~30 average for a long time ("29.27 avg (INCLUDES
+block instructions)") and it was read as a property of the design. Against the
+reference it is a **3.8x shortfall per instruction**, and it is the direct reason an
+asynchronous interrupt lands at a different point in a wait loop.
+
+It is not a correctness fault on its own — the game waits either way — but it makes
+every timing-dependent comparison approximate, and it is the kind of gap that
+matters once the rasterizer has to keep up with a frame. Worth a look on its own
+terms; `tools/v60_cpi_sweep.sh` already exists.
