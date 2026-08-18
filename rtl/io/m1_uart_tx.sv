@@ -23,6 +23,23 @@
 // read with `cat /dev/ttyS0`. Model1.sv had it tied to 0 and nothing in the docs
 // had considered it.
 //
+// THIS IS FOR DEBUGGING THE CORE ON MISTER HARDWARE. It has NOTHING to do with
+// sound. M4's sound path is a uPD71051C USART at 0xC40000 on the arcade main
+// board, which is real Model 1 hardware and a separate job; this is a printf
+// channel for our own diagnostics. Three different things in this repo get called
+// "a UART" and conflating them has already caused confusion once.
+//
+// NO PIN ASSIGNMENT IS NEEDED, AND NO CABLE. sys_top.v routes this through
+// `cyclonev_hps_interface_peripheral_uart`, a HARD HPS INTERFACE PRIMITIVE rather
+// than an FPGA I/O pin:
+//
+//     emu.UART_TXD  ->  uart_rxd  ->  primitive .rxd   (HPS UART receive)
+//
+// So the absence of a UART_TXD line in any .qsf is correct and not a gap. That was
+// misread here as "there is no pin assignment, so the channel cannot work", and a
+// physical UART cable was plugged into the DE10-Nano on the strength of it. The
+// cable was unnecessary. Read it over ssh, as below.
+//
 // TWO THINGS TO KNOW BEFORE USING IT
 //
 // 1. /proc/cmdline has `console=ttyS0,115200`, so that port is the Linux console
