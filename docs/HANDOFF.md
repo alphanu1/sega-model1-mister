@@ -101,12 +101,17 @@ about it.
 
 ### Open, in order
 
-0. **A measured CPI gap of 3.2x.** The reference completes 11,506 iterations of the
-   `fe1433` wait loop where we complete 3,619 — ~8 cycles/instruction against our
-   ~30. `make m1_boot`'s long-standing "29.27 avg" was read as a property of the
-   design; against the reference it is a shortfall. It is why an asynchronous
-   interrupt lands at a different point in a wait loop, which is where `v60_trace`
-   now stops. Not a correctness fault by itself. `tools/v60_cpi_sweep.sh` exists.
+0. **A measured CPI gap of 3.2x, and it is NOT in the V60.** The reference completes
+   11,506 iterations of the `fe1433` wait loop where we complete 3,619. `make m1_boot`
+   now breaks the cycles down: **65% have a bus request outstanding** (data 38%,
+   fetch 27%, barely overlapping), so ~20 of 30.5 CPI is memory and ~10 is execution.
+   The V60 in isolation is **6 CPI** at the shipped `ce=1` across latencies 0-64,
+   against MAME's implied ~8 — so **the core is fine and the memory path is the
+   target**: an instruction cache, deeper prefetch, or a dedicated fetch port. This
+   matters for the planned V60 split, which is not the lever on this number.
+   `tools/v60_cpi_sweep.sh` had hardcoded `CEDIV=3` while the core ships `ce=1`;
+   fixed, and its workload only produces four instruction fetches so it cannot see
+   fetch pressure at all.
 
 0. **`[5002]` — tilemap 2's H-scroll — is zero here and moving in the reference.**
    That is the missing scrolling, measured on both sides: the reference changes it

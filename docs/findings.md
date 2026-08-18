@@ -2444,3 +2444,60 @@ It is not a correctness fault on its own — the game waits either way — but i
 every timing-dependent comparison approximate, and it is the kind of gap that
 matters once the rasterizer has to keep up with a frame. Worth a look on its own
 terms; `tools/v60_cpi_sweep.sh` already exists.
+
+## Where the V60's cycles actually go — measured, after two wrong answers — 2026-08-18
+
+The reference completes 3.18x more iterations of the `fe1433` wait loop than we do in
+the same wall time. The question that matters for the planned V60 split is **what to
+optimise**, and it took three attempts to answer honestly.
+
+**Attempt 1, reasoning — wrong.** The FSM's shortest path is
+`S_FETCH -> S_FETCH_W -> S_DECODE -> S_ALU -> S_RETIRE`, five cycles, against a
+steady-state ~20 CPI, so "three quarters of every instruction is spent waiting on
+memory". Arithmetic, not measurement.
+
+**Attempt 2, the existing sweep — also wrong, and the tool was stale.**
+`tools/v60_cpi_sweep.sh` hardcoded `-GCEDIV=3` while `Model1.sv` ships
+`.ce_cpu(1'b1)`, so every number it ever produced described a V60 getting one cycle
+in three. Its header said "at the production /3 clock enable" — true of an earlier
+design, never revisited. Re-run at `CEDIV=1`:
+
+| | LAT=0 | LAT=64 |
+|---|---|---|
+| FAST=0 | 6.08 | 7.31 |
+| FAST=1 | 6.00 | 6.37 |
+
+That reads as "the core is 6 CPI and latency is irrelevant", which retired attempt 1
+— but the sweep's workload is **514 instructions producing FOUR instruction
+fetches**. The test code sits inside the fetch window and loops, so it never
+stresses fetch, which is exactly why latency barely moves it. It cannot explain the
+~20-30 CPI real code shows.
+
+**Attempt 3, direct measurement.** `tb_m1_boot` now counts CPU-domain cycles with a
+bus request outstanding, in three buckets — data, fetch, and the union, because the
+two overlap and adding them would overstate the total:
+
+    819,812 instructions over 25,000,148 CPU cycles = 30.49 CPI
+    data-stalled  9,625,651 (38%)
+    fetch-stalled 6,819,902 (27%)
+    either       16,435,859 (65%)
+
+So **~20 of the 30.5 CPI is waiting on memory** and ~10 is execution. The two buckets
+barely overlap, which says the single arbitrated bus is serialising them rather than
+hiding one behind the other.
+
+### What this means for the V60 split
+
+**The V60's own logic is close to the reference already** — ~6 CPI in isolation
+against MAME's implied ~8. The 3.18x throughput gap is almost entirely the **memory
+subsystem**: SDRAM latency under five-master contention, plus instruction-fetch
+bandwidth.
+
+So extracting the V60 and optimising *it* would not close the gap. The target is the
+memory path — a small instruction cache, deeper prefetch, or giving fetch its own
+port — and that lives outside the CPU, which is a different sharing question between
+the Model 1 and Model 2 projects than the core itself.
+
+The split is still worth doing for the reasons it was proposed. It just is not the
+lever on this number, and it would have been easy to spend the effort there and find
+that out afterwards.

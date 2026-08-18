@@ -169,6 +169,39 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// ------------------------------------------------------ WHERE THE CPI GOES
+//
+// The V60 measures ~6 CPI in isolation (tools/v60_cpi_sweep.sh at the shipped
+// ce=1, across memory latencies 0..64) and ~20 CPI running real code here. The
+// sweep cannot explain the difference: its workload is 514 instructions producing
+// FOUR instruction fetches — the test code sits inside the fetch window and loops,
+// so it never stresses fetch, which is why latency barely moves its number.
+//
+// Neither figure says where the cycles actually go, so count them. Three buckets,
+// in the CPU's own clock domain:
+//
+//   data stall   — a data-side bus request outstanding and unacknowledged
+//   fetch stall  — an instruction fetch outstanding and unacknowledged
+//   running      — everything else
+//
+// A cycle can be in both stall buckets; they are counted independently rather than
+// forced to partition, because the V60 arbitrates one bus between them and
+// pretending otherwise would hide the arbitration.
+// The union is counted too, because the two buckets CAN overlap and adding them
+// would overstate the total — the sort of arithmetic that turns a measurement into
+// a claim.
+integer v_cyc = 0, v_dstall = 0, v_fstall = 0, v_anystall = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && ce) begin
+        automatic bit ds = main.cpu.dbus_req && !main.cpu.dack;
+        automatic bit fs = main.cpu.if_req  && !main.cpu.if_ack_i;
+        v_cyc = v_cyc + 1;
+        if (ds)       v_dstall   = v_dstall   + 1;
+        if (fs)       v_fstall   = v_fstall   + 1;
+        if (ds || fs) v_anystall = v_anystall + 1;
+    end
+end
+
 // ONE LINE PER TGP RETIRE. m1_tgp runs on `clk` in m1_main, which this bench
 // drives as clk_cpu, so the retire strobe is sampled in its own domain.
 integer tgptr_n = 0;
@@ -697,6 +730,11 @@ initial begin
     $display("BOOT: io handshake replies=%0d (answered in RTL by m1_ioboard)",
              dbg_io_replies);
     $display("BOOT: sdram violations flags=%04h", v_flags);
+    if (v_cyc > 0)
+        $display("BOOT: CPU cycles %0d: data-stalled %0d (%0d%%), fetch-stalled %0d (%0d%%), either %0d (%0d%%)",
+                 v_cyc, v_dstall, (v_dstall * 100) / v_cyc,
+                 v_fstall, (v_fstall * 100) / v_cyc,
+                 v_anystall, (v_anystall * 100) / v_cyc);
     // ------------------------------------------------------ tile RAM census
     //
     // Is the missing 2D even IN the tile RAM? The picture on hardware shows the
