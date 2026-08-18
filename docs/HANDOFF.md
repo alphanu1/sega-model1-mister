@@ -145,7 +145,20 @@ reasons; speed is not one.
    8192 words. `copro RAM writes=0` meant the V60 never reached that code. It was
    named as the likely cause twice before anyone read the module.
 
-0. **NEXT: a FIFO read at TGP pc `00a5` pops without retiring.** Our TGP consumes all
+0. **NEXT: the V60 polls COPRO RAM at `fed5a4` and the TGP never writes it.**
+   With the FIFO fixed the copro exchange completes **21 commands correctly**, then
+   stops: identical state at 600 M and 1.5 G cycles (`pushes=71 returns=21 pops=21`,
+   `TGP retires=537 pc=0043`) while the V60 executes 8.8 M more instructions at
+   `fed5a4`. Parked, not slow.
+
+   `tools/mame_v60_iospace.lua` puts ~138 k reads at PC `fed5a4` and 148,896 reads at
+   **`0xd20000`, the copro RAM data port** — so that loop is polling coprocessor RAM,
+   not the FIFO. Our `copro RAM writes=0` and our TGP's io accesses reach only
+   `0x0020` (sincos); it has never touched io `0x0001`, the RAM data port. Confirm
+   the PC-to-address pairing before acting on it — that inference is from two
+   separate census columns, not one measurement.
+
+0. **DONE: a FIFO read at TGP pc `00a5` popped without retiring.** Our TGP consumes all
    four command words — the same four the reference pushes, from the same PCs — but
    never advances past `00a5`, where the reference does `00a5` then `00a6` and reaches
    the multiply at `00a7`. Look at `fifo_ack` against `fifo_in_pop` in `m1_tgp`, and
