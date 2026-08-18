@@ -146,7 +146,7 @@ Past a wait loop, also prefer **write traces** and targeted comparisons over the
 instruction stream, because a write trace tolerates timing differences that a PC
 stream does not.
 
-### Two artifacts this method produced, both withdrawn
+### Four artifacts this method produced, all withdrawn
 
 - **Collapsed loops.** Without `noloop` MAME prints `(loops for N instructions)` and
   the diff reports N phantom extras — read as a branch bug at instruction 83.
@@ -160,5 +160,24 @@ stream does not.
   `0x40e8fe` read `0x0000` there and `0xffff` here, and with the file deleted MAME
   reads `0xffff` too. The script now deletes `nvram/` every run.
 
-Each of those cost a wrong diagnosis. The method is sound; the instrument needs the
-same scepticism as the design.
+- **A PC published but never executed.** The V60 assigned `dbg_pc <= pc` at the top
+  of `S_DECODE`, *above* the interrupt check in the same state — so when an
+  interrupt preempted an instruction, `dbg_pc` still advertised its PC. MAME's
+  tracer only prints instructions it retires. At `updpsw.w #FFFFFFFF, #40000` —
+  whose mask `0x40000` is bit 18, `psw_ie`, so the instruction unmasks interrupts
+  and the reference vectors straight to the handler — we appeared to execute one
+  extra instruction. We did not; we published its PC. `dbg_pc` is now assigned on
+  dispatch, which is also the more useful reading for the overlay: it names the
+  last instruction that *ran*.
+
+- **A poll loop that alternates two addresses.** Collapsing consecutive repeats
+  cannot touch `test.b` / `bne`, so the whole 36,308-iteration wait survived and
+  the diff reported the exit as a divergence. `tools/v60_collapse.py` collapses the
+  shortest repeating period instead, and reports the iteration counts rather than
+  dropping them.
+
+Each of those cost a wrong diagnosis, and **all four were the instrument, not the
+design.** That is the shape to expect: a differential tool compares two things
+neither of which was built to be compared, and every mismatch in *how* they are
+observed shows up as a mismatch in *what* they did. Suspect the instrument first
+when the reported fault is a difference in count, in timing, or in one instruction.

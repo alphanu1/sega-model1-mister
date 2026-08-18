@@ -835,7 +835,20 @@ else if (ce) begin
 
     // ------------------------------------------------------------------
     S_DECODE: begin
-        dbg_pc <= pc;
+        // dbg_pc IS PUBLISHED ON DISPATCH, NOT ON ENTRY. It used to be assigned
+        // here, above the interrupt check below — so when an interrupt preempted
+        // an instruction, dbg_pc still advertised a PC that never executed.
+        //
+        // That produced a false CPU-bug report. `make v60_trace` logs dbg_pc on
+        // change and diffs it against MAME's tracer, which only prints
+        // instructions it actually retires; at `updpsw.w #FFFFFFFF, #40000` —
+        // whose mask 0x40000 is bit 18, psw_ie — the reference vectors straight
+        // to the handler and we appeared to execute one extra instruction first.
+        // We did not; we only published its PC. See docs/differential-testing.md.
+        //
+        // Holding the previous value through an exception entry is also the more
+        // useful reading for the overlay and for a parked CPU: dbg_pc then names
+        // the last instruction that ran rather than the one that was about to.
         cur_op <= opcode;
         total_len <= 5'd2;      // default for F12 base
         // exception-frame defaults (A8): 2-word frame returning to current PC;
@@ -868,6 +881,7 @@ else if (ce) begin
         end
         else if (halted) st <= S_HALT;
         else begin
+        dbg_pc <= pc;           // an instruction is really being dispatched now
         // primary dispatch (per MAME optable.hxx)
         casez (opcode)
         // ---- one-byte / special ----
