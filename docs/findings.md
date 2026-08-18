@@ -2671,3 +2671,43 @@ read at `00a5` pop without retiring?** Look at `fifo_ack` against `fifo_in_pop` 
 `m1_tgp`, and at how `mb86233_mem` holds `ext_rd` across the memory states — a
 request held for more than one cycle pops more than once, and an acknowledge that
 arrives on the wrong cycle retires nothing.
+
+## M0 exit criterion 2 is met: the TGP is instruction-accurate on real microcode
+
+`make tgp_trace` reports **`IDENTICAL for 342 instructions`** — the reference's entire
+traced window, its collapsed stream being 343. Our coprocessor executes the same
+instruction sequence as MAME's on the real decapped microcode.
+
+This is the criterion the project has owed since M0. What existed was
+`sim/tgp/mb86233_ref.cpp`, a whole-CPU reference in lockstep over 8,000 retires of
+**generated** instructions — which proves each instruction correct for the state it
+was handed, and cannot show the machine reaching the wrong state on real code.
+
+Four bugs fell out of building it, in order:
+
+| | |
+|---|---|
+| the boot bench loaded the microcode **one word high** | address 0 was right by accident, so instruction 1 worked and every one after came from the wrong word |
+| **ST was not a register** | the flags lived in the ALU's pipeline and a branch corrupted its own condition |
+| **`brul`/`bsul` unimplemented** | the dispatch jump was a constant |
+| **FIFO pop and push fired per CYCLE, not per ACCESS** | every read ate two command words, every result was pushed twice |
+
+### The caveat belongs with the claim
+
+The window is three emulated seconds and the TGP is idle for most of it, so 342
+instructions is **the reference's whole window, not deep coverage of the instruction
+set**. And `tb_mb86233_core`'s `diverged=0` remains no evidence about the flag path —
+it passed both before and after the ST fix, because generated instructions never put a
+conditional branch straight after a flag-setting ALU op.
+
+**Met for what the game currently executes, not for the instruction set.** Widen the
+window as the game gets further.
+
+### A note on where this was nearly recorded
+
+`CLAUDE.md` is gitignored (`.gitignore:122`), so it is a local-only file. Several
+commit messages on 2026-08-18 say "CLAUDE.md baseline updated" — those edits are real
+on disk but are **not in the repository**, and a clone gets none of them. Durable
+findings belong in `docs/`, which is tracked. The test-count baseline, the resource
+figures and the corrected "the V60 never reads the coprocessor back" entry all live
+only in the working copy.
