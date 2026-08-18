@@ -794,3 +794,82 @@ consistent.
 restarts its screen build, so on hardware the text will draw on more frames but the
 underlying restart remains. Modes 2/3 was a real defect worth closing on its own;
 it is not the open one.
+
+## THE COPROCESSOR'S DATA ROM WAS NEVER IN THE MRA — 2026-08-18
+
+The board's 0.45 s screen teardown, traced to its cause. The instrument that found
+it was overlay row `03`, added the night before precisely because nothing measured
+this.
+
+### What the board said
+
+```
+02  800 B9A     microcode: 2048 words, checksum B9A
+03  FFF 000     command FIFO: pushes saturated, pops ZERO
+10  000049      TGP program counter, stuck at 0x49 across two videos minutes apart
+```
+
+Row `02` **kills the microcode theory outright**: `0x800` is a complete 2,048-word
+load, and `B9A` is exactly the folded checksum computed from `315-5573.bin`
+independently — so the microcode is complete AND correct. The zip diagnosis of the
+previous night was wrong, as the user suspected when asking why a missing file
+produced no error.
+
+Row `03` is the fault: **the V60 pushes commands and the TGP never pops one.** The
+FIFO is 16 deep and **a full FIFO halts the V60** — so the CPU stalls, the game
+gives up on its screen build and restarts it. That is the teardown.
+
+### Why the TGP was stuck
+
+`make m1_tgp`, on this same microcode, reaches `pc=0043`, blocks correctly on an
+empty FIFO, and **pops 11 of 11** when commands are offered. The pop logic works.
+The board sits six instructions further at `0x49`, because its FIFO is *not* empty
+— it got past the read and stopped at the next thing.
+
+That next thing is the data ROM. MAME's `copro_io_map` puts the math units at
+`0x0020-0x002b` and the data-ROM window at `map(0x8000, 0xffff).r(copro_data_r)`,
+and `findings.md` already recorded — measured through MAME's own IO tap — that the
+data ROM is **read before any math unit**.
+
+### The three regions, and which we loaded
+
+`vr` needs, beyond the microcode:
+
+| MAME region | size | files | in our MRA |
+|---|---|---|---|
+| `copro_data` | 2 MB | `mpr-14898.39` .. `mpr-14901.42` | **NO** |
+| `copro_tables` | 256 KB | `opr14742.bin`, `opr14743.bin` | **NO** |
+| `other_data` | 512 KB | `opr-14744.58` .. `opr-14747.63` | n/a — computed in `fp_div`, no port, not in the ROM set |
+
+All six of the first two are present in the user's `vr.zip`. Neither region was in
+the MRA.
+
+### The part that makes this unambiguous
+
+**`tools/build_rom_image.py` — which feeds SIMULATION — has placed both regions
+correctly all along**, `copro_data` at byte `0x600000` and `copro_tables` at
+`0x800000`, matching `COPRO_DAT_BASE` and `COPRO_TBL_BASE` in `m1_integrated.sv`
+exactly. Its own comment says the layout was chosen so that *"the MRA needs no
+padding"*.
+
+So the layout was designed for the MRA to carry these, and **the MRA was never
+updated**. Simulation had the data ROM; hardware never did. That is the whole
+board-versus-simulation divergence chased across two sessions:
+
+- sim: microcode + data ROM + tables -> TGP runs -> no teardown, 0 blue frames
+- board: microcode only -> TGP stalls at 0x49 -> FIFO fills -> V60 halts -> teardown
+
+### The fix, and what it is not
+
+Six parts appended to the MRA's index-0 stream at `0x600000` and `0x800000`, with
+the same interleaves the image builder uses — four-way byte interleave for
+`copro_data`, two-way 16-bit for `copro_tables`. **No RTL change and no rebuild:
+the MRA is a data file on the SD card**, so this was deployed and reloaded in
+minutes.
+
+**A lesson worth more than the fix.** Two independent loaders existed for the same
+data — `build_rom_image.py` for simulation and the MRA for hardware — and only one
+knew about two of the three regions. Nothing checked them against each other, and
+the difference presented as a hardware bug for two sessions. The overlay row that
+finally caught it exists only because the user asked why a missing ROM file would
+not produce an error.
