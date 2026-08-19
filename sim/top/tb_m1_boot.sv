@@ -213,23 +213,36 @@ end
 // zero — while the io read itself returns 00000030 correctly (the boot trace prints
 // it). So the loss is between io_rdata and the store. Print the capture.
 integer sv_n = 0;
+reg     sv_armed = 1'b0;
 always @(posedge clk_cpu) begin
-    // ALL STATES, no guessed subset. Filtering to S_SRC/S_SRC_W with EP_IO produced
-    // nothing over 300 M cycles while the read demonstrably happens, so the guess
-    // about which state issues it was wrong. Let the print say which.
-    if (rst_n_cpu && sv_n < 24
-        && main.tgp.core.io_rd && main.tgp.core.io_addr[15]) begin
+    // EVERY CYCLE IN A WINDOW, NOT A FILTERED SUBSET.
+    //
+    // Filtering to `io_rd && io_addr[15]` printed only the cycles DURING an io read,
+    // hiding S_DST, S_RETIRE, S_FETCH and S_DECODE — which are exactly the cycles
+    // where src_val changed. The result was a trace showing a transition it never
+    // covered, and three mechanisms were invented to explain the gap.
+    //
+    // So: arm on the first acknowledged read of io 0x8010, then print EVERY cycle for
+    // the next 40, unfiltered. That covers the capture, the store, and everything
+    // between.
+    if (rst_n_cpu && !sv_armed
+        && main.tgp.core.io_rd && main.tgp.core.io_addr == 16'h8010
+        && main.tgp.core.io_ack)
+        sv_armed <= 1'b1;
+    if (rst_n_cpu && sv_armed && sv_n < 40) begin
         // mem_rdata and mem_stall too. The three candidates for src_val taking the
         // io ADDRESS rather than the io DATA are: the wrong mux leg (x_src_sp not
         // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
         // lets the state advance early, or a print sampling the wrong clock. These
         // fields separate all three.
-        $display("SRC st=%0d sp=%0d io_ack=%b stall=%b io_rdata=%08h mem_rdata=%08h src_val=%08h ea=%05h addr=%04h",
+        $display("W%0d st=%0d sp=%0d ack=%b stall=%b io=%08h mem=%08h src=%08h reg=%08h xreg=%b mw=%b maddr=%05h",
+                 sv_n,
                  main.tgp.core.state, main.tgp.core.x_src_sp,
                  main.tgp.core.io_ack, main.tgp.core.mem_stall,
                  main.tgp.core.io_rdata, main.tgp.core.mem_rdata,
-                 main.tgp.core.src_val, main.tgp.core.ea_src,
-                 main.tgp.core.io_addr);
+                 main.tgp.core.src_val, main.tgp.core.rf_rd_data,
+                 main.tgp.core.x_src_reg,
+                 main.tgp.core.mem_we, main.tgp.core.mem_addr);
         sv_n = sv_n + 1;
     end
 end

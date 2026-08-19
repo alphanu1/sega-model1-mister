@@ -3033,3 +3033,44 @@ filtered subset.** The filter is for finding the window, not for reading it.
 The next instrument is therefore: trigger on the first `io_addr == 0x8010` with
 `io_ack`, then print **every** cycle for the following ~40, unfiltered. That shows the
 capture, the store, and anything in between.
+
+## The store is CORRECT: write 22 is an extra pass, not a wrong value — 2026-08-19
+
+The unfiltered 40-cycle window, armed on the acknowledged io `8010` read:
+
+    W0 st=7 (S_DST)   src=00000030  mw=1  maddr=00069
+    W1 st=8 (S_DST_W) src=00000030  mw=1  maddr=00069
+
+`src_val` holds `00000030` — the correct data-ROM word — and the store writes it to
+`data[0x69]`. **The capture and the store are both right, and there is no datapath
+fault.** The three mechanisms invented for a "lost value" were explaining something that
+never happened.
+
+So `tgp_wrtrace`'s `TW 0069 00000000` at write 22 is a **different, earlier store**, and
+the correct one is write 27. The divergence is therefore about **which stores happen and
+in what order**, not about a corrupted value:
+
+| | write 22 | write 27 |
+|---|---|---|
+| reference | `data[0069] = 00000030` | `data[0069] = 00000030` |
+| ours | `data[0069] = 00000000` | `data[0069] = 00000030` |
+
+Writes 1-21 match exactly. At 22 the reference has already completed its io read and
+stores the word; we store zero at that point and only reach the correct store at 27. So
+**our TGP passes through that store once more than the reference does**, or reaches it
+before the read that should precede it.
+
+### Third time today our side looked wrong and was not
+
+After the `ffffffff` copro RAM write (correct — the reference writes it too) and the copro
+RAM contents (correct — written, not uninitialised). The pattern is consistent enough to
+state as a rule: **"ours looks odd" is not a fault until the oracle disagrees**, and the
+disagreement has to be about the same event, not a similar-looking one.
+
+### What to measure next
+
+Not the datapath. Compare the **instruction stream around write 22** against the
+reference: `tgp_trace` matched for 342 instructions in a 3-second window, but the extra
+store means the streams diverge in *control flow* somewhere before that write. Run
+`tgp_trace` with a window that reaches it and diff the PCs immediately preceding the two
+stores to `0x69`.
