@@ -202,4 +202,52 @@ module m1_mainram (
     dpram_q <= {dpram_hi[addr[11:1]], dpram_lo[addr[11:1]]};
   end
 
+  // ------------------------------------------------- POWER-ON CONTENTS ARE ZERO
+  //
+  // Not a simulation convenience. Cyclone V M10K blocks take their contents from
+  // the FPGA configuration bitstream, so on the device every one of these comes up
+  // cleared. Leaving them undefined in RTL makes simulation disagree with the
+  // hardware it models — and Verilator brings unpacked arrays up as ONES, so the
+  // disagreement is maximal rather than subtle.
+  //
+  // `mb86233_mem.sv` already carries this reasoning and this fix, and says it was
+  // found by lockstep: a program read address 0x6a before writing it, the reference
+  // returned 0 and the DUT returned 0x26000000, and it "looked exactly like a
+  // transfer bug for several rounds of narrowing". The same thing then happened
+  // again in `m1_copro_if` on 2026-08-18 and cost most of a session: the V60 waits
+  // at FED5A4 for coprocessor RAM to read zero, read 0xffffffff instead, and span
+  // 1,120,224 times without ever leaving the loop. Four layers of RTL between the
+  // bus and the array were read and found correct.
+  //
+  // DPRAM is the one here that is demonstrably read before it is written — the I/O
+  // board only fills 0x00-0x0e, 0x20 and 0x100-0x17f, so every other byte is
+  // whatever the array came up as. The rest are swept with it rather than waiting to
+  // find out which of them matters.
+  //
+  // NOT A RESET. Quartus 17.0 will not infer RAM from an array that is reset, and
+  // building 348,160 entries out of flip-flops is a failure this project has already
+  // paid for twice. An `initial` is what Quartus uses to initialise inferred RAM,
+  // and it must NOT be wrapped in `synthesis translate_off` — Verilator honours that
+  // pragma too and skips the code, which is exactly how the first attempt at the
+  // copro-RAM fix changed nothing at all.
+  integer zi;
+  initial begin
+    for (zi = 0; zi < 32768; zi = zi + 1) begin
+      tram_c_lo[zi] = 8'd0; tram_c_hi[zi] = 8'd0;
+      tram_v_lo[zi] = 8'd0; tram_v_hi[zi] = 8'd0;
+      dl0_lo[zi]    = 8'd0; dl0_hi[zi]    = 8'd0;
+      dl1_lo[zi]    = 8'd0; dl1_hi[zi]    = 8'd0;
+    end
+    for (zi = 0; zi < 24576; zi = zi + 1) begin
+      cxlat_lo[zi] = 8'd0; cxlat_hi[zi] = 8'd0;
+    end
+    for (zi = 0; zi < 8192; zi = zi + 1) begin
+      pram_c_lo[zi] = 8'd0; pram_c_hi[zi] = 8'd0;
+      pram_v_lo[zi] = 8'd0; pram_v_hi[zi] = 8'd0;
+    end
+    for (zi = 0; zi < 2048; zi = zi + 1) begin
+      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
+    end
+  end
+
 endmodule
