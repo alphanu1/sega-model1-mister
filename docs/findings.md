@@ -3616,3 +3616,42 @@ Note the collapsed count went *down* as the window grew earlier in the day — 5
 instance of each repeating period, so a machine spending more of its time in loops yields
 *fewer* collapsed lines. It is itself a signal that our core is looping more than the
 reference beyond the compared window.
+
+### The text routine RUNS on our side — it copies different strings
+
+`v60_trace` at `CYCLES=1500000000` reports `IDENTICAL for 25685 instructions` and
+`v60_resync` finds zero divergence sites, but our side yields **25,685 collapsed
+instructions at both 700 M and 1.5 B cycles** while the reference reaches 5,193,988. The
+agreement is real and the window is the whole story.
+
+**The collapse hides a loop that only one side has.** `v60_trace` collapses both streams to
+one instance per repeating period, so a loop present in ours and absent in MAME leaves the
+PC sequences identical and is reported only in the counts file — and only if BOTH sides
+collapsed it, since the comparison is over loops "in common". That is a blind spot in the
+instrument, not in the design.
+
+The counts file is where the difference lives:
+
+    ours   ff8ac3,ff8ac6,ff8ac8,ff8aca,ff8acd   counts 6, 7, 8, 9, 10, 13, 14 ...
+    MAME   ff8ac3,ff8ac6,ff8ac8,ff8aca,ff8acd   count  20, consistently
+
+and that loop is:
+
+    FF8AC3: mov.b  [R0+], R2      load a byte
+    FF8AC6: test.b R2
+    FF8AC8: be     FF8ACF         stop at the NUL
+    FF8ACA: mov.h  R2, [R1+]      store it as a HALFWORD
+    FF8ACD: br     FF8AC3
+
+**A null-terminated string being written out as 16-bit tile codes: this is the text
+routine.** It executes on our side, repeatedly, and copies six to fourteen characters where
+the reference copies twenty.
+
+So text IS being generated. The strings differ in length, which means either the source
+pointer differs or the string content does — and the strings on this screen are built in
+RAM (`CREDIT 0`, the ranking table) rather than read straight from ROM.
+
+**Next:** capture R0, R1 and the copied bytes on both sides at FF8AC3. A write tap on the
+destination range plus the same in `tb_m1_boot` gives the two strings side by side, and the
+lengths alone (20 against 6-14) should identify which string each side thinks it is
+drawing.
