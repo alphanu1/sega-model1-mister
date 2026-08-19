@@ -917,6 +917,25 @@ initial begin
         run_ucode_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
+        // READ THE MICROCODE BACK OUT OF THE COPROCESSOR.
+        //
+        // This bench drives the REAL m1_rom_loader, which is the path hardware
+        // uses, while tb_m1_boot preloads. So a fault here is a HARDWARE fault
+        // and a pass in tb_m1_boot is not evidence about it. The TGP retiring
+        // four instructions and parking on a FIFO read is exactly what an empty
+        // program RAM looks like.
+        begin : ucode_check
+            integer uw, ubad;
+            ubad = 0;
+            for (uw = 0; uw < 2048; uw = uw + 1)
+                if (core.main.tgp.prog[uw] !== ucode[uw]) begin
+                    if (ubad < 6)
+                        $display("UCODE MISMATCH @%04h: loaded %08h want %08h",
+                                 uw[15:0], core.main.tgp.prog[uw], ucode[uw]);
+                    ubad = ubad + 1;
+                end
+            $display("UCODE CHECK: %0d of 2048 words wrong", ubad);
+        end
         $fflush;
         // With HOLD_CPU=0 the V60 came out of reset back at mem_ready and has
         // been executing an SDRAM full of FFFF for the whole download. Nothing

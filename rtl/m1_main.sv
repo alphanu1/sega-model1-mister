@@ -448,8 +448,23 @@ module m1_main #(
   logic [31:0] t_fin_data, t_fout_data;
   logic        t_fin_valid, t_fin_pop, t_fout_push, t_fout_full;
 
+  // HELD UNTIL THE MICROCODE IS THERE, exactly like the V60.
+  //
+  // This was `.rst_n(rst_n)` - the raw reset - while the CPU used
+  // rst_cpu = ~rst_n | ~rom_loaded. So the coprocessor left reset at power-on
+  // and executed its program RAM while the HPS was still streaming the ROMs
+  // into it. An unwritten program RAM reads as zeros, a zero word decodes as
+  // `lab`, and one of the first four does a data-space read of 0x100 - the
+  // command FIFO - which BLOCKS until the V60 sends something. By the time the
+  // microcode arrived the coprocessor was already parked on that read and never
+  // recovered: tb_m1_frame reports tgp=4/0/004c with frd=1 held for the whole
+  // run, and the V60 then hangs at ff9754 waiting for a result that never comes.
+  //
+  // tb_m1_boot preloads the microcode and so never saw it. That bench found the
+  // same race in ITS OWN reset this morning and fixing it there masked this one
+  // - the real instance, on the path hardware actually uses.
   m1_tgp #(.MATH_ZERO(TGP_MATH_ZERO)) tgp (
-    .clk(clk), .rst_n(rst_n),
+    .clk(clk), .rst_n(~rst_cpu),
     .ucode_clk(ucode_clk), .ucode_we(ucode_we),
     .ucode_addr(ucode_addr), .ucode_data(ucode_data),
     .ram_req(t_ram_req), .ram_we(t_ram_we), .ram_addr(t_ram_addr),
