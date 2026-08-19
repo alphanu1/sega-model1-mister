@@ -214,10 +214,11 @@ end
 // it). So the loss is between io_rdata and the store. Print the capture.
 integer sv_n = 0;
 always @(posedge clk_cpu) begin
-    if (rst_n_cpu && sv_n < 20
-        && (main.tgp.core.state == 4'd3 || main.tgp.core.state == 4'd4)
-        && main.tgp.core.x_src_sp == mb86233_pkg::EP_IO
-        && main.tgp.core.io_addr[15]) begin   // the 0x8000+ data-ROM window only
+    // ALL STATES, no guessed subset. Filtering to S_SRC/S_SRC_W with EP_IO produced
+    // nothing over 300 M cycles while the read demonstrably happens, so the guess
+    // about which state issues it was wrong. Let the print say which.
+    if (rst_n_cpu && sv_n < 24
+        && main.tgp.core.io_rd && main.tgp.core.io_addr[15]) begin
         $display("SRC st=%0d sp=%0d io_ack=%b io_rd=%b io_rdata=%08h src_val=%08h addr=%04h",
                  main.tgp.core.state, main.tgp.core.x_src_sp,
                  main.tgp.core.io_ack, main.tgp.core.io_rd,

@@ -130,6 +130,25 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### THE RUN-LENGTH TRAP, three times in one day
+
+Every figure from `make m1_boot` scales with `BOOT_CYCLES`, and this file has said so
+about quoting figures since 2026-08-15. It bites just as hard when *comparing runs* or
+when *hunting for an event*:
+
+1. `WATCH_PAGE=0xD2` showed zero reads of `d20000` at 300 M cycles while a 600 M run
+   showed the V60 parked on the instruction that reads it. Reported as an instrument
+   contradiction. It was two run lengths.
+2. A 700 M run showed 324 TGP retires where earlier runs showed 537, and that was read
+   as the zero-init commits changing behaviour. **Still unresolved** — the run lengths
+   differed there too, so the behaviour change is not established either way.
+3. An all-states io trace at 300 M produced nothing, because `TGP data reads=0` at that
+   length: the read being hunted had not happened yet.
+
+**Before concluding that an event does not occur, check the run reached the point where
+it would.** The boot trace prints `TGP data reads=N` and `pc now` — both say how far the
+run actually got, and both were sitting in the output each time.
+
 ### Where to pick up — 2026-08-19 afternoon, and it is narrow
 
 **`make tgp_wrtrace` exists and works.** Value-level lockstep for the coprocessor: it
