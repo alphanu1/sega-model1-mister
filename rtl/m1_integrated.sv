@@ -306,8 +306,31 @@ module m1_integrated (
   logic [18:0] t_dat_addr;
   logic [31:0] t_mem_rdata;
 
-  // Tables win an exact tie; they cannot both be asserted in practice.
-  wire         t_mem_req  = t_tbl_req || t_dat_req;
+  // ONE REQUEST LINE, TWO MASTERS: FORCE A DEAD CYCLE WHEN THE OWNER CHANGES.
+  //
+  // t_mem_req is the OR of both requesters, so when a table read ends and a data
+  // read begins on the SAME cycle the line never falls. The CDC port sees one
+  // continuous request, keeps its acknowledge asserted, and the new master
+  // captures the PREVIOUS transaction's data - a stale read that looks exactly
+  // like a wrong value from the ROM.
+  //
+  // Measured: tgp_wrtrace write 455, data[0x305], where the reference reads
+  // 41b39db2 and we read 41f00000, which is the word our PREVIOUS read returned.
+  // One word in four thousand, because it needs a table access immediately
+  // followed by a data access with no gap - which is a sequence the math units
+  // only started producing once they were implemented.
+  //
+  // Suppressing the request for the cycle in which the owner changes costs one
+  // cycle of latency on a master switch and guarantees the port sees a clean
+  // boundary. The alternative - latching the owner when the transaction starts -
+  // needs to know the CDC port's accept semantics, and a dead cycle needs to know
+  // nothing.
+  logic        t_prev_tbl;
+  always_ff @(posedge clk_cpu or negedge rst_n_cpu)
+    if (!rst_n_cpu) t_prev_tbl <= 1'b0;
+    else            t_prev_tbl <= t_tbl_req;
+  wire         t_owner_change = (t_tbl_req != t_prev_tbl);
+  wire         t_mem_req  = (t_tbl_req || t_dat_req) && !t_owner_change;
   wire [24:1]  t_mem_addr = t_tbl_req
                           ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
                           : (COPRO_DAT_BASE + {4'd0, t_dat_addr, 1'b0});
