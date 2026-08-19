@@ -28,6 +28,22 @@ do
     end
 end
 
+-- x0 rides along for the same reason. After the lab fix the streams agreed on every
+-- VALUE up to write 41 and then differed on data[0x66], which is a plain `mov x0, $0x66`
+-- - the fault is in an address register that no write can show directly. Resolved the
+-- same defensive way as the PC: a bad state key throws INSIDE the tap, where MAME
+-- swallows the error and the trace simply stops with no message.
+local function reg(names)
+    local st = tgp.state
+    for _, n in ipairs(names) do
+        if st[n] then return function() return st[n].value end end
+    end
+    return function() return 0 end
+end
+local x0reg = reg{"X0", "x0"}
+local areg  = reg{"A", "a"}
+local dreg  = reg{"D", "d"}
+
 -- The PC is recorded with every write. Without it, a divergence in the write stream
 -- says only THAT the streams differ, not which instruction differs — and on
 -- 2026-08-19 that cost several hours: write 22 looked like a corrupted value and was
@@ -42,7 +58,8 @@ tap = dsp:install_write_tap(0, 0x3ff, "wr", function(offset, data, mask)
         -- still incremented to 32,474 while not one line was produced, so the
         -- failure looked like "no writes" rather than "bad key". Resolved once,
         -- outside the callback, with a fallback.
-        out[#out+1] = string.format("TW %04x %08x pc=%04x", offset, data, pcreg())
+        out[#out+1] = string.format("TW %04x %08x pc=%04x x0=%04x a=%08x d=%08x",
+                                    offset, data, pcreg(), x0reg(), areg(), dreg())
     end
     return data
 end)

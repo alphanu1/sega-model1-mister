@@ -554,9 +554,25 @@ module mb86233_core (
 
   // ------------------------------------------------------------ datapath
 
+  // ONCE PER ACCESS, NOT ONCE PER CYCLE. The _W states are HELD while the
+  // access completes - mem_stall for data, io_ack for external - so gating the
+  // post-increment on the state alone applies it on every waiting cycle. The
+  // external reads in this microcode wait eight and nine cycles (the boot trace
+  // prints "TGP io 2: R 8010 waited 8"), and x0 advanced by 9 and by 7 where the
+  // reference advanced by 1: the wait count, not the increment.
+  //
+  // Same fault as the coprocessor FIFO's pop/push, which was one per cycle
+  // instead of one per access. Look for this shape wherever a held state drives
+  // a side effect.
+  wire src_done  = !mem_stall && !(x_src_sp    == mb86233_pkg::EP_IO && !io_ack);
+  wire dst_done  = !mem_stall && !(x_dst_sp    == mb86233_pkg::EP_IO && !io_ack);
+  wire labb_done = !mem_stall && !(x_lab_b_sp  == mb86233_pkg::EP_IO && !io_ack);
+
   always_comb begin
     use_dst_side = (state == S_DST) || (state == S_DST_W);
-    agu_post_en  = (state == S_SRC_W) || (state == S_DST_W) || (state == S_LABB_W);
+    agu_post_en  = ((state == S_SRC_W)  && src_done)
+                || ((state == S_DST_W)  && dst_done)
+                || ((state == S_LABB_W) && labb_done);
 
     mem_req   = 1'b0; mem_we = 1'b0; mem_addr = 17'd0; mem_wdata = 32'd0;
     io_rd     = 1'b0; io_wr  = 1'b0; io_addr  = 16'd0; io_wdata  = 32'd0;

@@ -348,9 +348,11 @@ always @(posedge clk_cpu) begin
             // divergence without it says the streams differ but not which
             // instruction differs, and write 22 turned out to be an extra store
             // rather than a wrong value.
-            $display("TW %04h %08h pc=%04h",
+            $display("TW %04h %08h pc=%04h x0=%04h a=%08h d=%08h",
                      main.tgp.core.u_mem.addr[15:0], main.tgp.core.u_mem.wdata,
-                     main.tgp.core.seq_pc);
+                     main.tgp.core.seq_pc,
+                     main.tgp.core.u_regs.x0,
+                     main.tgp.core.u_regs.reg_a, main.tgp.core.u_regs.reg_d);
             tw_n = tw_n + 1;
         end
     end
