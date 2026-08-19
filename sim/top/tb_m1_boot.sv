@@ -208,6 +208,40 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// ---------------------------------------- PROOF THE MICROCODE IS ACTUALLY LOADED
+//
+// The core fetched 00000000 at 0x07e6 where the hex holds 40008000, and an all-zero
+// word decodes as `lab` — which is why three separate conclusions about decoding and
+// register writes were consequences rather than causes. Sampling one address cannot
+// tell a loader fault from a file fault from an early-execution race, so compare ALL
+// 2048 words of program RAM against what $readmemh put in `ucode`, once the stream has
+// finished, and report the first mismatches with a total.
+//
+// Reported as a count and examples rather than a pass/fail: "how many and where" tells
+// you which of the three it is, where "FAIL" would not.
+integer uc_i2, uc_bad;
+reg     uc_checked = 1'b0;
+reg     uc_we_d    = 1'b0;
+always @(posedge clk) begin
+    // Trigger on uc_we FALLING, not on uc_addr == 2047: uc_addr is 11 bits and wraps
+    // to 0 when it increments past 2047, so that value is not still there afterwards.
+    uc_we_d <= uc_we;
+    if (rst_n && uc_we_d && !uc_we && !uc_checked) begin
+        uc_checked <= 1'b1;
+        uc_bad = 0;
+        for (uc_i2 = 0; uc_i2 < 2048; uc_i2 = uc_i2 + 1) begin
+            if (main.tgp.prog[uc_i2] !== ucode[uc_i2]) begin
+                if (uc_bad < 8)
+                    $display("UCODE MISMATCH @%04h: prog=%08h ucode=%08h",
+                             uc_i2[15:0], main.tgp.prog[uc_i2], ucode[uc_i2]);
+                uc_bad = uc_bad + 1;
+            end
+        end
+        $display("UCODE CHECK: %0d of 2048 words differ; prog[07e6]=%08h ucode[07e6]=%08h hex should be 40008000",
+                 uc_bad, main.tgp.prog[16'h07e6], ucode[16'h07e6]);
+    end
+end
+
 // WHERE AN IO-SOURCED VALUE IS LOST. tgp_wrtrace puts the first value divergence at
 // write 22: data[0x69] should get 00000030, the coprocessor data ROM's word, and gets
 // zero — while the io read itself returns 00000030 correctly (the boot trace prints

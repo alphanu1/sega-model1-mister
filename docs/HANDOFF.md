@@ -130,7 +130,37 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
-### Where to pick up — 2026-08-19 evening. Program RAM reads ZERO at 0x07e6.
+### Where to pick up: the microcode IS loaded. The FETCH delivers zero.
+
+    UCODE CHECK: 0 of 2048 words differ; prog[07e6]=40008000 ucode[07e6]=40008000
+
+`tb_m1_boot` now verifies **every** word of program RAM against what `$readmemh` loaded,
+once the stream finishes, and reports a count with examples. All 2048 match. So the ROM is
+in correctly and the three candidates queued for it — a `$readmemh` gap, a loader dropping
+writes, an early-execution race — are all eliminated by one measurement.
+
+**Yet the core fetches `ir = 00000000` at `pc = 07e6`, where `prog[0x07e6]` provably holds
+`40008000`.** So the fault is in the fetch path:
+
+    prog_addr = (state == S_SRC || S_SRC_W) && x_src_sp == EP_PROG ? agu_ea[15:0] : seq_pc;
+    always_ff @(posedge clk) prog_rdata <= prog[prog_addr[10:0]];
+    S_FETCH_W: ir <= prog_rdata;
+
+Timing reads correctly: `S_FETCH` presents `seq_pc`, the edge into `S_FETCH_W` registers
+`prog[seq_pc]`, and `S_FETCH_W` latches it into `ir`. **So measure it rather than read it**
+— print `prog_addr`, `prog_rdata` and `ir` across `S_FETCH`/`S_FETCH_W`, and note the
+existing trace arms one cycle late (its first line is `st=1`, so `S_FETCH` itself is never
+shown). Arm on `seq_pc == 0x07e5` to see the fetch of `07e6` from the state before it.
+
+**A specific suspect worth checking first:** `prog_addr` is shared with the `EP_PROG` source
+path, so an instruction that reads program space as data steals the address port. If the
+instruction before `07E6` does that, the fetch of `07E6` could sample the wrong address —
+and `07E5` is `1c1c842e`, which is worth decoding before assuming otherwise.
+
+**Do not change `mb86233_dec`, `mb86233_core`'s decode, or the loader.** All three are
+proven correct for this case.
+
+### Superseded: "program RAM reads zero at 0x07e6" — the RAM is fine, the fetch is not
 
     W0 pc=07e6 ir=00000000 st=1 ...        the core fetches ZERO
     hex 07e6   40008000                    the file holds `ldi #0x8000, b0`
