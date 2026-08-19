@@ -3320,3 +3320,64 @@ core before.**
 - *"The TGP is halted"* — `dbg_tgp_retires` counts something narrower than retires. The
   instruction trace showed 3.4 M against the reference's 3.42 M.
 - *"`ldi #0x8000, b0` is mis-decoded"* — the decoder was always right; see the entry above.
+
+---
+
+## The window-mode scroll and split are CORRECT — four re-derivations, ruled out — 2026-08-19
+
+The board now moves: with the TGP fixed, the tilemap control words are written and the
+horizon scrolls. It scrolls **wrongly** — the sky runs off the top and palette 0 fills the
+bottom half — and the obvious suspects are all innocent. Recorded so the next session does
+not spend the evening re-reading `segaic24.cpp` as this one did.
+
+**1. `neg_vscr = -ctrl_r` is not a bug**, though it reads like one against the comment
+directly above it, which says `v = (-vscr) & 0x1ff`. MAME reads
+
+    hscr = tile_ram[0x5000 + (layer >> 1)]
+    vscr = tile_ram[0x5004 + (layer >> 1)]
+    ctrl = tile_ram[0x5004 + ((layer >> 1) & 2)]
+
+so `ctrl` and the EVEN map's `vscr` are **the same word** — 0x5004 for pair 0/1, 0x5006 for
+pair 2/3. `-ctrl_r` therefore already is `-vscr_even`, which is what the window branch
+uses. This was one edit away from being "fixed" into a real defect.
+
+**2. The scroll signs are correct, in both modes.** MAME's non-window path sets its source
+origin to `hscr = (-hscr) & 0x1ff`, `vscr = (+vscr) & 0x1ff`, i.e. `map_x = x - hscr` and
+`map_y = y + vscr` — which is `m1_tile_decode.sv:97-98` exactly. The window path instead
+calls `set_scrollx(0, -(hscr & 0x1ff))` and `set_scrolly(0, vscr & 0x1ff)`. Those look like
+the opposite convention and are not: `-(hscr & 0x1ff)` and `(-hscr) & 0x1ff` are equal mod
+512, and the tilemap is 512 wide, so `set_scrollx(S)` must mean `source_x = x + S` for the
+two paths to agree. Both reduce to `map_x = x - hscr`. **MAME's `src/emu/` is not in the
+bootstrap checkout**, so this was settled by requiring the two paths to be consistent
+rather than by reading `tilemap.cpp` — worth confirming against upstream if it ever matters
+more than it does here.
+
+**3. The window register sources are correct.** `f_hscr`/`f_vscr` take the even map's
+registers for both maps of the pair, which is what lines 359-361 and 420-421 do.
+
+**4. The split-line arithmetic is correct.** With the measured `ctrl = 0x2305`: mode is
+`(0x2305 >> 13) & 3 = 1`; `v = (-0x2305) & 0x1ff = 251`; bit 9 of `-0x2305` is clear so
+`layer ^= 1`. Rows 0-250 draw the ODD map and 251-383 the EVEN one, which is what
+`win_swap`/`win_pick` compute.
+
+### So the fault is that one map draws nothing in its own half
+
+The bottom half is palette 0, which is the backdrop showing through where tilemap 2 should
+be. That is a layer failing to produce pixels in a region it owns, not a scroll or a split
+computed wrongly.
+
+Two things in `draw_common` gate a layer entirely and are worth checking against our
+implementation before anything else:
+
+    if(vscr & 0x8000) return;        // whole-layer disable, per layer
+    if(layer & 1)     return;        // in window mode the ODD map's own pass draws NOTHING
+
+The second is the one to check hardest: the pair is drawn **entirely by the even layer's
+call**, so if our per-layer pipeline lets tilemap 3's own pass run, it draws over the
+region tilemap 2 owns rather than leaving it. `docs/HANDOFF.md` records odd-map suppression
+as implemented; confirm it covers the *fetch* as well as the *mix*.
+
+**Measure before changing anything.** `manager.machine.video:snapshot()` on a known frame,
+against ours on the same frame, plus a per-frame census of `[5000]`-`[5007]`. Four
+plausible causes have already been ruled out here by reading, and reading is what produced
+three withdrawn findings today.
