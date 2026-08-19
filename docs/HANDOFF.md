@@ -130,7 +130,38 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
-### Where to pick up — 2026-08-19 evening. The bug is one instruction wide.
+### Where to pick up — 2026-08-19 evening. It is `b0`, not the data path.
+
+Armed on `seq_pc == 0x07e7` — the instruction, not a symptom — and printing every cycle:
+
+    W2 pc=07e7 st=3 ack=1 rd=1 ioaddr=0000 io=00000000 b0=0000 x0=0000
+    W4 pc=07e7 st=7 mw=1 maddr=00069            stores that 0 into data[0x69]
+
+**`b0 = 0x0000` at the first execution of `07E7`.** `07E6` is `ldi #0x8000, b0`, so it
+should be `0x8000`. With `b0` and `x0` both zero the operand `(bx0)` addresses io
+`0x0000` — the coprocessor RAM address register, which reads 0 — instead of `0x8010`.
+The read succeeds, returns 0, and the store faithfully writes 0. **Nothing in the data
+path was ever wrong; the address was.**
+
+That also explains why the second execution is correct: by then `b0` holds `0x8000`.
+
+**The question is now: did `07E6` execute before that first `07E7`, and if so why did
+`b0` not take the value?** Two shapes, and they need different fixes:
+
+1. **`07E6` did not execute** — we reach `07E7` by a path the reference does not take,
+   so this is control flow and `tgp_trace` with a window that reaches it will show the
+   entry.
+2. **`07E6` executed and the write did not land.** `ldi` is an immediate-form write and
+   `mb86233_core` lands those in `S_RETIRE` via `rf_wr_en`/`rf_wr_addr = d_ldireg`. Check
+   `d_ldireg` resolves to `b0`'s index — `read_reg` case `0x00` is `m_b0` — and that the
+   write is not being lost to the register file's shared-ownership rules. **CLAUDE.md
+   warns that `x0`/`x1` have two writers and the AGU wins; `b0` deserves the same
+   scrutiny.**
+
+Widen the arm to `seq_pc == 0x07e6` and print through both instructions. That
+distinguishes the two in one run.
+
+### Superseded: "the bug is one instruction wide" — the store looked wrong and was not
 
 **`07E7` — `mov (bx0) (e), $0x69` — stores the wrong value on its FIRST execution.**
 

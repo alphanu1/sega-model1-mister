@@ -225,9 +225,14 @@ always @(posedge clk_cpu) begin
     // So: arm on the first acknowledged read of io 0x8010, then print EVERY cycle for
     // the next 40, unfiltered. That covers the capture, the store, and everything
     // between.
-    if (rst_n_cpu && !sv_armed
-        && main.tgp.core.io_rd && main.tgp.core.io_addr == 16'h8010
-        && main.tgp.core.io_ack)
+    // ARM ON THE INSTRUCTION, NOT ON A SYMPTOM OF THE WORKING CASE.
+    //
+    // The previous version armed on `io_addr == 0x8010 && io_ack`, which is the
+    // address the SECOND execution of 07E7 uses. The operand is (bx0) = b0 + x0 with
+    // b0 = 0x8000 from 07E6, so the first execution reads a different address — and
+    // the trace therefore showed only the pass that works, which is why the capture
+    // and store looked perfect while the stored value was wrong.
+    if (rst_n_cpu && !sv_armed && main.tgp.core.seq_pc == 16'h07e7)
         sv_armed <= 1'b1;
     if (rst_n_cpu && sv_armed && sv_n < 40) begin
         // mem_rdata and mem_stall too. The three candidates for src_val taking the
@@ -235,13 +240,13 @@ always @(posedge clk_cpu) begin
         // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
         // lets the state advance early, or a print sampling the wrong clock. These
         // fields separate all three.
-        $display("W%0d st=%0d sp=%0d ack=%b stall=%b io=%08h mem=%08h src=%08h reg=%08h xreg=%b mw=%b maddr=%05h",
-                 sv_n,
+        $display("W%0d pc=%04h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h mw=%b maddr=%05h",
+                 sv_n, main.tgp.core.seq_pc,
                  main.tgp.core.state, main.tgp.core.x_src_sp,
-                 main.tgp.core.io_ack, main.tgp.core.mem_stall,
-                 main.tgp.core.io_rdata, main.tgp.core.mem_rdata,
-                 main.tgp.core.src_val, main.tgp.core.rf_rd_data,
-                 main.tgp.core.x_src_reg,
+                 main.tgp.core.io_ack, main.tgp.core.io_rd,
+                 main.tgp.core.io_addr, main.tgp.core.io_rdata,
+                 main.tgp.core.src_val,
+                 main.tgp.core.u_regs.b0, main.tgp.core.u_regs.x0,
                  main.tgp.core.mem_we, main.tgp.core.mem_addr);
         sv_n = sv_n + 1;
     end
