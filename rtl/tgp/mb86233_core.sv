@@ -341,7 +341,8 @@ module mb86233_core (
     S_FETCH, S_FETCH_W, S_DECODE,
     S_SRC, S_SRC_W, S_LABB, S_LABB_W,
     S_DST, S_DST_W,
-    S_ALU, S_RETIRE
+    S_ALU, S_RETIRE,
+    S_BRUL_RD, S_BRUL_W
   } state_e;
 
   state_e state;
@@ -411,29 +412,38 @@ module mb86233_core (
 
   // Which indirect form a brul/bsul is using. Bit 14 of the instruction's low
   // half selects register over memory, exactly as MAME's `opcode & 0x4000` does.
-  logic brul_regform, brul_memform;
+  logic brul_regform, brul_memform, brul_ea_simple;
   always_comb begin
     brul_regform = d_branch & ((d_bsub == 3'd1) | (d_bsub == 3'd3)) &  d_bdata[14];
     brul_memform = d_branch & ((d_bsub == 3'd1) | (d_bsub == 3'd3)) & ~d_bdata[14];
+    // MAME's ea_pre_0: `switch(r & 0x180) case 0x000: return r & 0x7f`. The other
+    // three modes add b0/x0 and are not reached by this microcode — both sites,
+    // 0x04c5 and 0x04da, use the direct one. Anything else warns above rather than
+    // branching somewhere plausible.
+    brul_ea_simple = (d_bdata[8:7] == 2'b00);
   end
+
+  // The target word, read from data memory before the branch can resolve.
+  logic [15:0] brul_target;
 
   // THE MEMORY FORM IS NOT IMPLEMENTED and says so out loud rather than jumping
   // somewhere plausible. Resolving it needs a data-memory read before the branch,
   // which is another FSM state. Two sites exist in the vr microcode, both bsul at
   // 0x04c5 and 0x04da, and neither has been reached yet. Reported the way v60.sv
   // reports a skipped BRK: visible in simulation, no effect on synthesis.
-  // synthesis translate_off
+  // NOT WRAPPED IN A SYNTHESIS PRAGMA. The first version of this warning was, and
+  // the linter honours those pragmas too — so the one tool that could have printed
+  // it skipped it. `bsul` memory form then went undiagnosed for a day while its own
+  // warning sat switched off. A $display costs nothing in synthesis; the pragma was
+  // never needed.
+  //
+  // rst_n deliberately NOT tested: reading it in a posedge-clk block trips
+  // SYNCASYNCNET, and state resets to S_FETCH so it cannot be S_RETIRE in reset.
   always @(posedge clk) begin
-    // rst_n deliberately NOT tested here: reading it in a posedge-clk block trips
-    // SYNCASYNCNET, "flopped as both synchronous and async", and the test is
-    // redundant anyway — state resets to S_FETCH, so it cannot be S_RETIRE during
-    // reset. (Do not name the linter in a comment either; it reads the next word
-    // as a pragma and fails with BADVLTPRAGMA. That cost a build.)
-    if ((state == S_RETIRE) && brul_memform)
-      $display("TGP: brul/bsul MEMORY form at pc %04h is not implemented (op %08h)",
-               seq_pc, ir);
+    if ((state == S_RETIRE) && brul_memform && !brul_ea_simple)
+      $display("TGP: brul/bsul memory form with addressing mode %02h at pc %04h is not implemented (op %08h)",
+               d_bdata[8:7], seq_pc, ir);
   end
-  // synthesis translate_on
 
   assign retire    = (state == S_RETIRE);
   assign retire_pc = seq_pc;
@@ -458,7 +468,10 @@ module mb86233_core (
         S_DECODE: begin
           alu_op_r  <= d_alu;
           fp_post_r <= d_lab | d_ldmov;
-          if (d_lab || d_ldmov) state <= S_SRC;
+          // brul/bsul memory form needs its target FETCHED before the branch can
+          // resolve, so it takes the read states like any other source operand.
+          if (brul_memform && brul_ea_simple) state <= S_BRUL_RD;
+          else if (d_lab || d_ldmov) state <= S_SRC;
           else                  state <= S_ALU;
         end
 
@@ -500,6 +513,14 @@ module mb86233_core (
             alu_launched <= 1'b0;
           end
         end
+        S_BRUL_RD: state <= S_BRUL_W;
+        S_BRUL_W: begin
+          if (!mem_stall) begin
+            brul_target <= mem_rdata[15:0];
+            state       <= S_RETIRE;
+          end
+        end
+
         S_RETIRE: begin
           // stm/stmh: bit 0 selects floating point, bits 2:1 the cfxd rounding
           // mode. Only sub-op 5 is implemented in MAME; the rest log.
@@ -527,6 +548,13 @@ module mb86233_core (
     seq_branch_val = 16'd0; seq_is_rep = 1'b0; seq_rep_count = 8'd0;
 
     unique case (state)
+      S_BRUL_RD, S_BRUL_W: begin
+        // EA = opcode & 0x7f, MAME's ea_pre_0 mode 0. Direct data address, no AGU
+        // state involved, so it does not disturb x0/b0 the way a source read would.
+        mem_req  = 1'b1;
+        mem_addr = {10'd0, d_bdata[6:0]};
+      end
+
       S_SRC, S_SRC_W: begin
         // read_reg masks its argument to 6 bits, so the index is agu_r[5:0].
         // Taking only [2:0] silently reads register 0 for every target above
@@ -595,6 +623,8 @@ module mb86233_core (
         if (brul_regform) begin
           rf_rd_addr     = d_bdata[5:0];
           seq_branch_val = rf_rd_data[15:0];
+        end else if (brul_memform && brul_ea_simple) begin
+          seq_branch_val = brul_target;
         end else begin
           seq_branch_val = d_bdata;
         end

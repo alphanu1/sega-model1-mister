@@ -2816,3 +2816,52 @@ divergence will name itself.
 come up cleared on the device, MAME's equivalents are zero-filled, and `mb86233_mem.sv`
 already carried the same fix and reasoning. They were not this bug, and the commits
 should not be read as if they were.
+
+## FIXED: bsul's memory form — the geometry call jumped to its own address field
+
+The long `tgp_trace` window named it in one run:
+
+    04C5: bsul alw ($0x35)
+    MAME:  -> 0693      reads data[0x35], finds 0x0693, and calls it
+    ours:  -> 0035      jumped to the address field itself
+
+`bsul` **memory form**, at exactly the site identified on 2026-08-18 and deliberately
+left warning-only. `0x04c5` is a subroutine call into the geometry code at `0x0693`, so
+jumping to `0x0035` dropped our TGP back into the dispatch region looking finished —
+which is why it made **14** io accesses against the reference's **158,391**, and why the
+V60 waited forever at `FED5A4` for a completion word nobody was going to write.
+
+### The warning built to catch this was switched off by its own guard
+
+It was wrapped in `// synthesis translate_off`, and the linter honours that pragma too,
+so the one tool that could have printed it skipped the block. `bsul` went undiagnosed
+for a day with its own alarm disabled — **the same trap that silenced the copro RAM
+initialiser hours earlier.** Both are now unguarded. A `$display` costs nothing in
+synthesis and the pragma was never needed.
+
+**Rule: do not wrap diagnostics in a synthesis pragma.** Two instruments in one day
+were made inert by it, and an inert instrument is worse than an absent one because its
+silence reads as evidence.
+
+### The implementation
+
+MAME's `ea_pre_0`: `switch(r & 0x180) case 0x000: return r & 0x7f`. Both real sites
+(`0x04c5`, `0x04da`) use that direct mode, so two states fetch the target from data
+memory before the branch resolves, deliberately bypassing the AGU so the read cannot
+disturb `x0`/`b0` the way a source operand would. The other three modes still warn —
+and now the warning prints.
+
+Divergence moves **500 -> 604**.
+
+### The next one is an FP condition flag
+
+    0730: fadd
+    0731: brif ged #0x73a
+    MAME:  falls through to 0732   (ged false)
+    ours:  branches to 073a        (ged true)
+
+Operands are `d = mem[0x43]`, `a = mem[3]` (the transfer wins over `orad`, per the
+write-priority rule). So either the operands differ — they come from coprocessor RAM
+and the data ROM, both only just flowing — or `fadd`'s flag output is wrong. **Print
+the operands and the result on both sides before assuming which.** Four diagnoses were
+withdrawn today for skipping that step.
