@@ -3558,3 +3558,34 @@ completes a read instead of stalling, an empty FIFO reads as twelve zeros and th
 coprocessor carries on with them — which is precisely the symptom. `m1_tgp`'s `io_ack`
 has an unqualified final `else` that acknowledges anything unmapped, and a
 mis-decode into that arm would ack immediately with `io_rdata = 0`.
+
+### The V60's command stream is CORRECT — it just never stops
+
+`tools/mame_copro_push.lua` dumps the V60 -> TGP command stream as 32-bit words for diffing
+against `tb_m1_boot`'s `COPRO PUSH` lines. Over a 900-frame reference window:
+
+    command streams IDENTICAL for 61 commands
+    reference total: 61      ours total: 65535 (our counter saturates)
+
+**Every command the reference sends, we send, in the same order, with the same values.** We
+then send tens of thousands more. The reference issues 61 commands in fifteen seconds and
+stops; ours never stops.
+
+That reframes the remaining defect completely. It is not that the V60 computes the wrong
+geometry — the geometry is right. It is that our V60 keeps re-issuing work the reference
+issues once, which is consistent with it ending in the `FED5A4` poll and something
+re-triggering the send. The twelve zeros at TGP write 4122 then follow naturally: by that
+point the two machines are in different places in the program, and comparing write 4122 of
+one against write 4122 of the other stopped being meaningful several thousand writes
+earlier.
+
+**Instrument note.** The V60 writes the FIFO through PROGRAM space while reading it through
+IO — `in.w` only appears in `AS_IO`. A write tap on the IO space returns nothing while
+looking exactly like a working instrument, which is the same trap as the program-space read
+census that concluded the V60 never touches the coprocessor. Tap the space that matches the
+DIRECTION.
+
+**Next:** `make v60_trace` with `tools/v60_resync.py`, now that the coprocessor returns
+correct results. The earlier run found only interrupt-phase slips over 100,000 instructions
+because the TGP was feeding it wrong data; with the data right, a structural divergence
+should be visible and will say why the V60 loops.
