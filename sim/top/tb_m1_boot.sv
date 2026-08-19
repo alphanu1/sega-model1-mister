@@ -884,6 +884,55 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------ copro RAM sync-word census
+// FED5A4 spins on `in.w [R1], R0` with R1 = 0xD20000 and leaves when the low
+// byte of the coprocessor RAM word is zero. MAME's own tap on the maincpu IO
+// space, 8 seconds, returns 0000ffff 64,696 times and 00000000 3,738 times: the
+// TGP parks ffff in that word while it works and clears it when it is done, and
+// the V60 goes round the loop until it does.
+//
+// Ours never leaves, so the value being read is the whole question, and neither
+// the page histogram nor the watched-page log can answer it - the histogram
+// counts accesses without data, and the watched-page log keeps only the first
+// forty, which are from a different routine hours of simulated time earlier.
+//
+// `in.w` is an IO-SPACE access. A tap on the program space sees nothing and
+// reads as "the V60 never touches the coprocessor" - that exact mistake is on
+// record in CLAUDE.md, made against MAME and believed for two months.
+localparam integer D20N = 12;
+integer d20_val [0:D20N-1];
+integer d20_cnt [0:D20N-1];
+integer d20_dist = 0, d20_reads = 0, d20_lowzero = 0;
+reg     d20_pend = 1'b0;
+reg     d20_req_d = 1'b0;
+integer dj, dfound;
+
+always @(posedge clk_cpu) begin
+    d20_req_d <= main.m_req;
+    if (!rst_n_cpu) begin
+        d20_pend <= 1'b0;
+    end else begin
+        if (main.m_req && !d20_req_d && !main.m_we
+            && main.m_addr[23:16] == 8'hd2)
+            d20_pend <= 1'b1;
+        if (d20_pend && main.m_ack) begin
+            d20_pend  <= 1'b0;
+            d20_reads  = d20_reads + 1;
+            if (main.m_rdata[7:0] == 8'h00) d20_lowzero = d20_lowzero + 1;
+            dfound = -1;
+            for (dj = 0; dj < d20_dist; dj = dj + 1)
+                if (d20_val[dj] == main.m_rdata) dfound = dj;
+            if (dfound >= 0)
+                d20_cnt[dfound] = d20_cnt[dfound] + 1;
+            else if (d20_dist < D20N) begin
+                d20_val[d20_dist] = main.m_rdata;
+                d20_cnt[d20_dist] = 1;
+                d20_dist          = d20_dist + 1;
+            end
+        end
+    end
+end
+
 // ------------------------------------------- first entry into a watched page
 // The rolling buffer above answers "where did it END UP"; it cannot answer "how
 // did it GET there", because by the time the run finishes the approach has been
@@ -1093,6 +1142,13 @@ initial begin
              vbl_to_glue, irq_asserted, irq_edges);
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
+    $display("BOOT: copro RAM data port: %0d 16-bit reads, %0d with low byte zero, %0d distinct values",
+             d20_reads, d20_lowzero, d20_dist);
+    for (i = 0; i < d20_dist; i = i + 1)
+        $display("BOOT:   value %04h  x%0d", d20_val[i][15:0], d20_cnt[i]);
+    $display("BOOT:   reference (MAME io tap, 8 s): 0000ffff x64696, 00000000 x3738");
+    $display("BOOT: copro adr register = %04h (FED587 sets it to 0 before the poll)",
+             main.copro.adr);
     if (trapw >= 0) begin
         $display("BOOT: FIRST entry into page %04h at t=%0t; the %0d distinct PCs before it:",
                  `TRAP_HI, trap_time, PCBUF);
