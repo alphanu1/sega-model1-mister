@@ -304,6 +304,26 @@ int main(int argc, char** argv) {
     check(t.rd(Dut::RAM, 0) == 0xa5a5, "the TGP's contended write was lost");
   }
 
+  printf("test: coprocessor RAM comes up ZEROED, as an M10K does\n");
+  {
+    // The V60 waits on this at FED5A4: address 0, then `in.w` / `test.b` / `bne`
+    // until the low byte reads ZERO. A Cyclone V M10K powers up cleared, so on the
+    // device that loop exits after ~32 iterations. Verilator brings unreset arrays
+    // up as ONES, and reading 0xffffffff our V60 span 1,120,224 times and never
+    // left — never pushing another command, never reaching the per-frame 2D work.
+    //
+    // The `initial` in m1_copro_if closes that gap, and it must NOT be wrapped in
+    // `synthesis translate_off`: Verilator honours that pragma too and skips the
+    // code, which is how the first attempt at this fix changed nothing at all.
+    Dut t;
+    t.set_adr(0x0000);                      // address 0, increment disabled
+    uint16_t lo = t.rd(Dut::RAM, 0);
+    uint16_t hi = t.rd(Dut::RAM, 1);
+    check(lo == 0x0000, "copro RAM word 0 low half is not zero at reset");
+    check(hi == 0x0000, "copro RAM word 0 high half is not zero at reset");
+    printf("  word 0 reads %04x_%04x at reset\n", hi, lo);
+  }
+
   printf("test: an EMPTY outbound FIFO stalls the V60 instead of returning stale data\n");
   {
     // The other end of the same interlock, and the one that was missing.

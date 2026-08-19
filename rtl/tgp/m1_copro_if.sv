@@ -173,9 +173,13 @@ module m1_copro_if #(
   // per-frame 2D work. Every layer between the bus and the array was correct; the
   // array's initial contents were not.
   //
-  // synthesis translate_off
+  // NOT GUARDED BY translate_off. The first attempt wrapped this in
+  // `// synthesis translate_off` / `translate_on`, which VERILATOR ALSO HONOURS as a
+  // pragma — so the initialisation was skipped in simulation, the exact opposite of
+  // the intent, and the array still came up as ones. An unguarded `initial` is
+  // correct for both tools: Quartus uses it to initialise the inferred M10K, which
+  // is what the device does anyway, and Verilator executes it.
   initial for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
-  // synthesis translate_on
   logic [31:0]   ram_din, ram_q;
   logic          ram_we;
 
