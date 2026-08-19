@@ -202,6 +202,21 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// WHO WRITES COPRO RAM? dbg_ram_writes counts only the V60's writes (we && a1 in
+// S_V60_RAM); the S_TGP path has its own `ram_we = tgp_we` that the counter never
+// sees. So "copro RAM writes=0" never meant "nobody writes it" — the same
+// counter-name trap as dbg_fifo_pops. The array is confirmed zeroed at time 0
+// (CRAM INIT prints ram[0]=00000000) and later reads ffffffff, so someone writes it.
+integer rw_n = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && main.copro.ram_we && rw_n < 16) begin
+        $display("CRAM WR: st=%0d addr=%04h din=%08h  tgp_we=%b tgp_addr=%04h v60_we=%b a1=%b",
+                 main.copro.st, main.copro.ram_addr, main.copro.ram_din,
+                 main.copro.tgp_we, main.copro.tgp_addr, main.copro.we, main.copro.a1);
+        rw_n = rw_n + 1;
+    end
+end
+
 // -------------------------------- WHY A COPRO RAM READ RETURNS 0xff, NOT ram[adr]
 //
 // The V60 spins at FED5A4 on `in.w [R1], R0` / `test.b` / `bne`, which the reference

@@ -179,7 +179,10 @@ module m1_copro_if #(
   // the intent, and the array still came up as ones. An unguarded `initial` is
   // correct for both tools: Quartus uses it to initialise the inferred M10K, which
   // is what the device does anyway, and Verilator executes it.
-  initial for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
+  initial begin
+    for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
+    $display("CRAM INIT: %0d words zeroed, ram[0]=%08h", RAM_WORDS, ram[0]);
+  end
   logic [31:0]   ram_din, ram_q;
   logic          ram_we;
 

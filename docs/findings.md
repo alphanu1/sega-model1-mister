@@ -2711,3 +2711,56 @@ on disk but are **not in the repository**, and a clone gets none of them. Durabl
 findings belong in `docs/`, which is tracked. The test-count baseline, the resource
 figures and the corrected "the V60 never reads the coprocessor back" entry all live
 only in the working copy.
+
+## Traced end to end: "no text" reaches the TGP's unimplemented math units — 2026-08-19
+
+The chain, each link measured except the last:
+
+| link | evidence |
+|---|---|
+| no text on screen | board photograph and `m1_frame` |
+| the V60 never reaches the per-frame 2D setup | `[5002]`, `[5006]` and the row mask all zero at 862 frames |
+| it is stuck at `FED5A4` waiting for copro RAM to read zero | reference exits that loop after ~32 iterations; ours spins **1,120,224** times |
+| copro RAM word 0 holds `ffffffff` | `CRAM rd: ram_addr=0000 ram_q=ffffffff` |
+| **the TGP wrote it**, once | `CRAM WR: st=2 addr=0000 din=ffffffff tgp_we=1` |
+| it computed that from unimplemented math units | **INFERENCE, not measurement** |
+
+### Three of my own conclusions were wrong on the way here
+
+**"The array is uninitialised."** Plausible — Verilator does bring unpacked arrays up
+as ones, and `mb86233_mem.sv` already carried that exact fix and reasoning. But the
+`initial` block prints `CRAM INIT: 8192 words zeroed, ram[0]=00000000` in both builds.
+The array starts zeroed and is written afterwards. The fix is still right on its own
+merits and stays.
+
+**"Nothing writes `ram[0]`."** Said on the strength of `copro RAM writes=0`. That
+counter is `dbg_ram_writes`, which increments only on the **V60's** writes — `we && a1`
+in `S_V60_RAM`. The `S_TGP` path has its own `ram_we = tgp_we` that it never sees. The
+boot line reads "copro RAM writes=0" as though it covered both ports; it does not.
+**Third time this session a counter's name was trusted over what it increments on**,
+after `dbg_fifo_pops` and this one twice.
+
+**"The comment containing the pragma re-triggered it."** Both `translate_off`
+occurrences are in comments, and the same file compiles to a zeroed array in the module
+bench, so the comments cannot be the cause. Withdrawn before it was acted on.
+
+### Where this leaves the text
+
+The TGP's io sequence is `R 0020` (sincos), `W 002e`, `R 8010`, `R 8020`, `W 0028`
+(inv), `R 0028`, `R 0029`, `W 0008` (copro RAM address). It is using the interfaces
+correctly. But `m1_tgp`'s own header says the math path is not built: *"Index arithmetic
+and the exponent fixups are NOT here yet — so a read presents the quadrant base and the
+integrator's memory answers."* A sincos or inverse read returns table data at the
+quadrant base, not the function's value.
+
+So the V60's wait at `FED5A4` is downstream of **M2 work that was always known to be
+outstanding**, not of a bug. Two things follow:
+
+1. **The text is probably gated on the math units**, which is a substantial piece of
+   work rather than a fix. Worth confirming by making an unimplemented math read return
+   **zero** instead of table-base garbage and seeing whether the TGP then writes a word
+   whose low byte is zero — `m1_integrated` already acknowledges those reads with zero,
+   while `tb_m1_boot` wires them to real SDRAM tables, so the two disagree today.
+2. **That asymmetry is worth closing either way.** Simulation and hardware currently
+   feed the coprocessor different values on an unimplemented path, which is the same
+   class of divergence as the uninitialised array.
