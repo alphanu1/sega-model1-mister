@@ -208,6 +208,39 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// ------------------------- VALUE-LEVEL TRACE: EVERY TGP DATA-MEMORY WRITE
+//
+// The PC-stream lockstep (make tgp_trace) can only catch a wrong value once it
+// changes control flow, which is why it stops at `0731 brif ged` while the error is
+// upstream in the FP chain at 06EE-070C. This is the value trace that localises it.
+//
+// One line per write, in the same shape tools/mame_tgp_wrtrace.lua emits for the
+// reference, so the two diff directly. That Lua tap works where three attempts at
+// per-instruction REGISTERS did not: program-space taps never fire, `trace`'s
+// {tracelog} action emits nothing, and bpset actions never fired. Data writes are
+// what the microcode stores its results into, so they are the quantity that matters.
+//
+// EDGE-DETECTED. mb86233_core asserts mem_req in both S_DST and S_DST_W — it must,
+// because the address has to hold across a registered access — so a write appears on
+// two consecutive cycles and would be logged twice. That is the same shape as the
+// FIFO double-push fixed on 2026-08-18; here it only affects the trace.
+reg  tw_req_d = 0;
+wire tw_wr = main.tgp.core.u_mem.req && main.tgp.core.u_mem.we
+          && (main.tgp.core.u_mem.sel_ram0 || main.tgp.core.u_mem.sel_ram1);
+integer tw_n = 0;
+always @(posedge clk_cpu) begin
+    if (!rst_n_cpu) begin
+        tw_req_d <= 1'b0;
+    end else begin
+        tw_req_d <= tw_wr;
+        if (TGPTRACE && tw_wr && !tw_req_d && tw_n < 4000) begin
+            $display("TW %04h %08h",
+                     main.tgp.core.u_mem.addr[15:0], main.tgp.core.u_mem.wdata);
+            tw_n = tw_n + 1;
+        end
+    end
+end
+
 // WHO WRITES COPRO RAM? dbg_ram_writes counts only the V60's writes (we && a1 in
 // S_V60_RAM); the S_TGP path has its own `ram_we = tgp_we` that the counter never
 // sees. So "copro RAM writes=0" never meant "nobody writes it" — the same
