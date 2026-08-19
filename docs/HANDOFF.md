@@ -130,7 +130,43 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
-### Where to pick up — 2026-08-19 evening. Check `ir` at 07E6 FIRST.
+### Where to pick up — 2026-08-19 evening. Program RAM reads ZERO at 0x07e6.
+
+    W0 pc=07e6 ir=00000000 st=1 ...        the core fetches ZERO
+    hex 07e6   40008000                    the file holds `ldi #0x8000, b0`
+
+An all-zero word has `top = opcode[31:26] = 0x00`, which is exactly `is_lab` — so the
+`lab` path the trace showed is the **correct** decode of the word actually fetched.
+Nothing is mis-decoded. **The microcode is not in program RAM at that address.**
+
+**Every bound checks out**, so this is not an obvious sizing error:
+
+| | |
+|---|---|
+| `m1_tgp`'s `PROG_WORDS` | 2048 |
+| `build/rom/vr_tgp_prog.hex` | 2048 lines |
+| `tb_m1_boot`'s `ucode` array | `[0:2047]` |
+| the address | `0x07e6` = 2022, inside |
+| the loader's bound | walks to `11'd2047` |
+
+**So check, in this order:**
+
+1. **Does `ucode[0x07e6]` hold `40008000` in the bench?** `$readmemh` can stop early or skip
+   silently. Print it in the same `initial` that already prints the preload check.
+2. **Does `prog[0x07e6]` hold it after the load?** If `ucode` is right and `prog` is not,
+   the loader is dropping writes — and note the one-word shift fixed here on 2026-08-18
+   was in this same loader, so a second fault in it is plausible.
+3. **Does the TGP start executing before the load finishes?** The stream runs after `rst_n`
+   rises; if the coprocessor is released at the same time it will fetch from a partly
+   filled RAM. `0x07e6` is reached late, so this is the least likely of the three, but it
+   is the one that would differ between simulation and hardware — `m1_rom_loader` is a
+   different loader again.
+
+**Do not change `mb86233_dec` or `mb86233_core`.** Both are correct for the word they were
+given. Three earlier conclusions in this hunt — "mis-decoded", "b0 not written", "the store
+is wrong" — were all correct descriptions of consequences, and all wrong about the cause.
+
+### Superseded: "check `ir` at 07E6 first" — done, and it reads zero
 
 The chain is complete and every link is measured except the last step, which flipped at
 the end and is the one thing to verify before touching anything:

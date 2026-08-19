@@ -243,8 +243,8 @@ always @(posedge clk_cpu) begin
         // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
         // lets the state advance early, or a print sampling the wrong clock. These
         // fields separate all three.
-        $display("W%0d pc=%04h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h rfwe=%b rfaddr=%05h",
-                 sv_n, main.tgp.core.seq_pc,
+        $display("W%0d pc=%04h ir=%08h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h rfwe=%b rfaddr=%05h",
+                 sv_n, main.tgp.core.seq_pc, main.tgp.core.ir,
                  main.tgp.core.state, main.tgp.core.x_src_sp,
                  main.tgp.core.io_ack, main.tgp.core.io_rd,
                  main.tgp.core.io_addr, main.tgp.core.io_rdata,
