@@ -2865,3 +2865,43 @@ write-priority rule). So either the operands differ — they come from coprocess
 and the data ROM, both only just flowing — or `fadd`'s flag output is wrong. **Print
 the operands and the result on both sides before assuming which.** Four diagnoses were
 withdrawn today for skipping that step.
+
+## The value-level lockstep works, and names the fault in 26 writes — 2026-08-19
+
+`make tgp_wrtrace` diffs the TGP's data-memory write streams. First divergence, at
+write 22 of 26:
+
+    22   ref  data[0069] = 00000030      ours = 00000000     DIFF
+    23   ref  data[006a] = 00012e00      ours = 00000000     DIFF
+    ...
+    27   ref  data[0069] = 00000030      ours = 00000030     agree
+    28   ref  data[006a] = 00012e00      ours = 00012e00     agree
+
+Those two values are the **coprocessor data ROM's words** — `io 8010 -> 00000030` and
+`io 8020 -> 00012e00`. The reference stores them; our **first** read of each stores
+zero, and a later read of the same addresses is correct.
+
+So this is a **first-read / warm-up fault in the data-ROM path**, not arithmetic. And
+`tb_m1_boot` already documents the hazard, for its own capture rather than the DUT's:
+
+> *"Sampled the cycle AFTER the acknowledge. `a_dout` is registered and updates on the
+> same edge as `a_ack`, so a non-blocking capture at that edge takes the PREVIOUS value
+> — which produced a half-right pair and read exactly like a data path fault."*
+
+If `t_mem_rdata` becomes valid on the same edge as `t_mem_ack`, then `m1_tgp` sampling
+`dat_rdata` **during** the ack cycle takes the previous value — zero on the first read.
+`io_rdata = dat_rdata` and `io_ack = dat_ack` are combinational, so the DUT has no
+slack for that.
+
+**Check both wirings, because they may differ**: `tb_m1_boot`'s
+`t_dat_ack = t_mem_ack && !t_tbl_req && t_dat_req` against `m1_integrated`'s, which
+feeds the same `t_mem_rdata` on the hardware path. A one-cycle disagreement here would
+be a simulation-only fault — or a hardware-only one — and this session has already
+found two of those.
+
+### Why this instrument was worth building
+
+`tgp_trace` put the divergence at instruction 604, in `0731 brif ged`, which is **not
+where the error is**. The value trace puts it at write 22, in the data-ROM read — many
+instructions earlier and in a different subsystem. A PC diff can only ever report the
+first place a wrong value changes control flow.
