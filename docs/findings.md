@@ -2933,3 +2933,42 @@ RAM case this morning and the fault was elsewhere.
 where the error is**. The value trace puts it at write 22, in the data-ROM read — many
 instructions earlier and in a different subsystem. A PC diff can only ever report the
 first place a wrong value changes control flow.
+
+## LOCALISED: `src_val` follows the io ADDRESS, not the io DATA — 2026-08-19
+
+The all-states io trace, at a run length that actually reaches the read:
+
+    st=4  io_ack=1  io_rdata=00000030  src_val=00000010  addr=8010
+    st=3  io_ack=0  io_rdata=00000030  src_val=00000020  addr=8020
+
+At the acknowledge `io_rdata` is `00000030` — the correct data-ROM word, matching the
+reference. **But `src_val` never becomes `0x30`.** It reads `0x00000010` through the
+`8010` access and `0x00000020` through the `8020` one: the low bits of the io address,
+not the data.
+
+That is why `tgp_wrtrace` sees `data[0x69]` and `data[0x6a]` receive zero, or the wrong
+value, while every diagnostic that looks at the *read* says the data path is perfect.
+The read IS perfect. The capture is not.
+
+`mb86233_core`'s `S_SRC_W` reads
+
+    if (!mem_stall && !(x_src_sp == EP_IO && !io_ack))
+      src_val <= (x_src_sp == EP_PROG) ? prog_rdata
+               : (x_src_sp == EP_IO)   ? io_rdata
+                                       : mem_rdata;
+
+which is correct as written, so **something else assigns `src_val` on the same cycle and
+wins**, or the guard lets the state advance before the acknowledge and a later
+assignment overwrites it. Both are checkable: search every assignment to `src_val`, and
+print it on the exact cycle `io_ack` rises alongside whatever else is driving it.
+
+**Do not fix from that code reading.** It is the fifth time in two days that a path
+"correct as written" was not the fault — the copro RAM had four such layers.
+
+### Why this took a value-level instrument to find
+
+Every read-side diagnostic said the data was right: the boot trace prints
+`TGP data read 1: sdram word 300020 -> 00000030`, the io census showed the correct
+addresses, and `m1_cdc_port` is provably fine. The error is in the consumer, one cycle
+after a correct read, and only comparing the STORED values against the reference exposed
+it. `tgp_trace` reported it 578 instructions later as a branch going the wrong way.
