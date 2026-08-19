@@ -219,10 +219,16 @@ always @(posedge clk_cpu) begin
     // about which state issues it was wrong. Let the print say which.
     if (rst_n_cpu && sv_n < 24
         && main.tgp.core.io_rd && main.tgp.core.io_addr[15]) begin
-        $display("SRC st=%0d sp=%0d io_ack=%b io_rd=%b io_rdata=%08h src_val=%08h addr=%04h",
+        // mem_rdata and mem_stall too. The three candidates for src_val taking the
+        // io ADDRESS rather than the io DATA are: the wrong mux leg (x_src_sp not
+        // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
+        // lets the state advance early, or a print sampling the wrong clock. These
+        // fields separate all three.
+        $display("SRC st=%0d sp=%0d io_ack=%b stall=%b io_rdata=%08h mem_rdata=%08h src_val=%08h ea=%05h addr=%04h",
                  main.tgp.core.state, main.tgp.core.x_src_sp,
-                 main.tgp.core.io_ack, main.tgp.core.io_rd,
-                 main.tgp.core.io_rdata, main.tgp.core.src_val,
+                 main.tgp.core.io_ack, main.tgp.core.mem_stall,
+                 main.tgp.core.io_rdata, main.tgp.core.mem_rdata,
+                 main.tgp.core.src_val, main.tgp.core.ea_src,
                  main.tgp.core.io_addr);
         sv_n = sv_n + 1;
     end

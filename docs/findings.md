@@ -2999,3 +2999,37 @@ Every read-side diagnostic said the data was right: the boot trace prints
 addresses, and `m1_cdc_port` is provably fine. The error is in the consumer, one cycle
 after a correct read, and only comparing the STORED values against the reference exposed
 it. `tgp_trace` reported it 578 instructions later as a branch going the wrong way.
+
+## The instrument was subsampling: a filtered print cannot show a transition
+
+Chasing `src_val` taking the io address instead of the io data, the trace came out
+self-contradictory:
+
+    st=4 sp=2 io_ack=1 io_rdata=00000030 mem_rdata=00000000 src_val=00000010 ea=08010
+    st=3 sp=2 io_ack=0 io_rdata=00000030 mem_rdata=00000000 src_val=00000020 ea=08020
+
+At the acknowledge every term of `S_SRC_W`'s guard is satisfied — `sp=2` is `EP_IO`,
+`io_ack=1`, `mem_stall=0` — so `src_val <= io_rdata` should take `00000030` and the state
+should advance to `S_DST`. The next line shows `src_val = 00000020`, and **nothing else in
+`mb86233_core` writes `src_val`** (only two assignments exist, and the register path was
+not taken).
+
+Two explanations were eliminated by measurement rather than argument:
+
+- **the print's clock.** `tb_m1_boot` instantiates `m1_main` with `.clk(clk_cpu)` and the
+  TGP is not `ce`-gated, so a `posedge clk_cpu` print sees every TGP cycle. Sound.
+- **the wrong mux leg.** `mem_rdata` is `00000000` at that edge, so selecting it would
+  give zero, not `0x20`.
+
+**The fault was the filter.** The print fired only on `io_rd && io_addr[15]` — the cycles
+*during* an io read. `S_DST`, `S_RETIRE`, `S_FETCH`, `S_FETCH_W` and `S_DECODE` were never
+printed, and those are exactly the cycles between the two lines. A subsampled trace cannot
+show where a value changes; it can only show that it did, which invites inventing a
+mechanism for the gap.
+
+**Rule: to find where a signal changes, print every cycle in a bounded window — never a
+filtered subset.** The filter is for finding the window, not for reading it.
+
+The next instrument is therefore: trigger on the first `io_addr == 0x8010` with
+`io_ack`, then print **every** cycle for the following ~40, unfiltered. That shows the
+capture, the store, and anything in between.
