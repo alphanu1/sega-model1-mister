@@ -430,7 +430,14 @@ module mb86233_core (
   // +0x200 is applied outside the AGU because it is per-instruction-form, not
   // an addressing mode. See mb86233_agu's header.
   logic [16:0] ea_src, ea_dst;
-  assign ea_src = agu_ea + (x_src_200 ? 17'h200 : 17'd0);
+  // lab's A side carries its own +0x200 flag. ea_src honoured only x_src_200, so
+  // `lab (x0+6)+0x200, $0x74` addressed 0x106 instead of 0x306 - and 0x100 is
+  // the COMMAND FIFO, so the coprocessor blocked reading a FIFO that was empty
+  // and stayed blocked. It presented as a dead TGP with fifo_rd stuck high.
+  //
+  // Only reachable once the branch at 0731 went the right way; this instruction
+  // had never executed before today.
+  assign ea_src = agu_ea + ((x_src_200 || x_lab_a200) ? 17'h200 : 17'd0);
   assign ea_dst = agu_ea + (x_dst_200 ? 17'h200 : 17'd0);
 
   assign prog_addr = (state == S_SRC || state == S_SRC_W)
