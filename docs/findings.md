@@ -3238,3 +3238,85 @@ So this is not the coprocessor failing to answer a poll the reference also perfo
 our V60 reaching code the reference never reaches. That makes it a **V60 divergence**, and
 `make v60_trace` is the instrument for it. Do not debug the coprocessor further on this
 symptom.
+
+---
+
+## SIX real TGP defects, found by the microcode oracle, none by the fuzz suites — 2026-08-19
+
+**Instrument:** `make tgp_wrtrace` — the TGP's data-memory write stream diffed against
+MAME's, now carrying `x0`, `a` and `d` alongside each write.
+
+The V60 was spinning for ever at `FED5A4`, a poll on coprocessor RAM word 0 waiting for its
+low byte to read zero. The reference enters that loop 41,521 times in eight seconds and
+leaves it every time; ours entered once and stayed. Every defect below sat between those
+two facts.
+
+| # | defect | first divergence |
+|---|---|---|
+| 1 | `lab` loaded neither A nor B — the second read was issued and discarded, and `lab_a_val` was assigned and read by nothing | write 38 |
+| 2 | the AGU post-increment fired once per **cycle**, not once per access | write 42 |
+| 3 | `lab`'s B operand was addressed with the A operand's field (`r1`/bank 0 instead of `r2`/bank 1) | write 65 |
+| 4 | a parallel ALU op computed on the transfer's **new** operand; MAME's `alu_pre` runs before the transfer | write 90 |
+| 5 | the four math units — sincos, atan, inv, isqrt — were never implemented and returned the quadrant base word | write 102 |
+| 6 | `lab`'s A side dropped its `+0x200`, addressing the **command FIFO** at 0x106 instead of RAM at 0x306 | (deadlock, no writes) |
+
+`tgp_wrtrace` then reported **IDENTICAL for 110 writes**.
+
+### Every suite stayed green throughout
+
+All eleven TGP suites pass byte-identically before and after all six fixes — including
+`mb86233_core`'s 8,000-retire lockstep at `diverged=0`. That is the third time this
+lockstep has been cited as evidence and found not to be: it never generates a `lab` whose
+registers are read afterwards, never a transfer into a register its own ALU op reads, and
+never a stalling memory. **`diverged=0` from that suite is not evidence about any path it
+does not generate.**
+
+`mb86233_agu` is the sharper lesson. Three million cases, `uncovered_modes=0`, and defect 2
+walked straight through it — because the suite tests the AGU as a combinational function,
+*given r produce ea and x_next*, and the defect is in WHEN the core applies it. Nothing in
+the suite has a stalling memory.
+
+### Defect 2 is the FIFO bug again
+
+`agu_post_en` was `(state == S_SRC_W) || ...`, and those states are held while the access
+completes. The external reads wait eight and nine cycles — the boot trace has printed
+`TGP io 2: R 8010 waited 8` since the beginning — so x0 advanced by 9 and by 7 where the
+reference advanced by 1. **Those are the wait counts, not increments**, and they looked
+exactly like a wrong `i0`.
+
+The coprocessor FIFO had the identical fault a day earlier: one pop per cycle instead of
+one per access. Two instances of one mistake in two modules. **Wherever a held state
+drives a side effect, the side effect needs the completion condition, not the state.**
+
+### Fixing a dead path turns its silent consumers into faults
+
+Defect 1 made `lab` write its registers; defect 3 appeared one instruction later in the
+same trace, because the B-side addressing had been wrong all along and nothing had ever
+read the result. Defect 6 is the same shape again — unreachable until the branch at `0731`
+went the right way. That is the fix working, not a regression, and it is worth expecting:
+each repair moved the divergence forward rather than resolving it, 38 → 42 → 65 → 90 →
+102 → identical.
+
+### What it bought
+
+`make m1_boot`, 1.5 B cycles:
+
+| | before | after |
+|---|---|---|
+| scroll `[5002]` / `[5006]` | `0000` / `0000` | **`0044` / `2305`** |
+| row mask 0x6000 | 0/2048 | **336**/2048 |
+| copro sync word cleared | 62 | **14,308** |
+| TGP io accesses | — | 596,454 |
+
+`0x2305` is mode 1 on tilemap pair 2/3 — the vertical window split that draws the horizon —
+and it is what MAME shows on the same frame. **The row mask has never been non-zero in this
+core before.**
+
+### Withdrawn in the making
+
+- *"MAME never executes FED5xx"* — it executes `FED5A4` 41,521 times. The claim came from a
+  four-second trace and the routine is first reached at 5.2 s. A window too short to
+  contain the event reports "never" exactly as confidently as a real absence.
+- *"The TGP is halted"* — `dbg_tgp_retires` counts something narrower than retires. The
+  instruction trace showed 3.4 M against the reference's 3.42 M.
+- *"`ldi #0x8000, b0` is mis-decoded"* — the decoder was always right; see the entry above.
