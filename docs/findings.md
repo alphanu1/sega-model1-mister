@@ -3074,3 +3074,42 @@ reference: `tgp_trace` matched for 342 instructions in a 3-second window, but th
 store means the streams diverge in *control flow* somewhere before that write. Run
 `tgp_trace` with a window that reaches it and diff the PCs immediately preceding the two
 stores to `0x69`.
+
+## The PC settles it: same instruction, first read returns 0 — 2026-08-19
+
+With the PC carried on every write (and MAME's `GENPC` being the NEXT instruction, so
+its annotation reads one ahead of ours for the same store):
+
+    ref   write 22:  TW 0069 00000030 pc=07e8    instruction 0x07e7
+    ours  write 22:  TW 0069 00000000 pc=07e7    instruction 0x07e7
+    ours  write 27:  TW 0069 00000030 pc=07e7    the SAME instruction again
+
+`07E7` is `mov (bx0) (e), $0x69` — read io, store to data. **Both sides execute it twice.
+The reference gets `0x30` both times; we get 0 the first time and `0x30` the second.**
+
+So it is a value bug after all — a **first-read fault in the coprocessor data-ROM path** —
+and the "extra store" reading of the previous entry is withdrawn. Same address, same
+instruction, different data.
+
+### Why the boot print said the data was fine
+
+`BOOT: TGP data read 1: sdram word 300020 -> 00000030` comes from the testbench's OWN
+capture, which samples through `dat_ack_d` — **one cycle after the acknowledge**. The DUT
+samples **on** the ack cycle. The tb's comment beside that capture says so outright:
+
+> *"Sampled the cycle AFTER the acknowledge. `a_dout` is registered and updates on the
+> same edge as `a_ack`, so a non-blocking capture at that edge takes the PREVIOUS value."*
+
+I read that as reassurance that the data path was healthy. It is the opposite: it is a
+note that the tb had to work around a one-cycle offset, and the DUT does not.
+
+**So the suspicion raised early this morning and dismissed was right**, and it was
+dismissed on the strength of a diagnostic that measures a different cycle from the one
+that matters.
+
+### What to check, precisely
+
+Whether `t_mem_rdata` is valid **on** the `t_mem_ack` cycle or the one after, in
+`m1_cdc_port`. Then whether `m1_integrated` — the hardware path — has the same alignment
+as `tb_m1_boot`. If they differ, this is simulation-only or hardware-only, and this
+session has already found two of those.

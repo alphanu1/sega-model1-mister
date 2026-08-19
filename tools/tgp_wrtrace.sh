@@ -51,13 +51,25 @@ grep '^TW ' "$out/ours_raw.txt" > "$out/our_tw.txt" || true
 [ -s "$out/our_tw.txt" ] || { echo "our core emitted no data writes"; exit 1; }
 echo "  $(wc -l < "$out/our_tw.txt") writes"
 
-n=$(wc -l < "$out/our_tw.txt")
-head -"$n" "$out/mame_tw.txt" > "$out/mame_cut.txt"
-if cmp -s "$out/mame_cut.txt" "$out/our_tw.txt"; then
+# THE PC IS PROVENANCE, NOT PART OF THE COMPARISON.
+#
+# MAME's GENPC is `m_pc` — the address of the NEXT instruction — while our seq_pc is
+# the CURRENT one, so the reference's annotation reads one ahead of ours for the same
+# instruction: ref pc=0016 and ours pc=0015 are the same store. (MAME does register
+# m_ppc as "PC", but it is .noshow() and reading it inside a tap throws invisibly.)
+#
+# Comparing the annotated lines made the diff fail at write 1 with every VALUE
+# identical, which is a false divergence manufactured by the instrument. Compare the
+# address and the value; keep the PC for reading the result.
+cut -d' ' -f1-3 "$out/our_tw.txt"  > "$out/our_cmp.txt"
+cut -d' ' -f1-3 "$out/mame_tw.txt" > "$out/mame_cmp.txt"
+n=$(wc -l < "$out/our_cmp.txt")
+head -"$n" "$out/mame_cmp.txt" > "$out/mame_cut.txt"
+if cmp -s "$out/mame_cut.txt" "$out/our_cmp.txt"; then
     echo "tgp_wrtrace: IDENTICAL for $n writes"
     exit 0
 fi
-line=$( { cmp "$out/mame_cut.txt" "$out/our_tw.txt" || true; } 2>/dev/null \
+line=$( { cmp "$out/mame_cut.txt" "$out/our_cmp.txt" || true; } 2>/dev/null \
         | sed 's/.*line //' | tr -dc '0-9')
 [ -n "$line" ] || line=1
 echo "tgp_wrtrace: DIVERGES at write $line"
