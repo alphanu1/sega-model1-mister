@@ -1,4 +1,96 @@
-# Handoff — 2026-08-18
+# HANDOFF
+
+## 2026-08-19 — the coprocessor works, and the reason nothing drew was a reset
+
+**Read this section first.** It supersedes anything below it about the TGP or the missing
+2D.
+
+### The fix that mattered
+
+`m1_main` wired the coprocessor to the **raw** reset while the V60 was gated on
+`rom_loaded`:
+
+    m1_tgp tgp ( .clk(clk), .rst_n(rst_n),          // was
+    m1_tgp tgp ( .clk(clk), .rst_n(~rst_cpu),       // now
+
+So the TGP left reset at power-on and executed its program RAM while the HPS was still
+streaming ROMs into it. Zeros decode as `lab`; one of the first four does a data-space read
+of `0x100`, the **command FIFO**, which blocks until the V60 sends something. The microcode
+then arrived to a coprocessor already parked on that read, and the V60 hung at `ff9754`
+waiting for a result that never came.
+
+    before   tgp=4/0/004c     pc=ff9754   irq=3/4       wr=0,0,0,0
+    after    tgp=53918/23739  pc=fe02bc   irq=387/1611  ctrl=0000,238b
+
+**`tb_m1_boot` preloads the microcode and could never see this.** That bench had the same
+race in its own reset, and fixing it there this morning *masked* the real one. `tb_m1_frame`
+drives the genuine `m1_rom_loader` and is the only bench on the hardware path — treat a
+`tb_m1_boot` pass as evidence about the boot bench, not about the board.
+
+### Nine more defects fixed the same day, all real, all hardware
+
+| # | defect | found by |
+|---|---|---|
+| 1 | `lab` loaded neither A nor B | `tgp_wrtrace` write 38 |
+| 2 | AGU post-increment fired once per **cycle**, not per access | write 42 |
+| 3 | `lab`'s B operand addressed with the A field | write 65 |
+| 4 | a parallel ALU op computed on the transfer's **new** operand | write 90 |
+| 5 | the four math units — sincos, atan, inv, isqrt — never implemented | write 102 |
+| 6 | `lab`'s A side dropped `+0x200`, addressing the command FIFO | deadlock |
+| 7 | shared request line let one memory master read the other's data | write 455 |
+| 8 | RAM initialisers over 5,000 entries broke synthesis | `make rbf` |
+| 9 | the coprocessor reset above | `tb_m1_frame` |
+
+### What now agrees with MAME, measured
+
+- **V60 instruction stream**: `v60_trace` + `v60_resync` — zero divergence sites over the
+  compared window; 51 of 52 collapsed loops identical counts. The one exception is the I/O
+  board handshake at 18 cycles an iteration against 17, known and benign.
+- **V60 → TGP command stream**: identical for all 61 commands the reference issues.
+- **TGP data writes**: identical for 4,121 writes.
+- **Text routine**: identical, 400 writes, same addresses and data.
+- **Row mask**: identical for its first 289 words.
+- **Tilemaps 1 and 3**: byte-identical over all 4096 words.
+
+### What still differs
+
+Tilemaps 0 and 2, on 21 of 1024 dumped lines — the attract ranking table. The reference
+holds `a0xx` (category 1, palette 0x2000); we hold `0020`, a plain space with bit 15 clear.
+Measured **before** fix 9, so re-measure: the coprocessor now runs and the V60 is no longer
+hung, and this may already have moved.
+
+The scroll word `[5006]` was `0x2305` against the reference's `0x209b`. It is
+`mode | (scroll & 0x3ff)` from `FFE44B-FFE466`; the mode half matched and only the scroll
+half differed. Also measured before fix 9.
+
+### Instruments built today — use them before reading source
+
+| tool | what it answers |
+|---|---|
+| `tools/v60_resync.py` | all divergence sites, not just the first — `cmp` stopped at an interrupt phase slip and hid 79,000 instructions |
+| `tools/mame_copro_push.lua` | the V60 → TGP command stream, for diffing |
+| `tools/mame_text_writes.lua` | what the text routine stores, and where |
+| `tools/mame_rowmask.lua` | the row mask word by word |
+| `tools/mame_tilemap0.lua` | all four tilemaps, for a byte diff |
+| `make tgp_wrtrace` | TGP data writes with `x0`, `a` and `d` alongside |
+
+### Lessons that cost the most time
+
+- **Open the video.** Frames pulled with `ffmpeg -vf fps=2` and read directly overturned two
+  conclusions in ninety seconds that five source readings had produced. A photograph is a
+  measurement.
+- **Check the window before believing "never" or "identical".** "MAME never executes
+  FED5xx" came from a 4-second trace of a routine first reached at 5.2 s. "Identical for
+  4000 writes" meant both instruments stopped at exactly 4,000.
+- **A held state must not drive a side effect.** The AGU post-increment and the coprocessor
+  FIFO pop were the same bug in two modules: once per cycle instead of once per access.
+- **Fixing a dead path exposes its silent consumers.** Making `lab` write its registers
+  surfaced defect 3 one instruction later. That is the fix working.
+- **Do not begin a comment line with the simulator's name** — it parses as a pragma and
+  breaks the build, and `make lint` does not catch it.
+
+---
+
 
 ## Where this actually is
 
