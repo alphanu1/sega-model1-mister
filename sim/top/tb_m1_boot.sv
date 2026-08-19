@@ -92,7 +92,19 @@ wire ce = 1'b1;
 // Reset released separately into each domain.
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
-wire rst_n_cpu = rs_cpu[1];
+// HELD UNTIL THE MICROCODE IS LOADED, which is what the hardware does and what this
+// bench did not. m1_integrated's comment states the contract — "Complete before the CPU
+// is released, so there is no crossing to handshake" — and on the board that holds
+// because m1_rom_loader streams during the ioctl download and the CPU waits on
+// rom_loaded. Here the loader ran concurrently with execution.
+//
+// It advances four addresses per CPU cycle (100 MHz against 25 MHz), so the whole image
+// takes 512 CPU cycles — and the coprocessor reached microcode address 0x07e6 while the
+// loader was still at 0x07c6. prog[0x07e6] was therefore genuinely zero AT THAT MOMENT,
+// which is why the UCODE CHECK — which runs after the load — always passed while the
+// core fetched nothing. A zero word decodes as `lab`, so `ldi #0x8000, b0` never wrote
+// b0, and every downstream symptom followed from that.
+wire rst_n_cpu = rs_cpu[1] & uc_done;
 always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys <= {rs_sys[0], 1'b1};
 
 // Streamed in while reset is asserted, one word per fast cycle.
@@ -116,13 +128,29 @@ always @(posedge clk     or negedge rst_n) if (!rst_n) rs_sys <= 0; else rs_sys 
 //
 // uc_data is now combinational on uc_addr, so the word presented is always the
 // word for the address presented.
+// AND IT MUST STOP AFTER ONE PASS. `uc_addr` is 11 bits, so incrementing past 2047
+// WRAPS IT TO 0 — at which point `uc_addr != 2047` is true again and the loader
+// restarts, streaming for ever. With `uc_data` combinational that mostly rewrites the
+// same words, which is why it went unnoticed; but the write port is shared with the
+// core's instruction fetch inside m1_tgp, and a fetch colliding with a write to the
+// same address returns undefined data. That is how `prog[0x07e6]` verified as
+// 40008000 immediately after the load and read back as ZERO when the core fetched it,
+// which cost the whole afternoon: `ldi #0x8000, b0` fetched as 00000000 decodes as
+// `lab`, so b0 was never written and every downstream conclusion was about a
+// consequence.
+//
+// `uc_done` latches at the end of the single pass and is never cleared except by reset.
+reg uc_done = 1'b0;
 always @(posedge clk) begin
     if (!rst_n) begin
-        uc_we <= 1'b0; uc_addr <= '0;
-    end else if (uc_addr != 11'd2047 || uc_we) begin
+        uc_we <= 1'b0; uc_addr <= '0; uc_done <= 1'b0;
+    end else if (!uc_done) begin
         uc_we <= 1'b1;
         if (uc_we) uc_addr <= uc_addr + 11'd1;
-        if (uc_addr == 11'd2047 && uc_we) uc_we <= 1'b0;
+        if (uc_addr == 11'd2047 && uc_we) begin
+            uc_we   <= 1'b0;
+            uc_done <= 1'b1;
+        end
     end
 end
 always @(posedge clk_cpu or negedge rst_n) if (!rst_n) rs_cpu <= 0; else rs_cpu <= {rs_cpu[0], 1'b1};
@@ -269,7 +297,10 @@ always @(posedge clk_cpu) begin
     // Arm one instruction EARLIER, on 07E6 (`ldi #0x8000, b0`), so the trace covers
     // the write that should set b0 as well as the read that uses it. Arming on 07E7
     // showed b0 already wrong with no way to tell whether 07E6 had run at all.
-    if (rst_n_cpu && !sv_armed && main.tgp.core.seq_pc == 16'h07e6)
+    // Arm on 07E5 so S_FETCH of 07E6 is visible. Every trace before this armed one
+    // cycle late — their first line is st=1, S_FETCH_W — so the fetch itself, which is
+    // the thing in question, has never actually been shown.
+    if (rst_n_cpu && !sv_armed && main.tgp.core.seq_pc == 16'h07e5)
         sv_armed <= 1'b1;
     if (rst_n_cpu && sv_armed && sv_n < 40) begin
         // mem_rdata and mem_stall too. The three candidates for src_val taking the
@@ -277,14 +308,12 @@ always @(posedge clk_cpu) begin
         // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
         // lets the state advance early, or a print sampling the wrong clock. These
         // fields separate all three.
-        $display("W%0d pc=%04h ir=%08h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h rfwe=%b rfaddr=%05h",
+        $display("W%0d pc=%04h ir=%08h st=%0d paddr=%04h prd=%08h ucwe=%b ucaddr=%04h ucdone=%b pr7e6=%08h",
                  sv_n, main.tgp.core.seq_pc, main.tgp.core.ir,
-                 main.tgp.core.state, main.tgp.core.x_src_sp,
-                 main.tgp.core.io_ack, main.tgp.core.io_rd,
-                 main.tgp.core.io_addr, main.tgp.core.io_rdata,
-                 main.tgp.core.src_val,
-                 main.tgp.core.u_regs.b0, main.tgp.core.u_regs.x0,
-                 main.tgp.core.rf_wr_en, {11'd0, main.tgp.core.rf_wr_addr});
+                 main.tgp.core.state,
+                 main.tgp.core.prog_addr, main.tgp.core.prog_rdata,
+                 uc_we, {5'd0, uc_addr}, uc_done,
+                 main.tgp.prog[16'h07e6]);
         sv_n = sv_n + 1;
     end
 end
