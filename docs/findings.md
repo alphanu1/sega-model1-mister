@@ -3424,3 +3424,30 @@ Why is only ever ONE map of the pair live? `win_suppress` is
 `cur_line == win_v`. Confirm on real scanlines that both parities clear the suppression
 within one frame — if `win_v` lands at 0 or beyond 383, one map wins everywhere, and the
 alternation is then `win_swap` toggling with `ctrl`.
+
+### The blue band appears DURING the jump, and that rules out the suppression logic
+
+Observed on the board, 2026-08-19: sea and sky are both on screen together with no blue
+band; then the picture jumps up, a blue band appears; then it keeps jumping up and down,
+and when both maps show again the band is gone.
+
+**A gap means scanlines where NEITHER map paints.** `win_suppress` is
+
+    win_mode && win_vsplit && (cur_layer[0] != win_pick)
+
+and `win_pick` is a single bit per scanline, so exactly one parity is live on every line by
+construction. **This logic cannot open a gap.** Two candidates remain:
+
+1. the two layers' passes compute `win_pick` from **different values** — `ctrl_r`,
+   `win_v` or `cur_line` not identical between the even and odd pass of the same frame,
+   which would let both suppress on the same line. `ctrl_r` is refetched per layer from
+   the same address, so a mid-frame write to `0x5006` between the two passes would do it,
+   and the game writes that word every frame.
+2. the map that owns those lines is scrolled onto **empty rows of its own tilemap**, so it
+   paints transparent and the backdrop shows. That is a vertical-scroll or wrap fault, not
+   a suppression fault.
+
+Candidate 1 is the one to test first, and it is cheap: latch `ctrl_r`/`win_v` once per
+FRAME rather than per layer pass and see whether the band closes. MAME reads the register
+once, at the top of `draw_common`, for a call that draws both maps — our per-layer pipeline
+reads it twice, and nothing guarantees the two reads agree.
