@@ -202,6 +202,25 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// -------------------------------- WHY A COPRO RAM READ RETURNS 0xff, NOT ram[adr]
+//
+// The V60 spins at FED5A4 on `in.w [R1], R0` / `test.b` / `bne`, which the reference
+// leaves after ~32 iterations when the low byte reads ZERO. Ours reads ff, 1.1 M
+// times. 0xff is the unmapped default, so the read is not returning ram[adr] — and
+// m1_main's routing, m1_decode's select, m1_copro_if's S_IDLE ordering and
+// S_V60_RAM's assignment ALL read as correct. Print the internals instead of
+// reading them again.
+integer cram_n = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && main.m_req && !main.m_we && main.sel_copro_ram && cram_n < 12) begin
+        $display("CRAM rd: st=%0d adr=%04h a1=%b ram_addr=%04h ram_q=%08h q=%04h ack=%b served=%b",
+                 main.copro.st, main.copro.adr, main.copro.a1,
+                 main.copro.ram_addr, main.copro.ram_q, main.copro.q,
+                 main.copro.ack, main.copro.served);
+        cram_n = cram_n + 1;
+    end
+end
+
 // ------------------------------------------- THE COMMAND PROTOCOL, BOTH SIDES
 //
 // The V60 stalls at ff9754 after 4 pushes while the TGP stalls at 0x00a5 wanting

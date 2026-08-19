@@ -157,6 +157,25 @@ module m1_copro_if #(
   (* ramstyle = "M10K" *) logic [31:0] ram [RAM_WORDS];
 
   logic [AW-1:0] ram_addr;
+
+  // AN M10K POWERS UP ZEROED, AND SIMULATION MUST AGREE.
+  //
+  // This array is deliberately not reset — Quartus 17.0 will not infer RAM from an
+  // array that is, and building 8192 words out of flip-flops is the failure this
+  // project has already paid for twice. On the device that is fine: a Cyclone V M10K
+  // comes up cleared. In Verilator it came up as all ones, and that difference cost
+  // most of an evening.
+  //
+  // The V60 waits for this RAM at FED5A4: `mov.h #0, D00000` sets the address to 0,
+  // then `in.w [R1], R0` / `test.b R0` / `bne` spins until the low byte reads ZERO —
+  // about 32 iterations in the reference. Reading 0xffffffff, our V60 span 1,120,224
+  // times and never left, so it never pushed another command and never reached the
+  // per-frame 2D work. Every layer between the bus and the array was correct; the
+  // array's initial contents were not.
+  //
+  // synthesis translate_off
+  initial for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
+  // synthesis translate_on
   logic [31:0]   ram_din, ram_q;
   logic          ram_we;
 
