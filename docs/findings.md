@@ -3381,3 +3381,46 @@ as implemented; confirm it covers the *fetch* as well as the *mix*.
 against ours on the same frame, plus a per-frame census of `[5000]`-`[5007]`. Four
 plausible causes have already been ruled out here by reading, and reading is what produced
 three withdrawn findings today.
+
+---
+
+## LOOK AT THE VIDEO. Both maps render correctly; they are never on screen together — 2026-08-19
+
+A phone video of the board, frames extracted with `ffmpeg -vf fps=2` and read directly,
+overturned two conclusions reached the same evening from reading `segaic24.cpp` and the
+boot dump.
+
+**What the frames show:**
+
+- one frame has **sky, with clouds**; others have **sea, with full wave texture**
+- both are *correct artwork* — tile fetch, tile decode, palette and the character ROM path
+  all work, which no register dump had established
+- they **alternate frame to frame** rather than appearing together
+- each frame shows one map over roughly the top 40%, then flat colour bands below with
+  razor-sharp horizontal edges at the split lines
+
+**So the fault is that the two maps of a pair are never live at once.** The window split
+selects one map for nearly the whole picture and flips which one as `ctrl` changes. The
+entry above concluded "tilemap 2 is selected for the bottom half and produces no pixels
+there" — it produces excellent pixels, and that conclusion is withdrawn.
+
+### The instrument was sitting unopened for hours
+
+`docs/2d-gap-analysis.md` lists `manager.machine.video:snapshot()` for exactly this, and
+the user had already said the sea and sky were "jumping up and down". Five candidate causes
+were ruled out by reading source in the time it would have taken to extract eight frames.
+**A photograph or a video of the board is a measurement, and `ffmpeg` + the Read tool make
+it a cheap one** — `ffmpeg -v error -i clip.mp4 -vf "fps=2,scale=640:-1" -frames:v 8
+out%02d.png` and read the PNGs.
+
+This is the same lesson already recorded as "when a measurement says never, check the
+instrument could have seen it", in a new costume: a register census cannot tell correct
+artwork from a blank layer, and only the picture can.
+
+### Where to start
+
+Why is only ever ONE map of the pair live? `win_suppress` is
+`win_mode && win_vsplit && (cur_layer[0] != win_pick)`, and `win_pick` flips at
+`cur_line == win_v`. Confirm on real scanlines that both parities clear the suppression
+within one frame — if `win_v` lands at 0 or beyond 383, one map wins everywhere, and the
+alternation is then `win_swap` toggling with `ctrl`.
