@@ -130,6 +130,46 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Where to pick up — 2026-08-19, later
+
+Four things established since the midday note, two of them corrections.
+
+**1. `$0xNN` in the TGP disassembly is a DATA ADDRESS, not a register.** It comes from
+`mb86233d.cpp`'s `memory()` helper — `case 0x000: "$0x%x", reg & 0x7f` — while `regs()`
+is used only for `brul`/`bsul`'s register form. So at the divergence
+
+    06D4: mov d, $0x43        writes data[0x43]
+    070C: mov d, $0x42        writes data[0x42]
+    072D/072E/072F            reads them back, plus data[3]
+    0730: fadd
+
+the operands are **data memory**, filled by the FP chain at `06EE`-`070C` (`fml`,
+`fmrd`, `fabd`). An earlier note in this session claimed they were `x0`/`x1` via
+`read_reg`; that was wrong and is withdrawn.
+
+**2. The PC-stream lockstep has hit its structural limit.** `0731 brif ged` is merely
+where a wrong **value** first changes control flow. The error itself is somewhere in
+that FP chain, and no amount of PC comparison will localise it. **Per-retire value
+comparison is what is needed**, which is the thing `mb86233_ref.cpp` does for generated
+instructions and nothing does for real microcode.
+
+**3. Getting register/memory values out of MAME: three routes tried, all failed.**
+
+- `install_read_tap` on a CPU's **program** space never fires — instruction fetches use
+  the direct path and bypass taps. Rules out PC-hooking that way on any CPU here.
+- `trace f.tr,tgp_copro,noloop,{tracelog "x1=%04X ",x1}` writes the instruction lines
+  but **no action text**, with a constant format as well as with registers. So it is the
+  action mechanism, not the register symbols.
+- `bpset 730,1,{tracelog ...}` after `focus tgp_copro` never fired.
+- A **data**-space tap works but saw only one matching read in 200 frames, far fewer
+  than the instruction stream implies. Worth understanding before relying on it.
+
+**4. The four zero-init commits DID change behaviour, and I called them harmless.** Our
+TGP now retires **324** instructions where runs before them reached **537**. Whether
+that is better or worse is unmeasured. Check it: the inits are individually defensible
+(an M10K and a flop come up cleared on the device) but their effect was asserted, not
+tested, and one of them may be masking or moving the divergence.
+
 ### Where to pick up — 2026-08-19 midday
 
 `make tgp_trace SECONDS_RUN=10 BOOT_CYCLES=1500000000` **diverges at instruction 604**:

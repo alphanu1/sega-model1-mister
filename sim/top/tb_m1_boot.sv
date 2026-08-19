@@ -294,10 +294,16 @@ always @(posedge clk_cpu) begin
         // in `brif !zrd`, and our core takes that branch with d == 0 — so either
         // ZRD is not set when it should be, or the condition is misread. Printing
         // both settles which without reading any more RTL.
-        $display("TGPPC %04h ir=%08h a=%08h b=%08h d=%08h st=%08h zrd=%b",
+        // x0/x1 as well. The divergence at 0730 `fadd` takes its operands from
+        // them — `$0x43` and `$3` are read_reg 0x03 = x1, `$0x42` is 0x02 = x0 —
+        // and CLAUDE.md names x0/x1 as shared state: they live in the register file
+        // but the AGU's post-increment wins. So the operands are the likelier
+        // suspect than the FP flag, and this prints both.
+        $display("TGPPC %04h ir=%08h a=%08h d=%08h st=%08h x0=%04h x1=%04h",
                  main.tgp.retire_pc, main.tgp.core.ir,
-                 main.tgp.core.dbg_a, main.tgp.core.dbg_b, main.tgp.core.dbg_d,
-                 main.tgp.core.dbg_st, main.tgp.core.dbg_st[1]);
+                 main.tgp.core.dbg_a, main.tgp.core.dbg_d,
+                 main.tgp.core.dbg_st,
+                 main.tgp.core.u_regs.x0, main.tgp.core.u_regs.x1);
         tgptr_n = tgptr_n + 1;
     end
 end
