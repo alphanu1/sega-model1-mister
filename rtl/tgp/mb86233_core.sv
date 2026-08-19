@@ -342,7 +342,8 @@ module mb86233_core (
     S_SRC, S_SRC_W, S_LABB, S_LABB_W,
     S_DST, S_DST_W,
     S_ALU, S_RETIRE,
-    S_BRUL_RD, S_BRUL_W
+    S_BRUL_RD, S_BRUL_W,
+    S_LAB_WA, S_LAB_WB
   } state_e;
 
   state_e state;
@@ -378,7 +379,7 @@ module mb86233_core (
   logic alu_launched;
 
   logic [31:0] src_val;          // value in flight between source and dest
-  logic [31:0] lab_a_val;
+  logic [31:0] lab_a_val, lab_b_val;
 
   // Which side's r/bank the AGU should present this cycle.
   logic        use_dst_side;
@@ -457,6 +458,7 @@ module mb86233_core (
       ir           <= 32'd0;
       src_val      <= 32'd0;
       lab_a_val    <= 32'd0;
+      lab_b_val    <= 32'd0;
       alu_launched <= 1'b0;
       alu_op_r     <= 5'd0;
       fp_post_r    <= 1'b0;
@@ -491,9 +493,26 @@ module mb86233_core (
 
         S_LABB:   begin lab_a_val <= src_val; state <= S_LABB_W; end
         S_LABB_W: begin
-          if (!mem_stall && !(x_lab_b_sp == mb86233_pkg::EP_IO && !io_ack))
-            state <= S_ALU;
+          if (!mem_stall && !(x_lab_b_sp == mb86233_pkg::EP_IO && !io_ack)) begin
+            // THE SECOND OPERAND WAS BEING READ AND THROWN AWAY. `lab` is load A
+            // AND B - MAME's case 0x00 ends `m_a = v1; m_b = v2;` - and this
+            // state issued the read for v2, waited for it, and never captured
+            // it, while lab_a_val was assigned and never read by anything. The
+            // instruction loaded neither register.
+            lab_b_val <= (x_lab_b_sp == mb86233_pkg::EP_IO) ? io_rdata
+                                                            : mem_rdata;
+            state     <= S_ALU;
+          end
         end
+
+        // A and B are written AFTER the ALU, not before it. MAME calls
+        // alu_pre(alu) at the top of the instruction and only then assigns
+        // m_a/m_b, so the parallel ALU op of a `lab` sees the OLD operands.
+        // Writing them any earlier would feed this instruction's loads into its
+        // own arithmetic. One register per cycle: the file has a single write
+        // port and the ALU's own writeback to d/p does not use it.
+        S_LAB_WA: state <= S_LAB_WB;
+        S_LAB_WB: state <= S_RETIRE;
 
         S_DST:   state <= x_dst_reg ? S_ALU : S_DST_W;
         S_DST_W: begin
@@ -509,7 +528,7 @@ module mb86233_core (
           // high during the very cycle div_done fires, and the FSM would never
           // leave this state.
           if (!alu_active || alu_out_valid) begin
-            state        <= S_RETIRE;
+            state        <= d_lab ? S_LAB_WA : S_RETIRE;
             alu_launched <= 1'b0;
           end
         end
@@ -585,6 +604,13 @@ module mb86233_core (
         end else begin
           io_wr = 1'b1; io_addr = ea_dst[15:0]; io_wdata = src_val;
         end
+      end
+
+      S_LAB_WA: begin
+        rf_wr_en = 1'b1; rf_wr_addr = 6'h10; rf_wr_data = lab_a_val;  // A
+      end
+      S_LAB_WB: begin
+        rf_wr_en = 1'b1; rf_wr_addr = 6'h13; rf_wr_data = lab_b_val;  // B
       end
 
       S_ALU: begin
