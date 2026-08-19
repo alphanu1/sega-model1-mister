@@ -130,7 +130,42 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
-### Where to pick up — 2026-08-19 evening. It is `b0`, not the data path.
+### Where to pick up — 2026-08-19 evening. Check `ir` at 07E6 FIRST.
+
+The chain is complete and every link is measured except the last step, which flipped at
+the end and is the one thing to verify before touching anything:
+
+**The decoder is CORRECT for this opcode.** `mb86233_dec` has
+
+    assign top      = opcode[31:26];
+    assign is_lab   = (top == 6'h00);
+    assign is_ldmov = (top == 6'h07);
+    assign is_ldi   = (top >= 6'h10) && (top <= 6'h1f);
+    assign ldi_reg  = opcode[29:24];
+    assign ldi_val  = {{8{opcode[23]}}, opcode[23:0]};
+
+and the word at `0x07e6` in `build/rom/vr_tgp_prog.hex` is `0x40008000`, so `top = 0x10`,
+`is_ldi = 1`, `is_lab = 0`, `is_ldmov = 0`, `ldi_reg = 0x00` (b0), `ldi_val = 0x8000`.
+**The flags are mutually exclusive; there is no decode overlap.** A correctly fetched
+`0x40008000` would go straight to `S_ALU` and write `b0` at `S_RETIRE`.
+
+**But the trace shows it going through `S_SRC`, `S_SRC_W`, `S_LABB`, `S_LABB_W` with a
+data-space read, and `rf_wr_en` never asserted.** That is the `lab` path, which requires
+`top == 0x00`.
+
+**So the core is not fetching `0x40008000` at `0x07e6`.** Print `ir` in that window before
+anything else — one field added to a trace that already exists. Candidates:
+
+- the microcode image in program RAM differs from the hex file at that address. The
+  one-word load shift was fixed on 2026-08-18 in `tb_m1_boot`; **verify it is still
+  correct**, and note the hardware path (`m1_rom_loader`) is a different loader again.
+- the fetch is returning a stale or wrong word for another reason.
+
+**Do not change `mb86233_dec`.** It is right for this encoding, and `mb86233_dec` passes
+3,000,000 fuzz checks — the earlier worry that its reference might share a misreading does
+not apply, because there is no misreading to share.
+
+### Superseded: "it is b0, not the data path" — true, but the cause is a step earlier
 
 Armed on `seq_pc == 0x07e7` — the instruction, not a symptom — and printing every cycle:
 
