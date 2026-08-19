@@ -3589,3 +3589,30 @@ DIRECTION.
 correct results. The earlier run found only interrupt-phase slips over 100,000 instructions
 because the TGP was feeding it wrong data; with the data right, a structural divergence
 should be visible and will say why the V60 loops.
+
+### v60_trace after the TGP work: zero divergence sites
+
+Re-run with `tools/v60_resync.py` now that the coprocessor returns correct results:
+
+    --- compared 25685/1654754 reference and 25685/25685 our instructions
+    --- IDENTICAL over the whole compared range
+
+This afternoon the same instrument reported **304 divergence sites** over 100,000
+instructions. Now there are none, and 52 collapsed loops are in common with **51 running
+identical counts**. The single exception is the documented one:
+
+    at 24804   fe022c,fe0232   MAME 36308   ours 41147   (+13.3%)
+
+the I/O board handshake, 18 CPU cycles an iteration against the reference's 17, on a
+deadline correct in cycles to within 38. Known, measured, benign.
+
+**The window is the limit, not the agreement.** 700 M cycles reaches 25,685 collapsed
+instructions while the boot runs to 1.5 B, so whatever makes us re-issue commands lies
+beyond what was compared. Run `v60_trace` at `CYCLES=1500000000` with a 16-second reference
+to reach it.
+
+Note the collapsed count went *down* as the window grew earlier in the day — 50,923 at
+200 M cycles against 25,685 at 700 M. That is not a contradiction: the collapse keeps one
+instance of each repeating period, so a machine spending more of its time in loops yields
+*fewer* collapsed lines. It is itself a signal that our core is looping more than the
+reference beyond the compared window.
