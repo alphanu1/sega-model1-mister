@@ -343,7 +343,7 @@ always @(posedge clk_cpu) begin
         tw_req_d <= 1'b0;
     end else begin
         tw_req_d <= tw_wr;
-        if (TGPTRACE && tw_wr && !tw_req_d && tw_n < 4000) begin
+        if (TGPTRACE && tw_wr && !tw_req_d && tw_n < 60000) begin
             // PC with every write — see the Lua tap's comment. A write-stream
             // divergence without it says the streams differ but not which
             // instruction differs, and write 22 turned out to be an extra store

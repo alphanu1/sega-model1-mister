@@ -3523,3 +3523,38 @@ Bit 9 therefore survives into the register and is what selects the map swap, so 
 value that is merely too large does not just shift the picture — it flips which map is on
 top and moves the split into the visible area. That is why one wrong number produces
 banding rather than a displaced horizon.
+
+### The 60,000-write comparison: divergence at 4122, reading the command FIFO
+
+Both write caps were 4,000 — `mame_tgp_wrtrace.lua` and `tb_m1_boot`'s `tw_n` — so
+"IDENTICAL for 4000 writes" meant "identical for as far as either instrument looked".
+Raised to 60,000 on both sides with a 16-second reference window:
+
+    tgp_wrtrace: DIVERGES at write 4122
+
+and the divergence is that **we write zeros where the reference writes geometry**:
+
+    0436: ldi #0x100, x0
+    0437: ldi #0x120, x1
+    0438: rep #0xc
+    0439: mov (x0), (x1+1)+0x200      12 words, (x0) with x0 = 0x100
+
+`0x100` is the **command FIFO** (`copro_fifo_in`, model1_m.cpp:129), so this copies the
+V60's twelve-word command block into data RAM at 0x320. The reference gets
+`c34e5382, 41f15c2c, 408ac7be, ...`; we get twelve zeros.
+
+**The V60's command stream is correct where it has been checked.** A program-space write tap
+on 0xd80000 in the reference gives, assembled from 16-bit halves,
+
+    0400_0000  0100_0000  3f40_0000  428c_0000  0100_0000  3f40_0000  428c_0000
+
+and `make m1_boot` prints exactly that sequence. So the early commands agree and the
+divergence at write 4122 is later in the stream — either the V60 stops sending, sends
+different data, or our FIFO returns zero where the reference's would stall.
+
+**That last one is worth checking first.** MAME's FIFOs are a mutual interlock: reading an
+empty input FIFO stalls the coprocessor. If our data-space route for 0x100-0x1ff ever
+completes a read instead of stalling, an empty FIFO reads as twelve zeros and the
+coprocessor carries on with them — which is precisely the symptom. `m1_tgp`'s `io_ack`
+has an unqualified final `else` that acknowledges anything unmapped, and a
+mis-decode into that arm would ack immediately with `io_rdata = 0`.

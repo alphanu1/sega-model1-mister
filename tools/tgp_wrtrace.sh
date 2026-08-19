@@ -26,7 +26,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${OUT:-$root/build/tgpwr}"
-seconds="${SECONDS_RUN:-8}"
+seconds="${SECONDS_RUN:-16}"
 cycles="${BOOT_CYCLES:-1500000000}"
 game="${GAME:-vr}"
 rompath="${ROMPATH:-$HOME/roms}"

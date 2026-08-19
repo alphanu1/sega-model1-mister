@@ -51,7 +51,7 @@ local dreg  = reg{"D", "d"}
 -- arriving at write 27.
 tap = dsp:install_write_tap(0, 0x3ff, "wr", function(offset, data, mask)
     n = n + 1
-    if n <= 4000 then
+    if n <= 60000 then
         -- STATE KEY, CAREFULLY. mb86233.cpp registers STATE_GENPCBASE as "PC" with
         -- .noshow(), and STATE_GENPC as "GENPC". Asking for the wrong one throws
         -- INSIDE the tap callback, which MAME swallows silently: the write counter
@@ -66,7 +66,7 @@ end)
 
 notif = emu.add_machine_frame_notifier(function()
     frames = frames + 1
-    if frames >= 300 or n >= 4000 then
+    if frames >= 900 or n >= 60000 then
         print(string.format("=== %d data writes in %d frames ===", n, frames))
         for _, v in ipairs(out) do print(v) end
         manager.machine:exit()
