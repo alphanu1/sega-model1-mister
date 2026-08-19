@@ -202,6 +202,18 @@ module m1_tgp #(
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
+      sincos_base <= 32'd0; inv_base <= 32'd0; isqrt_base <= 32'd0;
+      atan_base[0] <= 32'd0; atan_base[1] <= 32'd0;
+      atan_base[2] <= 32'd0; atan_base[3] <= 32'd0;
+    end else if (io_wr && sel_math) begin
+      unique case (math_unit)
+        2'd0: sincos_base            <= io_wdata;
+        2'd1: atan_base[io_addr[1:0]] <= io_wdata;
+        2'd2: inv_base               <= io_wdata;
+        2'd3: isqrt_base             <= io_wdata;
+      endcase
+    end
+    if (!rst_n) begin
       popped   <= 1'b0;
       pop_data <= 32'd0;
     end else if (!fifo_rd) begin
@@ -253,16 +265,107 @@ module m1_tgp #(
   wire        sel_datb = io_mid && (io_addr[4:0] == 5'h0e);
   wire        sel_datw = io_addr[15];               // 0x8000-0xffff
 
-  // The math tables: four 16K-word quadrants, selected by which unit. Index
-  // arithmetic and the exponent fixups are NOT here yet — see the header — so a
-  // read presents the quadrant base and the integrator's memory answers.
-  wire [1:0] math_unit = (io_addr[4:0] <= 5'h03) ? 2'd0    // sincos
-                       : (io_addr[4:0] <= 5'h07) ? 2'd1    // atan
-                       : (io_addr[4:0] <= 5'h09) ? 2'd2    // inv
-                       :                           2'd3;   // isqrt
+  // ---------------------------------------------------- the math units
+  //
+  // sincos, atan, inv and isqrt, read off model1_m.cpp's copro_sincos_r,
+  // copro_atan_r, copro_inv_r and copro_isqrt_r. Each is a table lookup in one
+  // 16K-word quadrant plus a fixup; the quadrant is the top two bits of the
+  // table index, which is why {unit, index} is the whole address.
+  //
+  // These used to return the quadrant BASE word, unindexed and unfixed, and
+  // this file's own comment predicted exactly what that caused: "the TGP
+  // computes with a wrong operand and writes a wrong result into coprocessor
+  // RAM - and the V60 then waits at FED5A4 for that word's low byte to read
+  // zero, forever." It does, 6,221,912 times in a fifteen-second run.
+  //
+  // Each unit latches an operand on a WRITE and computes on a READ. The bases
+  // are separate registers, not one shared register: the units are independent
+  // hardware and the microcode interleaves them.
+  wire [1:0] math_unit = (io_addr[4:0] <= 5'h03) ? 2'd0    // sincos 0x20-0x23
+                       : (io_addr[4:0] <= 5'h07) ? 2'd1    // atan   0x24-0x27
+                       : (io_addr[4:0] <= 5'h09) ? 2'd2    // inv    0x28-0x29
+                       :                           2'd3;   // isqrt  0x2a-0x2b
+
+  logic [31:0] sincos_base, inv_base, isqrt_base;
+  logic [31:0] atan_base [4];
+  integer zb;
+  initial begin
+    sincos_base = 32'd0; inv_base = 32'd0; isqrt_base = 32'd0;
+    for (zb = 0; zb < 4; zb = zb + 1) atan_base[zb] = 32'd0;
+  end
+
+  // sincos: ang = base + offset*0x4000, index = ang & 0x3fff, and the second
+  // quadrant mirrors - std::min(0x4000 - index, 0x3fff), so index 0 maps to
+  // 0x3fff rather than to 0x4000, which is off the end of the quadrant.
+  wire [15:0] sc_ang   = sincos_base[15:0] + {io_addr[1:0], 14'd0};
+  wire [13:0] sc_raw   = sc_ang[13:0];
+  wire [14:0] sc_mirr  = 15'h4000 - {1'b0, sc_raw};
+  wire [13:0] sc_index = !sc_ang[14] ? sc_raw
+                       : (sc_mirr > 15'h3fff) ? 14'h3fff : sc_mirr[13:0];
+
+  // inv / isqrt: the index comes from the operand's mantissa, the exponent is
+  // rebiased against the operand's, and the sign is patched in afterwards.
+  wire [13:0] inv_index   = {inv_base[22:10], 1'b0} | {13'd0, io_addr[0]};
+  wire [13:0] isqrt_index = 14'h2000 ^ ({isqrt_base[23:11], 1'b0}
+                                        | {13'd0, io_addr[0]});
+
+  wire [13:0] math_index = (math_unit == 2'd0) ? sc_index
+                         : (math_unit == 2'd1) ? (|atan_base[3][15:14] ? 14'h3fff
+                                                 : atan_base[3][13:0])
+                         : (math_unit == 2'd2) ? inv_index
+                         :                       isqrt_index;
 
   assign tbl_req  = (io_rd && sel_math);
-  assign tbl_addr = {math_unit, 14'd0};
+  assign tbl_addr = {math_unit, math_index};
+
+  // ---- the fixups, applied to the word the table returned
+
+  wire [7:0] inv_exp = tbl_rdata[30:23] + (8'h7f - inv_base[30:23]);
+  wire [31:0] inv_val_raw = {tbl_rdata[31], inv_exp, tbl_rdata[22:0]};
+  wire [31:0] inv_val = inv_base[31] ? {~inv_val_raw[31], inv_val_raw[30:0]}
+                                     : inv_val_raw;
+
+  wire [7:0] isq_exp = tbl_rdata[30:23] + (8'h3f - {1'b0, isqrt_base[30:24]});
+  wire [31:0] isq_raw = {tbl_rdata[31], isq_exp, tbl_rdata[22:0]};
+  wire [31:0] isqrt_val = io_addr[0] ? isq_raw : {1'b0, isq_raw[30:0]};
+
+  wire [31:0] sincos_val = sc_ang[15] ? {~tbl_rdata[31], tbl_rdata[30:0]}
+                                      : tbl_rdata;
+
+  // atan's table is WRONG IN THE ROM and MAME corrects it on the way out, with
+  // the note that "the hardware does something equivalent somehow". Reproduced
+  // rather than cleaned up, per the project's rule about hardware quirks: the
+  // microcode's results depend on these exact values.
+  wire [15:0] at_dt = tbl_rdata[31:16] + tbl_rdata[15:0];
+  logic [31:0] at_fix;
+  always_comb begin
+    at_fix = tbl_rdata;
+    if (at_dt[0])
+      at_fix = (at_fix[3:0] == 4'he) ? at_fix - 32'h00000001
+                                     : at_fix - 32'h00010000;
+    if (at_dt[4])
+      at_fix = (at_fix[7:4] == 4'he) ? at_fix - 32'h00000010
+                                     : at_fix - 32'h00100000;
+    if (at_dt[8])
+      at_fix = (at_fix[11:8] == 4'he) ? at_fix - 32'h00000100
+                                      : at_fix - 32'h01000000;
+  end
+
+  wire at_s0 = atan_base[0][31];
+  wire at_s1 = atan_base[1][31];
+  wire at_s2 = atan_base[2][31];
+  wire [31:0] at_shifted = (at_s0 ^ at_s1 ^ at_s2) ? {16'd0, at_fix[31:16]}
+                                                   : at_fix;
+  wire [31:0] at_signed  = at_shifted
+                         + (at_s2 ? 32'h4000 : 32'd0)
+                         + (((at_s0 && !at_s2) || (at_s1 && at_s2)) ? 32'h8000
+                                                                    : 32'd0);
+  wire [31:0] atan_val = {16'd0, at_signed[15:0]};
+
+  wire [31:0] math_val = (math_unit == 2'd0) ? sincos_val
+                       : (math_unit == 2'd1) ? atan_val
+                       : (math_unit == 2'd2) ? inv_val
+                       :                       isqrt_val;
   assign dat_req  = (io_rd && sel_datw);
   // index = (base & ~0x7fff) | offset, masked to the ROM's word count.
   assign dat_addr = {dat_base[18:15], io_addr[14:0]};
@@ -277,17 +380,11 @@ module m1_tgp #(
     io_rdata = 32'd0;
     if      (sel_radr) io_rdata = copro_adr[radr_i];
     else if (sel_rdat) io_rdata = ram_rdata;
-    // MATH_ZERO is an EXPERIMENT SWITCH, default off. The math units are not built:
-    // a sincos or inverse read returns whatever sits at the quadrant base of the
-    // table ROM, because the index arithmetic and exponent fixups do not exist yet
-    // (see this file's header). That is not the function's value, so the TGP
-    // computes with a wrong operand and writes a wrong result into coprocessor RAM
-    // — and the V60 then waits at FED5A4 for that word's low byte to read zero,
-    // forever. Setting this returns 0 instead, which is not more CORRECT but is a
-    // documented "not implemented" rather than plausible-looking garbage, and it
-    // answers whether the V60's wait is the only thing standing between here and
-    // the 2D setup. Delete it once the math units are real.
-    else if (sel_math) io_rdata = MATH_ZERO ? 32'd0 : tbl_rdata;
+    // MATH_ZERO forces every math unit to answer zero. It was the switch that
+    // established the units were the blocker while they were unimplemented; it
+    // is kept only so that experiment can be repeated, and the default path is
+    // now the real function.
+    else if (sel_math) io_rdata = MATH_ZERO ? 32'd0 : math_val;
     else if (sel_datw) io_rdata = dat_rdata;
   end
 
