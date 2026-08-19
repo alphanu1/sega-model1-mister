@@ -273,8 +273,13 @@ always @(posedge clk_cpu) begin
     end else begin
         tw_req_d <= tw_wr;
         if (TGPTRACE && tw_wr && !tw_req_d && tw_n < 4000) begin
-            $display("TW %04h %08h",
-                     main.tgp.core.u_mem.addr[15:0], main.tgp.core.u_mem.wdata);
+            // PC with every write — see the Lua tap's comment. A write-stream
+            // divergence without it says the streams differ but not which
+            // instruction differs, and write 22 turned out to be an extra store
+            // rather than a wrong value.
+            $display("TW %04h %08h pc=%04h",
+                     main.tgp.core.u_mem.addr[15:0], main.tgp.core.u_mem.wdata,
+                     main.tgp.core.seq_pc);
             tw_n = tw_n + 1;
         end
     end
