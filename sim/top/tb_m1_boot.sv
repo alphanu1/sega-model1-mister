@@ -232,7 +232,10 @@ always @(posedge clk_cpu) begin
     // b0 = 0x8000 from 07E6, so the first execution reads a different address — and
     // the trace therefore showed only the pass that works, which is why the capture
     // and store looked perfect while the stored value was wrong.
-    if (rst_n_cpu && !sv_armed && main.tgp.core.seq_pc == 16'h07e7)
+    // Arm one instruction EARLIER, on 07E6 (`ldi #0x8000, b0`), so the trace covers
+    // the write that should set b0 as well as the read that uses it. Arming on 07E7
+    // showed b0 already wrong with no way to tell whether 07E6 had run at all.
+    if (rst_n_cpu && !sv_armed && main.tgp.core.seq_pc == 16'h07e6)
         sv_armed <= 1'b1;
     if (rst_n_cpu && sv_armed && sv_n < 40) begin
         // mem_rdata and mem_stall too. The three candidates for src_val taking the
@@ -240,14 +243,14 @@ always @(posedge clk_cpu) begin
         // EP_IO at the capturing edge, selecting a stale mem_rdata), a guard that
         // lets the state advance early, or a print sampling the wrong clock. These
         // fields separate all three.
-        $display("W%0d pc=%04h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h mw=%b maddr=%05h",
+        $display("W%0d pc=%04h st=%0d sp=%0d ack=%b rd=%b ioaddr=%04h io=%08h src=%08h b0=%04h x0=%04h rfwe=%b rfaddr=%05h",
                  sv_n, main.tgp.core.seq_pc,
                  main.tgp.core.state, main.tgp.core.x_src_sp,
                  main.tgp.core.io_ack, main.tgp.core.io_rd,
                  main.tgp.core.io_addr, main.tgp.core.io_rdata,
                  main.tgp.core.src_val,
                  main.tgp.core.u_regs.b0, main.tgp.core.u_regs.x0,
-                 main.tgp.core.mem_we, main.tgp.core.mem_addr);
+                 main.tgp.core.rf_wr_en, {11'd0, main.tgp.core.rf_wr_addr});
         sv_n = sv_n + 1;
     end
 end
