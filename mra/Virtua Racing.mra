@@ -75,15 +75,19 @@
             <part name="mpr-14900.41" map="0100"/>
             <part name="mpr-14901.42" map="1000"/>
         </interleave>
-        <!-- stream 0x800000: the sincos tables, 256 KB.
-             MAME's copro_tables, from MODEL1_CPU_BOARD. COPRO_TBL_BASE in
+        <!-- stream 0x800000: the coprocessor math tables, 256 KB.
+             MAME's copro_tables, from MODEL1_CPU_BOARD. FOUR 16K-word
+             quadrants, not just sincos: sincos at 0x0000, atan at 0x4000,
+             1/x at 0x8000 and 1/sqrt(x) at 0xc000 - copro_inv_r indexes
+             m_copro_tables[index | 0x8000] and copro_isqrt_r
+             [index | 0xc000], both inside THIS region. COPRO_TBL_BASE in
              m1_integrated.sv. ROM_LOAD32_WORD x2 is a two-way 16-bit
              interleave into the same 32-bit words.
 
-             MAME's other_data — opr-14744..14747, the 1/x and 1/sqrt
-             tables — is deliberately absent: this design computes those in
-             fp_div rather than reading them, so there is no port for them
-             and the files are not in the ROM set. -->
+             MAME's other_data - opr-14744..14747 - is a SEPARATE region and
+             is deliberately absent. It is not what the inv and isqrt units
+             read; those read the quadrants above. Nothing in model1_m.cpp
+             indexes other_data at all. -->
         <interleave output="32">
             <part name="opr14742.bin" map="0021"/>
             <part name="opr14743.bin" map="2100"/>
