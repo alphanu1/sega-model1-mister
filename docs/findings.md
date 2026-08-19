@@ -2965,6 +2965,33 @@ print it on the exact cycle `io_ack` rises alongside whatever else is driving it
 **Do not fix from that code reading.** It is the fifth time in two days that a path
 "correct as written" was not the fault — the copro RAM had four such layers.
 
+### The enumeration: only two writers, and neither explains it
+
+`src_val` is assigned in exactly two places in `mb86233_core`:
+
+    S_SRC:    if (x_src_reg) src_val <= rf_rd_data;          the register path
+    S_SRC_W:  src_val <= (EP_IO) ? io_rdata : ... ;           memory / io / prog
+
+The trace shows `st=3` then `st=4`, so the access took the `S_SRC_W` path — the register
+path was not used. And at `st=4` the guard's terms are satisfied: `io_ack=1`, so
+`src_val <= io_rdata` should have taken `00000030` at that edge. By the next
+instruction's `S_SRC` it reads `00000020`.
+
+**Both writers are accounted for and neither explains the value.** So one of these is
+true and the next step is to find out which, not to guess:
+
+1. the print is sampling something other than what it appears to — it fires on
+   `posedge clk_cpu` while `m1_tgp` runs on `m1_main`'s `clk`; the bench drives them
+   from the same signal, but that should be confirmed rather than assumed;
+2. the capture happens and is then overwritten before the store consumes it, by a path
+   not visible in a grep for `src_val` — a hierarchical or generate-scoped assignment;
+3. `x_src_sp` is not `EP_IO` at the capturing edge even though it was during the wait,
+   so the mux selects `mem_rdata` (which would be stale) instead of `io_rdata`.
+
+**(3) is the cheapest to test and fits the evidence best**: `0x10` and `0x20` are the
+low bits of the io address, and `mem_addr`/`ea_src` carry exactly that. Print
+`x_src_sp`, `mem_rdata` and `io_rdata` together on the acknowledge edge.
+
 ### Why this took a value-level instrument to find
 
 Every read-side diagnostic said the data was right: the boot trace prints
