@@ -3494,3 +3494,32 @@ stops because our side stops producing. Extend the window until it diverges agai
 the V60's writes to 0x70A00C (word 0x5006) and diff against MAME's writes to the same
 address. The second is the more direct instrument and `install_write_tap` on the maincpu
 program space is what does it.
+
+### The scroll word is `mode | (scroll & 0x3ff)`, and only the scroll half is wrong
+
+`install_write_tap` on 0x70a00c in the reference: the word is written twice a frame, from
+`FFE466` and `FFE27A`, creeping 0x2064 -> 0x205d over the frames sampled. `FFE466`'s
+producer:
+
+    FFE44B: mov.h R28, R27
+    FFE44E: add.h 50141A, R28      R28 += work RAM
+    FFE455: shl.h #FF, R28         >> 1
+    FFE459: and.h #E000, R27       keep the mode bits
+    FFE45E: and.h #3FF, R28        keep TEN bits of scroll
+    FFE463: or.h  R27, R28
+    FFE466: mov.h R28, 70A00C
+
+So `[5006] = mode | (scroll & 0x3ff)`.
+
+    reference   0x2062   mode 0x2000, scroll 0x062 = 98
+    ours        0x2305   mode 0x2000, scroll 0x305 = 773
+
+**The mode half is correct on both.** Only the scroll value differs, and it comes from work
+RAM at 0x50141A and 0x50140E — which is downstream of the coprocessor's geometry, not of
+anything in the video path.
+
+Note the field is masked to **0x3ff, ten bits**, while `draw_common` masks vscr to 0x1ff.
+Bit 9 therefore survives into the register and is what selects the map swap, so a scroll
+value that is merely too large does not just shift the picture — it flips which map is on
+top and moves the split into the visible area. That is why one wrong number produces
+banding rather than a displaced horizon.
