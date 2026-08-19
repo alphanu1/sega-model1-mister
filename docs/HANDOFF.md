@@ -152,10 +152,21 @@ Timing reads correctly: `S_FETCH` presents `seq_pc`, the edge into `S_FETCH_W` r
 existing trace arms one cycle late (its first line is `st=1`, so `S_FETCH` itself is never
 shown). Arm on `seq_pc == 0x07e5` to see the fetch of `07e6` from the state before it.
 
-**A specific suspect worth checking first:** `prog_addr` is shared with the `EP_PROG` source
-path, so an instruction that reads program space as data steals the address port. If the
-instruction before `07E6` does that, the fetch of `07E6` could sample the wrong address —
-and `07E5` is `1c1c842e`, which is worth decoding before assuming otherwise.
+**A specific suspect, now half-confirmed.** `prog_addr` is shared with the `EP_PROG` source
+path, so an instruction that reads program space as data steals the address port:
+
+    prog_addr = (S_SRC || S_SRC_W) && x_src_sp == EP_PROG ? agu_ea[15:0] : seq_pc;
+
+**`07E5` is `0x1c1c842e`, whose `top = opcode[31:26] = 0x07` — `ldmov`**, a transfer that
+goes through `S_SRC`/`S_SRC_W`. So the instruction immediately before the failing fetch is
+in the class that can take that port.
+
+What is still unmeasured is whether its `x_src_sp` is actually `EP_PROG`, and whether
+`prog_rdata` — registered every cycle from `prog[prog_addr]` — is sampled by `S_FETCH_W`
+before it has settled on `seq_pc` again. **Print `prog_addr`, `prog_rdata`, `ir` and
+`x_src_sp` across `07E5` and `07E6` together**, arming on `seq_pc == 0x07e5`. On paper the
+timing is correct: `S_FETCH` presents `seq_pc`, the edge registers `prog[seq_pc]`, and
+`S_FETCH_W` latches it. On paper is where the last five wrong answers came from.
 
 **Do not change `mb86233_dec`, `mb86233_core`'s decode, or the loader.** All three are
 proven correct for this case.
