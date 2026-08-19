@@ -130,6 +130,36 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Where to pick up — 2026-08-19 evening. The bug is one instruction wide.
+
+**`07E7` — `mov (bx0) (e), $0x69` — stores the wrong value on its FIRST execution.**
+
+    ref   write 22:  TW 0069 00000030 pc=07e8    (GENPC is the NEXT pc, so instr 07e7)
+    ours  write 22:  TW 0069 00000000 pc=07e7
+    ours  write 27:  TW 0069 00000030 pc=07e7    same instruction, correct second time
+
+Both sides execute it twice; the reference gets `0x30` both times.
+
+**Cleared by measurement, do not revisit:**
+
+- **`m1_cdc_port`.** `a_dout <= x_dout; a_ack <= 1'b1;` are assigned together, so the data
+  IS valid on the ack cycle, exactly as its comment says. A combinational read during that
+  cycle is correct.
+- **The store path.** An unfiltered 40-cycle window shows `src=00000030`, `mw=1`,
+  `maddr=00069` — the capture and the store are both right.
+- **The data ROM, SDRAM and the io reads themselves** — the values arrive correctly.
+
+**The likely shape, and the measurement that settles it.** The operand is `(bx0)` =
+`b0 + x0`, set up by `07E6: ldi #0x8000, b0`. So the address depends on `x0`, and the two
+executions read **different io addresses** — probably `0x8000` first and `0x8010` second.
+The earlier window trace armed on `io_addr == 0x8010`, so **it only ever showed the second,
+working execution**, which is why the store looked correct.
+
+**Arm on `seq_pc == 0x07e7` instead**, print every cycle for ~40, and compare the FIRST
+execution's io address and returned data against the reference's. `tools/mame_tgp_io_full.lua`
+already shows the reference's side: `W io 002e`, `R io 8010`, `R io 8020` — note it does
+**not** read `0x8000`, so if ours does, that is the divergence.
+
 ### THE RUN-LENGTH TRAP, three times in one day
 
 Every figure from `make m1_boot` scales with `BOOT_CYCLES`, and this file has said so
