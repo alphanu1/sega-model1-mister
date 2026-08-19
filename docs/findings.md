@@ -2899,6 +2899,34 @@ feeds the same `t_mem_rdata` on the hardware path. A one-cycle disagreement here
 be a simulation-only fault — or a hardware-only one — and this session has already
 found two of those.
 
+### Refined: the data path is INNOCENT, the loss is inside the core
+
+Our io reads return the right values — the boot trace prints them:
+
+    TGP io 9:  R 8010  waited 9
+    TGP data read 1: sdram word 300020 -> 00000030     matches the reference
+    TGP io 10: R 8020  waited 9
+    TGP data read 2: sdram word 300040 -> 00012e00     matches
+
+So the data ROM, the SDRAM path, `m1_cdc_port` and `io_rdata` are all correct, and the
+`a_dout`/`a_ack` alignment worry above does **not** apply to the DUT — `a_dout` updates
+on the same edge as `a_ack`, so a combinational read during the ack cycle is right. The
+testbench's own capture problem was sampling a cycle later, which is a different thing.
+
+**The value is lost between arriving at the io port and being stored.** The write that
+should carry `00000030` into `data[0x69]` writes zero; a later pass carries it
+correctly. So look inside `mb86233_core`:
+
+- `S_SRC_W`: `src_val <= (x_src_sp == EP_IO) ? io_rdata : ...`, guarded by
+  `!(x_src_sp == EP_IO && !io_ack)`. Does the guard hold for the FIRST io read, or does
+  the state advance once before `io_ack` and latch a stale `src_val`?
+- the store path that consumes `src_val` — if it fires a cycle early it writes whatever
+  `src_val` held before, which at reset is 0 and matches the symptom exactly.
+
+**Print `src_val`, `io_ack` and `io_rdata` across `S_SRC`/`S_SRC_W` for the first
+`sel_datw` read.** Do not fix from inspection: four layers looked correct in the copro
+RAM case this morning and the fault was elsewhere.
+
 ### Why this instrument was worth building
 
 `tgp_trace` put the divergence at instruction 604, in `0731 brif ged`, which is **not
