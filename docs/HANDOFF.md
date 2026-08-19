@@ -130,6 +130,39 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Where to pick up — 2026-08-19 afternoon, and it is narrow
+
+**`make tgp_wrtrace` exists and works.** Value-level lockstep for the coprocessor: it
+diffs the data-memory write streams and located in **26 writes** what `tgp_trace` could
+not in 604 instructions.
+
+    tgp_wrtrace: DIVERGES at write 22
+      22   ref data[0069] = 00000030    ours = 00000000
+      23   ref data[006a] = 00012e00    ours = 00000000
+      27   ref data[0069] = 00000030    ours = 00000030   (a later pass is correct)
+
+`00000030` and `00012e00` are the coprocessor data ROM's words at io `8010`/`8020`.
+
+**Three suspects already cleared by measurement**, so do not revisit them: the data ROM,
+the SDRAM path and `m1_cdc_port` are all correct — the boot trace prints
+`TGP data read 1: sdram word 300020 -> 00000030` and `read 2: ... -> 00012e00`, matching
+the reference. The `a_dout`/`a_ack` alignment worry does not apply to the DUT either:
+`a_dout` updates on the same edge as `a_ack`, so a combinational read during the ack
+cycle is right. The testbench's own capture bug was sampling a cycle later — a different
+thing, which I conflated once already.
+
+**So the value is lost between `io_rdata` and the store.** And the next measurement
+narrowed it further: printing `S_SRC`/`S_SRC_W` with `x_src_sp == EP_IO` and
+`io_addr[15]` set produced **nothing** over 300 M cycles, while the same print without
+the address filter fires for io `0x0000` and `0x0020`. So the data-window read at
+`0x8010` **is not issued from `S_SRC` with `EP_IO`**.
+
+**Next: find which path does issue it.** Candidates are the `lab` path (`S_LABB`,
+`S_LABB_W`) and the destination side (`S_DST`, `S_DST_W`) — the reference instruction is
+of the form `mov (bx0) (e), $0x69`, an external-space source with a data-memory
+destination. Print `io_rd`, `io_addr`, `io_ack`, `io_rdata` and `src_val` across **all**
+states rather than a guessed subset; the guessed subset is what just cost a run.
+
 ### Where to pick up — 2026-08-19, later
 
 Four things established since the midday note, two of them corrections.

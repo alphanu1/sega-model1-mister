@@ -208,6 +208,25 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// WHERE AN IO-SOURCED VALUE IS LOST. tgp_wrtrace puts the first value divergence at
+// write 22: data[0x69] should get 00000030, the coprocessor data ROM's word, and gets
+// zero — while the io read itself returns 00000030 correctly (the boot trace prints
+// it). So the loss is between io_rdata and the store. Print the capture.
+integer sv_n = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && sv_n < 20
+        && (main.tgp.core.state == 4'd3 || main.tgp.core.state == 4'd4)
+        && main.tgp.core.x_src_sp == mb86233_pkg::EP_IO
+        && main.tgp.core.io_addr[15]) begin   // the 0x8000+ data-ROM window only
+        $display("SRC st=%0d sp=%0d io_ack=%b io_rd=%b io_rdata=%08h src_val=%08h addr=%04h",
+                 main.tgp.core.state, main.tgp.core.x_src_sp,
+                 main.tgp.core.io_ack, main.tgp.core.io_rd,
+                 main.tgp.core.io_rdata, main.tgp.core.src_val,
+                 main.tgp.core.io_addr);
+        sv_n = sv_n + 1;
+    end
+end
+
 // ------------------------- VALUE-LEVEL TRACE: EVERY TGP DATA-MEMORY WRITE
 //
 // The PC-stream lockstep (make tgp_trace) can only catch a wrong value once it
