@@ -113,6 +113,24 @@ module mb86233_regs (
   logic [2:0]  vsm;
   logic [31:0] rf [0:15];            // 0x20-0x2f, indexed by addr[3:0]
 
+  // POWER-ON CONTENTS ARE ZERO. Sixteen 32-bit registers are flip-flops on the
+  // device and come up cleared; MAME's RF space is zero-filled RAM. Verilator
+  // brings an uninitialised unpacked array up as ONES, so a register read before
+  // its first write returns 0xffffffff here and 0 everywhere else.
+  //
+  // mb86233_mem.sv already carries this fix and says it was found by lockstep,
+  // where it "looked exactly like a transfer bug for several rounds of narrowing".
+  // It then happened again in m1_copro_if, and again here: the TGP wrote
+  // 0xffffffff into coprocessor RAM word 0, and the V60 waits at FED5A4 for that
+  // word's low byte to read zero — 1,120,224 spins and counting.
+  //
+  // NOT a reset: this is small enough to be flops either way, but the file's other
+  // arrays follow the same pattern and a reset on a wider one would cost RAM
+  // inference. An `initial` is what Quartus uses, and it must NOT be wrapped in a
+  // synthesis-pragma comment — the linter honours those and would skip it.
+  integer zr;
+  initial for (zr = 0; zr < 16; zr = zr + 1) rf[zr] = 32'd0;
+
   // --------------------------------------------------------------- read
   //
   // r >= 0x20 && r < 0x30 selects the general file. Note the index is

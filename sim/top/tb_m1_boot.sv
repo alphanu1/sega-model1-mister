@@ -50,7 +50,13 @@ module tb_m1_boot #(
     // retire/retire_pc come straight out of mb86233_core and are already what the
     // core considers an instruction boundary, so this is not a new definition of
     // "retired" invented for the trace.
-    parameter bit     TGPTRACE   = 0
+    parameter bit     TGPTRACE   = 0,
+
+    // Forces the TGP's unimplemented math-unit reads to 0 instead of table-base
+    // data. See m1_tgp's io_rdata mux: an experiment, not a feature. The question
+    // it answers is whether the V60's wait at FED5A4 is the only thing between
+    // here and the per-frame 2D setup.
+    parameter bit     MATH_ZERO  = 0
 );
 
 // Packed V60-visible ROM: ROMX at word 0, ROM0 at word 0x80000.
@@ -389,7 +395,7 @@ initial begin
                  UCODEHEX);
 end
 
-m1_main main (
+m1_main #(.TGP_MATH_ZERO(MATH_ZERO)) main (
     .clk(clk_cpu), .ce(ce), .rst_n(rst_n_cpu), .rom_loaded(mem_ready_cpu[1]),
     // Idle-high: every control is active low, so zero means all held down.
     // At rest: digital bytes idle-high, the three ADC channels at their

@@ -571,7 +571,7 @@ m1_boot:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
-	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) \
+	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) -GMATH_ZERO=$(MATH_ZERO) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
@@ -590,6 +590,7 @@ tgp_trace:
 
 BOOT_CYCLES ?= 20000000
 TGPTRACE    ?= 0
+MATH_ZERO   ?= 0
 WATCH_PAGE  ?= 0xC0
 
 # Real boot code through the real video path, dumped as an image. This is the

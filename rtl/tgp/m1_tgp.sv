@@ -39,6 +39,9 @@
 `timescale 1ns/1ps
 
 module m1_tgp #(
+  // See the io_rdata mux: forces unimplemented math-unit reads to 0 rather than
+  // table-base data. An experiment switch, not a feature.
+  parameter bit MATH_ZERO = 1'b0,
   // AS_PROGRAM is 0x000-0x7ff. The microcode is exactly this size, so a smaller
   // parameter would silently alias rather than fail.
   parameter int unsigned PROG_WORDS = 2048
@@ -232,6 +235,12 @@ module m1_tgp #(
   //   0x002e          copro_data window base
   //   0x8000-0xffff   copro_data read, low 15 bits from the address
   logic [31:0] copro_adr [4];         // the TGP's four registers
+
+  // Power-on zero, same reasoning as mb86233_regs' rf and m1_copro_if's ram: four
+  // flops on the device, ones in Verilator, and the TGP reads one of these to
+  // address coprocessor RAM before necessarily writing it.
+  integer za;
+  initial for (za = 0; za < 4; za = za + 1) copro_adr[za] = 32'd0;
   logic [31:0] dat_base;
 
   wire        io_lo    = (io_addr[15:5] == 11'd0);
@@ -268,7 +277,17 @@ module m1_tgp #(
     io_rdata = 32'd0;
     if      (sel_radr) io_rdata = copro_adr[radr_i];
     else if (sel_rdat) io_rdata = ram_rdata;
-    else if (sel_math) io_rdata = tbl_rdata;
+    // MATH_ZERO is an EXPERIMENT SWITCH, default off. The math units are not built:
+    // a sincos or inverse read returns whatever sits at the quadrant base of the
+    // table ROM, because the index arithmetic and exponent fixups do not exist yet
+    // (see this file's header). That is not the function's value, so the TGP
+    // computes with a wrong operand and writes a wrong result into coprocessor RAM
+    // — and the V60 then waits at FED5A4 for that word's low byte to read zero,
+    // forever. Setting this returns 0 instead, which is not more CORRECT but is a
+    // documented "not implemented" rather than plausible-looking garbage, and it
+    // answers whether the V60's wait is the only thing standing between here and
+    // the 2D setup. Delete it once the math units are real.
+    else if (sel_math) io_rdata = MATH_ZERO ? 32'd0 : tbl_rdata;
     else if (sel_datw) io_rdata = dat_rdata;
   end
 

@@ -40,6 +40,9 @@
 `timescale 1ns/1ps
 
 module m1_main #(
+  // Forwarded to m1_tgp — see its io_rdata mux. Experiment switch for the
+  // unimplemented math units, default off.
+  parameter bit TGP_MATH_ZERO = 1'b0,
   // The V60 resets here. Real hardware uses the architectural 0xFFFFFFF0 and
   // the boot ROM branches out of it; a test that wants to start somewhere
   // else without also encoding a branch overrides this.
@@ -445,7 +448,7 @@ module m1_main #(
   logic [31:0] t_fin_data, t_fout_data;
   logic        t_fin_valid, t_fin_pop, t_fout_push, t_fout_full;
 
-  m1_tgp tgp (
+  m1_tgp #(.MATH_ZERO(TGP_MATH_ZERO)) tgp (
     .clk(clk), .rst_n(rst_n),
     .ucode_clk(ucode_clk), .ucode_we(ucode_we),
     .ucode_addr(ucode_addr), .ucode_data(ucode_data),

@@ -2764,3 +2764,55 @@ outstanding**, not of a bug. Two things follow:
 2. **That asymmetry is worth closing either way.** Simulation and hardware currently
    feed the coprocessor different values on an unimplemented path, which is the same
    class of divergence as the uninitialised array.
+
+## WITHDRAWN: the 0xffffffff was never garbage — the reference writes it too — 2026-08-19
+
+Asked MAME instead of guessing a fourth time, which is what this repository's own
+first rule says to do. `tools/mame_tgp_io_full.lua`, 400 frames:
+
+     10  W io 0008  00010000        TGP sets the copro RAM address
+     11  W io 0009  ffffffff        and writes ffffffff
+
+**The reference's TGP writes `0xffffffff` into coprocessor RAM as well.** Our value was
+correct all along. Three consecutive diagnoses were chasing a non-problem:
+
+| guess | how it died |
+|---|---|
+| the RAM is uninitialised | `initial` runs and prints `ram[0]=00000000` |
+| nothing writes it | the TGP does; `dbg_ram_writes` only watches the V60's port |
+| the TGP computed it from unimplemented math units | `MATH_ZERO=1` changed nothing |
+| the register file is uninitialised | never needed — the value was right |
+
+Each fitted the evidence. None was measured against the oracle first, and the oracle
+answers it in one run.
+
+### The real difference is VOLUME, not values
+
+| | io accesses |
+|---|---|
+| reference | **158,391** over 400 frames |
+| ours | **~14**, then parked at dispatch with `pc=0043` |
+
+Busiest: `W 0020` 13,169, `R 0021` 10,925, `W 002e` 9,710, `R 0020` 9,348, `W 0009`
+5,345. The reference's TGP keeps working, writing coprocessor RAM over and over until
+it eventually writes the word whose low byte is zero — which is what releases the V60
+from `FED5A4`. Ours does its opening handful of accesses and stops.
+
+### And this weakens the M0 claim made yesterday
+
+`tgp_trace: IDENTICAL for 342 instructions` was over a **3-second window**, which
+captures the reference's first 343 collapsed instructions and nothing of its steady
+state. So the honest reading is: **our TGP matches the reference's opening and then
+stops doing work**, and the window was too short to show it. "M0 exit criterion 2 met"
+overstated it — met for the first 342 instructions, which is not the same thing.
+
+Run `tgp_trace` with a window long enough to reach the 400-frame behaviour and the
+divergence will name itself.
+
+### The three initialisation fixes stay
+
+`m1_copro_if`'s RAM, `m1_mainram`'s sixteen arrays, `mb86233_regs`' `rf` and
+`m1_tgp`'s `copro_adr` are all still correct on their own merits — an M10K and a flop
+come up cleared on the device, MAME's equivalents are zero-filled, and `mb86233_mem.sv`
+already carried the same fix and reasoning. They were not this bug, and the commits
+should not be read as if they were.
