@@ -130,6 +130,29 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Corrected 2026-08-19: the coprocessor stops working, it does not compute wrongly
+
+Everything below this heading was written before MAME was asked the obvious question,
+and two of its conclusions are withdrawn.
+
+**The `ffffffff` in coprocessor RAM is CORRECT.** `tools/mame_tgp_io_full.lua` shows the
+reference's TGP doing `W io 0008 <- 00010000` then `W io 0009 <- ffffffff`. Four
+diagnoses chased that value — uninitialised RAM, no writer, the math units, the
+register file — and all of them were chasing a non-problem.
+
+**The difference is VOLUME.** The reference makes **158,391** io accesses over 400
+frames and keeps writing coprocessor RAM until it writes the word whose low byte is
+zero, which releases the V60 from `FED5A4`. Ours makes about fourteen and parks at
+dispatch with `pc=0043`.
+
+**And `tgp_trace: IDENTICAL for 342 instructions` does not mean what it was taken to
+mean.** That was a 3-second window holding the reference's first 343 collapsed
+instructions, with the TGP idle for most of it. Our coprocessor matches the opening and
+then stops. M0 exit criterion 2 is **not** met.
+
+Next: `make tgp_trace SECONDS_RUN=10 BOOT_CYCLES=1500000000`, long enough to reach the
+400-frame behaviour, and the divergence names itself.
+
 ### Report for the morning — 2026-08-18, end of session
 
 **The coprocessor works.** `make tgp_trace` reports `IDENTICAL for 342 instructions`,
