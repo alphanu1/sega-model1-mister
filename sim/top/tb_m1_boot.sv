@@ -908,6 +908,40 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------------- text writes census
+// The routine at FF8AC3 copies a NUL-terminated string out as 16-bit tile codes:
+//
+//   FF8AC3: mov.b  [R0+], R2
+//   FF8AC6: test.b R2
+//   FF8AC8: be     FF8ACF
+//   FF8ACA: mov.h  R2, [R1+]     <- the write
+//   FF8ACD: br     FF8AC3
+//
+// The reference writes twenty characters a string and we write six to fourteen,
+// so capture what each side actually stores. Shaped to match
+// tools/mame_text_writes.lua exactly so the two can be decoded by one script.
+//
+// Our dbg_pc is the CURRENT instruction; MAME's GENPC is the NEXT one, which is
+// why the reference script matches FF8ACD and this matches FF8ACA. Getting that
+// backwards produces an empty log that looks like "the routine never runs".
+integer mi, mj;   // tilemap dump indices
+localparam integer TXN = 4000;
+integer tx_addr [0:TXN-1];
+integer tx_data [0:TXN-1];
+integer tx_n = 0;
+reg     tx_req_d = 1'b0;
+
+always @(posedge clk_cpu) begin
+    tx_req_d <= main.m_req;
+    if (rst_n_cpu && main.m_req && !tx_req_d && main.m_we
+        && main.m_addr[23:16] >= 8'h70 && main.m_addr[23:16] <= 8'h73
+        && dbg_pc == 24'hff8aca && tx_n < TXN) begin
+        tx_addr[tx_n] = {main.m_addr, 1'b0};
+        tx_data[tx_n] = main.m_wdata;
+        tx_n = tx_n + 1;
+    end
+end
+
 // ------------------------------------------ copro RAM sync-word census
 // FED5A4 spins on `in.w [R1], R0` with R1 = 0xD20000 and leaves when the low
 // byte of the coprocessor RAM word is zero. MAME's own tap on the maincpu IO
@@ -1105,7 +1139,28 @@ initial begin
         // a zero here says the run is short, NOT that the core is wrong — and it
         // was read as a defect for exactly that reason. 600000000 reaches frame
         // 345 and our core has 96 words; the reference has 528 by frame 900.
+        // All four tilemaps, word for word, to diff against
+        // tools/mame_tilemap0.lua. The census counts told us tilemap 0 is
+        // entirely category-1 and told us nothing about whether the CONTENT
+        // matches - and content is what decides whether the text is on screen.
+        for (mi = 0; mi < 4; mi = mi + 1)
+            for (i = 0; i < 4096; i = i + 16) begin
+                $write("TM%0d %04h", mi[3:0], i[15:0]);
+                for (mj = 0; mj < 16; mj = mj + 1)
+                    $write(" %04h",
+                           {main.rams.tram_c_hi[15'(mi*4096 + i + mj)],
+                            main.rams.tram_c_lo[15'(mi*4096 + i + mj)]});
+                $display("");
+            end
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (reference: none before frame 276, 528 by frame 900)", nz);
+        // The COUNT alone cannot say whether the mask is in the right place, and
+        // a category-1 tile - which is what all of the text is - shows only where
+        // its mask bit is 1. Dump the words so they can be diffed against
+        // tools/mame_rowmask.lua's output line for line.
+        for (i = 0; i < 2048; i = i + 1)
+            if ({main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]} != 0)
+                $display("RM %04h %04h", i[15:0],
+                         {main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]});
     end
 
     // THE OLD EXPECTATION HERE WAS WRONG, AND IT ACCUSED THE PACKER.
@@ -1166,6 +1221,10 @@ initial begin
              vbl_to_glue, irq_asserted, irq_edges);
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
+    // loop indices for the tilemap dump
+    $display("BOOT: text writes from FF8ACA: %0d", tx_n);
+    for (i = 0; i < tx_n; i = i + 1)
+        $display("TX %0d %06h %04h", i + 1, tx_addr[i][23:0], tx_data[i][15:0]);
     $display("BOOT: copro RAM data port: %0d 16-bit reads, %0d with low byte zero, %0d distinct values",
              d20_reads, d20_lowzero, d20_dist);
     for (i = 0; i < d20_dist; i = i + 1)
