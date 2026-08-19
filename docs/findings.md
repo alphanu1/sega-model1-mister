@@ -3114,7 +3114,7 @@ Whether `t_mem_rdata` is valid **on** the `t_mem_ack` cycle or the one after, in
 as `tb_m1_boot`. If they differ, this is simulation-only or hardware-only, and this
 session has already found two of those.
 
-## COMPLETE: `ldi #0x8000, b0` is mis-decoded, and that is the whole chain — 2026-08-19
+## WITHDRAWN (the decode is CORRECT): `ldi #0x8000, b0` is mis-decoded — 2026-08-19
 
 Armed on the instruction and printing every cycle, `07E6` executes and **`rf_wr_en` is
 never asserted**:
@@ -3160,3 +3160,81 @@ will break the suite and the suite is what would have caught this.
 MAME's disassembler switches on `opcode >> 26`; cases `0x10`-`0x1f` are all `ldi`, with the
 immediate in `opcode & 0xffffff` and the register in `(opcode >> 24) & 0x3f`. Compare that
 against `mb86233_dec`'s primary decode and against `sim/tgp/mb86233_ref.cpp`.
+
+
+---
+
+## ROOT CAUSE: the bench released the CPU before the microcode finished loading — 2026-08-19
+
+**Instrument:** a windowed per-cycle print in `tb_m1_boot.sv`, armed on `seq_pc == 0x07e5`,
+dumping `pc`, `ir`, the sequencer state, the loader's `uc_addr`/`uc_we`/`uc_done` and
+`prog[0x07e6]` *as it stood at that cycle*.
+
+**Correcting:** the entry above, which said the decoder routed `ldi` down the `lab` path.
+It does not. `mb86233_dec` was right, and its 3,000,000-case fuzz suite was right to pass.
+
+The microcode loader advances four addresses per CPU cycle — 100 MHz against 25 MHz — so
+2048 words take 512 CPU cycles. The coprocessor was released at the same instant and
+reached microcode address `0x07e6` while the loader was still at `0x07c6`:
+
+    W13 pc=07e6 ir=1c1c842e st=1 paddr=07e6 prd=40008000 ucwe=0 ucaddr=0000 ucdone=1 pr7e6=40008000
+
+`prog[0x07e6]` was **genuinely zero at the moment of the fetch**, and correctly populated
+by the time anything checked. A zero word has `opcode[31:26] == 0`, which is `is_lab` — so
+`ldi #0x8000, b0` was fetched as `00000000` and executed as a `lab`. The disassembly was
+right, the decoder was right, and the fetch returned a different word than either was
+looking at.
+
+**This is why the `UCODE CHECK` added the same morning kept passing.** It verified all 2048
+words *after* the run; the defect existed only during a 512-cycle window at reset. An
+instrument that samples the wrong instant reports the wrong answer confidently.
+
+### One line, and it is simulation-only
+
+    wire rst_n_cpu = rs_cpu[1] & uc_done;      // was: rs_cpu[1]
+
+`m1_integrated` states the contract in its own comment — *"Complete before the CPU is
+released, so there is no crossing to handshake"* — and hardware honours it, because
+`m1_rom_loader` streams during the ioctl download and the CPU waits on `rom_loaded`. The
+bench never did. **Fourth simulation-only divergence found in one day**, after the copro
+RAM initialisation, the `a_dout`/`a_ack` capture offset and the loader restart.
+
+### Every symptom chased that day was this one race
+
+    b0 never written -> (bx0) addresses io 0x0000 not 0x8010 -> data[0x69] = 0
+      -> the FP chain diverges -> 0731 brif ged branches -> the TGP stops early
+
+`tgp_wrtrace`'s "extra store at write 22", `tgp_trace`'s "divergence at instruction 604",
+the "wrong io address" and the "mis-decode" were six accurate descriptions of one cause.
+**A chain of correct observations is not a diagnosis** — each was a link, and the instrument
+that found the head was the only one that sampled reset.
+
+### What it bought, measured
+
+`make m1_boot` at 1.5 B cycles, before and after:
+
+| | before | after |
+|---|---|---|
+| TGP retires | stops early | **49,518**, `unimplemented=0` |
+| TGP io accesses | — | **1,401,155** completed, not stuck |
+| V60 -> TGP pushes | — | **561** |
+| TGP -> V60 returns | — | **232**, V60 pops 217 |
+
+The coprocessor now runs real microcode to completion and returns results. **It was worth
+the day.**
+
+### It did NOT fix the text, and the next cause is already measured
+
+The V60 still ends at `fed5a4`, in a three-instruction loop `fed5a4 -> fed5a7 -> fed5a9`,
+reading the coprocessor RAM data port **6,221,996 times**. `[5000]`-`[5007]` are all zero
+and the row mask is still `0/2048`.
+
+**MAME never executes `FED5xx` at all.** A 4-second reference trace, cold nvram, contains
+zero instructions anywhere in that page:
+
+    grep -ic "fed5" mame.tr   ->  0
+
+So this is not the coprocessor failing to answer a poll the reference also performs — it is
+our V60 reaching code the reference never reaches. That makes it a **V60 divergence**, and
+`make v60_trace` is the instrument for it. Do not debug the coprocessor further on this
+symptom.
