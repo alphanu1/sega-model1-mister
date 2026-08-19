@@ -130,6 +130,44 @@ against the reference's implied ~8, and 65% of its cycles are bus stalls that li
 outside the core. Area, maintainability and sharing with the i960 project are good
 reasons; speed is not one.
 
+### Where to pick up — 2026-08-19 midday
+
+`make tgp_trace SECONDS_RUN=10 BOOT_CYCLES=1500000000` **diverges at instruction 604**:
+
+    0730: fadd
+    0731: brif ged #0x73a      reference falls through to 0732; we branch to 073a
+
+So an FP condition flag, or the operands feeding it. The microcode is
+
+    072D: mov $0x43, d
+    072E: mov $0x42, a
+    072F: orad : mov $3, a     the transfer beats orad, per the write-priority rule
+    0730: fadd
+
+**`$0x43` is a REGISTER, not a data address** — `read_reg` masks its argument to six
+bits, so these are register reads. A data-space tap sees only `data[3]` and is the wrong
+instrument; that was tried.
+
+**Getting the reference's values needs a register read at that instant**, and two routes
+failed:
+
+- `install_read_tap` on the TGP's **program** space never fires. MAME fetches
+  instructions through the direct path, which bypasses taps. Do not use PC-hooking via
+  program taps on any CPU here.
+- `trace tgpr.tr,tgp_copro,noloop,{tracelog "A=%08X ...",a,d,st}` produced the
+  instruction lines but no register values. The action syntax needs checking, or use a
+  breakpoint (`bpset`) with a print, or MAME's Lua debugger hooks.
+
+**Our side needs `BOOT_CYCLES=1500000000`** to reach `0730` at all — a 700 M run stops
+at ~324 TGP retires, short of it. `TGPTRACE=1` already prints `a`/`b`/`d`/`st` per
+retire, so our half of the comparison is one long run away.
+
+**Do not guess whether it is the flag or the data.** Both operands come from registers
+that are loaded from coprocessor RAM and the data ROM, which only started flowing
+today, and four diagnoses were withdrawn on 2026-08-19 for reasoning instead of
+measuring — including three consecutive guesses at a value (`0xffffffff`) that turned
+out to be **correct**.
+
 ### Corrected 2026-08-19: the coprocessor stops working, it does not compute wrongly
 
 Everything below this heading was written before MAME was asked the obvious question,
