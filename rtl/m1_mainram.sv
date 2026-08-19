@@ -226,10 +226,20 @@ module m1_mainram (
   //
   // NOT A RESET. Quartus 17.0 will not infer RAM from an array that is reset, and
   // building 348,160 entries out of flip-flops is a failure this project has already
-  // paid for twice. An `initial` is what Quartus uses to initialise inferred RAM,
-  // and it must NOT be wrapped in `synthesis translate_off` — Verilator honours that
-  // pragma too and skips the code, which is exactly how the first attempt at the
-  // copro-RAM fix changed nothing at all.
+  // paid for twice.
+  //
+  // SIMULATION ONLY, AND GUARDED ON `VERILATOR` RATHER THAN ON A PRAGMA. The device
+  // does this by itself: Cyclone V M10K powers up cleared, so hardware needs no
+  // initialiser at all — only Verilator, which brings unpacked arrays up as ones.
+  //
+  // `synthesis translate_off` is the obvious wrapper and it is WRONG here: Verilator
+  // honours that pragma too and skips the code, which is exactly how the first attempt
+  // at the copro-RAM fix changed nothing at all. Leaving it unguarded is also wrong,
+  // and cost a 25-minute build — Quartus caps a loop at 5,000 iterations and these run
+  // to 32,768, so synthesis fails with "loop must terminate within 5000 iterations" and
+  // the whole hierarchy under it fails to elaborate. `VERILATOR` is predefined by every
+  // Verilator build (lint, test, m1_boot, m1_frame) and by no synthesis tool.
+`ifdef VERILATOR
   integer zi;
   initial begin
     for (zi = 0; zi < 32768; zi = zi + 1) begin
@@ -249,5 +259,6 @@ module m1_mainram (
       dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
     end
   end
+`endif
 
 endmodule

@@ -179,10 +179,18 @@ module m1_copro_if #(
   // the intent, and the array still came up as ones. An unguarded `initial` is
   // correct for both tools: Quartus uses it to initialise the inferred M10K, which
   // is what the device does anyway, and Verilator executes it.
+  //
+  // GUARDED ON `VERILATOR`, not left bare: RAM_WORDS is 8192 and Quartus caps a
+  // loop at 5,000 iterations, so an unguarded loop fails synthesis with "loop
+  // must terminate within 5000 iterations" and takes the whole hierarchy under
+  // it with it. The device needs no initialiser - Cyclone V M10K powers up
+  // cleared - so only the simulator wants this.
+`ifdef VERILATOR
   initial begin
     for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
     $display("CRAM INIT: %0d words zeroed, ram[0]=%08h", RAM_WORDS, ram[0]);
   end
+`endif
   logic [31:0]   ram_din, ram_q;
   logic          ram_we;
 
