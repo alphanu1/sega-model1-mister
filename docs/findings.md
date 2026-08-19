@@ -3451,3 +3451,46 @@ Candidate 1 is the one to test first, and it is cheap: latch `ctrl_r`/`win_v` on
 FRAME rather than per layer pass and see whether the band closes. MAME reads the register
 once, at the top of `draw_common`, for a call that draws both maps — our per-layer pipeline
 reads it twice, and nothing guarantees the two reads agree.
+
+### MEASURED: the video logic is innocent — we write the WRONG scroll values
+
+`tools/mame_scroll_census`-style Lua on the reference, frames 280-292:
+
+    frame  280  5000..5007 = 0000 0000 0025 0000 0000 0000 2062 0000
+    frame  282  ...                    0025 ...                2061 ...
+    frame  292  ...                    0025 ...                205c ...
+
+against ours from `make m1_boot`:
+
+    [5000]=0000 [5001]=0000 [5002]=0044 [5003]=0000
+    [5004]=0000 [5005]=0000 [5006]=2305 [5007]=0000
+
+**`[5006]` is 0x2062 in the reference and 0x2305 here, and that one word explains the
+whole picture.** Work it through `draw_common`:
+
+    reference   v = (-0x2062) & 0x1ff = 414   > 383, so the split is BELOW the screen:
+                c1 keeps rows 0..383, c2.min_y becomes 414 and is EMPTY
+                bit 9 of -0x2062 is SET, so no swap
+                -> ONE tilemap fills the whole screen, vertical scroll 0x2062 & 0x1ff = 98
+
+    ours        v = (-0x2305) & 0x1ff = 251   mid-screen, so the screen SPLITS
+                bit 9 of -0x2305 is clear, so the maps SWAP
+                -> tilemap 3 on top, tilemap 2 below, and the boundary jumps as ctrl moves
+
+The reference's horizon drifts smoothly because `[5006]` decrements by one every two
+frames, 0x2062 -> 0x205c. Sky and sea are BOTH IN ONE TILEMAP; there is no split at all at
+this point in attract. Ours splits the screen and alternates the maps, which is exactly the
+banding filmed on the board.
+
+`[5002]` differs too: 0x0025 against 0x0044.
+
+**So the window-mode implementation is not the bug.** Five suspects were ruled out by
+reading and a sixth by arithmetic; the values feeding them are wrong. This is upstream
+program state — what the V60 computes from the coprocessor's results — and no further
+tilemap work will move it.
+
+**Where to go:** `tgp_wrtrace` is identical for the 110 writes our side produces and then
+stops because our side stops producing. Extend the window until it diverges again, or trace
+the V60's writes to 0x70A00C (word 0x5006) and diff against MAME's writes to the same
+address. The second is the more direct instrument and `install_write_tap` on the maincpu
+program space is what does it.
