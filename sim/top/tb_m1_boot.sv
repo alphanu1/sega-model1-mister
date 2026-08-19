@@ -884,13 +884,45 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------- first entry into a watched page
+// The rolling buffer above answers "where did it END UP"; it cannot answer "how
+// did it GET there", because by the time the run finishes the approach has been
+// overwritten by millions of iterations of the loop it ended in. This freezes a
+// copy of the buffer at the FIRST instruction in a watched page, so the call
+// that reached it is still in the window.
+//
+// It exists because the V60 ends at fed5a4 and MAME never executes fed5xx AT
+// ALL - a 4-second reference trace with cold nvram has zero instructions in that
+// page - so the question is which branch left the reference's path, and no
+// end-of-run print can show that.
+`ifndef TRAP_HI
+`define TRAP_HI 16'hfed5
+`endif
+integer trapbuf [0:PCBUF-1];
+integer trapw = -1;
+time    trap_time = 0;
+integer ti;
+
 always @(posedge clk_cpu) begin
     if (rst_n_cpu && dbg_pc != pclast) begin
+        // SNAPSHOT BEFORE THE RING MOVES, AND IN THIS BLOCK. The first version
+        // of this trap lived in its own always block and tested
+        // `dbg_pc != pclast` there too. Both blocks run on the same edge, the
+        // ring block won, and pclast already equalled dbg_pc by the time the
+        // trap looked - so the guard was false on every cycle and the trap
+        // never fired. It reported "page fed5 never executed" in the same run
+        // whose final line was "pc now fed5a4".
+        if (trapw < 0 && dbg_pc[23:8] == `TRAP_HI) begin
+            for (ti = 0; ti < PCBUF; ti = ti + 1) trapbuf[ti] = pcbuf[ti];
+            trapw     = pcw;
+            trap_time = $time;
+        end
         pcbuf[pcw % PCBUF] = dbg_pc;
         pcw = pcw + 1;
         pclast = dbg_pc;
     end
 end
+
 
 // ------------------------------------------------------------------- run
 integer cycles, ce_cycles, last_pc, stuck, pcmin, pcmax, distinct;
@@ -1061,10 +1093,22 @@ initial begin
              vbl_to_glue, irq_asserted, irq_edges);
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
+    if (trapw >= 0) begin
+        $display("BOOT: FIRST entry into page %04h at t=%0t; the %0d distinct PCs before it:",
+                 `TRAP_HI, trap_time, PCBUF);
+        for (i = 0; i < PCBUF; i = i + 1) begin
+            if (i % 16 == 0) $write("BOOT:   ");
+            $write("%06h ", trapbuf[(trapw + i) % PCBUF]);
+            if (i % 16 == 15) $display("");
+        end
+    end else
+        $display("BOOT: page %04h never executed", `TRAP_HI);
     $display("BOOT: last %0d distinct PCs, oldest first:", PCBUF);
-    for (i = 0; i < PCBUF; i = i + 1)
+    for (i = 0; i < PCBUF; i = i + 1) begin
+        if (i % 16 == 0) $write("BOOT:   ");
         $write("%06h ", pcbuf[(pcw + i) % PCBUF]);
-    $display("");
+        if (i % 16 == 15) $display("");
+    end
 
     if (dbg_fp_trap)
         $display("BOOT: *** FP opcode executed — S32_V60_NO_FP is NOT safe ***");
