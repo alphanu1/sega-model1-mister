@@ -318,10 +318,37 @@ module mb86233_core (
   logic        xfer_d_valid;
   logic [31:0] xfer_d_data;
 
+  // ALU OPERANDS ARE SNAPSHOT AT DECODE, NOT READ LIVE.
+  //
+  // MAME calls alu_pre(alu) at the TOP of every instruction, before the memory
+  // access and before the parallel transfer writes its register. Our FSM writes
+  // the transfer in S_DST and only reaches S_ALU afterwards, so an ALU fed from
+  // the live register file computes on the value this same instruction just
+  // stored:
+  //
+  //     069E: mov $0x5c, a
+  //     069F: fsbd : mov $0x5e, a     <- d = d - a, with the OLD a (0x5c)
+  //     06A0: mov d, $0x44
+  //
+  //     reference   TW 0044 bf9e1480
+  //     ours        TW 0044 c33b6666   <- subtracted data[0x5e] instead
+  //
+  // The separate xfer_d_valid path still carries the write-priority rule for a
+  // transfer targeting D; this is about the OPERANDS, which is a different
+  // question and was never modelled.
+  logic [31:0] pre_a, pre_b, pre_d, pre_p;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      pre_a <= 32'd0; pre_b <= 32'd0; pre_d <= 32'd0; pre_p <= 32'd0;
+    end else if (state == S_DECODE) begin
+      pre_a <= reg_a; pre_b <= reg_b; pre_d <= reg_d; pre_p <= reg_p;
+    end
+  end
+
   mb86233_alu u_alu (
     .clk(clk), .rst_n(rst_n),
     .in_valid(alu_in_valid), .op(alu_op_r),
-    .reg_a(reg_a), .reg_b(reg_b), .reg_d(reg_d), .reg_p(reg_p),
+    .reg_a(pre_a), .reg_b(pre_b), .reg_d(pre_d), .reg_p(pre_p),
     .sft(sft), .m(reg_m), .st_in(st),
     .xfer_d_valid(xfer_d_valid), .xfer_d_data(xfer_d_data),
     // lab and ld/mov reach alu_post_2; the 0x0f group does not.
