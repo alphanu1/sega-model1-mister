@@ -382,10 +382,23 @@ module mb86233_core (
   logic [31:0] lab_a_val, lab_b_val;
 
   // Which side's r/bank the AGU should present this cycle.
+  //
+  // THE B SIDE OF A `lab` IS A THIRD CASE. MAME reads A with ea_pre_0(r1) and B
+  // with ea_pre_1(r2) - different field, different bank, and ea_post_1(r2)
+  // afterwards. The mux had only a source and a destination side, so the B read
+  // addressed with r1/bank0 and fetched the A operand's neighbourhood; B came
+  // back holding the same value as A.
+  //
+  // This was invisible for as long as the B value was read and discarded. The
+  // fix that made `lab` write its registers is what exposed it, one instruction
+  // later in the same trace.
   logic        use_dst_side;
-  assign agu_r    = use_dst_side ? (x_dst_r2 ? d_r2 : d_r1)
+  wire         use_lab_b = (state == S_LABB) || (state == S_LABB_W);
+  assign agu_r    = use_lab_b    ? d_r2
+                  : use_dst_side ? (x_dst_r2 ? d_r2 : d_r1)
                                  : (x_src_r2 ? d_r2 : d_r1);
-  assign agu_bank = use_dst_side ? x_dst_bank : x_src_bank;
+  assign agu_bank = use_lab_b ? 1'b1
+                  : use_dst_side ? x_dst_bank : x_src_bank;
 
   // +0x200 is applied outside the AGU because it is per-instruction-form, not
   // an addressing mode. See mb86233_agu's header.
