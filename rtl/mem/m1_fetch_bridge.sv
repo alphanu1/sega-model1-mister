@@ -70,6 +70,52 @@ module m1_fetch_bridge (
   logic        pending, served;
   logic [2:0]  off_q;
 
+  // ------------------------------------------------------- instruction cache
+  //
+  // MEASURED BEFORE IT WAS BUILT. Modelling the reference's own 31-million-PC
+  // trace offline gives, for an 8-byte line:
+  //
+  //     1 line  (   8 B)  32.1% hit      2 lines (  16 B)  99.0% hit
+  //     4 lines (  32 B)  99.2% hit      8 lines (  64 B)  99.6% hit
+  //
+  // One line thrashes because the V60 alternates between two of them - an
+  // instruction straddling a boundary fetches N and N+1 in turn - so the single
+  // entry is evicted every time and 32% is the floor, not the ceiling. Two lines
+  // take it to 99%. Eight costs 512 bits of line plus 152 of tag and leaves no
+  // headroom question worth arguing about.
+  //
+  // The core spent 34% of its cycles fetch-stalled at 9.3 cycles a line and
+  // 1.29 lines an instruction, which is no reuse whatever.
+  //
+  // WHY NO INVALIDATE PORT. The V60 is held in reset until rom_loaded, so it
+  // cannot fetch while the loader is writing SDRAM, and the cache cannot be
+  // filled with pre-download data. Afterwards the fetch region is read-only:
+  // the V60 does write SDRAM - character RAM lives there - but it never
+  // executes what it wrote, and a write to a different address cannot alias
+  // because the tag is compared in full. If either of those ever stops being
+  // true this needs a real invalidate.
+  // THE TAG CARRIES BITS [2:1] TOO, though m1_main drives
+  // {if_rom_word[24:3], 2'b00} and they are always zero there. Dropping them
+  // would make the cache correct only for as long as that stays true, and the
+  // port itself does not enforce it - m1_fetch_bridge's own suite drives
+  // arbitrary addresses and caught the aliasing immediately. Two flops a line.
+  localparam int LINES = 8;
+  typedef logic [20:0] tag_t;                 // {addr[24:6], addr[2:1]}
+  logic [63:0] cline  [LINES];
+  tag_t        ctag   [LINES];
+  logic        cvalid [LINES];
+  integer      ci;
+
+  wire [2:0]   cidx    = if_sdram_addr[5:3];
+  wire tag_t   cur_tag = {if_sdram_addr[24:6], if_sdram_addr[2:1]};
+  wire         chit    = cvalid[cidx] && (ctag[cidx] == cur_tag);
+
+  // The index and tag of the fetch IN FLIGHT, captured with the request for the
+  // same reason off_q is: the core may move if_sdram_addr once a fetch is
+  // answered, and the fill must land in the line that was asked for.
+  logic [2:0]  idx_q;
+  tag_t        tag_q;
+
   // The crossing is the same two-phase handshake the data port uses; only the
   // width and the absence of a write side differ.
   m1_cdc_port #(.AW(24), .DW(64), .BEW(1)) u_cdc (
@@ -102,6 +148,9 @@ module m1_fetch_bridge (
       served  <= 1'b0;
       off_q   <= 3'd0;
       if_data <= 64'd0;
+      idx_q   <= 3'd0;
+      tag_q   <= '0;
+      for (ci = 0; ci < LINES; ci = ci + 1) cvalid[ci] <= 1'b0;
     end else begin
       c_req <= 1'b0;
 
@@ -114,13 +163,27 @@ module m1_fetch_bridge (
         // Capture the offset with the request: if_addr belongs to the fetch in
         // flight, and the core is free to move it once this one is answered.
         off_q   <= if_off;
-        c_req   <= 1'b1;
-        pending <= 1'b1;
+        idx_q   <= cidx;
+        tag_q   <= cur_tag;
+        if (chit) begin
+          // Answered from the cache, with no memory transaction at all. The
+          // rotate is the same one the miss path does; only the source differs.
+          if_data <= cline[cidx] >> {if_off, 3'b000};
+          served  <= 1'b1;
+        end else begin
+          c_req   <= 1'b1;
+          pending <= 1'b1;
+        end
       end else if (pending && c_ack) begin
-        // Rotate the line so byte zero is the byte the core asked for.
-        if_data <= c_dout >> {off_q, 3'b000};
-        served  <= 1'b1;
-        pending <= 1'b0;
+        // Rotate the line so byte zero is the byte the core asked for. The line
+        // is cached UNROTATED, so a later fetch at a different offset within it
+        // still hits.
+        if_data       <= c_dout >> {off_q, 3'b000};
+        cline[idx_q]  <= c_dout;
+        ctag[idx_q]   <= tag_q;
+        cvalid[idx_q] <= 1'b1;
+        served        <= 1'b1;
+        pending       <= 1'b0;
       end
     end
   end

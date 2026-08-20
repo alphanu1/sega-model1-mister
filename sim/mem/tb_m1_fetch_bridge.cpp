@@ -166,7 +166,11 @@ static bool do_fetch(Fetch& t, uint32_t line, uint8_t off, int mem_per_cpu,
   }
 
   checks++;
-  if (t.transactions != before + 1) {
+  // A CACHE HIT COSTS ZERO TRANSACTIONS, and that is the point of the cache.
+  // This used to require exactly one memory transaction per fetch, which was
+  // right when the bridge had no storage and is now the thing under test.
+  // What must still hold is that a fetch never issues MORE than one.
+  if (t.transactions > before + 1) {
     fails++;
     if (printed++ < 20)
       printf("  FAIL %ld memory transactions for one fetch\n",
@@ -226,6 +230,36 @@ int main(int argc, char** argv) {
 
   printf("test: the offset must be captured with the request\n");
   run(4, 12, 2000, true, "offset jiggled in flight");
+
+  // THE CACHE ACTUALLY CACHES. Everything above proves the bridge still returns
+  // the right bytes; none of it would fail if the cache never hit. Fetch one
+  // line twice and require the second to cost no memory transaction at all.
+  {
+    Fetch t2;
+    std::mt19937 rng2(20260820u);
+    t2.lat = 4;
+    t2.reset();
+    for (auto& l : t2.lines) l = ((uint64_t)rng2() << 32) | rng2();
+    do_fetch(t2, 0x2000, 0, 4, rng2, false);
+    long before2 = t2.transactions;
+    do_fetch(t2, 0x2000, 0, 4, rng2, false);
+    checks++;
+    if (t2.transactions != before2) {
+      fails++;
+      printf("  FAIL repeat fetch of a cached line cost %ld transactions\n",
+             t2.transactions - before2);
+    }
+    // A different offset inside the SAME line must also hit: the line is cached
+    // unrotated precisely so that works.
+    long before3 = t2.transactions;
+    do_fetch(t2, 0x2000, 5, 4, rng2, false);
+    checks++;
+    if (t2.transactions != before3) {
+      fails++;
+      printf("  FAIL same line at a new offset cost %ld transactions\n",
+             t2.transactions - before3);
+    }
+  }
 
   printf("m1_fetch_bridge: checks=%ld fails=%ld\n", checks, fails);
   return fails ? 1 : 0;
