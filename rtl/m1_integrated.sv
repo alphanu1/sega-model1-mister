@@ -392,11 +392,21 @@ module m1_integrated (
   //   both wrong                       the read path or this sweep is at fault,
   //                                    and everything inferred from row 0C so far
   //                                    needs re-examining
-  localparam int          RB_BURSTS = 4096;
+  // THE WHOLE IMAGE, NOT A WINDOW.
+  //
+  // Two 16 K-word windows both matched the model, and that proved only that
+  // those two windows are good. The image is 0x420000 words and a dropped word
+  // anywhere in it is a ROM with a hole - reported as a successful load, because
+  // rows 07 and 0B are folded at the IOCTL INPUT, before the FIFO. The loader is
+  // hardened for that (FIFO_DEPTH 512, WAIT_MARGIN 256, after 8/6 was measured
+  // dropping words at 16 cycles of host reaction) but hardened is not verified.
+  //
+  // 0x420000 words is 0x108000 bursts of four.
+  localparam int          RB_BURSTS = 24'h108000;
   logic        rb_done;
   logic        rb_region;                          // 0 = V60 ROM, 1 = math tables
-  logic [12:0] rb_n;
-  assign dbg_rb_n = rb_n;
+  logic [23:0] rb_n;
+  assign dbg_rb_n = rb_n[12:0];
   wire [24:1] rb_region_base = rb_region ? 24'h400000 : 24'h000000;
 
   // THE FAST DOMAIN. The SDRAM ports are clk_sys; clocking this sweep on clk_cpu
@@ -405,7 +415,7 @@ module m1_integrated (
   always_ff @(posedge clk_sys or negedge rst_n_sys) begin
     if (!rst_n_sys) begin
       rb_addr <= 24'd0; rb_req <= 1'b0; rb_done <= 1'b0; rb_region <= 1'b0;
-      dbg_rb_csum <= 24'd0; dbg_rb_csum0 <= 24'd0; rb_n <= 13'd0;
+      dbg_rb_csum <= 24'd0; dbg_rb_csum0 <= 24'd0; rb_n <= 24'd0;
     end else if (rom_present && !rb_done) begin
       if (!rb_req) begin
         rb_req <= 1'b1;
@@ -413,18 +423,31 @@ module m1_integrated (
         rb_req  <= 1'b0;
         rb_addr <= rb_addr + 24'd4;
         rb_n    <= rb_n + 13'd1;
-        if (!rb_region)
-          dbg_rb_csum0 <= {dbg_rb_csum0[22:0], dbg_rb_csum0[23]} ^ rb_dout[23:0];
-        else
-          dbg_rb_csum  <= {dbg_rb_csum[22:0],  dbg_rb_csum[23]}  ^ rb_dout[23:0];
-        if (rb_n == 13'(RB_BURSTS - 1)) begin
-          rb_n <= 13'd0;
-          if (!rb_region) begin
-            rb_region <= 1'b1;
-            rb_addr   <= 24'h400000;
-          end else begin
+        // ONE CHECKSUM PER BURST HALF, BOTH OVER THE SAME REGION.
+        //
+        // The coprocessor takes a 32-bit word out of a 64-bit burst with
+        //   tgp_mem_addr[1] ? rb_dout[63:32] : rb_dout[31:0]
+        // and the sweep has only ever folded rb_dout[23:0] - the LOW half. If
+        // the device returns the halves in a different order than the model,
+        // the coprocessor reads wrong data while this sweep reports everything
+        // correct. It did report everything correct, on both regions, which is
+        // exactly the blind spot.
+        //
+        // Region 0 now folds the LOW half and region 1 the HIGH half of the SAME
+        // math-table region, so the two rows are directly comparable:
+        //   0E matches, 0C differs   the halves are swapped or the high half is
+        //                            wrong, and the coprocessor is the only
+        //                            master that cares
+        // Both halves of every burst, folded separately: the low half is what the
+        // sweep has always checked, and the high half is what the coprocessor
+        // reads for an odd table index and nothing has ever verified.
+        dbg_rb_csum0 <= {dbg_rb_csum0[22:0], dbg_rb_csum0[23]} ^ rb_dout[23:0];
+        dbg_rb_csum  <= {dbg_rb_csum[22:0],  dbg_rb_csum[23]}  ^ rb_dout[55:32];
+        if (rb_n == 24'(RB_BURSTS - 1)) begin
+          rb_n <= 24'd0;
+          begin
             rb_done <= 1'b1;
-            rb_n    <= 13'(RB_BURSTS);   // leave the count showing completion
+            rb_n    <= 24'(RB_BURSTS);   // leave the count showing completion
           end
         end
       end
