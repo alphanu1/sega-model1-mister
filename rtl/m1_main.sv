@@ -173,7 +173,9 @@ module m1_main #(
   // writes happened at all - and only a total since reset can answer it.
   output logic [11:0] dbg_tgp_ram_writes,
   output logic [15:0] dbg_sync_word,
-  output logic [11:0] dbg_tm0_writes,     // tile RAM words 0x0000-0x0fff, tilemap 0
+  output logic [11:0] dbg_tm0_writes,
+  output logic [11:0] dbg_tm0_text_writes,
+  output logic [23:0] dbg_tm0_first_pc,     // tile RAM words 0x0000-0x0fff, tilemap 0
   output logic [11:0] dbg_mask_writes,    // tile RAM words 0x6000-0x67ff, the row mask
   // Command-FIFO pops, alongside the pushes already brought out. Was internal;
   // brought out because pushes-without-pops and pops-without-returns are
@@ -326,6 +328,8 @@ module m1_main #(
         dbg_tram_writes[r]  <= 12'd0;
       end
       dbg_tm0_writes  <= 12'd0;
+      dbg_tm0_text_writes <= 12'd0;
+      dbg_tm0_first_pc    <= 24'd0;
       dbg_mask_writes <= 12'd0;
       tw_vb_d <= 1'b0;
     end else begin
@@ -343,6 +347,23 @@ module m1_main #(
         // Saturating totals, never cleared. See the port comment.
         if (m_addr[15:12] == 4'h0 && dbg_tm0_writes != 12'hfff)
           dbg_tm0_writes <= dbg_tm0_writes + 12'd1;
+        // CHARACTERS, NOT SPACES.
+        //
+        // The board's tilemap 0 holds 4,096 words and the renderer finds eight
+        // of them non-blank, so the CPU clears the screen and never draws. The
+        // total above cannot tell those apart - a screen clear is 4,096 writes
+        // and saturates it either way. m1_tile_fetch calls a word blank when it
+        // is zero or when (word & 0x3fff) == 0x0020, which is a space, so use
+        // exactly that test here.
+        //
+        // The PC of the FIRST real character says which routine drew it, and
+        // zero says none ever ran.
+        if (m_addr[15:12] == 4'h0 && m_wdata != 16'h0000
+            && (m_wdata & 16'h3fff) != 16'h0020) begin
+          if (dbg_tm0_text_writes != 12'hfff)
+            dbg_tm0_text_writes <= dbg_tm0_text_writes + 12'd1;
+          if (dbg_tm0_text_writes == 12'd0) dbg_tm0_first_pc <= dbg_pc;
+        end
         if (m_addr[15:11] == 5'b01100 && dbg_mask_writes != 12'hfff)
           dbg_mask_writes <= dbg_mask_writes + 12'd1;
       end

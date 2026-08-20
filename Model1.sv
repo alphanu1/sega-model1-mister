@@ -410,6 +410,8 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_tram_writes [4];
   wire [11:0] dbg_tm0_writes, dbg_mask_writes;
   wire [11:0] dbg_tgp_ram_writes;
+  wire [11:0] dbg_tm0_text_writes;
+  wire [23:0] dbg_tm0_first_pc;
   wire [15:0] dbg_sync_word;
   wire [23:0] dbg_copro_rd_csum;
   wire        rb_req;
@@ -472,6 +474,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
+    .dbg_tm0_text_writes(dbg_tm0_text_writes), .dbg_tm0_first_pc(dbg_tm0_first_pc),
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
     .dbg_rb_csum(dbg_rb_csum), .dbg_rb_csum0(dbg_rb_csum0), .dbg_rb_n(dbg_rb_n),
@@ -819,7 +822,14 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // the read-back checksum: what SDRAM returns for the math-table region, swept
   // sequentially on the spare port. tools/rom_csum.py --region prints the same
   // fold of the bytes on disk.
-  assign dw[10] = {8'h0C, dbg_rb_csum};
+  // SDRAM IS VERIFIED - row 0E read 4D2E75 against an image folding to 4D2E75,
+  // 1,081,344 words across all 8.6 M - so these two rows are free for the
+  // question that is actually open: the board's tilemap 0 holds 4,096 words and
+  // the renderer finds eight non-blank, so the CPU clears the screen and never
+  // draws.
+  //   0C  PC of the FIRST real character written into tilemap 0, 0 if none
+  //   0E  how many real characters were written at all
+  assign dw[10] = {8'h0C, dbg_tm0_first_pc};
   // ROW 0D WAS the frame rate, which has read 57.5 Hz correctly for weeks.
   // Replaced with the FED5A4 deadlock's two facts: how many times the
   // COPROCESSOR has written coprocessor RAM (left) and the current value of the
@@ -832,7 +842,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // reads correctly every frame. Row 0C is the math tables at 0x400000.
   //   0E right, 0C wrong  the fault is specific to the high region
   //   both wrong          the read path or the sweep itself is at fault
-  assign dw[12] = {8'h0E, dbg_rb_csum0};
+  assign dw[12] = {8'h0E, 12'd0, dbg_tm0_text_writes};
   // M2 telemetry, one value per row. A retire count that moves means the
   // coprocessor is executing real microcode; the PC says where it stopped if it
   // did. These two were packed into one row each with a second value and both
