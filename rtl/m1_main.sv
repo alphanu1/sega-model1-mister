@@ -164,6 +164,15 @@ module m1_main #(
   // Per frame and saturating at FFF, latched at vblank. See the counter below
   // for why cumulative does not work.
   output logic [11:0] dbg_tram_writes [4],
+  // CUMULATIVE, NOT PER FRAME. dbg_tram_writes above is latched and cleared
+  // every vblank, which is right for liveness and blind to this: the text is
+  // written into tile RAM ONCE during init and never rewritten, so a per-frame
+  // counter reads zero on a working machine and on a broken one alike. The
+  // board shows tilemap 0 holding 8 non-blank words against simulation's 79 and
+  // winning 5 pixels against 11,038, so the question is whether those init
+  // writes happened at all - and only a total since reset can answer it.
+  output logic [11:0] dbg_tm0_writes,     // tile RAM words 0x0000-0x0fff, tilemap 0
+  output logic [11:0] dbg_mask_writes,    // tile RAM words 0x6000-0x67ff, the row mask
   // Command-FIFO pops, alongside the pushes already brought out. Was internal;
   // brought out because pushes-without-pops and pops-without-returns are
   // different faults and the overlay could not tell them apart.
@@ -314,6 +323,8 @@ module m1_main #(
         tw_cnt[r]           <= 12'd0;
         dbg_tram_writes[r]  <= 12'd0;
       end
+      dbg_tm0_writes  <= 12'd0;
+      dbg_mask_writes <= 12'd0;
       tw_vb_d <= 1'b0;
     end else begin
       tw_vb_d <= vblank_irq;
@@ -327,6 +338,11 @@ module m1_main #(
       end else if (m_req && m_we && sel_tileram) begin
         if (tw_cnt[m_addr[15:14]] != 12'hfff)
           tw_cnt[m_addr[15:14]] <= tw_cnt[m_addr[15:14]] + 12'd1;
+        // Saturating totals, never cleared. See the port comment.
+        if (m_addr[15:12] == 4'h0 && dbg_tm0_writes != 12'hfff)
+          dbg_tm0_writes <= dbg_tm0_writes + 12'd1;
+        if (m_addr[15:11] == 5'b01100 && dbg_mask_writes != 12'hfff)
+          dbg_mask_writes <= dbg_mask_writes + 12'd1;
       end
     end
   end

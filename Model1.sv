@@ -406,6 +406,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [15:0] dbg_ctrl [2];
   wire [11:0] dbg_layer_have [4];
   wire [11:0] dbg_tram_writes [4];
+  wire [11:0] dbg_tm0_writes, dbg_mask_writes;
+  wire [23:0] dbg_copro_rd_csum;
   wire [11:0] dbg_ucode_words;
   wire [15:0] dbg_copro_pops;
   wire [15:0] dbg_copro_drains;
@@ -459,6 +461,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
+    .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_copro_pops(dbg_copro_pops),
     .dbg_copro_drains(dbg_copro_drains)
@@ -761,8 +765,20 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // and have read the same four constants ever since. The four questions below
   // are the ones the board cannot currently answer.
   assign dw[4]  = {8'h04, pc_at_teardown};         // PC when the screen tore down
-  assign dw[5]  = {8'h05, teardown_count};         // how many times it has
-  assign dw[6]  = {8'h06, cyc_rom0};               // cycles with PC in boot ROM
+  // ROW 05 WAS teardown_count, a boot forensic that has read the same value for
+  // weeks. Replaced with the measurement the board is actually missing:
+  // cumulative writes into tilemap 0 (left) and into the row mask at 0x6000
+  // (right), neither ever cleared. The text is written once during init, so the
+  // per-frame counters in row 1B read zero whether it worked or not.
+  //   left ~FFF, right > 0   the CPU wrote the text and the mask; look at video
+  //   left 000               the init never ran, and the fault is upstream
+  assign dw[5]  = {8'h05, dbg_tm0_writes, dbg_mask_writes};
+  // ROW 06 WAS cyc_rom0. Replaced with a checksum of every word the coprocessor
+  // reads from SDRAM - the math tables and the data window - so it can be
+  // compared against the identical fold printed by tb_m1_frame. Equal means the
+  // reads are good and the fault is logic; different means the SDRAM interface
+  // is not delivering, which is the one block this core has never constrained.
+  assign dw[6]  = {8'h06, dbg_copro_rd_csum};
   assign dw[7]  = {8'h07, cyc_other};              // cycles anywhere else
   assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
   // Tags 09 and 0A — the data words of fetches 4 and 5 — are GONE, to stay under

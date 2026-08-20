@@ -170,6 +170,20 @@ module m1_integrated (
   // CPU writes into tile RAM by region — see m1_main. The counterpart to
   // dbg_layer_have: one says what was written, the other what was read back.
   output logic [11:0] dbg_tram_writes [4],
+  output logic [11:0] dbg_tm0_writes,
+  output logic [11:0] dbg_mask_writes,
+  // A CHECKSUM OF EVERYTHING THE COPROCESSOR READS FROM SDRAM.
+  //
+  // The math tables and the 2 MB data window are read at RUNTIME over the SDRAM
+  // port, and docs/00-decisions.md records that interface as having no timing
+  // constraints and a read capture phase found empirically. The board shows the
+  // coprocessor retiring instructions and consuming commands while never
+  // clearing the V60's sync word, which is what wrong ARITHMETIC looks like from
+  // outside - a different microcode path, taken confidently.
+  //
+  // Simulation reads the same words from a model. Folding both sides the same
+  // way turns "are the reads good on hardware" from a guess into one comparison.
+  output logic [23:0] dbg_copro_rd_csum,
 
   // Microcode load evidence — see m1_rom_loader. 0x800 words is a complete load.
   output logic [11:0] dbg_ucode_words,
@@ -279,6 +293,7 @@ module m1_integrated (
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_copro_pops(dbg_copro_pops),
     .dbg_copro_drains(dbg_copro_drains),
     .rom_bank(rom_bank)
@@ -338,6 +353,16 @@ module m1_integrated (
   // A 32-bit read is two 16-bit words. The SDRAM port returns a 64-bit burst,
   // so one transaction covers both halves and the low 32 bits are the word.
   logic t_mem_ack;
+
+  // Fold every acknowledged table or data word. Rotate so ordering matters: a
+  // plain XOR would hide two swapped reads, which is one of the failure modes a
+  // marginal capture phase actually produces.
+  always_ff @(posedge clk_cpu or negedge rst_n_cpu) begin
+    if (!rst_n_cpu) dbg_copro_rd_csum <= 24'd0;
+    else if (t_tbl_ack || t_dat_ack)
+      dbg_copro_rd_csum <= {dbg_copro_rd_csum[22:0], dbg_copro_rd_csum[23]}
+                         ^ t_mem_rdata[23:0];
+  end
   assign t_tbl_ack = t_mem_ack &&  t_tbl_req;
   assign t_dat_ack = t_mem_ack && !t_tbl_req && t_dat_req;
 
