@@ -449,6 +449,29 @@ module m1_sdram #(
   // lock, so the first clocked edges after lock perform the reset. Nothing in this
   // controller needs to be reset while its clock is stopped.
   always_ff @(posedge clk) begin
+    // HOLD sd_a EXPLICITLY, so it has no ENABLE.
+    //
+    // Quartus refuses to pack sd_a into the I/O cells - sixteen copies of
+    // "cannot simultaneously use clear and load signals" - and a Cyclone V I/O
+    // register has one or the other. sd_a is never assigned in the reset branch,
+    // so the CLEAR is the block's; the LOAD is sd_a being assigned only in some
+    // states, which synthesises as an enable. Writing the hold explicitly makes
+    // the D input an unconditional mux and removes the enable, leaving a
+    // register the pin can hold.
+    //
+    // Behaviourally identical: a register with no assignment already holds.
+    //
+    // WHY IT MATTERS. The framework constrains this interface not at all - no
+    // generated clock on SDRAM_CLK, no input or output delay, in sys_top.sdc or
+    // ours - so the address path leaves through fabric with uncontrolled delay.
+    // Skewed address bits select the wrong row or column, which is written into
+    // this file's own history: a build whose only change was a debug counter
+    // produced a garbage picture with +0.296 ns reported slack and no new
+    // warnings. The board now reads back a 4096-burst sweep of the math tables
+    // as 04FFFB where the model gives 991AF0 - correct data written, different
+    // data returned - and unpacked address registers are the best candidate for
+    // that in the whole design.
+    sd_a <= sd_a;
     if (!rst_n) begin
       // cmd IS RESET AND THE OTHERS ARE NOT, deliberately.
       //
