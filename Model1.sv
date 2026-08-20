@@ -336,49 +336,8 @@ module emu
 
   // Port map per docs/00-decisions.md D8: p0 CPU data, p1 character RAM,
   // p2 instruction fetch. p3 and p4 are sound, unbuilt.
-  // ---------------------------------------------- SDRAM read-back self-test
-  //
-  // Port 4 was tied off. It now sweeps the math-table region and folds what
-  // SDRAM RETURNS, which is the one thing nothing here has ever measured.
-  //
-  // What is already known: row 07 matches simulation, so the HPS delivered the
-  // right bytes in the right order - but that fold is taken at the ioctl input,
-  // BEFORE the FIFO and before the write, so it says nothing about what reached
-  // the chip. Row 06 differs from simulation at all four capture phases, so the
-  // coprocessor reads wrong data. Between those two facts sit the write path and
-  // the read path, and only a read-back separates them.
-  //
-  // SEQUENTIAL, and that is deliberate. The V60 reads SDRAM correctly all day -
-  // it fetches, runs and writes the text - while the coprocessor's tables are
-  // scattered across 256 KB. If a sequential sweep of the same region comes back
-  // clean, the data is in the chip and the fault is in the random-access
-  // pattern; if it comes back wrong, the region never made it.
-  localparam logic [24:1] RB_BASE  = 24'h400000;   // COPRO_TBL_BASE
-  localparam int          RB_WORDS = 4096;
-
-  reg [24:1] rb_addr;
-  reg        rb_req, rb_done;
-  reg [23:0] rb_csum;
-  reg [12:0] rb_n;
-
-  always @(posedge clk_sys) begin
-    if (!mem_rst_n) begin
-      rb_addr <= RB_BASE; rb_req <= 1'b0; rb_done <= 1'b0;
-      rb_csum <= 24'd0;   rb_n   <= 13'd0;
-    end else if (rom_ready && !rb_done) begin
-      if (!rb_req) begin
-        rb_req <= 1'b1;
-      end else if (p_ack[4]) begin
-        rb_req  <= 1'b0;
-        // Fold the low 24 bits of the burst, the same shape as row 07.
-        rb_csum <= {rb_csum[22:0], rb_csum[23]} ^ p_dout[4][23:0];
-        rb_addr <= rb_addr + 24'd4;          // one 64-bit burst per step
-        rb_n    <= rb_n + 13'd1;
-        if (rb_n == 13'(RB_WORDS - 1)) rb_done <= 1'b1;
-      end
-    end
-  end
-
+  // The read-back sweep lives in m1_integrated now, so tb_m1_frame can verify
+  // it against the SDRAM model. Port 4 was tied off; it carries the sweep.
   assign p_req  = {rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
   assign p_we   = {1'b0,   1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
@@ -451,6 +410,10 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_tram_writes [4];
   wire [11:0] dbg_tm0_writes, dbg_mask_writes;
   wire [23:0] dbg_copro_rd_csum;
+  wire        rb_req;
+  wire [24:1] rb_addr;
+  wire [23:0] dbg_rb_csum;
+  wire [12:0] dbg_rb_n;
   wire [11:0] dbg_ucode_words;
   wire [15:0] dbg_copro_pops;
   wire [15:0] dbg_copro_drains;
@@ -507,6 +470,8 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
+    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
+    .dbg_rb_csum(dbg_rb_csum), .dbg_rb_n(dbg_rb_n),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_sdram_csum(dbg_sdram_csum), .dbg_sdram_words(dbg_sdram_words),
     .dbg_copro_pops(dbg_copro_pops),
@@ -809,7 +774,13 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // ROWS 04-07 WERE BOOT FETCH ADDRESSES 2 TO 5. They were captured once at boot
   // and have read the same four constants ever since. The four questions below
   // are the ones the board cannot currently answer.
-  assign dw[4]  = {8'h04, pc_at_teardown};         // PC when the screen tore down
+  // ROW 04 WAS pc_at_teardown. Replaced with how many read-back bursts actually
+  // completed, because without it a checksum cannot be told from a SWEEP THAT
+  // STALLED. Simulation stalled at exactly one burst of 4096 when the sweep was
+  // clocked in the wrong domain, and produced a plausible-looking number while
+  // doing it.
+  //   1000 (hex) = 4096 = the sweep finished and row 0C means something
+  assign dw[4]  = {8'h04, 11'd0, dbg_rb_n};
   // ROW 05 WAS teardown_count, a boot forensic that has read the same value for
   // weeks. Replaced with the measurement the board is actually missing:
   // cumulative writes into tilemap 0 (left) and into the row mask at 0x6000
@@ -845,7 +816,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // the read-back checksum: what SDRAM returns for the math-table region, swept
   // sequentially on the spare port. tools/rom_csum.py --region prints the same
   // fold of the bytes on disk.
-  assign dw[10] = {8'h0C, rb_csum};
+  assign dw[10] = {8'h0C, dbg_rb_csum};
   assign dw[11] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
   assign dw[12] = {8'h0E, fper};                       // frame period, cycles
   // M2 telemetry, one value per row. A retire count that moves means the

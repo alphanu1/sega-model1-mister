@@ -141,7 +141,7 @@ wire [4:0][15:0] p_din;
 wire [4:0][1:0]  p_be;
 wire [4:0][63:0] p_dout;
 
-assign p_req  = {1'b0, tgp_mem_req, ifp_req, char_req, sdr_req};
+assign p_req  = {rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
 assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
@@ -149,7 +149,7 @@ assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
 // from word 0, which is V60 program ROM, and every glyph decodes from the same
 // wrong data. 31 distinct tile numbers then render identically and the screen
 // is a uniform pattern that looks like a video bug rather than an address one.
-assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
+assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
 assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
@@ -227,6 +227,10 @@ m1_integrated core (
     // index 1, and the coprocessor's read-only regions come off SDRAM port 3.
     .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),
     .tgp_mem_dout(p_dout[3]), .tgp_mem_ack(p_ack[3]),
+    // The read-back sweep, on the port that was tied off. Same logic the board
+    // runs, so the printed value IS the expected value for row 0C.
+    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
+    .dbg_rb_csum(f_rb_csum), .dbg_rb_n(f_rb_n),
     .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
     .dbg_tgp_unimpl(f_tgp_unimpl),
     .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
@@ -276,6 +280,10 @@ wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 wire [11:0] f_tm0_wr, f_mask_wr;
 wire [23:0] f_rd_csum;   // board row 06
 wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
+wire        rb_req;
+wire [24:1] rb_addr;
+wire [23:0] f_rb_csum;               // board row 0C
+wire [12:0] f_rb_n;
 // POPS is the question: on hardware the V60 pushes and the TGP never takes one,
 // and a full 16-deep FIFO halts the CPU. m1_tgp's own suite pops 11 of 11 on this
 // microcode, so if the whole system pops here the fault is hardware-only.
@@ -1007,6 +1015,9 @@ initial begin
     $display("FRAME: copro SDRAM read checksum=%06h (board row 06)", f_rd_csum);
     $display("FRAME: loader SDRAM write checksum=%06h words=%06h (board rows 07, 0B)",
              f_sd_csum, f_sd_words);
+    $display("FRAME: SDRAM read-back checksum=%06h (board row 0C, board reads 04fffb)",
+             f_rb_csum);
+    $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
     fd = $fopen(PPMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PPMOUT);
     else begin

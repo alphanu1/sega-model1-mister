@@ -125,6 +125,22 @@ module m1_integrated (
   input  logic [63:0] tgp_mem_dout,
   input  logic        tgp_mem_ack,
 
+  // ------------------------------------------------ SDRAM read-back self-test
+  //
+  // MOVED HERE FROM Model1.sv SO A TESTBENCH CAN SEE IT. It was written and
+  // flashed without ever being simulated, and it returned 04FFFB where the
+  // hand-folded image says 63110D - a number that could equally mean SDRAM is
+  // wrong or that this FSM is. tb_m1_frame drives m1_integrated against the
+  // SDRAM model, so with the sweep in here simulation produces the expected
+  // value through THE SAME LOGIC, which also retires my hand-written assumption
+  // about burst word order (neither it nor its reverse matches the board).
+  output logic        rb_req,
+  output logic [24:1] rb_addr,
+  input  logic [63:0] rb_dout,
+  input  logic        rb_ack,
+  output logic [23:0] dbg_rb_csum,
+  output logic [12:0] dbg_rb_n,      // bursts actually completed
+
   output logic [15:0] dbg_tgp_retires,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
@@ -354,6 +370,36 @@ module m1_integrated (
 
   // A 32-bit read is two 16-bit words. The SDRAM port returns a 64-bit burst,
   // so one transaction covers both halves and the low 32 bits are the word.
+  // Sweep the math-table region and fold what SDRAM RETURNS. Sequential on
+  // purpose: the V60 reads SDRAM correctly all day while the coprocessor's
+  // tables are scattered across 256 KB, so a clean sequential sweep would put
+  // the fault in the access PATTERN rather than in the data.
+  localparam logic [24:1] RB_BASE  = 24'h400000;    // COPRO_TBL_BASE
+  localparam int          RB_BURSTS = 4096;
+  logic        rb_done;
+  logic [12:0] rb_n;
+  assign dbg_rb_n = rb_n;
+
+  // THE FAST DOMAIN. The SDRAM ports are clk_sys; clocking this sweep on clk_cpu
+  // missed the acknowledge and completed exactly ONE burst of 4096, which is how
+  // the flaw was found - in simulation, where it was cheap.
+  always_ff @(posedge clk_sys or negedge rst_n_sys) begin
+    if (!rst_n_sys) begin
+      rb_addr <= RB_BASE; rb_req <= 1'b0; rb_done <= 1'b0;
+      dbg_rb_csum <= 24'd0; rb_n <= 13'd0;
+    end else if (rom_present && !rb_done) begin
+      if (!rb_req) begin
+        rb_req <= 1'b1;
+      end else if (rb_ack) begin
+        rb_req      <= 1'b0;
+        dbg_rb_csum <= {dbg_rb_csum[22:0], dbg_rb_csum[23]} ^ rb_dout[23:0];
+        rb_addr     <= rb_addr + 24'd4;
+        rb_n        <= rb_n + 13'd1;
+        if (rb_n == 13'(RB_BURSTS - 1)) rb_done <= 1'b1;
+      end
+    end
+  end
+
   logic t_mem_ack;
 
   // Fold the FIRST 1024 acknowledged words and then FREEZE.
