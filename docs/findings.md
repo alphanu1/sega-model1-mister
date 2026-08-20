@@ -3815,3 +3815,30 @@ self-consistently, which is why write-then-read matches.
 **The rule that follows:** every new instrument ships with a known-good case measured in
 the same run. Three of these four produced confident, specific, wrong answers that survived
 until a control contradicted them.
+
+### The text IS drawn on hardware — the screen is redrawn for ever
+
+Measured on the board with the character-write census:
+
+    row 0E  000315 and RISING with every jump   789 real characters and climbing
+    row 0C  FC567D                              the same routine simulation uses
+
+So the V60 reaches the drawing code, runs the same routine, and writes real characters into
+tilemap 0. **The fault is not that it never draws.** The renderer finds only eight non-blank
+words a frame because the screen is cleared and redrawn continuously — each visible "jump"
+is another pass — and any given frame catches it mostly blank.
+
+That matches the PC: row 00 alternates between `FED5A4` (waiting on the coprocessor sync
+word) and `FFE???` (the tilemap copy routines). Clear, draw, wait, clear, draw.
+
+**The divergence to chase is row 0D.** On the board the coprocessor writes coprocessor RAM
+thousands of times — the counter saturates at `FFF` — while `tb_m1_frame` reports
+`TGP writes to copro RAM=0`. Something on hardware keeps re-arming the sync word to `ffff`,
+which sends the V60 back to `FED5A4`, and the cycle repeats for ever.
+
+Since the microcode is verified identical (row 02 matches the image byte for byte) and SDRAM
+is verified across the whole image, the coprocessor is executing a different path from the
+same code and the same data. Row 06's read checksum differs between board and model, which
+says the same thing: it is issuing different reads. What is left that could differ is its
+INPUTS — the command stream from the V60 — or the relative timing of the two machines,
+which is not the same on silicon as against a memory model.
