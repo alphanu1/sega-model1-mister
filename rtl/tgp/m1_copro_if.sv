@@ -97,6 +97,9 @@ module m1_copro_if #(
 
   // --------------------------------------------------------- TGP RAM port
   input  logic        tgp_req,
+  // Instruments for the FED5A4 deadlock - see the note beside ram_we below.
+  output logic [11:0] dbg_tgp_ram_writes,
+  output logic [15:0] dbg_sync_word,
   input  logic        tgp_we,
   input  logic [12:0] tgp_addr,
   input  logic [31:0] tgp_wdata,
@@ -180,22 +183,46 @@ module m1_copro_if #(
   // correct for both tools: Quartus uses it to initialise the inferred M10K, which
   // is what the device does anyway, and Verilator executes it.
   //
-  // GUARDED ON `VERILATOR`, not left bare: RAM_WORDS is 8192 and Quartus caps a
-  // loop at 5,000 iterations, so an unguarded loop fails synthesis with "loop
-  // must terminate within 5000 iterations" and takes the whole hierarchy under
-  // it with it. The device needs no initialiser - Cyclone V M10K powers up
-  // cleared - so only the simulator wants this.
-`ifdef VERILATOR
+  // ZEROED FOR BOTH TOOLS, IN CHUNKS UNDER QUARTUS'S LOOP LIMIT.
+  //
+  // MAME does this and the game depends on it: model1_m.cpp:59 ends
+  // device_reset with memset(m_copro_ram_data.get(), 0, 0x2000*4). The V60 spins
+  // at FED5A4 reading word 0 until its LOW BYTE IS ZERO, and NOTHING EVER WRITES
+  // THAT WORD - not the coprocessor, not the V60. Measured: tb_m1_frame reports
+  // "TGP writes to copro RAM=0". Simulation only works because this initialiser
+  // makes word 0 zero to begin with.
+  //
+  // It was briefly guarded on `VERILATOR`, which removed it from the DEVICE and
+  // left the board reading ffff there for ever - and every reading of that as
+  // "the coprocessor fails to signal completion" was backwards, because there
+  // was never a signal to write.
+  //
+  // Quartus caps a loop at 5,000 iterations, which is why the guard went on. Two
+  // loops of 4,096 are each under the cap and initialise the inferred M10K
+  // exactly as one loop of 8,192 would. An `initial` is the idiom Quartus wants;
+  // a reset that clears the array would be a second write port and would build
+  // the whole thing out of flip-flops.
+  localparam int unsigned RAM_HALF = RAM_WORDS / 2;
   initial begin
-    for (int unsigned i = 0; i < RAM_WORDS; i++) ram[i] = 32'd0;
-    $display("CRAM INIT: %0d words zeroed, ram[0]=%08h", RAM_WORDS, ram[0]);
+    for (int unsigned i = 0; i < RAM_HALF; i++)            ram[i] = 32'd0;
+    for (int unsigned i = RAM_HALF; i < RAM_WORDS; i++)    ram[i] = 32'd0;
   end
-`endif
   logic [31:0]   ram_din, ram_q;
   logic          ram_we;
 
   always_ff @(posedge clk) begin
     if (ram_we) ram[ram_addr] <= ram_din;
+    // THE SYNC WORD, AND WHO WRITES IT. The V60 spins at FED5A4 reading word 0
+    // until its low byte is zero; on hardware it never is, while simulation
+    // clears it thousands of times. The microcode is verified correct on the
+    // board (row 02) and SDRAM returns correct data (rows 0C and 0E), so the
+    // question left is whether the coprocessor ever writes this word at all.
+    // Synchronous, and in THIS block: the counter is incremented here, and a
+    // reset in the other always_ff made it multiply driven.
+    if (!rst_n) dbg_tgp_ram_writes <= 12'd0;
+    else if (ram_we && (st == S_TGP) && dbg_tgp_ram_writes != 12'hfff)
+      dbg_tgp_ram_writes <= dbg_tgp_ram_writes + 12'd1;
+    dbg_sync_word <= ram[0][15:0];
     ram_q <= ram[ram_addr];
   end
 

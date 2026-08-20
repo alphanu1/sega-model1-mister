@@ -409,6 +409,8 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_layer_have [4];
   wire [11:0] dbg_tram_writes [4];
   wire [11:0] dbg_tm0_writes, dbg_mask_writes;
+  wire [11:0] dbg_tgp_ram_writes;
+  wire [15:0] dbg_sync_word;
   wire [23:0] dbg_copro_rd_csum;
   wire        rb_req;
   wire [24:1] rb_addr;
@@ -468,6 +470,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
@@ -817,7 +820,13 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // sequentially on the spare port. tools/rom_csum.py --region prints the same
   // fold of the bytes on disk.
   assign dw[10] = {8'h0C, dbg_rb_csum};
-  assign dw[11] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
+  // ROW 0D WAS the frame rate, which has read 57.5 Hz correctly for weeks.
+  // Replaced with the FED5A4 deadlock's two facts: how many times the
+  // COPROCESSOR has written coprocessor RAM (left) and the current value of the
+  // sync word the V60 is spinning on (right).
+  //   left 000, right ffff   the coprocessor never gets far enough to signal
+  //   left > 0               it writes, and the fault is elsewhere
+  assign dw[11] = {8'h0D, dbg_tgp_ram_writes, dbg_sync_word[11:0]};
   // ROW 0E WAS the frame period. Replaced with the CONTROL sweep: the same
   // read-back over V60 program ROM at word 0, a region the CPU demonstrably
   // reads correctly every frame. Row 0C is the math tables at 0x400000.

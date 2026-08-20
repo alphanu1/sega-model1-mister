@@ -244,26 +244,37 @@ module m1_mainram (
   // Do NOT begin a comment line with the simulator's name: `// <name> ...` is
   // valid metacomment syntax, so the line is parsed as a pragma and the build
   // dies with BADVLTPRAGMA. This comment did exactly that.
-`ifdef VERILATOR
-  integer zi;
+  // CHUNKED, NOT GUARDED. Quartus caps a loop at 5,000 iterations and these run
+  // to 32,768, which is why this was wrapped in `VERILATOR` earlier today - and
+  // wrapping it removed the initialisation from the DEVICE, which is exactly the
+  // bug that left the coprocessor's RAM reading ffff on the board. Splitting
+  // each sweep into 4,096-word chunks is under the cap and initialises the
+  // inferred M10K for both tools.
+  //
+  // Cyclone V M10K does come up cleared, so this is belt and braces here - but
+  // the coprocessor RAM proved that "the device does it anyway" is a bad thing
+  // to rely on when the simulator is relying on the initialiser.
+  integer zi, zc;
   initial begin
-    for (zi = 0; zi < 32768; zi = zi + 1) begin
-      tram_c_lo[zi] = 8'd0; tram_c_hi[zi] = 8'd0;
-      tram_v_lo[zi] = 8'd0; tram_v_hi[zi] = 8'd0;
-      dl0_lo[zi]    = 8'd0; dl0_hi[zi]    = 8'd0;
-      dl1_lo[zi]    = 8'd0; dl1_hi[zi]    = 8'd0;
-    end
-    for (zi = 0; zi < 24576; zi = zi + 1) begin
-      cxlat_lo[zi] = 8'd0; cxlat_hi[zi] = 8'd0;
-    end
-    for (zi = 0; zi < 8192; zi = zi + 1) begin
-      pram_c_lo[zi] = 8'd0; pram_c_hi[zi] = 8'd0;
-      pram_v_lo[zi] = 8'd0; pram_v_hi[zi] = 8'd0;
-    end
+    for (zc = 0; zc < 8; zc = zc + 1)
+      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
+        tram_c_lo[zi] = 8'd0; tram_c_hi[zi] = 8'd0;
+        tram_v_lo[zi] = 8'd0; tram_v_hi[zi] = 8'd0;
+        dl0_lo[zi]    = 8'd0; dl0_hi[zi]    = 8'd0;
+        dl1_lo[zi]    = 8'd0; dl1_hi[zi]    = 8'd0;
+      end
+    for (zc = 0; zc < 6; zc = zc + 1)
+      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
+        cxlat_lo[zi] = 8'd0; cxlat_hi[zi] = 8'd0;
+      end
+    for (zc = 0; zc < 2; zc = zc + 1)
+      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
+        pram_c_lo[zi] = 8'd0; pram_c_hi[zi] = 8'd0;
+        pram_v_lo[zi] = 8'd0; pram_v_hi[zi] = 8'd0;
+      end
     for (zi = 0; zi < 2048; zi = zi + 1) begin
       dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
     end
   end
-`endif
 
 endmodule

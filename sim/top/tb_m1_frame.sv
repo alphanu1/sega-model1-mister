@@ -238,6 +238,7 @@ m1_integrated core (
     .dbg_layer_px(f_layer_px), .dbg_ctrl(f_ctrl),
     .dbg_layer_have(f_have_rtl),
     .dbg_tram_writes(f_tram_wr),
+    .dbg_tgp_ram_writes(f_tgp_ramwr), .dbg_sync_word(f_sync_word),
     .dbg_tm0_writes(f_tm0_wr), .dbg_mask_writes(f_mask_wr),
     .dbg_copro_rd_csum(f_rd_csum),
     .dbg_sdram_csum(f_sd_csum), .dbg_sdram_words(f_sd_words),
@@ -278,6 +279,8 @@ wire [24:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 // Cumulative tile-RAM init writes, to compare directly against the board's row 05.
 wire [11:0] f_tm0_wr, f_mask_wr;
+wire [11:0] f_tgp_ramwr;
+wire [15:0] f_sync_word;   // board row 0D
 wire [23:0] f_rd_csum;   // board row 06
 wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
 wire        rb_req;
@@ -1020,6 +1023,8 @@ initial begin
              f_rb_csum);
     $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
+    $display("FRAME: TGP writes to copro RAM=%0d  sync word=%04h (board row 0D)",
+             f_tgp_ramwr, f_sync_word);
     fd = $fopen(PPMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PPMOUT);
     else begin

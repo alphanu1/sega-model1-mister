@@ -171,6 +171,8 @@ module m1_main #(
   // board shows tilemap 0 holding 8 non-blank words against simulation's 79 and
   // winning 5 pixels against 11,038, so the question is whether those init
   // writes happened at all - and only a total since reset can answer it.
+  output logic [11:0] dbg_tgp_ram_writes,
+  output logic [15:0] dbg_sync_word,
   output logic [11:0] dbg_tm0_writes,     // tile RAM words 0x0000-0x0fff, tilemap 0
   output logic [11:0] dbg_mask_writes,    // tile RAM words 0x6000-0x67ff, the row mask
   // Command-FIFO pops, alongside the pushes already brought out. Was internal;
@@ -434,6 +436,7 @@ module m1_main #(
 
   m1_copro_if copro (
     .clk(clk), .rst_n(rst_n),
+    .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .sel_adr(sel_copro_adr), .sel_ram(sel_copro_ram), .sel_fifo(sel_copro_fifo),
     // The request is held until copro_ack; the interface serves one access per
     // request however long it is held, so nothing here needs to pulse.
