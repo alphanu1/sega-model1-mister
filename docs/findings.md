@@ -3752,3 +3752,66 @@ the mean lands near 9-10 against a 12.5 target. **The bus is the whole problem.*
 
 Keep the V60 split on the roadmap for area or Fmax if it earns its place there; do not
 spend it on throughput on this evidence.
+
+## SDRAM IS VERIFIED, and the copro RAM initialiser was the FED5A4 deadlock — 2026-08-20
+
+### The deadlock: nothing ever writes the sync word
+
+The V60 spins at `FED5A4` reading coprocessor RAM word 0 until its **low byte is zero**.
+Hours went into "why does the coprocessor never clear it". **It never clears it in
+simulation either** — `tb_m1_frame` reports `TGP writes to copro RAM=0` — and simulation
+works because the array's initialiser makes word 0 zero to begin with. MAME does the same
+thing explicitly: `model1_m.cpp:59` ends `device_reset` with
+`memset(m_copro_ram_data, 0, 0x2000*4)`.
+
+**There was never a signal to write.** Every reading of this as "the coprocessor fails to
+signal completion" was backwards.
+
+**And the board lost that initialisation the same morning, self-inflicted.** Quartus caps a
+loop at 5,000 iterations, so when the RAM initialisers broke synthesis they were wrapped in
+`` `ifdef VERILATOR ``. That kept the simulator working and silently removed the
+initialisation from the DEVICE, so word 0 came up `ffff` and the V60 waited for ever.
+
+The fix is **chunking, not guarding**: two loops of 4,096 are each under the cap and
+initialise the inferred M10K exactly as one loop of 8,192 would. A clear-at-reset FSM was
+tried first and reverted — gating accesses for 8,192 cycles broke `m1_copro_if`'s suite,
+156 of 259 checks.
+
+Result on the board: the V60 **leaves** `FED5A4` and reaches the tilemap copy routines, and
+the sync word reaches `000`. Tilemap 0 still holds 4,096 **spaces** and no characters, so
+the drawing path runs and produces blanks — that is the next question.
+
+### SDRAM: verified across the whole image
+
+Rows 07/0B fold at the **ioctl input**, before the FIFO, so they say the HPS delivered the
+right bytes and nothing about what reached the chip. The read-back sweep on the spare port 4
+closes that:
+
+    row 0E   4D2E75   matches the image exactly, 1,081,344 words across all 8.6 M
+    row 0C   000000   correct: port 4 is a SINGLE-WORD port, there is no high half
+
+**Memory is not the fault.** Correct data in, correct data out.
+
+Checked and ruled out alongside, from the kaneko port's findings: the **A10 auto-precharge**
+fault does not apply — our `S_RD` drives A10 low on every read including single-word ones
+and precharges explicitly — and `COL_BITS=9` on a 64 MB module addresses half of each row
+self-consistently, which is why write-then-read matches.
+
+### FOUR instrument faults in one day, every one caught by a control
+
+1. The sweep's address was wired into `tb_m1_frame` and **never into `Model1.sv`**, so port
+   4 read word 0 for all 8,192 bursts. Caught because a control region returned the
+   *identical* checksum to the region under test — impossible for real data.
+2. The sweep was clocked on `clk_cpu` while the SDRAM ports are `clk_sys`, and completed
+   **one burst of 4,096** while producing a plausible-looking number. Caught by adding a
+   burst COUNT.
+3. Expected values were computed for a 4-word burst on a port that `blen()` gives **one**
+   word. Caught because the "high half" read zero on both sides.
+4. `pgrep -f quartus` matched a watcher belonging to a *different project*, and
+   `pgrep -f "compile Model1"` matched the shell running that very string — reporting a
+   build as running for 82 minutes after it finished. **The honest test is whether the log
+   file is still growing.**
+
+**The rule that follows:** every new instrument ships with a known-good case measured in
+the same run. Three of these four produced confident, specific, wrong answers that survived
+until a control contradicted them.
