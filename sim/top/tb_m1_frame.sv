@@ -236,6 +236,7 @@ m1_integrated core (
     .dbg_tram_writes(f_tram_wr),
     .dbg_tm0_writes(f_tm0_wr), .dbg_mask_writes(f_mask_wr),
     .dbg_copro_rd_csum(f_rd_csum),
+    .dbg_sdram_csum(f_sd_csum), .dbg_sdram_words(f_sd_words),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
@@ -274,6 +275,7 @@ wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 // Cumulative tile-RAM init writes, to compare directly against the board's row 05.
 wire [11:0] f_tm0_wr, f_mask_wr;
 wire [23:0] f_rd_csum;   // board row 06
+wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
 // POPS is the question: on hardware the V60 pushes and the TGP never takes one,
 // and a full 16-deep FIFO halts the CPU. m1_tgp's own suite pops 11 of 11 on this
 // microcode, so if the whole system pops here the fault is hardware-only.
@@ -1003,6 +1005,8 @@ initial begin
     $display("FRAME: tilemap0 init writes=%0d  row-mask init writes=%0d (board row 05)",
              f_tm0_wr, f_mask_wr);
     $display("FRAME: copro SDRAM read checksum=%06h (board row 06)", f_rd_csum);
+    $display("FRAME: loader SDRAM write checksum=%06h words=%06h (board rows 07, 0B)",
+             f_sd_csum, f_sd_words);
     fd = $fopen(PPMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PPMOUT);
     else begin

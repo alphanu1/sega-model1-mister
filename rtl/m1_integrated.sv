@@ -188,6 +188,8 @@ module m1_integrated (
   // Microcode load evidence — see m1_rom_loader. 0x800 words is a complete load.
   output logic [11:0] dbg_ucode_words,
   output logic [15:0] dbg_ucode_csum,
+  output logic [23:0] dbg_sdram_csum,
+  output logic [23:0] dbg_sdram_words,
 
   // Coprocessor command-FIFO pops — see m1_main.
   output logic [15:0] dbg_copro_pops,
@@ -464,6 +466,7 @@ module m1_integrated (
     .sdr_wr_din(ldr_wr_din), .sdr_wr_be(ldr_wr_be), .sdr_wr_ack(ldr_wr_ack),
     .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
     .ucode_words(dbg_ucode_words), .ucode_csum(dbg_ucode_csum),
+    .sdram_csum(dbg_sdram_csum), .sdram_words(dbg_sdram_words),
     .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)
   );
 

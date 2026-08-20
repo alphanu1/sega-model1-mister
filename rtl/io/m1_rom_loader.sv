@@ -156,7 +156,21 @@ module m1_rom_loader #(
   // ucode_csum folds both halves of every word, so a load of the WRONG 8 KB is
   // distinguishable from the right one rather than merely non-zero.
   output logic [11:0] ucode_words,
-  output logic [15:0] ucode_csum
+  output logic [15:0] ucode_csum,
+  // A FOLD OF EVERY WORD HANDED TO SDRAM, and of how many there were.
+  //
+  // Row 02 proves the MICROCODE arrives, but that goes straight to the
+  // coprocessor's RAM and never touches SDRAM. The math tables and the data
+  // window do, and the board reads different values from them than the model
+  // returns at every one of the four capture phases. That leaves two
+  // possibilities - the data never reached SDRAM, or SDRAM does not return what
+  // was written - and nothing so far separates them.
+  //
+  // This is the write side. tools/rom_csum.py folds the packed image the same
+  // way, so a match means the HPS delivered the right bytes in the right order
+  // and the fault is on the read side.
+  output logic [23:0] sdram_csum,
+  output logic [23:0] sdram_words
 );
 
   localparam int unsigned AW = $clog2(FIFO_DEPTH);
@@ -228,6 +242,7 @@ module m1_rom_loader #(
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
+      sdram_csum <= 24'd0; sdram_words <= 24'd0;
       // THE ARRAYS ARE DELIBERATELY NOT CLEARED HERE.
       //
       // A reset that writes every entry is a second write port on the memory
@@ -249,6 +264,10 @@ module m1_rom_loader #(
             fifo_addr[wptr[AW-1:0]] <= ioctl_addr[24:1];
             fifo_data[wptr[AW-1:0]] <= ioctl_dout;
             wptr <= wptr + 1'b1;
+            // Rotate then XOR, so a reordering does not cancel.
+            sdram_csum  <= {sdram_csum[22:0], sdram_csum[23]}
+                         ^ {8'd0, ioctl_dout};
+            sdram_words <= sdram_words + 24'd1;
           end
         end else if (is_tgp) begin
           // 32-bit program words, low half first. Bit 1 of the byte address
