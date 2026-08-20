@@ -191,6 +191,7 @@ module m1_integrated (
   output logic [15:0] dbg_sync_word,
   output logic [11:0] dbg_tm0_writes,
   output logic [11:0] dbg_tm0_text_writes,
+  output logic [11:0] dbg_mask_nz_writes,
   output logic [23:0] dbg_tm0_first_pc,
   output logic [11:0] dbg_mask_writes,
   // A CHECKSUM OF EVERYTHING THE COPROCESSOR READS FROM SDRAM.
@@ -319,6 +320,7 @@ module m1_integrated (
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_tm0_text_writes(dbg_tm0_text_writes), .dbg_tm0_first_pc(dbg_tm0_first_pc),
+    .dbg_mask_nz_writes(dbg_mask_nz_writes),
     .dbg_copro_pops(dbg_copro_pops),
     .dbg_copro_drains(dbg_copro_drains),
     .rom_bank(rom_bank)

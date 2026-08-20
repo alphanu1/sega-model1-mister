@@ -411,6 +411,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_tm0_writes, dbg_mask_writes;
   wire [11:0] dbg_tgp_ram_writes;
   wire [11:0] dbg_tm0_text_writes;
+  wire [11:0] dbg_mask_nz_writes;
   wire [23:0] dbg_tm0_first_pc;
   wire [15:0] dbg_sync_word;
   wire [23:0] dbg_copro_rd_csum;
@@ -475,6 +476,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_tm0_text_writes(dbg_tm0_text_writes), .dbg_tm0_first_pc(dbg_tm0_first_pc),
+    .dbg_mask_nz_writes(dbg_mask_nz_writes),
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
     .dbg_rb_csum(dbg_rb_csum), .dbg_rb_csum0(dbg_rb_csum0), .dbg_rb_n(dbg_rb_n),
@@ -794,7 +796,10 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // per-frame counters in row 1B read zero whether it worked or not.
   //   left ~FFF, right > 0   the CPU wrote the text and the mask; look at video
   //   left 000               the init never ran, and the fault is upstream
-  assign dw[5]  = {8'h05, dbg_tm0_writes, dbg_mask_writes};
+  // Right half is now NON-ZERO mask writes: an all-zero row mask hides every
+  // category-1 tile, which is all of the text, while category-0 sky and sea
+  // render normally - exactly what the board shows.
+  assign dw[5]  = {8'h05, dbg_tm0_writes, dbg_mask_nz_writes};
   // ROW 06 WAS cyc_rom0. Replaced with a checksum of every word the coprocessor
   // reads from SDRAM - the math tables and the data window - so it can be
   // compared against the identical fold printed by tb_m1_frame. Equal means the

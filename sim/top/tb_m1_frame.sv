@@ -241,6 +241,7 @@ m1_integrated core (
     .dbg_tgp_ram_writes(f_tgp_ramwr), .dbg_sync_word(f_sync_word),
     .dbg_tm0_writes(f_tm0_wr), .dbg_mask_writes(f_mask_wr),
     .dbg_tm0_text_writes(f_tm0_text), .dbg_tm0_first_pc(f_tm0_pc),
+    .dbg_mask_nz_writes(f_mask_nz),
     .dbg_copro_rd_csum(f_rd_csum),
     .dbg_sdram_csum(f_sd_csum), .dbg_sdram_words(f_sd_words),
 
@@ -281,6 +282,7 @@ wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 // Cumulative tile-RAM init writes, to compare directly against the board's row 05.
 wire [11:0] f_tm0_wr, f_mask_wr;
 wire [11:0] f_tm0_text;
+wire [11:0] f_mask_nz;
 wire [23:0] f_tm0_pc;   // board rows 0E and 0C
 wire [11:0] f_tgp_ramwr;
 wire [15:0] f_sync_word;   // board row 0D
@@ -1019,6 +1021,7 @@ initial begin
     // The board's row 05, printed here so the two can be put side by side.
     $display("FRAME: tilemap0 init writes=%0d  row-mask init writes=%0d (board row 05)",
              f_tm0_wr, f_mask_wr);
+    $display("FRAME: NON-ZERO row-mask writes=%0d (board row 05, right half)", f_mask_nz);
     $display("FRAME: tilemap0 CHARACTER writes=%0d  first at pc=%06h (board rows 0E, 0C)",
              f_tm0_text, f_tm0_pc);
     $display("FRAME: copro SDRAM read checksum=%06h (board row 06)", f_rd_csum);

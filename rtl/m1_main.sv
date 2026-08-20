@@ -175,6 +175,7 @@ module m1_main #(
   output logic [15:0] dbg_sync_word,
   output logic [11:0] dbg_tm0_writes,
   output logic [11:0] dbg_tm0_text_writes,
+  output logic [11:0] dbg_mask_nz_writes,
   output logic [23:0] dbg_tm0_first_pc,     // tile RAM words 0x0000-0x0fff, tilemap 0
   output logic [11:0] dbg_mask_writes,    // tile RAM words 0x6000-0x67ff, the row mask
   // Command-FIFO pops, alongside the pushes already brought out. Was internal;
@@ -329,6 +330,7 @@ module m1_main #(
       end
       dbg_tm0_writes  <= 12'd0;
       dbg_tm0_text_writes <= 12'd0;
+      dbg_mask_nz_writes  <= 12'd0;
       dbg_tm0_first_pc    <= 24'd0;
       dbg_mask_writes <= 12'd0;
       tw_vb_d <= 1'b0;
@@ -366,6 +368,20 @@ module m1_main #(
         end
         if (m_addr[15:11] == 5'b01100 && dbg_mask_writes != 12'hfff)
           dbg_mask_writes <= dbg_mask_writes + 12'd1;
+        // NON-ZERO MASK WORDS, WHICH IS THE ONLY KIND THAT MATTERS.
+        //
+        // The text is CATEGORY 1 - bit 15 of the tile word - and a category-1
+        // tile is visible only where its row-mask bit is SET. The sky and sea
+        // are category 0 and show wherever the mask is clear. So an all-zero
+        // mask produces exactly what the board shows: background rendering,
+        // characters written into tile RAM and never visible.
+        //
+        // The total above counts writes and cannot tell a mask being filled from
+        // a mask being cleared - the same distinction as spaces against
+        // characters, which is what settled the previous question.
+        if (m_addr[15:11] == 5'b01100 && m_wdata != 16'h0000
+            && dbg_mask_nz_writes != 12'hfff)
+          dbg_mask_nz_writes <= dbg_mask_nz_writes + 12'd1;
       end
     end
   end
