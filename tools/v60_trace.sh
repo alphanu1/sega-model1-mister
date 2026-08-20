@@ -24,6 +24,13 @@
 # here, and the false finding survived until the trace file was read by eye.
 set -euo pipefail
 
+# Temporaries in THIS project's build/, never /tmp: /tmp here is a quota'd tmpfs
+# that reports free space and then refuses writes with EDQUOT, which stops a
+# build mid-compile and kills the shell. The Makefile exports this too; these
+# scripts are also run directly.
+export TMPDIR="${TMPDIR:-$(cd "$(dirname "$0")/.." && pwd)/build/tmp}"
+mkdir -p "$TMPDIR"
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${OUT:-$root/build/v60trace}"
 seconds="${SECONDS_RUN:-2}"

@@ -9,6 +9,21 @@
 #   (core)               full MiSTer .rbf build. Does not exist until M1
 #                        produces a top level. See docs/m1-m4-plan.md.
 
+# EVERY TEMPORARY LANDS IN THIS PROJECT'S build/, NEVER IN /tmp.
+#
+# /tmp here is a quota'd tmpfs, and it is not the filesystem size: `df` reports
+# gigabytes free while writes return EDQUOT. Two ways that bites, both measured
+# on 2026-08-20:
+#
+#   * g++ writes assembler temporaries there, so a Verilator build dies partway
+#     with "fatal error: error writing to /tmp/ccXXXX.s: Disk quota exceeded"
+#   * Quartus and MAME put working files there too
+#
+# Exported, not passed per-target, so it cannot be forgotten. The directory is
+# created by the targets that need it; `mkdir -p` costs nothing when it exists.
+export TMPDIR := $(CURDIR)/build/tmp
+$(shell mkdir -p $(CURDIR)/build/tmp)
+
 VFLAGS := -Wno-TIMESCALEMOD -Wno-UNUSEDPARAM -Wno-UNUSEDSIGNAL \
           -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC
 RTL    := rtl/tgp
