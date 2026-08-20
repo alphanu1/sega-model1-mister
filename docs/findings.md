@@ -3724,3 +3724,31 @@ Two levers, both real work:
 
 Together those are roughly 2x and would land the core at real time. Neither should be done
 in a hurry: the bus is the one thing in this core that every other block depends on.
+
+### The V60 is NOT the bottleneck — a retire-to-retire histogram says so
+
+Asked whether splitting the V60 would cut CPI the way splitting the i960 did on Model 2
+(9 -> 3.4). Measured instead of judged, 9.6 M instructions:
+
+     3 cycles   654,431   6%     <- I-cache hit, no data access: THE FLOOR
+     7-8        602,853   6%
+    10        1,883,483  19%
+    12        2,101,037  21%     <- 3 + 9, one data access
+    26        1,875,743  19%     <- 3 + two accesses
+    35          514,236   5%
+    mean 18.4   median 12
+
+**The V60 retires in 3 cycles when it hits the instruction cache and touches no data.**
+Every cluster above that is the 3-cycle base plus multiples of the ~9-cycle bus access.
+Splitting the core would attack the 3, which is already small, and leave the 9s untouched.
+
+**This corrects the entry above.** "Execution-only CPI is ~10.9" was computed as
+`(1 - stall%) x 23.67` and is wrong: the stall counters do not capture all of the memory
+wait. The histogram is the better instrument, and the conclusion drawn from 10.9 — that the
+bus alone could not reach real time — does not hold.
+
+Take the access from 9 cycles to ~4 and the 12-cluster becomes 7, the 26-cluster ~11, and
+the mean lands near 9-10 against a 12.5 target. **The bus is the whole problem.**
+
+Keep the V60 split on the roadmap for area or Fmax if it earns its place there; do not
+spend it on throughput on this evidence.

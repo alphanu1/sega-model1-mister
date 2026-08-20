@@ -908,6 +908,44 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------- retire-to-retire histogram
+// Execution-only CPI is ~10.9 and the real-time target at 25 MHz is 12.5, which
+// leaves 1.6 cycles an instruction for every stall - and we average 0.83 data
+// accesses an instruction. So the bus work alone cannot reach real time and
+// execution CPI has to come down as well.
+//
+// WHETHER THAT MEANS PIPELINING IS A DIFFERENT QUESTION, and this answers it.
+// A UNIFORM ~11 means every instruction is genuinely multi-cycle and a split
+// pays; a BIMODAL distribution means a short average dragged by a few slow
+// classes, which pipelining barely touches and a targeted fix does. The i960
+// went 9 -> 3.4 on the same codebase, so the upside is real if the shape is
+// right.
+//
+// Counted in CPU-clock cycles between PC changes, which is retire to retire.
+integer cpi_hist [0:63];
+integer cpi_run, cpi_i;
+integer cpi_stall_run;
+reg [23:0] cpi_last_pc = 24'hffffff;
+
+initial begin
+    for (cpi_i = 0; cpi_i < 64; cpi_i = cpi_i + 1) cpi_hist[cpi_i] = 0;
+    cpi_run = 0; cpi_stall_run = 0;
+end
+
+always @(posedge clk_cpu) begin
+    if (!rst_n_cpu) begin
+        cpi_run = 0;
+    end else begin
+        cpi_run = cpi_run + 1;
+        if (dbg_pc != cpi_last_pc) begin
+            cpi_hist[(cpi_run > 63) ? 63 : cpi_run] =
+                cpi_hist[(cpi_run > 63) ? 63 : cpi_run] + 1;
+            cpi_run     = 0;
+            cpi_last_pc = dbg_pc;
+        end
+    end
+end
+
 // --------------------------------------------- per-page data-bus latency
 // 13.2 M data accesses cost 155 M stall cycles - 11.8 cycles each - against a
 // bus FSM whose local path is three. The page histogram says WHERE the accesses
@@ -1256,6 +1294,26 @@ initial begin
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
     // loop indices for the tilemap dump
+    $display("BOOT: retire-to-retire histogram (CPU cycles per instruction):");
+    begin : cpi_report
+        integer tot, sum, cum, med;
+        tot = 0; sum = 0;
+        for (cpi_i = 0; cpi_i < 64; cpi_i = cpi_i + 1) begin
+            tot = tot + cpi_hist[cpi_i];
+            sum = sum + cpi_hist[cpi_i] * cpi_i;
+        end
+        cum = 0; med = 0;
+        for (cpi_i = 0; cpi_i < 64; cpi_i = cpi_i + 1) begin
+            if (cpi_hist[cpi_i] > 0)
+                $display("BOOT:   %2d cycles: %0d  (%0d%%)", cpi_i, cpi_hist[cpi_i],
+                         (cpi_hist[cpi_i] * 100) / ((tot == 0) ? 1 : tot));
+            cum = cum + cpi_hist[cpi_i];
+            if (med == 0 && cum * 2 >= tot) med = cpi_i;
+        end
+        $display("BOOT:   instructions=%0d  mean=%0d.%0d  median=%0d  (63 = 63 or more)",
+                 tot, sum / ((tot == 0) ? 1 : tot),
+                 ((sum * 10) / ((tot == 0) ? 1 : tot)) % 10, med);
+    end
     $display("BOOT: data-bus latency by page (page, accesses, total stall cycles, avg):");
     for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1)
         if (lat_cnt[lat_i] > 10000)
