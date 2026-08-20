@@ -354,14 +354,27 @@ module m1_integrated (
   // so one transaction covers both halves and the low 32 bits are the word.
   logic t_mem_ack;
 
-  // Fold every acknowledged table or data word. Rotate so ordering matters: a
-  // plain XOR would hide two swapped reads, which is one of the failure modes a
-  // marginal capture phase actually produces.
+  // Fold the FIRST 1024 acknowledged words and then FREEZE.
+  //
+  // Folding everything since reset was the obvious thing and it is useless: the
+  // checksum then depends on how many reads have happened, and the board is
+  // parked at FED5A4 while simulation runs on, so the two would differ even if
+  // every read were perfect. A fixed window makes the comparison mean something
+  // - both machines execute the same early boot, and v60_trace shows the V60
+  // matching the reference instruction for instruction through it.
+  //
+  // Rotate then XOR, not plain XOR, so two swapped reads do not cancel: that is
+  // a failure mode a marginal capture phase actually produces.
+  logic [10:0] rd_n;
   always_ff @(posedge clk_cpu or negedge rst_n_cpu) begin
-    if (!rst_n_cpu) dbg_copro_rd_csum <= 24'd0;
-    else if (t_tbl_ack || t_dat_ack)
+    if (!rst_n_cpu) begin
+      dbg_copro_rd_csum <= 24'd0;
+      rd_n              <= 11'd0;
+    end else if ((t_tbl_ack || t_dat_ack) && !rd_n[10]) begin
       dbg_copro_rd_csum <= {dbg_copro_rd_csum[22:0], dbg_copro_rd_csum[23]}
                          ^ t_mem_rdata[23:0];
+      rd_n              <= rd_n + 11'd1;
+    end
   end
   assign t_tbl_ack = t_mem_ack &&  t_tbl_req;
   assign t_dat_ack = t_mem_ack && !t_tbl_req && t_dat_req;
