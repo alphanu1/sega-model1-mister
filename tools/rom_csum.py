@@ -33,3 +33,14 @@ for p in sys.argv[1:]:
         print("%-40s MISSING" % p); continue
     c, n = fold(p)
     print("%-40s csum=%06x words=%d (%06x)" % (os.path.basename(p), c, n, n & 0xffffff))
+
+# --- region mode -----------------------------------------------------------
+#
+# The board's read-back self-test (Model1.sv, spare SDRAM port 4) sweeps the
+# math-table region and folds the LOW 24 BITS OF EACH 64-BIT BURST:
+#
+#     burst k covers words 4k..4k+3 from RB_BASE
+#     low 24 bits = w0 | ((w1 & 0xff) << 16)
+#     csum = rot_left_24(csum) ^ low24
+#
+# Run:  tools/rom_csum.py --region build/rom/vr_v60.hex 0x400000 4096

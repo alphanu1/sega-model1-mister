@@ -336,8 +336,51 @@ module emu
 
   // Port map per docs/00-decisions.md D8: p0 CPU data, p1 character RAM,
   // p2 instruction fetch. p3 and p4 are sound, unbuilt.
-  assign p_req  = {1'b0, tgp_mem_req, ifp_req, char_req, sdr_req};
-  assign p_we   = {1'b0, 1'b0,        1'b0,    1'b0,     sdr_we};
+  // ---------------------------------------------- SDRAM read-back self-test
+  //
+  // Port 4 was tied off. It now sweeps the math-table region and folds what
+  // SDRAM RETURNS, which is the one thing nothing here has ever measured.
+  //
+  // What is already known: row 07 matches simulation, so the HPS delivered the
+  // right bytes in the right order - but that fold is taken at the ioctl input,
+  // BEFORE the FIFO and before the write, so it says nothing about what reached
+  // the chip. Row 06 differs from simulation at all four capture phases, so the
+  // coprocessor reads wrong data. Between those two facts sit the write path and
+  // the read path, and only a read-back separates them.
+  //
+  // SEQUENTIAL, and that is deliberate. The V60 reads SDRAM correctly all day -
+  // it fetches, runs and writes the text - while the coprocessor's tables are
+  // scattered across 256 KB. If a sequential sweep of the same region comes back
+  // clean, the data is in the chip and the fault is in the random-access
+  // pattern; if it comes back wrong, the region never made it.
+  localparam logic [24:1] RB_BASE  = 24'h400000;   // COPRO_TBL_BASE
+  localparam int          RB_WORDS = 4096;
+
+  reg [24:1] rb_addr;
+  reg        rb_req, rb_done;
+  reg [23:0] rb_csum;
+  reg [12:0] rb_n;
+
+  always @(posedge clk_sys) begin
+    if (!mem_rst_n) begin
+      rb_addr <= RB_BASE; rb_req <= 1'b0; rb_done <= 1'b0;
+      rb_csum <= 24'd0;   rb_n   <= 13'd0;
+    end else if (rom_ready && !rb_done) begin
+      if (!rb_req) begin
+        rb_req <= 1'b1;
+      end else if (p_ack[4]) begin
+        rb_req  <= 1'b0;
+        // Fold the low 24 bits of the burst, the same shape as row 07.
+        rb_csum <= {rb_csum[22:0], rb_csum[23]} ^ p_dout[4][23:0];
+        rb_addr <= rb_addr + 24'd4;          // one 64-bit burst per step
+        rb_n    <= rb_n + 13'd1;
+        if (rb_n == 13'(RB_WORDS - 1)) rb_done <= 1'b1;
+      end
+    end
+  end
+
+  assign p_req  = {rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+  assign p_we   = {1'b0,   1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -798,7 +841,11 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // Fetch deadline misses against the worst layer's fetch count for the last
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
-  assign dw[10] = {8'h0C, dbg_overruns, dbg_fetches};
+  // ROW 0C WAS overruns/fetches, which has read 000001 throughout. Replaced with
+  // the read-back checksum: what SDRAM returns for the math-table region, swept
+  // sequentially on the spare port. tools/rom_csum.py --region prints the same
+  // fold of the bytes on disk.
+  assign dw[10] = {8'h0C, rb_csum};
   assign dw[11] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
   assign dw[12] = {8'h0E, fper};                       // frame period, cycles
   // M2 telemetry, one value per row. A retire count that moves means the
