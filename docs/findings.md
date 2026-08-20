@@ -3655,3 +3655,72 @@ RAM (`CREDIT 0`, the ranking table) rather than read straight from ROM.
 destination range plus the same in `tb_m1_boot` gives the two strings side by side, and the
 lengths alone (20 against 6-14) should identify which string each side thinks it is
 drawing.
+
+## SPEED: 35.0 -> 23.7 cycles per instruction, and where the rest goes — 2026-08-20
+
+The core ran about **2.3x slower than the reference**. That is slow motion on the board, and
+it also made every frame-indexed comparison against MAME meaningless — most of the "our
+`[5006]` is 0x2305 against MAME's 0x209b" confusion came from comparing frame N of a machine
+running at half speed against frame N of one running at full speed.
+
+### The instruction cache, measured before it was built
+
+Modelling the reference's own 31-million-PC trace offline, for an 8-byte line:
+
+    1 line  (   8 B)  32.1% hit      2 lines (  16 B)  99.0% hit
+    4 lines (  32 B)  99.2% hit      8 lines (  64 B)  99.6% hit
+
+One line thrashes because the V60 alternates between two — an instruction straddling a
+boundary fetches N and N+1 in turn — so 32% is the floor. Built 8 lines, direct-mapped.
+
+    instructions        10,716,101  ->  15,838,344
+    cycles/instruction       34.99  ->       23.67
+    ifetch lines        13,810,468  ->   3,472,976   (-75%)
+    fetch-stalled              34%  ->         13%
+
+The real hit rate is 75%, not 99%: the model had one PC per instruction while the core
+issues several fetch requests per instruction. The prediction still earned its keep — it is
+what said two lines would work and one would not.
+
+### Where the remaining time goes, measured
+
+Per-page data-bus latency, from `m_req` rising to `m_ack`:
+
+    100000  n=118940  avg=36        200000  n=32768  avg=36
+    110000  n=83563   avg=36        210000  n=32768  avg=36
+    120000  n=131064  avg=36        ...every page identical...
+
+**Every page costs the same 36 fast cycles — 9 CPU cycles — whether it is BRAM or SDRAM.**
+That is not memory latency; it is fixed handshake overhead, and it is why the page histogram
+was useless for this question: 4.3 M cheap accesses and 1 M expensive ones look identical in
+a count.
+
+The 9 decomposes exactly:
+
+    T0  adapter I_CYC asserts m_req
+    T1  m1_main B_IDLE sees it, goes B_LOCAL
+    T2  BRAM data valid, ack_r set, goes B_ACK
+    T3  adapter sees ack, drops m_req, advances
+    T4  m1_main sees req low, returns to B_IDLE      = 4 cycles per 16-bit cycle
+
+and `v60_bus` splits a 32-bit access into **two** 16-bit cycles (three if unaligned), so
+2 x 4 + entry = 9.
+
+### What it would take to reach real time
+
+At 25 MHz the target is ~12.5 cycles/instruction to match the reference's ~2 M
+instructions/second. We are at 23.67, of which 54% is stall (41% data, 13% fetch). **Pure
+execution is already ~11 cycles/instruction**, so removing the stalls entirely would reach
+real time — the CPU core itself is fast enough.
+
+Two levers, both real work:
+
+1. **Shorten the handshake**, 4 cycles to 3, by letting `m1_main` accept a new request in
+   the cycle it acknowledges. Risk: the "acknowledges must be held, not pulsed" rule exists
+   because the requester is `ce`-gated. `ce_cpu` is tied high today, so the rule is
+   currently slack — but it is slack, not gone.
+2. **A 32-bit local data path**, halving the bus cycles per access. Bigger change:
+   `v60_bus`, `m1_main`'s routing and the memories' ports.
+
+Together those are roughly 2x and would land the core at real time. Neither should be done
+in a hurry: the bus is the one thing in this core that every other block depends on.

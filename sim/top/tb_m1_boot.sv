@@ -908,6 +908,40 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// --------------------------------------------- per-page data-bus latency
+// 13.2 M data accesses cost 155 M stall cycles - 11.8 cycles each - against a
+// bus FSM whose local path is three. The page histogram says WHERE the accesses
+// go and says nothing about what they COST, and those are different questions:
+// 4.3 M cheap accesses and 1 M expensive ones look identical in a count.
+//
+// Measured from m_req rising to m_ack, which is exactly the window the CPU is
+// stalled in.
+integer lat_tot [0:255];
+integer lat_cnt [0:255];
+integer lat_pg, lat_start, lat_i;
+reg     lat_busy = 1'b0;
+reg     lat_req_d = 1'b0;
+
+initial for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1) begin
+    lat_tot[lat_i] = 0; lat_cnt[lat_i] = 0;
+end
+
+always @(posedge clk_cpu) begin
+    lat_req_d <= main.m_req;
+    if (rst_n_cpu) begin
+        if (main.m_req && !lat_req_d) begin
+            lat_busy  <= 1'b1;
+            lat_start  = cycles;
+            lat_pg     = main.m_addr[23:16];
+        end
+        if (lat_busy && main.m_ack) begin
+            lat_busy <= 1'b0;
+            lat_tot[lat_pg] = lat_tot[lat_pg] + (cycles - lat_start);
+            lat_cnt[lat_pg] = lat_cnt[lat_pg] + 1;
+        end
+    end
+end
+
 // ------------------------------------------------- text writes census
 // The routine at FF8AC3 copies a NUL-terminated string out as 16-bit tile codes:
 //
@@ -1222,6 +1256,12 @@ initial begin
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
     // loop indices for the tilemap dump
+    $display("BOOT: data-bus latency by page (page, accesses, total stall cycles, avg):");
+    for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1)
+        if (lat_cnt[lat_i] > 10000)
+            $display("BOOT:   %02h0000  n=%0d  cycles=%0d  avg=%0d",
+                     lat_i[7:0], lat_cnt[lat_i], lat_tot[lat_i],
+                     lat_tot[lat_i] / lat_cnt[lat_i]);
     $display("BOOT: text writes from FF8ACA: %0d", tx_n);
     for (i = 0; i < tx_n; i = i + 1)
         $display("TX %0d %06h %04h", i + 1, tx_addr[i][23:0], tx_data[i][15:0]);
