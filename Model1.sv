@@ -348,7 +348,7 @@ module emu
 // is a uniform pattern that looks like a video bug rather than an address one.
 // p3's address is aligned down to its 4-word burst boundary; m1_integrated keeps
 // bit 1 to pick which 32-bit half of the burst it wanted.
-assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
+assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
   assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
