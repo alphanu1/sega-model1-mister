@@ -99,22 +99,30 @@ module m1_fetch_bridge (
   // would make the cache correct only for as long as that stays true, and the
   // port itself does not enforce it - m1_fetch_bridge's own suite drives
   // arbitrary addresses and caught the aliasing immediately. Two flops a line.
+  // EXPLICIT WIDTHS, NO TYPEDEF. `wire tag_t cur_tag = ...` elaborates in
+  // simulation, and Quartus 17.0 rejects it outright - "identifier tag_t is
+  // already declared in the present scope", then a syntax error on the next
+  // token. Same class as the genvar-in-loop-header and iverilog issues in
+  // docs/rtl-conventions.md: a clean lint is not evidence the synthesiser
+  // agrees. The tag is {addr[24:6], addr[2:1]}, 21 bits.
+  //
+  // (And no comment line here may START with the simulator's name - that parses
+  // as a metacomment and fails the build. Second time in one session.)
   localparam int LINES = 8;
-  typedef logic [20:0] tag_t;                 // {addr[24:6], addr[2:1]}
   logic [63:0] cline  [LINES];
-  tag_t        ctag   [LINES];
+  logic [20:0] ctag   [LINES];
   logic        cvalid [LINES];
   integer      ci;
 
   wire [2:0]   cidx    = if_sdram_addr[5:3];
-  wire tag_t   cur_tag = {if_sdram_addr[24:6], if_sdram_addr[2:1]};
+  wire [20:0]  cur_tag = {if_sdram_addr[24:6], if_sdram_addr[2:1]};
   wire         chit    = cvalid[cidx] && (ctag[cidx] == cur_tag);
 
   // The index and tag of the fetch IN FLIGHT, captured with the request for the
   // same reason off_q is: the core may move if_sdram_addr once a fetch is
   // answered, and the fill must land in the line that was asked for.
   logic [2:0]  idx_q;
-  tag_t        tag_q;
+  logic [20:0] tag_q;
 
   // The crossing is the same two-phase handshake the data port uses; only the
   // width and the absence of a write side differ.
