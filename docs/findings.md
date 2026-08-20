@@ -3816,7 +3816,7 @@ self-consistently, which is why write-then-read matches.
 the same run. Three of these four produced confident, specific, wrong answers that survived
 until a control contradicted them.
 
-### The text IS drawn on hardware — the screen is redrawn for ever
+### Characters are WRITTEN on hardware, and none is ever VISIBLE
 
 Measured on the board with the character-write census:
 
@@ -3824,9 +3824,13 @@ Measured on the board with the character-write census:
     row 0C  FC567D                              the same routine simulation uses
 
 So the V60 reaches the drawing code, runs the same routine, and writes real characters into
-tilemap 0. **The fault is not that it never draws.** The renderer finds only eight non-blank
-words a frame because the screen is cleared and redrawn continuously — each visible "jump"
-is another pass — and any given frame catches it mostly blank.
+tilemap 0.
+
+**NO TEXT IS VISIBLE ON THE SCREEN AT ANY POINT.** Those are two different claims and
+conflating them was wrong: "the text is drawn" was written here when what is measured is
+that characters reach tile RAM. What the board shows is sky and sea for a split second, then
+a jump with a blue bar across the bottom third, repeating. The renderer finds eight
+non-blank words a frame, so whatever is written is not there when it looks.
 
 That matches the PC: row 00 alternates between `FED5A4` (waiting on the coprocessor sync
 word) and `FFE???` (the tilemap copy routines). Clear, draw, wait, clear, draw.
