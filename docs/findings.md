@@ -3846,3 +3846,36 @@ same code and the same data. Row 06's read checksum differs between board and mo
 says the same thing: it is issuing different reads. What is left that could differ is its
 INPUTS — the command stream from the V60 — or the relative timing of the two machines,
 which is not the same on silicon as against a memory model.
+
+### At depth, board and simulation agree on everything but ONE number
+
+`tb_m1_frame` at 1.5 B cycles against the board:
+
+    non-zero row-mask writes   4095 saturated   |  FFF saturated      agree
+    tilemap0 character writes  1680 from fc567d |  1155 and rising    agree
+    TGP writes to copro RAM    4095 saturated   |  FFF saturated      agree
+    copro SDRAM read checksum  bd686d           |  1e0da5             DIFFER
+
+**Two more inferences withdrawn**, both from samples taken before the machines had got
+there:
+
+- *"The row mask is never populated on hardware"* — it saturates on both.
+- *"The coprocessor writes copro RAM on hardware and never in simulation"* — that was a
+  400 M-cycle sample. At 1.5 B it saturates on both, so there is no divergence in that
+  behaviour and nothing is "re-arming" the sync word that does not also do so in
+  simulation.
+
+That is the fourth and fifth claim retired today for the same reason: **a counter read
+before the machine reaches the code is indistinguishable from a counter that never moves.**
+Every one of them looked like a specific, actionable difference.
+
+**One measured difference remains:** row 06, the fold of the coprocessor's first 1024 SDRAM
+reads. SDRAM itself is verified whole-image, and the microcode is verified byte-identical,
+so the coprocessor is reading *different addresses* — not different data. What can still
+differ is the order and timing of those reads, which is the one thing a memory model does
+not reproduce.
+
+**And the visible difference:** simulation renders the attract screen; the board clears,
+draws, and jumps. With the text and the mask both written on hardware and the renderer
+finding blanks, the viewport is landing on empty rows of the map — the scroll word is
+rewritten every pass of the V60's loop instead of settling.
