@@ -412,7 +412,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [23:0] dbg_copro_rd_csum;
   wire        rb_req;
   wire [24:1] rb_addr;
-  wire [23:0] dbg_rb_csum;
+  wire [23:0] dbg_rb_csum, dbg_rb_csum0;
   wire [12:0] dbg_rb_n;
   wire [11:0] dbg_ucode_words;
   wire [15:0] dbg_copro_pops;
@@ -471,7 +471,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
-    .dbg_rb_csum(dbg_rb_csum), .dbg_rb_n(dbg_rb_n),
+    .dbg_rb_csum(dbg_rb_csum), .dbg_rb_csum0(dbg_rb_csum0), .dbg_rb_n(dbg_rb_n),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_sdram_csum(dbg_sdram_csum), .dbg_sdram_words(dbg_sdram_words),
     .dbg_copro_pops(dbg_copro_pops),
@@ -818,7 +818,12 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // fold of the bytes on disk.
   assign dw[10] = {8'h0C, dbg_rb_csum};
   assign dw[11] = {8'h0D, 8'h00, fps_bcd};             // frames per 10 s, BCD
-  assign dw[12] = {8'h0E, fper};                       // frame period, cycles
+  // ROW 0E WAS the frame period. Replaced with the CONTROL sweep: the same
+  // read-back over V60 program ROM at word 0, a region the CPU demonstrably
+  // reads correctly every frame. Row 0C is the math tables at 0x400000.
+  //   0E right, 0C wrong  the fault is specific to the high region
+  //   both wrong          the read path or the sweep itself is at fault
+  assign dw[12] = {8'h0E, dbg_rb_csum0};
   // M2 telemetry, one value per row. A retire count that moves means the
   // coprocessor is executing real microcode; the PC says where it stopped if it
   // did. These two were packed into one row each with a second value and both

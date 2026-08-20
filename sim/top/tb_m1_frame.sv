@@ -230,7 +230,7 @@ m1_integrated core (
     // The read-back sweep, on the port that was tied off. Same logic the board
     // runs, so the printed value IS the expected value for row 0C.
     .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
-    .dbg_rb_csum(f_rb_csum), .dbg_rb_n(f_rb_n),
+    .dbg_rb_csum(f_rb_csum), .dbg_rb_csum0(f_rb_csum0), .dbg_rb_n(f_rb_n),
     .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
     .dbg_tgp_unimpl(f_tgp_unimpl),
     .dbg_copro_pushes(f_pushes), .dbg_copro_returns(f_returns),
@@ -283,6 +283,7 @@ wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
 wire        rb_req;
 wire [24:1] rb_addr;
 wire [23:0] f_rb_csum;               // board row 0C
+wire [23:0] f_rb_csum0;              // board row 0E, the control sweep
 wire [12:0] f_rb_n;
 // POPS is the question: on hardware the V60 pushes and the TGP never takes one,
 // and a full 16-deep FIFO halts the CPU. m1_tgp's own suite pops 11 of 11 on this
@@ -1018,6 +1019,7 @@ initial begin
     $display("FRAME: SDRAM read-back checksum=%06h (board row 0C, board reads 04fffb)",
              f_rb_csum);
     $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
+    $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
     fd = $fopen(PPMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PPMOUT);
     else begin

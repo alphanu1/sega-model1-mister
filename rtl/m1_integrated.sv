@@ -138,7 +138,8 @@ module m1_integrated (
   output logic [24:1] rb_addr,
   input  logic [63:0] rb_dout,
   input  logic        rb_ack,
-  output logic [23:0] dbg_rb_csum,
+  output logic [23:0] dbg_rb_csum,     // math tables, word 0x400000
+  output logic [23:0] dbg_rb_csum0,    // V60 ROM, word 0 - the control
   output logic [12:0] dbg_rb_n,      // bursts actually completed
 
   output logic [15:0] dbg_tgp_retires,
@@ -374,28 +375,55 @@ module m1_integrated (
   // purpose: the V60 reads SDRAM correctly all day while the coprocessor's
   // tables are scattered across 256 KB, so a clean sequential sweep would put
   // the fault in the access PATTERN rather than in the data.
-  localparam logic [24:1] RB_BASE  = 24'h400000;    // COPRO_TBL_BASE
+  // TWO REGIONS, SWEPT IN TURN.
+  //
+  // The board reads back the math tables as 04FFFB where the model gives 991AF0,
+  // and it gives the SAME wrong value from two different builds - so this is not
+  // marginal timing, which would vary, but something systematic about that
+  // region. The discriminator is to sweep a region the V60 provably reads
+  // correctly: word 0 is V60 program ROM, and the CPU executes from it all day.
+  //
+  //   region 0 right, region 1 wrong   the fault is specific to the high region
+  //                                    - addressing, size or a write that never
+  //                                    landed - and not the read path at all
+  //   both wrong                       the read path or this sweep is at fault,
+  //                                    and everything inferred from row 0C so far
+  //                                    needs re-examining
   localparam int          RB_BURSTS = 4096;
   logic        rb_done;
+  logic        rb_region;                          // 0 = V60 ROM, 1 = math tables
   logic [12:0] rb_n;
   assign dbg_rb_n = rb_n;
+  wire [24:1] rb_region_base = rb_region ? 24'h400000 : 24'h000000;
 
   // THE FAST DOMAIN. The SDRAM ports are clk_sys; clocking this sweep on clk_cpu
   // missed the acknowledge and completed exactly ONE burst of 4096, which is how
   // the flaw was found - in simulation, where it was cheap.
   always_ff @(posedge clk_sys or negedge rst_n_sys) begin
     if (!rst_n_sys) begin
-      rb_addr <= RB_BASE; rb_req <= 1'b0; rb_done <= 1'b0;
-      dbg_rb_csum <= 24'd0; rb_n <= 13'd0;
+      rb_addr <= 24'd0; rb_req <= 1'b0; rb_done <= 1'b0; rb_region <= 1'b0;
+      dbg_rb_csum <= 24'd0; dbg_rb_csum0 <= 24'd0; rb_n <= 13'd0;
     end else if (rom_present && !rb_done) begin
       if (!rb_req) begin
         rb_req <= 1'b1;
       end else if (rb_ack) begin
-        rb_req      <= 1'b0;
-        dbg_rb_csum <= {dbg_rb_csum[22:0], dbg_rb_csum[23]} ^ rb_dout[23:0];
-        rb_addr     <= rb_addr + 24'd4;
-        rb_n        <= rb_n + 13'd1;
-        if (rb_n == 13'(RB_BURSTS - 1)) rb_done <= 1'b1;
+        rb_req  <= 1'b0;
+        rb_addr <= rb_addr + 24'd4;
+        rb_n    <= rb_n + 13'd1;
+        if (!rb_region)
+          dbg_rb_csum0 <= {dbg_rb_csum0[22:0], dbg_rb_csum0[23]} ^ rb_dout[23:0];
+        else
+          dbg_rb_csum  <= {dbg_rb_csum[22:0],  dbg_rb_csum[23]}  ^ rb_dout[23:0];
+        if (rb_n == 13'(RB_BURSTS - 1)) begin
+          rb_n <= 13'd0;
+          if (!rb_region) begin
+            rb_region <= 1'b1;
+            rb_addr   <= 24'h400000;
+          end else begin
+            rb_done <= 1'b1;
+            rb_n    <= 13'(RB_BURSTS);   // leave the count showing completion
+          end
+        end
       end
     end
   end
