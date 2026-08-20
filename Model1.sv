@@ -794,9 +794,7 @@ assign p_addr = {24'd0, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // the 24-row ceiling. They were boot forensics: they proved ROM contents were
   // arriving, which a core that now boots and runs proves better. Their
   // ADDRESSES survive as tags 06 and 07.
-  assign dw[9]  = {8'h0B, dbg_sdram_words};
-                   rom_ready, mem_ready, ioctl_download,
-                   st_s2[15:0]};                   // flags, I/O replies
+  assign dw[9]  = {8'h0B, dbg_sdram_words};   // words handed to SDRAM
   // Fetch deadline misses against the worst layer's fetch count for the last
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
