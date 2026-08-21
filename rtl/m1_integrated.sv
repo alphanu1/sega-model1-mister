@@ -206,6 +206,7 @@ module m1_integrated (
   // Simulation reads the same words from a model. Folding both sides the same
   // way turns "are the reads good on hardware" from a guess into one comparison.
   output logic [23:0] dbg_copro_rd_csum,
+  output logic [23:0] dbg_rd_a0, dbg_rd_a1, dbg_rd_a2, dbg_rd_a3,
 
   // Microcode load evidence — see m1_rom_loader. 0x800 words is a complete load.
   output logic [11:0] dbg_ucode_words,
@@ -472,15 +473,34 @@ module m1_integrated (
   //
   // Rotate then XOR, not plain XOR, so two swapped reads do not cancel: that is
   // a failure mode a marginal capture phase actually produces.
+  // THE FIRST FOUR READ ADDRESSES, NOT JUST A FOLD OF THEM.
+  //
+  // The checksum says the coprocessor reads something different on hardware and
+  // says nothing about WHERE. SDRAM is verified whole-image and the microcode is
+  // verified byte-identical, so it is reading different ADDRESSES - a different
+  // path through the same code - and the first divergent read is the thing to
+  // find. Four addresses is four rows; if they all match, the split is later and
+  // the window moves.
   logic [10:0] rd_n;
   always_ff @(posedge clk_cpu or negedge rst_n_cpu) begin
     if (!rst_n_cpu) begin
       dbg_copro_rd_csum <= 24'd0;
       rd_n              <= 11'd0;
+      dbg_rd_a0 <= 24'd0; dbg_rd_a1 <= 24'd0;
+      dbg_rd_a2 <= 24'd0; dbg_rd_a3 <= 24'd0;
     end else if ((t_tbl_ack || t_dat_ack) && !rd_n[10]) begin
       dbg_copro_rd_csum <= {dbg_copro_rd_csum[22:0], dbg_copro_rd_csum[23]}
                          ^ t_mem_rdata[23:0];
       rd_n              <= rd_n + 11'd1;
+      // THE WORD ADDRESS, NOT THE BYTE ADDRESS. {t_mem_addr, 1'b0} is 25 bits and
+      // the row carries 24, so the math tables at word 0x400000 - byte 0x800000
+      // - truncated to 000000 and every captured address read as zero.
+      case (rd_n[1:0])
+        2'd0: if (rd_n == 11'd0) dbg_rd_a0 <= t_mem_addr;
+        2'd1: if (rd_n == 11'd1) dbg_rd_a1 <= t_mem_addr;
+        2'd2: if (rd_n == 11'd2) dbg_rd_a2 <= t_mem_addr;
+        2'd3: if (rd_n == 11'd3) dbg_rd_a3 <= t_mem_addr;
+      endcase
     end
   end
   assign t_tbl_ack = t_mem_ack &&  t_tbl_req;

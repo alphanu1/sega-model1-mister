@@ -243,6 +243,8 @@ m1_integrated core (
     .dbg_tm0_text_writes(f_tm0_text), .dbg_tm0_first_pc(f_tm0_pc),
     .dbg_mask_nz_writes(f_mask_nz),
     .dbg_copro_rd_csum(f_rd_csum),
+    .dbg_rd_a0(f_rd_a0), .dbg_rd_a1(f_rd_a1),
+    .dbg_rd_a2(f_rd_a2), .dbg_rd_a3(f_rd_a3),
     .dbg_sdram_csum(f_sd_csum), .dbg_sdram_words(f_sd_words),
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
@@ -287,6 +289,7 @@ wire [23:0] f_tm0_pc;   // board rows 0E and 0C
 wire [11:0] f_tgp_ramwr;
 wire [15:0] f_sync_word;   // board row 0D
 wire [23:0] f_rd_csum;   // board row 06
+wire [23:0] f_rd_a0, f_rd_a1, f_rd_a2, f_rd_a3;   // board rows 0C 0E 07 0B
 wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
 wire        rb_req;
 wire [24:1] rb_addr;
@@ -1025,6 +1028,8 @@ initial begin
     $display("FRAME: tilemap0 CHARACTER writes=%0d  first at pc=%06h (board rows 0E, 0C)",
              f_tm0_text, f_tm0_pc);
     $display("FRAME: copro SDRAM read checksum=%06h (board row 06)", f_rd_csum);
+    $display("FRAME: first four copro read addresses = %06h %06h %06h %06h (rows 0C 0E 07 0B)",
+             f_rd_a0, f_rd_a1, f_rd_a2, f_rd_a3);
     $display("FRAME: loader SDRAM write checksum=%06h words=%06h (board rows 07, 0B)",
              f_sd_csum, f_sd_words);
     $display("FRAME: SDRAM read-back checksum=%06h (board row 0C, board reads 04fffb)",
