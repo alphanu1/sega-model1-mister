@@ -241,6 +241,42 @@ module m1_video #(
   logic [8:0]  cur_line;
   logic [15:0] hscr_r, vscr_r;
 
+  // THE SCROLL AND CONTROL WORDS ARE LATCHED ONCE PER FRAME, NOT PER LINE.
+  //
+  // `draw_common` reads them ONCE, at the top, for a call that renders a whole
+  // layer:
+  //
+  //     uint16_t hscr = tile_ram[0x5000+(layer >> 1)];
+  //     uint16_t vscr = tile_ram[0x5004+(layer >> 1)];
+  //     uint16_t ctrl = tile_ram[0x5004+((layer >> 1) & 2)];
+  //
+  // This sequencer re-read them per LAYER per SCANLINE, so a word the game
+  // rewrites mid-frame applied to part of the picture and not the rest. Virtua
+  // Racing rewrites 0x5006 constantly - it is both the ctrl word and the
+  // vertical scroll for the pair that draws the horizon - and on hardware that
+  // showed as the sky and sea jumping up and down and off the top of the
+  // screen.
+  //
+  // The same fault, found the same way, is recorded in the Kaneko16 core:
+  // "kaneko_tmap.cpp reads the scroll registers in prepare_common(), which runs
+  // once before a frame is rendered; the core read them live out of the register
+  // bank, so a register the IRQ handler changed mid-frame applied to part of the
+  // screen and not the rest."
+  //
+  // The ROW MASK stays per line. MAME indexes it by screen line inside the same
+  // call - `mask += yy1*4` walks the destination rectangle - so it is genuinely
+  // per line and latching it would be the opposite mistake.
+  logic [15:0] f_hscr_l  [4];
+  logic [15:0] f_vscr_l  [4];
+  logic [15:0] f_ctrl_l  [4];
+  logic [15:0] f_hctrl_l [4];
+  logic        cfg_valid;          // set once the first frame has been latched
+  // The first visible line of a frame: the point MAME's prepare_common() would
+  // have run. Latching here means the frame being drawn uses the values the
+  // game set FOR it, not the ones left at the end of the previous one.
+  wire         line_start_first = line_start && (line_number == 9'd0);
+  logic        latch_cfg;          // this pass is the one that fills the arrays
+
   // This scanline's row mask for the pair the current layer belongs to.
   //
   // segas24 keeps two tables: tilemaps 0/1 read tile_ram 0x6000 and 2/3 read
@@ -442,6 +478,7 @@ module m1_video #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
+      cfg_valid <= 1'b0; latch_cfg <= 1'b1;
       hscr_r <= '0; vscr_r <= '0; ctrl_r <= '0; f_start <= 1'b0;
       dbg_ctrl[0] <= '0; dbg_ctrl[1] <= '0;
       mask_r <= '0; mask_i <= '0;
@@ -454,6 +491,10 @@ module m1_video #(
         Q_IDLE: begin
           seq_owns_tram <= 1'b1;
           if (line_start) begin
+            // Fetch the config only on the FIRST visible line of a frame; every
+            // other line reuses what that pass latched.
+            latch_cfg <= line_start_first || !cfg_valid;
+            if (line_start_first) cfg_valid <= 1'b1;
             // Only reached when the previous line finished in time. If it did
             // not, the sequencer is still in Q_RUN and this edge is ignored —
             // see the overrun note on Q_RUN.
@@ -473,13 +514,15 @@ module m1_video #(
           q             <= Q_HSCR_W;
         end
         Q_HSCR_W: begin
-          hscr_r        <= tram_data;
+          hscr_r        <= latch_cfg ? tram_data : f_hscr_l[cur_layer];
+          if (latch_cfg) f_hscr_l[cur_layer] <= tram_data;
           seq_tram_addr <= 15'h5004 + {13'd0, cur_layer};
           q             <= Q_VSCR;
         end
         Q_VSCR: q <= Q_VSCR_W;
         Q_VSCR_W: begin
-          vscr_r        <= tram_data;
+          vscr_r        <= latch_cfg ? tram_data : f_vscr_l[cur_layer];
+          if (latch_cfg) f_vscr_l[cur_layer] <= tram_data;
           // ctrl is the PAIR's EVEN vscr, not this layer's own register:
           // MAME reads tile_ram[0x5004 + ((layer >> 1) & 2)], which for our
           // 0..3 numbering is 0x5004 + (layer & 2). One register governs both
@@ -491,7 +534,8 @@ module m1_video #(
 
         Q_CTRL: q <= Q_CTRL_W;
         Q_CTRL_W: begin
-          ctrl_r        <= tram_data;
+          ctrl_r        <= latch_cfg ? tram_data : f_ctrl_l[cur_layer];
+          if (latch_cfg) f_ctrl_l[cur_layer] <= tram_data;
           // Same value the window logic is about to act on, kept for the
           // overlay. Latched here rather than re-read at vblank so it cannot
           // disagree with what actually drove the decision.
@@ -503,7 +547,8 @@ module m1_video #(
 
         Q_HCTRL: q <= Q_HCTRL_W;
         Q_HCTRL_W: begin
-          hctrl_r       <= tram_data;
+          hctrl_r       <= latch_cfg ? tram_data : f_hctrl_l[cur_layer];
+          if (latch_cfg) f_hctrl_l[cur_layer] <= tram_data;
           seq_tram_addr <= mask_base + {13'd0, 2'd0};
           mask_i        <= 2'd0;
           q             <= Q_MASK;
