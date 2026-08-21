@@ -274,7 +274,26 @@ module m1_video #(
   // The first visible line of a frame: the point MAME's prepare_common() would
   // have run. Latching here means the frame being drawn uses the values the
   // game set FOR it, not the ones left at the end of the previous one.
-  wire         line_start_first = line_start && (line_number == 9'd0);
+  // LATCH AT VBLANK BEGIN, WHICH IS WHERE MAME READS THEM.
+  //
+  // screen_device::vblank_begin calls update_if_primary() unless the driver sets
+  // VIDEO_UPDATE_AFTER_VBLANK, and model1 does not - so the whole screen is
+  // rendered at the START of vblank, from the values standing at that instant.
+  // Latching at the first VISIBLE line instead picks up whatever the game writes
+  // during vblank, which is exactly when a driver updates its scroll registers,
+  // and would use values MAME's picture never saw.
+  //
+  // Armed here and consumed by the next line-start, because the sequencer owns
+  // tile RAM only on its own schedule.
+  //
+  // The same source warns that MAME's Lua frame notifier fires much later -
+  // video_manager::frame_update runs finish_screen_updates() before
+  // call_notifiers(MACHINE_NOTIFY_FRAME) - so a census taken with
+  // add_machine_frame_notifier is a whole vblank NEWER than the picture it is
+  // compared against. The scroll census in docs/findings.md was taken that way.
+  logic        vbs_d;
+  logic        cfg_pending;
+  wire         cfg_latch_point = vblank_start && !vbs_d;
   logic        latch_cfg;          // this pass is the one that fills the arrays
 
   // This scanline's row mask for the pair the current layer belongs to.
@@ -478,7 +497,7 @@ module m1_video #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       q <= Q_IDLE; cur_layer <= '0; cur_line <= '0;
-      cfg_valid <= 1'b0; latch_cfg <= 1'b1;
+      cfg_valid <= 1'b0; latch_cfg <= 1'b1; cfg_pending <= 1'b1; vbs_d <= 1'b0;
       hscr_r <= '0; vscr_r <= '0; ctrl_r <= '0; f_start <= 1'b0;
       dbg_ctrl[0] <= '0; dbg_ctrl[1] <= '0;
       mask_r <= '0; mask_i <= '0;
@@ -486,6 +505,11 @@ module m1_video #(
       bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
     end else begin
       f_start <= 1'b0;
+      // Arm the config latch at VBLANK BEGIN - MAME's read point - and let the
+      // next line-start consume it, since the sequencer owns tile RAM only on
+      // its own schedule.
+      vbs_d <= vblank_start;
+      if (cfg_latch_point) cfg_pending <= 1'b1;
 
       case (q)
         Q_IDLE: begin
@@ -493,8 +517,8 @@ module m1_video #(
           if (line_start) begin
             // Fetch the config only on the FIRST visible line of a frame; every
             // other line reuses what that pass latched.
-            latch_cfg <= line_start_first || !cfg_valid;
-            if (line_start_first) cfg_valid <= 1'b1;
+            latch_cfg <= cfg_pending || !cfg_valid;
+            if (cfg_pending) begin cfg_valid <= 1'b1; cfg_pending <= 1'b0; end
             // Only reached when the previous line finished in time. If it did
             // not, the sequencer is still in Q_RUN and this edge is ignored —
             // see the overrun note on Q_RUN.
