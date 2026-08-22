@@ -3879,3 +3879,38 @@ not reproduce.
 draws, and jumps. With the text and the mask both written on hardware and the renderer
 finding blanks, the viewport is landing on empty rows of the map — the scroll word is
 rewritten every pass of the V60's loop instead of settling.
+
+## SETTLED: the V60's FP group must stay — but the evidence is a RESERVED opcode — 2026-08-23
+
+`CLAUDE.md` carried this as an unspent lever: "the V60 without its FP group is -2,984 ALM on
+the full core. `dbg_fp_trap` has never fired, but only through boot and attract, and it is
+inert by construction in a build that has FP — so that is not yet evidence."
+
+**Measured, standalone, Quartus 17.0:**
+
+    V60 with FP     20,614 ALM   Fmax 24.92 MHz
+    V60 without FP  18,672 ALM   Fmax 45.98 MHz
+
+So the group is 1,942 ALM — not the 2,984 recorded, which was a full-core figure — **and it
+halves the Fmax**. It is on the critical path as well as being 6% of the core, which makes
+it a bigger prize than the ALM alone suggested.
+
+**And the run under the define says it cannot go:**
+
+    V60: reserved FP opcode 5f at 00fed52b
+    BOOT: *** FP opcode executed — S32_V60_NO_FP is NOT safe ***
+
+**READ THAT CAREFULLY BEFORE CONCLUDING THE GAME USES FLOATING POINT.** It is a *reserved*
+opcode, at `FED52B` — inside the `FED5xx` page that **MAME never executes a single
+instruction in**, measured with a 4-second reference trace on cold nvram. So what this
+proves is that our V60 reaches a region the reference never reaches and executes data as
+code there; the FP decoder catching it is incidental.
+
+Two things follow:
+
+1. **The lever stays unspent.** Removing the group would turn that into a different wrong
+   behaviour rather than a correct one, and 1,942 ALM is not worth a build that traps on a
+   path the machine should not be on.
+2. **It is another instrument pointing at `FED5xx`.** The V60 spinning there was read all
+   week as a legitimate poll on the coprocessor sync word. A reserved opcode inside the same
+   page is hard to square with that, and worth following.

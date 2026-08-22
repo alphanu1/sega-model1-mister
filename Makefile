@@ -585,7 +585,7 @@ m1_boot:
 	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
-	  +define+SIMULATION --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
+	  +define+SIMULATION $(BOOT_DEFS) --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
 	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) -GMATH_ZERO=$(MATH_ZERO) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/io/m1_decode.sv \
@@ -610,6 +610,16 @@ tgp_trace:
 tgp_wrtrace:
 	bash tools/tgp_wrtrace.sh
 
+# Extra defines for the boot bench. The one that matters:
+#
+#   make m1_boot BOOT_DEFS=+define+S32_V60_NO_FP
+#
+# builds the V60 without its floating-point group and traps any FP opcode that
+# executes. Measured standalone, that group costs 1,942 ALM AND HALVES THE Fmax -
+# 20,614 ALM at 24.92 MHz against 18,672 at 45.98 - so it is on the critical path
+# as well as being 6% of the core. dbg_fp_trap has never fired, but it is inert by
+# construction in a build that HAS the group, so only a run under this define is
+# evidence.
 BOOT_CYCLES ?= 20000000
 TGPTRACE    ?= 0
 MATH_ZERO   ?= 0
