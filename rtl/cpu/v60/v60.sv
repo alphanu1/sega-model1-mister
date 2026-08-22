@@ -772,32 +772,34 @@ else if (ce) begin
             logic [31:0] delta;
             delta = pc - fb_base;
             if (delta < {27'b0, fb_valid}) begin
-                // Consume min(delta,8) bytes this cycle.
+                // Consume min(delta,4) bytes this cycle.
                 //
-                // WIDENED FROM 4 ON A MEASUREMENT, and the note it replaces asked
-                // for exactly that: "Revisit only with a real STA report." The
-                // guard was written when the core closed at ~0.054 ns setup
-                // slack; the current build closes at +0.331 ns, six times the
-                // margin, and Quartus reports it on the real device rather than
-                // from a proxy.
+                // WIDENED TO 8 ON 2026-08-22 AND REVERTED ON 2026-08-23, ON
+                // MEASUREMENTS RATHER THAN THE ORIGINAL GUESS. Each of the 24
+                // bytes in fb[] needs a mux selecting fb[i..i+s], so 4 is a 5:1
+                // mux per byte and 8 is a 9:1, multiplied by 24 bytes of 8 bits.
+                // Built both, Quartus 17.0, the V60 alone:
                 //
-                // WHAT IT COSTS AT 4. S_FILL is 33% of every CPU cycle in the
-                // core - the largest single item anywhere in it - and a census
-                // splits that as
+                //     shift 8   20,614 ALM
+                //     shift 4   20,129 ALM      485 ALM for the widening
                 //
-                //     realigning  25,962,839 cycles   79%
-                //     starved      6,966,440 cycles   21%
+                // and it bought 1.7% - mean CPI 17.9 -> 17.6 - because the
+                // shifting bucket was already only 1.0 cycle an instruction. A
+                // state census puts S_FILL at 33% of all CPU cycles but splits it
                 //
-                // so 26% of ALL cycles are this shift, and only 7% are waiting
-                // for the prefetch. The "~0.5 cyc/instr" the old note estimated
-                // is nearer five: a V60 instruction is one to eight bytes and
-                // anything over four takes a second pass, on a machine that
-                // averages 17.9 cycles an instruction in total.
+                //     shifting  1.0/instruction     dispatch 1.0/instruction
+                //     starved-aligned 3.3/instruction
                 //
-                // If this costs Fmax, the STA report will say so and the number
-                // to weigh it against is in this comment.
+                // so the win was never in the shift width. With the core at 72%
+                // of the device and a rasterizer still to fit, 485 ALM for 1.7%
+                // is the wrong trade.
+                //
+                // The note this replaces said "Revisit only with a real STA
+                // report" and that has now been done: the core closes at
+                // +0.331 ns, so the timing objection has gone - the AREA one
+                // has not.
                 logic [4:0] s;
-                s = (delta >= 32'd8) ? 5'd8 : delta[4:0];
+                s = (delta >= 32'd4) ? 5'd4 : delta[4:0];
                 if (!fb_realigning) begin
                     for (int i = 0; i < 24; i++) fb_prev[i] <= fb[i];
                     fb_prev_base  <= fb_base;
@@ -808,7 +810,7 @@ else if (ce) begin
                 fb_base  <= fb_base + {27'b0, s};
                 fb_valid <= fb_valid - s;
                 fb_wr    <= fb_wr - s;   // frontier shifts down with the window
-                fb_realigning <= (delta > 32'd8);
+                fb_realigning <= (delta > 32'd4);
             end
             else begin
                 fb_realigning <= 0;
