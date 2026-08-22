@@ -956,13 +956,25 @@ end
 // so those are the three buckets, and they want different fixes: the first a
 // wider shift, the third a better instruction supply.
 integer fill_shift = 0;
+integer fill_inflight = 0, fill_suppress = 0, fill_noissue = 0;
 always @(posedge clk_cpu) if (rst_n_cpu && ce && main.cpu.st == 7'd1) begin
     if (main.cpu.fb_base != main.cpu.pc)
         fill_shift = fill_shift + 1;
     else if (main.cpu.fb_valid >= main.cpu.fb_need)
         fill_realign = fill_realign + 1;      // the dispatch cycle itself
-    else
+    else begin
         fill_starved = fill_starved + 1;      // aligned, waiting for bytes
+        // WHY it is waiting: is a fetch in flight, or was none even issued?
+        // "In flight" means the supply is too slow; "none issued" means the
+        // prefetcher declined to run and the fix is in its enable condition.
+        // pf_busy is REGISTERED, so the cycle a fetch completes and the next is
+        // issued reads as "none issued" here even though the engine is running
+        // back to back. Count the issue edge separately or this bucket reads as
+        // a stall that is not one.
+        if (main.cpu.pf_busy)          fill_inflight = fill_inflight + 1;
+        else if (main.cpu.pf_suppress) fill_suppress = fill_suppress + 1;
+        else                           fill_noissue  = fill_noissue  + 1;
+    end
 end
 
 // ------------------------------------------- V60 state census
@@ -1403,6 +1415,8 @@ initial begin
              8);
     $display("BOOT: S_FILL: shifting=%0d dispatch=%0d starved-aligned=%0d entries=%0d",
              fill_shift, fill_realign, fill_starved, fill_entries);
+    $display("BOOT:   of the starved: fetch in flight=%0d, suppressed=%0d, none issued=%0d",
+             fill_inflight, fill_suppress, fill_noissue);
     $display("BOOT: V60 state census, busiest first (cycles, of which bus-free):");
     begin : stc
         integer a, b, best, bi, tot;
