@@ -908,6 +908,85 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------- instruction cache hit rate
+// 20 M cycles - 20% of every cycle in the core - are spent with the instruction
+// window ALIGNED and short of bytes, waiting for the prefetcher. The cache in
+// m1_fetch_bridge is EIGHT lines of 64 bits, which is 64 bytes of instruction
+// footprint, and nothing has ever measured whether that is enough.
+integer ic_hit = 0, ic_miss = 0;
+reg ifr_d = 0;
+always @(posedge clk) begin
+    ifr_d <= fetch.if_req;
+    if (fetch.if_req && !ifr_d) begin
+        if (fetch.chit) ic_hit = ic_hit + 1;
+        else                  ic_miss = ic_miss + 1;
+    end
+end
+
+// --------------------------------------- what S_FILL is actually doing
+// S_FILL is 33% of all CPU cycles and never touches the data bus. It does two
+// different jobs and they want opposite fixes:
+//
+//   REALIGNING  the bytes are in the 24-byte window and it is shifting them
+//               down 4 a cycle to line up with the PC. Costs cycles purely
+//               because the shift is 4 wide - and the comment in v60.sv says 8
+//               was rejected as a timing guard "at only ~0.054ns setup slack",
+//               where the current build closes at +0.331.
+//   STARVED     the bytes are not there and it is waiting for the prefetch.
+//               Only the instruction supply helps that.
+integer fill_realign = 0, fill_starved = 0;
+// ENTRIES as well as cycles: 5.1 realign cycles an instruction cannot be one
+// shift, so either S_FILL is entered several times per instruction or each
+// entry takes several passes. Those want completely different fixes.
+integer fill_entries = 0;
+reg [6:0] st_prev = 0;
+always @(posedge clk_cpu) if (rst_n_cpu && ce) begin
+    st_prev <= main.cpu.st;
+    if (main.cpu.st == 7'd1 && st_prev != 7'd1) fill_entries = fill_entries + 1;
+end
+// THREE WAYS, NOT TWO. The earlier split called anything with
+// (pc - fb_base) < fb_valid "realigning", which is TRUE when the window is
+// already aligned - delta is 0 and 0 < fb_valid - so it counted the aligned
+// wait for bytes as shifting. S_FILL's own structure is:
+//
+//     if (fb_base != pc)              shift the window down
+//     else if (fb_valid >= fb_need)   dispatch
+//     else                            wait for the prefetch
+//
+// so those are the three buckets, and they want different fixes: the first a
+// wider shift, the third a better instruction supply.
+integer fill_shift = 0;
+always @(posedge clk_cpu) if (rst_n_cpu && ce && main.cpu.st == 7'd1) begin
+    if (main.cpu.fb_base != main.cpu.pc)
+        fill_shift = fill_shift + 1;
+    else if (main.cpu.fb_valid >= main.cpu.fb_need)
+        fill_realign = fill_realign + 1;      // the dispatch cycle itself
+    else
+        fill_starved = fill_starved + 1;      // aligned, waiting for bytes
+end
+
+// ------------------------------------------- V60 state census
+// WHERE THE EXECUTION CYCLES GO. Measured: 200 M CPU cycles, 9.9 M instructions,
+// of which ~9.4 cycles an instruction are stall and ~10.7 are execution - and
+// real V60 silicon is about 8 cycles TOTAL. So the FSM itself is half the cost
+// and a restructure has to be aimed, not guessed: a simple memory-operand
+// instruction walks S_DECODE, S_IF2, S_EA_MODE, S_EA_IND, S_EA_VAL, S_EA_DONE,
+// S_EXEC, S_NEXT before any memory wait.
+//
+// Counts CPU-clock cycles spent in each state, and separately those where the
+// bus was NOT stalling, because a state that is only ever waiting for memory is
+// not something a pipeline change can remove.
+integer st_cyc  [0:127];
+integer st_free [0:127];
+integer sc_i;
+initial for (sc_i = 0; sc_i < 128; sc_i = sc_i + 1) begin
+    st_cyc[sc_i] = 0; st_free[sc_i] = 0;
+end
+always @(posedge clk_cpu) if (rst_n_cpu && ce) begin
+    st_cyc[main.cpu.st] = st_cyc[main.cpu.st] + 1;
+    if (!main.c_req) st_free[main.cpu.st] = st_free[main.cpu.st] + 1;
+end
+
 // ------------------------------------------- data access size census
 // Every page costs an identical 36 fast cycles - 9 CPU cycles - including block
 // RAM, so the cost is the HANDSHAKE and not the memory. A 32-bit access is two
@@ -1318,6 +1397,28 @@ initial begin
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
     // loop indices for the tilemap dump
+    $display("BOOT: I-cache: hits=%0d misses=%0d (%0d%% hit, %0d lines)",
+             ic_hit, ic_miss,
+             (ic_hit * 100) / ((ic_hit + ic_miss) == 0 ? 1 : (ic_hit + ic_miss)),
+             8);
+    $display("BOOT: S_FILL: shifting=%0d dispatch=%0d starved-aligned=%0d entries=%0d",
+             fill_shift, fill_realign, fill_starved, fill_entries);
+    $display("BOOT: V60 state census, busiest first (cycles, of which bus-free):");
+    begin : stc
+        integer a, b, best, bi, tot;
+        tot = 0;
+        for (sc_i = 0; sc_i < 128; sc_i = sc_i + 1) tot = tot + st_cyc[sc_i];
+        for (a = 0; a < 14; a = a + 1) begin
+            best = -1; bi = 0;
+            for (b = 0; b < 128; b = b + 1)
+                if (st_cyc[b] > best) begin best = st_cyc[b]; bi = b; end
+            if (best > 0)
+                $display("BOOT:   state %0d: %0d cycles (%0d%%), bus-free %0d",
+                         bi, best, (best * 100) / (tot == 0 ? 1 : tot), st_free[bi]);
+            st_cyc[bi] = -1;
+        end
+        $display("BOOT:   total CE cycles in states = %0d", tot);
+    end
     $display("BOOT: data access sizes: byte=%0d half=%0d word=%0d (word unaligned=%0d)",
              sz_b, sz_h, sz_w, sz_un);
     $display("BOOT:   bus cycles now = %0d; with a 32-bit path = %0d (%0d%% fewer)",

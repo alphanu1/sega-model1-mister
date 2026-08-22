@@ -772,14 +772,32 @@ else if (ce) begin
             logic [31:0] delta;
             delta = pc - fb_base;
             if (delta < {27'b0, fb_valid}) begin
-                // consume min(delta,4) bytes this cycle.  NOTE: kept at 4 bytes/cycle
-                // (not widened to 8) as a timing-closure guard -- the core clock closes
-                // at only ~0.054ns setup slack, and a wider (9:1 vs 5:1) realign mux on
-                // the fb[] register inputs risks eating that margin.  The extra realign
-                // tick on 5-8 byte instructions costs ~0.5 cyc/instr, well worth the
-                // combinational headroom.  Revisit only with a real STA report.
+                // Consume min(delta,8) bytes this cycle.
+                //
+                // WIDENED FROM 4 ON A MEASUREMENT, and the note it replaces asked
+                // for exactly that: "Revisit only with a real STA report." The
+                // guard was written when the core closed at ~0.054 ns setup
+                // slack; the current build closes at +0.331 ns, six times the
+                // margin, and Quartus reports it on the real device rather than
+                // from a proxy.
+                //
+                // WHAT IT COSTS AT 4. S_FILL is 33% of every CPU cycle in the
+                // core - the largest single item anywhere in it - and a census
+                // splits that as
+                //
+                //     realigning  25,962,839 cycles   79%
+                //     starved      6,966,440 cycles   21%
+                //
+                // so 26% of ALL cycles are this shift, and only 7% are waiting
+                // for the prefetch. The "~0.5 cyc/instr" the old note estimated
+                // is nearer five: a V60 instruction is one to eight bytes and
+                // anything over four takes a second pass, on a machine that
+                // averages 17.9 cycles an instruction in total.
+                //
+                // If this costs Fmax, the STA report will say so and the number
+                // to weigh it against is in this comment.
                 logic [4:0] s;
-                s = (delta >= 32'd4) ? 5'd4 : delta[4:0];
+                s = (delta >= 32'd8) ? 5'd8 : delta[4:0];
                 if (!fb_realigning) begin
                     for (int i = 0; i < 24; i++) fb_prev[i] <= fb[i];
                     fb_prev_base  <= fb_base;
@@ -790,7 +808,7 @@ else if (ce) begin
                 fb_base  <= fb_base + {27'b0, s};
                 fb_valid <= fb_valid - s;
                 fb_wr    <= fb_wr - s;   // frontier shifts down with the window
-                fb_realigning <= (delta > 32'd4);
+                fb_realigning <= (delta > 32'd8);
             end
             else begin
                 fb_realigning <= 0;
