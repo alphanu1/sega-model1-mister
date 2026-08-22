@@ -52,6 +52,27 @@ always @(posedge clk) begin
         c_req_d <= c_req;
 
         case (bst)
+        // ISSUE THE FIRST BUS CYCLE HERE, not one state later.
+        //
+        // MEASURED: every page costs an identical 36 fast cycles - 9 CPU cycles -
+        // including block RAM, so the cost is this handshake and not the memory.
+        // Per access the core spends about 9 cycles and only ~1.2 bus cycles
+        // (4,475,451 accesses against 5,401,332 bus cycles over 600 M cycles of
+        // boot), so the FIXED overhead is as large as the transfers:
+        //
+        //     I_IDLE  detect the request       1
+        //     I_CYC   register m_req/addr      1
+        //     bus     4 cycles x 1.2          ~5
+        //     c_ack   round trip to the CPU    2
+        //
+        // A 32-bit data path was the obvious fix and the census says otherwise:
+        // 46% of accesses are BYTE and 33% half-word, already one bus cycle
+        // each, so widening the path removes only 17% of bus cycles. The
+        // overhead is where the time is.
+        //
+        // This state now does cyc-0's setup from the incoming request rather
+        // than from the latched copy, so m_req goes out a cycle earlier on every
+        // access. The registers are still latched for the cycles that follow.
         I_IDLE: if (c_req && !c_req_d) begin
             addr_r  <= c_addr;
             wdata_r <= c_wdata;
@@ -64,7 +85,23 @@ always @(posedge clk) begin
                 2'd1: cycs <= (c_addr[0]) ? 2'd1 : 2'd0;           // half: 1 or 2
                 default: cycs <= (c_addr[0]) ? 2'd2 : 2'd1;        // word: 2 or 3
             endcase
-            bst <= I_CYC;
+            // --- cycle 0, issued now. Mirrors I_CYC's cyc==0 arms exactly.
+            m_req <= 1'b1;
+            m_we  <= c_we;
+            m_addr <= c_addr[23:1];
+            if (!c_addr[0]) begin
+                case (c_size)
+                    2'd0: begin m_be <= 2'b01; m_wdata <= {8'h00, c_wdata[7:0]}; end
+                    2'd1: begin m_be <= 2'b11; m_wdata <= c_wdata[15:0]; end
+                    default: begin m_be <= 2'b11; m_wdata <= c_wdata[15:0]; end
+                endcase
+            end
+            else begin
+                // unaligned start: the first cycle covers the high lane
+                m_be    <= 2'b10;
+                m_wdata <= {c_wdata[7:0], 8'h00};
+            end
+            bst <= I_WAIT;
         end
         I_CYC: begin
             m_req  <= 1'b1;

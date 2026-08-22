@@ -908,6 +908,30 @@ localparam integer PCBUF = 128;
 integer pcbuf [0:PCBUF-1];
 integer pcw = 0, pclast = -1;
 
+// ------------------------------------------- data access size census
+// Every page costs an identical 36 fast cycles - 9 CPU cycles - including block
+// RAM, so the cost is the HANDSHAKE and not the memory. A 32-bit access is two
+// 16-bit bus cycles at four cycles each; a 16-bit access is one. So the payoff
+// from a 32-bit data path depends entirely on how many accesses are actually
+// 32-bit, and nothing here has measured that.
+integer sz_b, sz_h, sz_w, sz_un;
+initial begin sz_b = 0; sz_h = 0; sz_w = 0; sz_un = 0; end
+reg c_req_dly = 0;
+always @(posedge clk_cpu) begin
+    c_req_dly <= main.c_req;
+    if (main.c_req && !c_req_dly) begin
+        case (main.c_size)
+            2'd0: sz_b = sz_b + 1;
+            2'd1: sz_h = sz_h + 1;
+            2'd2: begin
+                sz_w = sz_w + 1;
+                if (main.c_addr[0]) sz_un = sz_un + 1;
+            end
+            default: ;
+        endcase
+    end
+end
+
 // ------------------------------------------- retire-to-retire histogram
 // Execution-only CPI is ~10.9 and the real-time target at 25 MHz is 12.5, which
 // leaves 1.6 cycles an instruction for every stall - and we average 0.83 data
@@ -1294,6 +1318,11 @@ initial begin
     $display("BOOT: glue irq_status=%02h irq_mask=%02h",
              main.glue.irq_status, main.glue.irq_mask);
     // loop indices for the tilemap dump
+    $display("BOOT: data access sizes: byte=%0d half=%0d word=%0d (word unaligned=%0d)",
+             sz_b, sz_h, sz_w, sz_un);
+    $display("BOOT:   bus cycles now = %0d; with a 32-bit path = %0d (%0d%% fewer)",
+             sz_b + sz_h + 2*sz_w, sz_b + sz_h + sz_w,
+             (sz_w * 100) / ((sz_b + sz_h + 2*sz_w) == 0 ? 1 : (sz_b + sz_h + 2*sz_w)));
     $display("BOOT: retire-to-retire histogram (CPU cycles per instruction):");
     begin : cpi_report
         integer tot, sum, cum, med;
