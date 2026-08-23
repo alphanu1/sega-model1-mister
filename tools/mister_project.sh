@@ -239,6 +239,24 @@ EOF
 sed -e 's/^source files.qip$/source files.qip/' \
     "$tpl/Template.qsf" > "$stage/Model1.qsf"
 
+# FITTER SEED, pinned rather than re-rolled.
+#
+# From the Kaneko16 core's findings: "SEED 1 to SEED 3 closed it: -0.084 to
+# +0.344, with the same logic and the same memory", and - the part that matters
+# for deciding whether to touch RTL - "the build immediately before it had MORE
+# logic, 12,401 ALMs against 12,018, and closed at zero, which is what identifies
+# placement rather than capacity as the cause."
+#
+# That is our shape too: the flat V60 build has MORE ALM (30,227) and closes at
+# +0.639 ns, while the split has less (29,992) and closes at +0.143. Changing RTL
+# to fix a placement result would be the wrong lever.
+if [ -n "${M1_SEED:-}" ]; then
+    # The template's last line has no trailing newline, so append one first or
+    # the assignment lands on the end of it and Quartus rejects the file.
+    printf '\nset_global_assignment -name SEED %s\n' "$M1_SEED" >> "$stage/Model1.qsf"
+    echo "  SEED = $M1_SEED"
+fi
+
 if [ -n "${M1_QOPT:-}" ]; then
     sed -i -e "s/^set_global_assignment -name OPTIMIZATION_MODE .*/set_global_assignment -name OPTIMIZATION_MODE \"$M1_QOPT\"/" \
            -e 's/^set_global_assignment -name OPTIMIZATION_TECHNIQUE .*/set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA/' \

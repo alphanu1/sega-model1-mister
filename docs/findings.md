@@ -4069,3 +4069,25 @@ sites.
 the sound board is the unbuilt part: a smaller 68000 core than fx68k, or one MultiPCM
 time-multiplexed across both channels rather than two instances, are both cheaper and less
 risky than reimplementing a working CPU.
+
+### Fitter SEED is worth more slack than the RTL change cost — 2026-08-23
+
+From the Kaneko16 core: *"SEED 1 to SEED 3 closed it: -0.084 to +0.344, with the same logic
+and the same memory"*, and the diagnostic that matters — *"the build immediately before it
+had MORE logic, 12,401 ALMs against 12,018, and closed at zero, which is what identifies
+placement rather than capacity as the cause."*
+
+That is our shape. Splitting `v60_ifetch` out took the core from 30,227 ALM at +0.639 ns to
+29,992 at +0.143, and the slack drop looked like the price of the split. It was not:
+
+    same split RTL, seed default   29,992 ALM   +0.143 ns
+    same split RTL, seed 3         30,071 ALM   +0.379 ns
+
+**0.24 ns of slack from the seed alone, on identical logic.** So a marginal timing result
+after an RTL change should be re-fitted before the RTL is blamed - changing code that is not
+on the failing path is the wrong lever, and it is how a real area saving gets reverted for
+no reason.
+
+`M1_SEED=<n> make rbf` pins it. Note the template's last line has no trailing newline, so
+the assignment must be appended with a leading `\n` or Quartus rejects the whole file - one
+wasted build.
