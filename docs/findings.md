@@ -4200,3 +4200,40 @@ words and nothing about what reached the TGP's program RAM. It is exactly the ga
 **Next instrument: read the TGP's program RAM back and fold it**, the same way
 `v60_ifetch`'s SDRAM sweep does, and compare against `tools/rom_csum.py` over
 `vr_tgp_prog.hex`. Until that exists, "the microcode arrived" is an assumption.
+
+### The microcode IS intact, and a 2048-cycle reset delay fixed the hang — 2026-08-23
+
+    row 0C   A07D51   the program RAM read back through its own port
+    expected A07D51   tools/rom_csum.py over vr_tgp_prog.hex
+
+**Exact match, so the load path is exonerated** and "the microcode arrived" is measured at
+the array for the first time rather than at the loader's input.
+
+**And the sweep fixed the hang as a side effect.** The only RTL change was holding the core
+in reset for the 2048 cycles the sweep takes, and the coprocessor went from parked at 0x7E6
+with 53 retires to running with its pc around 0x4xx and retires climbing. **There is a race
+at coprocessor release and the previous build was losing it.** That delay is currently
+incidental - it exists because the sweep needs it - and it should be made explicit and
+justified rather than left as a side effect of a debug instrument.
+
+### CORRECTION: the stable picture was the hang, not the scroll latch
+
+The previous build showed a clean, still horizon and that was read here as the per-frame
+scroll latch working. It was the game FROZEN: with the coprocessor hung the V60 never got
+far enough to rewrite the scroll registers, so nothing moved. With the coprocessor running
+again the jumping is back.
+
+The latch change is still correct - it is what `draw_common` does, read once at vblank begin -
+and it stays. It just did not cause the stable picture, and claiming it did would have
+retired a bug that is still open.
+
+### Where the coprocessor actually diverges: after read 4
+
+    row 07   300020   first copro SDRAM read address    matches simulation
+    row 0B   300040   second                            matches
+    row 0E   300040   matches
+    row 06   1E0DA5   fold of the first 1024 reads      simulation: BD686D
+
+So it **starts identically and diverges later**, somewhere inside the first 1024 reads. That
+is a bisectable range: capture the address at read 64, 256 and 512 and halve it each build,
+the same way `tgp_wrtrace` went from "diverges at write 38" to a named instruction.
