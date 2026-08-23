@@ -4237,3 +4237,33 @@ retired a bug that is still open.
 So it **starts identically and diverges later**, somewhere inside the first 1024 reads. That
 is a bisectable range: capture the address at read 64, 256 and 512 and halve it each build,
 the same way `tgp_wrtrace` went from "diverges at write 38" to a named instruction.
+
+### The coprocessor read stream is TIMING-DEPENDENT, so row 06 is a weak comparison
+
+Two deep `tb_m1_frame` runs, identical RTL except for making the release delay explicit:
+
+    before   copro read checksum bd686d
+    after    copro read checksum 101ed7
+
+The delay changes when the coprocessor starts, which changes how its reads interleave with
+the V60's commands, which changes the sequence. **So the read fold is not a stable
+signature**, and the difference between the board's `1E0DA5` and simulation's value has been
+read here as evidence of a defect when part of it is just interleaving.
+
+Hardware and simulation interleave differently by construction - real SDRAM latency against a
+behavioural model - so **any dynamic stream compared between them carries this caveat**. The
+first read (`300020`) is deterministic because it happens before any interaction; the
+addresses at 64, 256 and 512 are not.
+
+**What this does not undermine**, because each is a static fact rather than a stream:
+
+- the microcode read-back, `A07D51`, matching the ROM image exactly
+- the SDRAM whole-image read-back, `4D2E75`, matching
+- the row-mask and character write counts
+- the tilemap pixel shares
+
+**What to use instead for the coprocessor:** compare against MAME rather than against our own
+simulation, at a defined program point rather than a cycle count. `make tgp_trace` already
+does that for the retire stream and reports IDENTICAL for its window; extending that window
+is the honest way forward, not comparing two machines that were never going to interleave
+alike.

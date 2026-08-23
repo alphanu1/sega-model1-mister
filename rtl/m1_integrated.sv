@@ -498,12 +498,15 @@ module m1_integrated (
       // THE WORD ADDRESS, NOT THE BYTE ADDRESS. {t_mem_addr, 1'b0} is 25 bits and
       // the row carries 24, so the math tables at word 0x400000 - byte 0x800000
       // - truncated to 000000 and every captured address read as zero.
-      case (rd_n[1:0])
-        2'd0: if (rd_n == 11'd0) dbg_rd_a0 <= t_mem_addr;
-        2'd1: if (rd_n == 11'd1) dbg_rd_a1 <= t_mem_addr;
-        2'd2: if (rd_n == 11'd2) dbg_rd_a2 <= t_mem_addr;
-        2'd3: if (rd_n == 11'd3) dbg_rd_a3 <= t_mem_addr;
-      endcase
+      // BISECTING THE DIVERGENCE. Reads 0 and 1 match the model exactly on
+      // hardware while the fold over all 1024 differs, so the split is later
+      // than read 4. Sampling at 64, 256 and 512 halves the range each build -
+      // the method that took tgp_wrtrace from "diverges at write 38" to a named
+      // instruction, nine times over.
+      if (rd_n == 11'd0)   dbg_rd_a0 <= t_mem_addr;   // row 0E
+      if (rd_n == 11'd64)  dbg_rd_a1 <= t_mem_addr;   // row 07
+      if (rd_n == 11'd256) dbg_rd_a2 <= t_mem_addr;   // row 0B
+      if (rd_n == 11'd512) dbg_rd_a3 <= t_mem_addr;   // row 1B
     end
   end
   assign t_tbl_ack = t_mem_ack &&  t_tbl_req;

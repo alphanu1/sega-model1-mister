@@ -1031,7 +1031,7 @@ initial begin
     $display("FRAME: tilemap0 CHARACTER writes=%0d  first at pc=%06h (board rows 0E, 0C)",
              f_tm0_text, f_tm0_pc);
     $display("FRAME: copro SDRAM read checksum=%06h (board row 06)", f_rd_csum);
-    $display("FRAME: first four copro read addresses = %06h %06h %06h %06h (rows 0C 0E 07 0B)",
+    $display("FRAME: copro read addresses at 0/64/256/512 = %06h %06h %06h %06h (rows 0E 07 0B 1B)",
              f_rd_a0, f_rd_a1, f_rd_a2, f_rd_a3);
     $display("FRAME: loader SDRAM write checksum=%06h words=%06h (board rows 07, 0B)",
              f_sd_csum, f_sd_words);

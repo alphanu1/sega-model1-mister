@@ -139,9 +139,36 @@ module m1_tgp #(
   // Swept while the core is still in reset, through the existing read port, so
   // no third port is needed. 2048 cycles, and the core is released when it
   // finishes - invisible next to a ROM download.
+  // THE RELEASE DELAY IS DELIBERATE, NOT A SIDE EFFECT OF THE SWEEP.
+  //
+  // Measured on hardware 2026-08-23: without it the coprocessor parked at
+  // microcode 0x7E6 with 53 retires and made no SDRAM reads at all - the
+  // empty-program-RAM signature - and the V60 then filled the command FIFO and
+  // halted behind it. Adding the sweep, whose only other effect is to hold the
+  // core in reset for 2048 cycles, made it run. So there is a race at release,
+  // and the delay is what wins it.
+  //
+  // The sweep proves the RAM is intact (row 0C reads A07D51, matching the ROM
+  // image exactly), so the race is not the microcode still arriving - it is
+  // something at the moment of release that this has not identified yet. Until
+  // it is identified the delay stays, EXPLICITLY, so that removing the debug
+  // instrument cannot silently bring the hang back.
+  localparam int RELEASE_DELAY = 2048;
+
   logic [11:0] sw_addr;
   logic        sw_busy, sw_done;
   logic [23:0] sw_csum;
+  logic [11:0] rel_cnt;
+  logic        rel_done;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rel_cnt <= 12'd0; rel_done <= 1'b0;
+    end else if (!rel_done) begin
+      rel_cnt <= rel_cnt + 12'd1;
+      if (rel_cnt == 12'(RELEASE_DELAY - 1)) rel_done <= 1'b1;
+    end
+  end
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -184,7 +211,7 @@ module m1_tgp #(
   logic [7:0]  u_c0, u_c1, u_rep;
 
   mb86233_core core (
-    .clk(clk), .rst_n(rst_n && sw_done),
+    .clk(clk), .rst_n(rst_n && sw_done && rel_done),
     .prog_addr(prog_addr), .prog_rdata(prog_rdata),
     .io_addr(io_addr), .io_rd(io_rd), .io_wr(io_wr),
     .io_wdata(io_wdata), .io_rdata(io_rdata), .io_ack(io_ack),

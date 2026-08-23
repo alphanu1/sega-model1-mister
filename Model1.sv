@@ -819,13 +819,13 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // delivered the right bytes in the right order, and the coprocessor's bad
   // reads are a READ-side fault; a mismatch means the data never arrived and no
   // amount of capture-phase tuning will help.
-  assign dw[7]  = {8'h07, dbg_rd_a2};   // 3rd
+  assign dw[7]  = {8'h07, dbg_rd_a1};   // coprocessor read #64
   assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
   // Tags 09 and 0A — the data words of fetches 4 and 5 — are GONE, to stay under
   // the 24-row ceiling. They were boot forensics: they proved ROM contents were
   // arriving, which a core that now boots and runs proves better. Their
   // ADDRESSES survive as tags 06 and 07.
-  assign dw[9]  = {8'h0B, dbg_rd_a3};   // 4th
+  assign dw[9]  = {8'h0B, dbg_rd_a2};   // coprocessor read #256
   // Fetch deadline misses against the worst layer's fetch count for the last
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
@@ -857,7 +857,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // reads correctly every frame. Row 0C is the math tables at 0x400000.
   //   0E right, 0C wrong  the fault is specific to the high region
   //   both wrong          the read path or the sweep itself is at fault
-  assign dw[12] = {8'h0E, dbg_rd_a1};   // 2nd
+  assign dw[12] = {8'h0E, dbg_rd_a0};   // coprocessor read #0
   // M2 telemetry, one value per row. A retire count that moves means the
   // coprocessor is executing real microcode; the PC says where it stopped if it
   // did. These two were packed into one row each with a second value and both
@@ -917,7 +917,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   //
   // Rows 1B is the last one available: 24 rows at 16 pixels is 384 lines, the
   // whole visible field.
-  assign dw[23] = {8'h1B, dbg_tram_writes[0], dbg_tram_writes[2]};
+  assign dw[23] = {8'h1B, dbg_rd_a3};   // coprocessor read #512
 
   wire [7:0] dg_r, dg_g, dg_b;
 
