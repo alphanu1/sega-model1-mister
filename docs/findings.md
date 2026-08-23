@@ -4091,3 +4091,37 @@ no reason.
 `M1_SEED=<n> make rbf` pins it. Note the template's last line has no trailing newline, so
 the assignment must be appended with a leading `\n` or Quartus rejects the whole file - one
 wasted build.
+
+### PREREQUISITE for a faster SDRAM clock: the ROM loader must not move with it
+
+Raised from the Kaneko16 core, where splitting the memory clock to 96 MHz broke **every
+game at once** on a build that **closed timing at +0.502 ns**:
+
+> `kaneko_rom_loader` was clocked from `clk_sdram`. That was invisible while `clk_sdram` and
+> `clk_sys` were the same net; doubling the memory clock made it wrong twice over: every
+> input it takes comes from `hps_io` on `clk_sys` - so it became an unsynchronised crossing -
+> and it drives the SLOW port while being clocked FAST, so `ACK_HOLD`'s two-cycle
+> acknowledge, exactly one edge for a 48 MHz requester, was two edges for it. **Every ROM
+> write counted twice and the image loaded corrupt.**
+
+**Model 1 is correct today and only by accident of having one domain:**
+
+    hps_io          .clk_sys(clk_sys)    80 MHz
+    m1_rom_loader   .clk(clk_sys)        80 MHz
+    m1_sdram        clk_sys              80 MHz
+
+Our controller has the same `ACK_HOLD = 2`, so both halves of that bug are latent here. If
+the memory clock is raised - and 96 MHz is +20% of bandwidth against a core that spends 20%
+of its cycles starved for instruction bytes - then:
+
+1. **Keep `m1_rom_loader` on `clk_sys`**, where its `ioctl_*` inputs already are, and let an
+   adapter do the crossing.
+2. **Re-check every requester against `ACK_HOLD`.** A held acknowledge counted in the fast
+   domain is a different number of edges for a slow master.
+3. **Recompute `T_REFI`.** It is in clock cycles and tuned for 80 MHz; `Model1.sv:364` already
+   records that at 100 MHz it under-refreshes, which is a data-retention fault that would
+   present as random corruption.
+
+**And the line worth keeping from that entry:** *"the broken build CLOSED TIMING. Static
+analysis says the paths are met, not that the design is right, and the guard cannot see a
+module wired to the wrong clock."*
