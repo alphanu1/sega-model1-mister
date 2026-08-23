@@ -1812,3 +1812,80 @@ CPI figure was stale, the budget did not justify what I claimed, the I/O board
 did not need per-variant work, the handshake reply was not a signature. Where
 an estimate has a wide spread, measure it — it has consistently been cheaper
 than the argument about it.
+
+---
+
+# 2026-08-23 overnight: V60 speed and area, measured
+
+## Speed: mean CPI 18.4 -> 14.9, and where the rest is
+
+`make m1_boot BOOT_CYCLES=400000000` on the same 100 M CPU cycles throughout.
+
+| change | mean CPI | note |
+|---|---|---|
+| start | 18.4 | |
+| bus issues its first cycle a cycle earlier | 17.9 | `I_IDLE` latched, `I_CYC` issued |
+| realign shift 4 -> 8 | 17.6 | **reverted**, see area |
+| **instruction-cache hits answered combinationally** | **14.6** | the real win |
+| shift reverted to 4 | **14.9** | 485 ALM back for 2% |
+
+**19% faster.** Real time at 25 MHz needs 12.5, so about 16% still to find.
+
+**Where it goes now**, from a state census counting CE cycles per FSM state:
+
+    S_FILL            33%   never touches the data bus
+      shifting 1.0/instr | dispatch 1.0/instr | STARVED-ALIGNED 3.3/instr
+    S_DECODE..S_NEXT  28%   pure FSM stepping, all bus-free
+    S_OP2_LD          20%   genuine memory wait
+    S_WB_MEM/S_EA_VAL 12%   genuine memory wait
+
+The remaining front-end starvation is most likely **branch refill** - a taken branch zeroes
+the window and the core waits for a rebuild - which is inherent to a non-speculative front
+end. A branch-target cache is the fix, not a gate tweak; one gate change was tried, changed
+NOTHING to the digit, and was reverted.
+
+The 28% in bus-free FSM stepping is what a pipelined or shared-datapath restructure removes,
+and it is the one remaining item large enough to close the gap.
+
+## Area: 485 ALM taken, and what every other knob is worth
+
+The V60 is **17,445 ALM of the core's 29,611 - 59% of the whole design**, and 79% of
+`m1_main`. Everything else in our core totals ~2,500; the framework (ascal, osd, audio) is
+~6,500.
+
+| knob | ALM | verdict |
+|---|---|---|
+| realign shift 8 vs 4 | +485 | **taken** - 1.7% speed was not worth it |
+| loop cache | 167 | keep - removing it costs 4% speed |
+| FP group | 1,942 | **cannot** - a reserved FP opcode executes at FED52B |
+| Aggressive Area, V60 alone | 2,631 | does not transfer |
+| Aggressive Area, full core | 595 | **do not** - costs 11 M10K and the slack |
+
+**M10K is the binding resource, not ALM** - 452 of 553 with the rasterizer's band buffer
+wanting ~51 - which is why the area-optimised build is the wrong trade at 84%.
+
+## What is NOT the hog, so nobody re-derives it
+
+- **The register file.** 105 `r[]` references but 52 are `r[31]` and nearly all the rest are
+  constant indices; only four are variable, and constant reads are free.
+- **Replicated adders** are real - 128 distinct `Add*` nodes - but the PC alone has 19
+  increment sites with different deltas, so sharing them means restructuring the FSM.
+- **`fb32`/`fb16` window muxes.** Four and two 24:1 byte muxes each, `fb32(ea_ofs+1)` at five
+  call sites in different always blocks. Naming them as shared wires **broke
+  `tb_v60_search`** and was reverted.
+
+## The split, and why it is not done
+
+It is the right next move for both goals and it is a multi-day job, not an overnight one:
+4,644 lines, ~90 states, shared registers and tasks. The gate that makes it safe already
+exists - `v60_trace` and `v60_resync` report **zero divergence sites** against MAME, plus 29
+unit tests and `m1_main` - and that harness does not decay.
+
+**Do it in stages, measuring each:** the prefetch/fetch-buffer unit first (self-contained,
+biggest cycle consumer), then the EA engine (one datapath nearly every instruction uses),
+then let the cold groups - `S_STR_*`, `S_BF_*`, `S_DEC_*`, `S_BS_*`, all under 5% of cycles -
+share it rather than each carrying its own.
+
+**Standalone numbers do not predict in-context ones.** The V60 measures 20,129 ALM alone and
+17,445 in the design; Aggressive Area saves 13% alone and 2% in place. Use standalone figures
+only to compare two versions of the same block.
