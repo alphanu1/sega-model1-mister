@@ -171,6 +171,8 @@ module m1_main #(
   // board shows tilemap 0 holding 8 non-blank words against simulation's 79 and
   // winning 5 pixels against 11,038, so the question is whether those init
   // writes happened at all - and only a total since reset can answer it.
+  output logic [23:0] dbg_ucode_ram_csum,
+  output logic        dbg_ucode_ram_ok,
   output logic [11:0] dbg_tgp_ram_writes,
   output logic [15:0] dbg_sync_word,
   output logic [11:0] dbg_tm0_writes,
@@ -520,6 +522,7 @@ module m1_main #(
   // same race in ITS OWN reset this morning and fixing it there masked this one
   // - the real instance, on the path hardware actually uses.
   m1_tgp #(.MATH_ZERO(TGP_MATH_ZERO)) tgp (
+    .dbg_ucode_ram_csum(dbg_ucode_ram_csum), .dbg_ucode_ram_ok(dbg_ucode_ram_ok),
     .clk(clk), .rst_n(~rst_cpu),
     .ucode_clk(ucode_clk), .ucode_we(ucode_we),
     .ucode_addr(ucode_addr), .ucode_data(ucode_data),

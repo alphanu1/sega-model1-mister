@@ -48,6 +48,9 @@ module m1_tgp #(
 ) (
   input  logic        clk,
   input  logic        rst_n,
+  // Read-back of the program RAM: see the sweep below.
+  output logic [23:0] dbg_ucode_ram_csum,
+  output logic        dbg_ucode_ram_ok,
 
   // ---------------------------------------------------------- microcode ROM
   // Written before the core is released from reset. On hardware this arrives
@@ -124,8 +127,42 @@ module m1_tgp #(
   always_ff @(posedge ucode_clk) begin
     if (ucode_we) prog[ucode_addr] <= ucode_data;
   end
+  // ------------------------------------------- program-RAM read-back checksum
+  //
+  // WHAT ROW 02 DOES NOT PROVE. The loader's ucode_csum is folded at the IOCTL
+  // INPUT, before the write, so `800B9A` says the HPS delivered 2048 correct
+  // words and nothing about what reached this array. That is exactly the gap
+  // rows 07/0B had for SDRAM, which was only closed by reading the memory back -
+  // and the board is sitting at pc 0x7E6 with 53 retires, which is where a
+  // coprocessor executing an EMPTY program RAM ends up.
+  //
+  // Swept while the core is still in reset, through the existing read port, so
+  // no third port is needed. 2048 cycles, and the core is released when it
+  // finishes - invisible next to a ROM download.
+  logic [11:0] sw_addr;
+  logic        sw_busy, sw_done;
+  logic [23:0] sw_csum;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      sw_addr <= 12'd0; sw_busy <= 1'b1; sw_done <= 1'b0; sw_csum <= 24'd0;
+    end else if (sw_busy) begin
+      sw_addr <= sw_addr + 12'd1;
+      // One cycle of read latency: fold the word for the PREVIOUS address.
+      if (sw_addr != 12'd0)
+        sw_csum <= {sw_csum[22:0], sw_csum[23]} ^ prog_rdata[23:0];
+      if (sw_addr == 12'(PROG_WORDS)) begin
+        sw_busy <= 1'b0;
+        sw_done <= 1'b1;
+      end
+    end
+  end
+
+  assign dbg_ucode_ram_csum = sw_csum;
+  assign dbg_ucode_ram_ok   = sw_done;
+
   always_ff @(posedge clk) begin
-    prog_rdata <= prog[prog_addr[10:0]];
+    prog_rdata <= prog[sw_busy ? sw_addr[10:0] : prog_addr[10:0]];
   end
 
   // ----------------------------------------------------------- the core
@@ -147,7 +184,7 @@ module m1_tgp #(
   logic [7:0]  u_c0, u_c1, u_rep;
 
   mb86233_core core (
-    .clk(clk), .rst_n(rst_n),
+    .clk(clk), .rst_n(rst_n && sw_done),
     .prog_addr(prog_addr), .prog_rdata(prog_rdata),
     .io_addr(io_addr), .io_rd(io_rd), .io_wr(io_wr),
     .io_wdata(io_wdata), .io_rdata(io_rdata), .io_ack(io_ack),

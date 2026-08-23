@@ -409,6 +409,8 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   wire [11:0] dbg_layer_have [4];
   wire [11:0] dbg_tram_writes [4];
   wire [11:0] dbg_tm0_writes, dbg_mask_writes;
+  wire [23:0] dbg_ucode_ram_csum;
+  wire        dbg_ucode_ram_ok;
   wire [11:0] dbg_tgp_ram_writes;
   wire [11:0] dbg_tm0_text_writes;
   wire [11:0] dbg_mask_nz_writes;
@@ -474,6 +476,7 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
     .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_ucode_ram_csum(dbg_ucode_ram_csum), .dbg_ucode_ram_ok(dbg_ucode_ram_ok),
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_tm0_text_writes(dbg_tm0_text_writes), .dbg_tm0_first_pc(dbg_tm0_first_pc),
@@ -837,7 +840,11 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   // draws.
   //   0C  PC of the FIRST real character written into tilemap 0, 0 if none
   //   0E  how many real characters were written at all
-  assign dw[10] = {8'h0C, dbg_rd_a0};   // 1st coprocessor SDRAM read address
+  // ROW 0C: THE PROGRAM RAM READ BACK. Row 02 folds the loader's ioctl INPUT,
+  // before the write, so it cannot see a word that failed to land. This is the
+  // same fold taken from the array itself - tools/rom_csum.py --ucode prints the
+  // expected value from vr_tgp_prog.hex.
+  assign dw[10] = {8'h0C, dbg_ucode_ram_csum};
   // ROW 0D WAS the frame rate, which has read 57.5 Hz correctly for weeks.
   // Replaced with the FED5A4 deadlock's two facts: how many times the
   // COPROCESSOR has written coprocessor RAM (left) and the current value of the

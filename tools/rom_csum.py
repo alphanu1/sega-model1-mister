@@ -44,3 +44,12 @@ for p in sys.argv[1:]:
 #     csum = rot_left_24(csum) ^ low24
 #
 # Run:  tools/rom_csum.py --region build/rom/vr_v60.hex 0x400000 4096
+
+# --- microcode mode --------------------------------------------------------
+#
+# The coprocessor's program RAM read back through its own read port, folded the
+# same way (low 24 bits of each 32-bit word, rotate then XOR). Row 02 folds the
+# LOADER'S INPUT and so cannot see a word that failed to land in the array; this
+# is the array itself.
+#
+#   tools/rom_csum.py --ucode build/rom/vr_tgp_prog.hex

@@ -238,6 +238,7 @@ m1_integrated core (
     .dbg_layer_px(f_layer_px), .dbg_ctrl(f_ctrl),
     .dbg_layer_have(f_have_rtl),
     .dbg_tram_writes(f_tram_wr),
+    .dbg_ucode_ram_csum(f_uc_csum), .dbg_ucode_ram_ok(f_uc_ok),
     .dbg_tgp_ram_writes(f_tgp_ramwr), .dbg_sync_word(f_sync_word),
     .dbg_tm0_writes(f_tm0_wr), .dbg_mask_writes(f_mask_wr),
     .dbg_tm0_text_writes(f_tm0_text), .dbg_tm0_first_pc(f_tm0_pc),
@@ -287,6 +288,8 @@ wire [11:0] f_tm0_text;
 wire [11:0] f_mask_nz;
 wire [23:0] f_tm0_pc;   // board rows 0E and 0C
 wire [11:0] f_tgp_ramwr;
+wire [23:0] f_uc_csum;
+wire        f_uc_ok;
 wire [15:0] f_sync_word;   // board row 0D
 wire [23:0] f_rd_csum;   // board row 06
 wire [23:0] f_rd_a0, f_rd_a1, f_rd_a2, f_rd_a3;   // board rows 0C 0E 07 0B
@@ -1036,6 +1039,8 @@ initial begin
              f_rb_csum);
     $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
+    $display("FRAME: microcode RAM read back = %06h, sweep done=%0b (board row 0C)",
+             f_uc_csum, f_uc_ok);
     $display("FRAME: TGP writes to copro RAM=%0d  sync word=%04h (board row 0D)",
              f_tgp_ramwr, f_sync_word);
     fd = $fopen(PPMOUT, "w");

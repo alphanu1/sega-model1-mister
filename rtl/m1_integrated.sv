@@ -187,6 +187,8 @@ module m1_integrated (
   // CPU writes into tile RAM by region — see m1_main. The counterpart to
   // dbg_layer_have: one says what was written, the other what was read back.
   output logic [11:0] dbg_tram_writes [4],
+  output logic [23:0] dbg_ucode_ram_csum,
+  output logic        dbg_ucode_ram_ok,
   output logic [11:0] dbg_tgp_ram_writes,
   output logic [15:0] dbg_sync_word,
   output logic [11:0] dbg_tm0_writes,
@@ -318,6 +320,7 @@ module m1_integrated (
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
     .dbg_tram_writes(dbg_tram_writes),
+    .dbg_ucode_ram_csum(dbg_ucode_ram_csum), .dbg_ucode_ram_ok(dbg_ucode_ram_ok),
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .dbg_tm0_writes(dbg_tm0_writes), .dbg_mask_writes(dbg_mask_writes),
     .dbg_tm0_text_writes(dbg_tm0_text_writes), .dbg_tm0_first_pc(dbg_tm0_first_pc),
