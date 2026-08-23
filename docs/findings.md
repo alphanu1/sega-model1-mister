@@ -4009,3 +4009,33 @@ the third time in two days a standalone figure has pointed the wrong way:
 
 **Rule: never justify a change with a standalone area number.** Use standalone only to rank
 two versions of the same block, and confirm anything that matters with a full build.
+
+### Which V60 instruction groups the game never touches — and why NOT to cut them
+
+A state census over 200 M CPU cycles and 10.7 M instructions of boot and attract. States
+never entered once, mapped back through the enum:
+
+    18-24    XCH, ROTC, MOVD (64-bit moves)
+    48-52    decimal arithmetic, the whole S_DEC_* group
+    58-71    bit-field insert and every bit-string op, S_BF_INS*/S_BS_*
+    83-88    task switching, S_TASK_*/S_TASI*
+    89-90    PREPARE / DISPOSE
+
+That is a large amount of datapath in a CPU that is **17,771 ALM of a 30,227-ALM core**,
+with the rasterizer (~4-6 k ALM) and the whole sound board (~8-9 k) still to fit into 11,683
+free. Gating the unused groups is the obvious way to close that gap.
+
+**Do not do it on this evidence.** Attract mode exercises a narrow slice of a game. A
+compiler emits PREPARE/DISPOSE around stack frames and MOVD for 64-bit moves, and those can
+appear the moment a race starts; the census proves only that thirty seconds of attract does
+not reach them.
+
+**The distinction that matters:** restructuring the V60 is OPTIMISATION - identical
+behaviour, and `v60_trace`/`v60_resync` report zero divergence sites against MAME, so it is
+provable. Gating a group REMOVES CAPABILITY and cannot be proven by any amount of testing,
+only disproven.
+
+**If it is spent anyway, spend it the way the FP group is spent:** gate the group out AND
+trap its opcodes, so a wrong path raises a visible flag instead of silently computing
+nonsense. That is exactly how the FP group was settled - the trap fired at `FED52B`, and the
+lever stayed unspent. Drive the game through a full race first.

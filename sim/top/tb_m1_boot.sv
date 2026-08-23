@@ -1432,6 +1432,15 @@ initial begin
             st_cyc[bi] = -1;
         end
         $display("BOOT:   total CE cycles in states = %0d", tot);
+        // WHICH STATES NEVER RUN. Each unused instruction group is datapath the
+        // design carries and the game never exercises, and the V60 is 17,771 ALM
+        // of a 30,227-ALM core with the rasterizer and the whole sound board
+        // still to fit. st_cyc has been consumed by the ranking above, so use
+        // st_free, which the loop does not disturb.
+        $write("BOOT:   states never entered:");
+        for (sc_i = 0; sc_i < 128; sc_i = sc_i + 1)
+            if (st_free[sc_i] == 0 && st_cyc[sc_i] == 0) $write(" %0d", sc_i);
+        $display("");
     end
     $display("BOOT: data access sizes: byte=%0d half=%0d word=%0d (word unaligned=%0d)",
              sz_b, sz_h, sz_w, sz_un);
