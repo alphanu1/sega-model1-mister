@@ -796,8 +796,20 @@ else if (ce) begin
                 // mux per byte and 8 is a 9:1, multiplied by 24 bytes of 8 bits.
                 // Built both, Quartus 17.0, the V60 alone:
                 //
-                //     shift 8   20,614 ALM
-                //     shift 4   20,129 ALM      485 ALM for the widening
+                //     shift 8   20,614 ALM        STANDALONE
+                //     shift 4   20,129 ALM        485 ALM apart
+                //
+                // AND THAT 485 IS A STANDALONE ARTEFACT. Measured again in the
+                // full core, which is the only number that decides anything:
+                //
+                //     shift 8   17,817 ALM   +0.331 ns slack
+                //     shift 4   17,771 ALM   +0.639 ns slack
+                //
+                // FORTY-SIX ALM, inside fit-to-fit noise. What the narrower shift
+                // really buys is TIMING - the 9:1 mux was on the critical path,
+                // and 0.3 ns of slack on a design that has been down to +0.024 ns
+                // is worth more than 2% of CPU speed. That is the reason it is 4;
+                // the area argument this comment first gave was wrong.
                 //
                 // and it bought 1.7% - mean CPI 17.9 -> 17.6 - because the
                 // shifting bucket was already only 1.0 cycle an instruction. A

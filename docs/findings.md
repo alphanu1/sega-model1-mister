@@ -3986,3 +3986,26 @@ alone with virtual pins is not the module in context. The V60 reports 20,129 ALM
 and 17,817 in the core; the area setting saves 13% standalone and 2% in place. Standalone
 numbers are for comparing two versions of the same block, never for predicting what a change
 does to the design.
+
+### CORRECTION: the 485 ALM was standalone; in the core it is 46
+
+The realign shift was reverted from 8 bytes to 4 on a standalone measurement of 485 ALM.
+Rebuilt in the full core:
+
+    shift 8   17,771 -> 17,817 ALM   +0.331 ns slack
+    shift 4                17,771    +0.639 ns
+
+**Forty-six ALM, inside fit-to-fit noise**, against 2% of CPU speed. The area justification
+was wrong.
+
+The revert stands, for a reason that was not measured at the time: **the 9:1 mux is on the
+critical path**, and 0.3 ns of slack on a design that has been down to +0.024 ns is worth
+more than 2% of the CPU. But the number in the commit message was misleading, and this is
+the third time in two days a standalone figure has pointed the wrong way:
+
+- the V60 measures 20,129 ALM alone and 17,771 in place
+- Aggressive Area saves 2,631 alone and 595 in the core, while costing 11 M10K
+- this shift saves 485 alone and 46 in place
+
+**Rule: never justify a change with a standalone area number.** Use standalone only to rank
+two versions of the same block, and confirm anything that matters with a full build.
