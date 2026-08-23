@@ -571,6 +571,20 @@ endtask
 //   modm=0: 0..2 Disp8/16/32, 3 RegInd, 4..6 DispIndirect(deferred), 7 Group7
 //   modm=1: 0..2 DoubleDisp,  3 Reg,    4 AutoInc, 5 AutoDec, 6 Group6(idx)
 // ---------------------------------------------------------------------------
+// SHARED STACK-POINTER ARITHMETIC.
+//
+// `r[31] - 4` is written out at eleven separate dbus_addr sites and `r[31] + 4`
+// at more, in different branches of a 90-state case. Each is a 32-bit
+// subtractor, and whether the synthesiser shares them across branches is its
+// choice rather than ours. Naming them makes it structural.
+//
+// Safe against the write port: r[31] is only updated by non-blocking assignment
+// in the register-file block, so a continuous assignment reads exactly what an
+// inline expression in the same cycle would.
+wire [31:0] sp_val  = r[31];
+wire [31:0] sp_m4   = r[31] - 32'd4;
+wire [31:0] sp_p4   = r[31] + 32'd4;
+
 wire [7:0] modval  = fb[ea_ofs];
 wire [4:0] modreg  = modval[4:0];
 wire [2:0] modtop  = modval[7:5];
@@ -997,7 +1011,7 @@ else if (ce) begin
             logic [15:0] bd16;
             bd16 = fb16(1);
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= pc + 3;
             queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
             wb_val <= pc + {{16{bd16[15]}}, bd16};
@@ -1959,7 +1973,7 @@ else if (ce) begin
     S_CALL1b: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= wb_val;          // return PC
             queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
         end
@@ -1999,7 +2013,7 @@ else if (ce) begin
     S_RETI2: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-            dbus_addr <= r[31] + 4;
+            dbus_addr <= sp_p4;
         end
         else if (dack) begin
             dbus_req <= 0;
@@ -2045,7 +2059,7 @@ else if (ce) begin
             logic [4:0] idx;
             idx = pushm_index(op1);
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             // Mask bit 31 pushes PSW, not r31 (audit R20 V60-11): the old code
             // pushed the SP value there and PSW save/restore was lost.
             dbus_wdata <= (idx == 5'd31) ? psw : rf_rdata_a;
@@ -3082,7 +3096,7 @@ else if (ce) begin
     S_EXC_EXTRA: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= exc_extra;
         end
         else if (dack) begin
@@ -3094,7 +3108,7 @@ else if (ce) begin
     S_EXC_CODE: begin         // push code+size word (trap-class only)
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= exc_code;
         end
         else if (dack) begin
@@ -3106,7 +3120,7 @@ else if (ce) begin
     S_EXC_PUSH2: begin        // push old PSW
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= exc_pushval;
         end
         else if (dack) begin
@@ -3118,7 +3132,7 @@ else if (ce) begin
     S_EXC_JMP: begin          // push return PC (A2: PC+len for TRAP)
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= r[31] - 4;
+            dbus_addr <= sp_m4;
             dbus_wdata <= exc_retpc;
         end
         else if (dack) begin
@@ -3797,7 +3811,7 @@ task automatic exec_op;
     8'h49: begin
         // MAME opCALL: SP-=4; [SP]=AP; AP=op2; SP-=4; [SP]=retPC; PC=op1.
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-        dbus_addr <= r[31] - 4;
+        dbus_addr <= sp_m4;
         dbus_wdata <= r[29];          // push AP (R29) first
         queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
         queue_reg_write(5'd29, op2, 32'hffff_ffff); // AP (R29) = op2
@@ -3893,7 +3907,7 @@ task automatic exec_op;
     end
     8'he8, 8'he9: begin // JSR
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-        dbus_addr <= r[31] - 4;
+        dbus_addr <= sp_m4;
         dbus_wdata <= pc + 5'd1 + len1;
         queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
         wb_val <= op1;
@@ -3911,7 +3925,7 @@ task automatic exec_op;
     end
     8'hee, 8'hef: begin // PUSH
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-        dbus_addr <= r[31] - 4;
+        dbus_addr <= sp_m4;
         dbus_wdata <= op1;
         queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
         total_len <= 5'd1 + len1;
@@ -3936,7 +3950,7 @@ task automatic exec_op;
     end
     8'hde, 8'hdf: begin // PREPARE: push FP (R30); FP=SP; SP -= imm
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-        dbus_addr <= r[31] - 4;
+        dbus_addr <= sp_m4;
         dbus_wdata <= r[30];
         total_len <= 5'd1 + len1;
         st <= S_PREP1;

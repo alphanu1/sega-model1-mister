@@ -4039,3 +4039,33 @@ only disproven.
 trap its opcodes, so a wrong path raises a visible flag instead of silently computing
 nonsense. That is exactly how the FP group was settled - the trap fired at `FED52B`, and the
 lever stayed unspent. Drive the game through a full race first.
+
+### Expression sharing in the V60 is worth 25 ALM — the area is structural
+
+`r[31] - 4` appears at eleven separate `dbus_addr` sites and `r[31] + 4` at more, spread
+through a 90-state case. Naming them as shared wires:
+
+    baseline          20,129 ALM   (standalone)
+    shared sp_m4/p4   20,104 ALM   -25
+
+**Quartus was already sharing them**, and that is the useful result. Taken with the earlier
+findings - 128 distinct `Add*` nodes, a register file that is almost entirely
+constant-indexed, and `Aggressive Area` saving only 2% in context - the conclusion is that
+**the V60's 17,771 ALM is not duplicated logic that a refactor can fold together.**
+
+**This also means splitting it into modules will not, by itself, save area.** Quartus
+flattens hierarchy to optimise across it; drawing boundaries buys VISIBILITY and can cost
+area by blocking cross-boundary sharing. The split is still worth doing for what it reveals
+and for the pipelining it enables - but it should not be sold as an area fix on its own.
+
+**What would actually reduce it** is a different implementation, not a reorganisation of
+this one: the cost is the control-to-datapath mux network of a ~90-state machine in which
+each state drives wide registers directly. A microcoded or pipelined V60 replaces that with a
+narrow control word and one shared datapath. That is a reimplementation measured in weeks,
+against a CPU that currently matches MAME instruction-for-instruction with zero divergence
+sites.
+
+**So the M4 budget gap should be closed from the other end first.** ~2-4 k ALM short, and
+the sound board is the unbuilt part: a smaller 68000 core than fx68k, or one MultiPCM
+time-multiplexed across both channels rather than two instances, are both cheaper and less
+risky than reimplementing a working CPU.
