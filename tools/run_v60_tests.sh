@@ -94,8 +94,11 @@ for tb in $ORDER; do
   # the repository - tools/bootstrap.sh populates it - so an edit there would be
   # silently undone on the next clean checkout, which is exactly the kind of
   # change that comes back as a mystery failure months later.
+  # Both the fetch window and the register file are submodules now, and the
+  # tests reach into them: `cpu.fb[3] = ...` to inject an instruction byte, and
+  # `cpu.r[31]` to set up and check the stack pointer.
   if grep -q 'cpu\.fb\[' "$src"; then
-      sed 's/cpu\.fb\[/cpu.u_ifetch.fb[/g' "$src" > "$bdir/${tb}.sv"
+      sed -e 's/cpu\.fb\[/cpu.u_ifetch.fb[/g' "$src" > "$bdir/${tb}.sv"
       src="$bdir/${tb}.sv"
   fi
   if is_icarus "$tb"; then

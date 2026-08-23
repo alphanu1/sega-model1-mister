@@ -4125,3 +4125,34 @@ of its cycles starved for instruction bytes - then:
 **And the line worth keeping from that entry:** *"the broken build CLOSED TIMING. Static
 analysis says the paths are met, not that the design is right, and the guard cannot see a
 module wired to the wrong clock."*
+
+### The register file CANNOT be extracted as-is: rf_we* are blocking temporaries
+
+Second extraction attempted after `v60_ifetch` succeeded, and reverted. It failed
+`tb_v60_audit`, `tb_v60_search` and `tb_v60_cmpc` with wrong register values, and the reason
+is structural rather than a wiring slip.
+
+Every architectural update is funnelled through two masked ports, which looks like a clean
+boundary:
+
+    rf_we0 = 1'b0;              // cleared at the top of the FSM's always block
+    ...
+    rf_we0 = 1'b1;              // set by queue_reg_write, BLOCKING, inside a task
+    ...
+    if (rf_we0 && rf_wmask0[b]) r[waddr0][b] <= wdata0[b];   // consumed in the SAME block
+
+**They are intra-block temporaries, not registers.** The write decode at the end of the
+always block sees the value the tasks set during that same evaluation. Move the decode into
+a submodule and it samples them at the clock edge instead - which is the value left over from
+the PREVIOUS cycle. Most instructions still pass; the ones that queue two writes, or write
+then immediately read, do not.
+
+**So the boundary is real but the signalling is not.** Extracting the register file needs
+`rf_we*`/`rf_waddr*`/`rf_wdata*`/`rf_wmask*` produced by an `always_comb` first, so they are
+genuine combinational outputs of the FSM rather than scratch variables. That is a change to
+how every write is queued, and it should be made and verified on its own before any
+extraction depends on it.
+
+**General rule for the remaining splits:** a signal set with `=` inside a clocked block and
+consumed later in that same block is not an interface, however much it looks like one. Check
+the assignment operator before drawing the boundary.

@@ -85,17 +85,26 @@ module v60_ifetch #(
     wire [63:0] if_data   = if_data_i;
 
     // Early-decode threshold, unchanged from v60.sv.
+    //
+    // The three bytes it inspects are pulled out first: Icarus reports "constant
+    // selects in always_* processes are not fully supported (the process will be
+    // sensitive to all bits)" for fb[1][7:5] inside the block, and six of the
+    // unit tests run under Icarus.
+    wire [7:0] fb_b0 = fb[0];
+    wire [7:0] fb_b1 = fb[1];
+    wire [7:0] fb_b2 = fb[2];
+
     always_comb begin
         fb_need = FB_THRESH;
         if (fb_valid_r != 0) begin
-            casez (fb[0])
+            casez (fb_b0)
                 8'h00, 8'hc8, 8'hc9, 8'hca, 8'hcd: fb_need = 5'd1;
                 8'b0110_????:                      fb_need = 5'd2;
                 8'b0111_????, 8'h48:               fb_need = 5'd3;
                 8'hc6, 8'hc7:                      fb_need = 5'd4;
                 8'h2d: begin
                     if (fb_valid_r < 3) fb_need = 5'd3;
-                    else if (fb[1][7:5] == 3'b001 && fb[2] == 8'hf4) fb_need = 5'd11;
+                    else if (fb_b1[7:5] == 3'b001 && fb_b2 == 8'hf4) fb_need = 5'd11;
                 end
                 default: ;
             endcase
