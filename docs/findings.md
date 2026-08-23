@@ -4156,3 +4156,47 @@ extraction depends on it.
 **General rule for the remaining splits:** a signal set with `=` inside a clocked block and
 consumed later in that same block is not an interface, however much it looks like one. Check
 the assignment operator before drawing the boundary.
+
+## The scroll latch FIXED the picture; the coprocessor now blocks the V60 — 2026-08-23
+
+**The jumping is gone.** Latching the scroll and control words once per frame at vblank
+begin - where `screen_device::vblank_begin` renders and where `draw_common` reads them -
+gives a stable horizon on hardware: sky above, sea below, layer 2 winning `02E800` = 190,464
+pixels, the whole visible area. That was the fault behind "sea and sky jumping up and down
+and off the top of the screen", and it came from the Kaneko16 core's identical finding.
+
+**And the core is now hung, on one fault with a clear chain:**
+
+    row 0F  000035    TGP retires = 53
+    row 10  0007E6    TGP pc = 0x7E6
+    rows 06/0C/0E/07/0B  all zero   the coprocessor made NO SDRAM reads at all
+    row 00  FE8B1E    V60 PC, FROZEN
+    row 01  15580E    1,398,798 instruction fetches, frozen
+
+The coprocessor is stuck, so it never drains the command FIFO; the FIFOs are a mutual
+hardware interlock (`model1_m.cpp:29-44`), so the V60 fills the input FIFO and halts. **The
+V60 is a victim here, not the cause** - and `FE8B1E` is above `FE6C`, which is the highest
+address MAME ever executes, so it is off in the weeds exactly as `FED5A4` was.
+
+**Not timing.** `clk_cpu` closes with **9.944 ns** of slack; only `clk_sys` is near the edge
+at +0.379. The combinational instruction-cache hit added on 2026-08-22 is in the CPU domain
+and is nowhere near critical.
+
+**Not reproduced in simulation.** `tb_m1_frame` runs past 300 M cycles with the PC and frame
+counter advancing, and reaches TGP pc `004c` - the command-wait loop - with 342 retires and
+text rendering, `tm0=9787`.
+
+### 53 retires at 0x7E6 is the empty-program-RAM signature
+
+That is where a coprocessor executing zeros ends up: a zero word decodes as `lab`, so
+`ldi #0x8000, b0` never writes `b0` - the fault that opened this whole investigation, then
+found to be a testbench race.
+
+**Row 02's `800B9A` does not disprove it.** That checksum is folded at the loader's IOCTL
+INPUT, before the FIFO and before the write, so it proves the HPS delivered 2048 correct
+words and nothing about what reached the TGP's program RAM. It is exactly the gap that rows
+07/0B had for SDRAM, and that the read-back sweep closed by reading the memory back.
+
+**Next instrument: read the TGP's program RAM back and fold it**, the same way
+`v60_ifetch`'s SDRAM sweep does, and compare against `tools/rom_csum.py` over
+`vr_tgp_prog.hex`. Until that exists, "the microcode arrived" is an assumption.
