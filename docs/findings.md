@@ -3962,3 +3962,27 @@ the handshake was costing ~2.5 CPU cycles on data sitting in a register array.
   `fb32(ea_ofs+1)` appears at five call sites in different always blocks. Naming them as
   shared wires **broke `tb_v60_search`** and was reverted. Worth retrying only after
   understanding why, rather than assuming Quartus was not already sharing them.
+
+### Aggressive Area on the full core: DO NOT — it trades the binding resource
+
+The V60 alone drops 2,631 ALM under `OPTIMIZATION_MODE "Aggressive Area"` +
+`OPTIMIZATION_TECHNIQUE AREA`, 20,129 -> 17,498, for 3.5% of Fmax. On the full core it does
+not transfer:
+
+    default (HIGH PERFORMANCE EFFORT / SPEED)   30,206 ALM   452 M10K   +0.331 ns
+    Aggressive Area / AREA                      29,611 ALM   463 M10K   +0.024 ns
+                                                  -595        +11
+
+**595 ALM, +11 M10K, and almost no setup slack.** M10K is the binding resource here - 82%
+before this, 84% after, with the rasterizer's band buffer wanting ~51 blocks - so it spends
+the scarce resource to save the plentiful one. And +0.024 ns is one unlucky fit from a
+failing build.
+
+The knob stays available as `M1_QOPT="Aggressive Area" make rbf` with this measurement
+beside it, and the default is unchanged.
+
+**The general lesson, which cost two 25-minute builds to learn twice:** a module measured
+alone with virtual pins is not the module in context. The V60 reports 20,129 ALM standalone
+and 17,817 in the core; the area setting saves 13% standalone and 2% in place. Standalone
+numbers are for comparing two versions of the same block, never for predicting what a change
+does to the design.

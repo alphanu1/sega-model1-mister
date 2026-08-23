@@ -223,8 +223,27 @@ if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
 EOF
 
 # Project settings: the template's, with the entity and the file list swapped.
+#
+# OPTIMISATION TARGET IS OVERRIDABLE, because it is worth a lot of area here. The
+# MiSTer template asks for HIGH PERFORMANCE EFFORT and OPTIMIZATION_TECHNIQUE
+# SPEED. Measured on the V60 alone, Quartus 17.0:
+#
+#     Aggressive Performance   20,129 ALM   24.92 MHz
+#     Aggressive Area          17,498 ALM   24.06 MHz
+#
+# 2,631 ALM - 13% - for 3.5% of Fmax, which is more than every RTL change made
+# for area put together, and it cannot break correctness. Whether the full core
+# keeps that ratio, and whether it still closes timing, is what
+# M1_QOPT="Aggressive Area" is for.
 sed -e 's/^source files.qip$/source files.qip/' \
     "$tpl/Template.qsf" > "$stage/Model1.qsf"
+
+if [ -n "${M1_QOPT:-}" ]; then
+    sed -i -e "s/^set_global_assignment -name OPTIMIZATION_MODE .*/set_global_assignment -name OPTIMIZATION_MODE \"$M1_QOPT\"/" \
+           -e 's/^set_global_assignment -name OPTIMIZATION_TECHNIQUE .*/set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA/' \
+           "$stage/Model1.qsf"
+    echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = AREA"
+fi
 
 cat > "$stage/Model1.qpf" <<'EOF'
 QUARTUS_VERSION = "17.0"
