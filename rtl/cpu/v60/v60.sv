@@ -188,9 +188,23 @@ reg [4:0]  fb_valid;         // valid byte count decode may read (0..24)
 // frontier without disturbing what decode consumes (P1 scaffolding; today it
 // tracks fb_valid exactly, so behavior is bit-identical).
 reg [4:0]  fb_wr;
+// THE LOOP CACHE, and whether it earns its keep is a build option.
+//
+// 24 bytes of registers plus a full 24-byte copy in and out, a base compare and
+// the pf_suppress interlock. Defined out, a branch back into the previous window
+// refetches instead of restoring, which costs cycles and saves the copy network.
+// Measured both ways in docs/findings.md.
+`ifndef V60_NO_LOOP_CACHE
 reg [7:0]  fb_prev[0:23];   // previous sequential window for tight loops
 reg [31:0] fb_prev_base;
 reg [4:0]  fb_prev_valid;
+`else
+// Tied off: the restore path below tests fb_prev_valid != 0, which is never true
+// here, so the whole copy network optimises away while the code stays readable.
+wire [7:0]  fb_prev[0:23] = '{default: 8'd0};
+wire [31:0] fb_prev_base  = 32'd0;
+wire [4:0]  fb_prev_valid = 5'd0;
+`endif
 reg        fb_realigning;
 localparam [4:0] FB_THRESH = 5'd20;   // max instruction length
 wire [7:0] opcode = fb[0];
@@ -752,8 +766,10 @@ else if (ce) begin
         fb_base <= START_PC;
         fb_valid <= 0;
         fb_wr <= 0;
+`ifndef V60_NO_LOOP_CACHE
         fb_prev_base <= START_PC;
         fb_prev_valid <= 0;
+`endif
         fb_realigning <= 0;
         st <= S_FILL;
         st_after_fill <= S_DECODE;
@@ -800,11 +816,13 @@ else if (ce) begin
                 // has not.
                 logic [4:0] s;
                 s = (delta >= 32'd4) ? 5'd4 : delta[4:0];
+`ifndef V60_NO_LOOP_CACHE
                 if (!fb_realigning) begin
                     for (int i = 0; i < 24; i++) fb_prev[i] <= fb[i];
                     fb_prev_base  <= fb_base;
                     fb_prev_valid <= fb_valid;
                 end
+`endif
                 for (int i = 0; i < 24; i++)
                     if (i + s < 24) fb[i] <= fb[i + s];
                 fb_base  <= fb_base + {27'b0, s};
@@ -828,7 +846,9 @@ else if (ce) begin
                     fb_valid <= 0;
                     fb_wr    <= 0;
                     fb_base  <= pc;
+`ifndef V60_NO_LOOP_CACHE
                     fb_prev_valid <= 0;
+`endif
                     pf_suppress <= 1'b0;         // real branch out: resume lookahead
                 end
             end
@@ -3224,8 +3244,11 @@ else if (ce) begin
             fb_wr    <= 5'd0;
             pf_epoch <= pf_epoch + 4'd1;  // void any in-flight prefetch too
         end
+`ifndef V60_NO_LOOP_CACHE
+        // Self-modifying code invalidates the cached window.
         if (fb_prev_valid != 0 && dbus_addr < pv_end && wr_end > fb_prev_base)
             fb_prev_valid <= 5'd0;
+`endif
     end
 
     // Port 1 is applied second so the final queued write retains the original

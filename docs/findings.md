@@ -3914,3 +3914,51 @@ Two things follow:
 2. **It is another instrument pointing at `FED5xx`.** The V60 spinning there was read all
    week as a legitimate poll on the coprocessor sync word. A reserved opcode inside the same
    page is hard to square with that, and worth following.
+
+## V60 area and speed: what each knob is actually worth — 2026-08-23
+
+Every figure below is Quartus 17.0 on the V60 alone, and `make m1_boot` at 400 M cycles for
+the CPI. Standalone ALM runs higher than in-core (20,129 against 17,817) because the fitter
+cannot optimise across the boundary; the DELTAS are the usable part.
+
+| build | ALM | Fmax | mean CPI |
+|---|---|---|---|
+| baseline (shift 4, loop cache) | **20,129** | | **14.9** |
+| realign shift 8 | 20,614 (+485) | | 14.6 (-2%) |
+| no loop cache | 19,962 (-167) | | 15.5 (+4%) |
+| no FP group | 18,672 (-1,942) | 45.98 MHz vs 24.92 | — (unsafe) |
+
+**Conclusions, and two of them go against the change that produced them:**
+
+- **The realign widening is reverted.** 485 ALM for 1.7% is the wrong trade with the core at
+  72% of the device and a rasterizer still to fit.
+- **The loop cache stays.** Removing it saves 167 ALM and costs 4% - the worst ratio of the
+  three.
+- **The FP group stays**, and not for its cost: a run under `S32_V60_NO_FP` executes a
+  *reserved* FP opcode at `FED52B`, in a page MAME never enters. See the entry above.
+
+### Where the V60's cycles go, measured
+
+A state census over 100 M CPU cycles, counting CE cycles per FSM state:
+
+    S_FILL            33%   never touches the data bus
+      of which:  shifting 1.0/instr, dispatch 1.0/instr, STARVED-ALIGNED 3.3/instr
+    S_OP2_LD          20%   almost entirely genuine memory wait
+    S_DECODE..S_NEXT  28%   pure FSM stepping, all bus-free
+    S_WB_MEM/S_EA_VAL 12%   memory wait
+
+**The starved-aligned bucket is where the win was**, and answering instruction-cache hits
+combinationally took mean CPI from 17.6 to 14.6 - the cache already hit 99% of the time, and
+the handshake was costing ~2.5 CPU cycles on data sitting in a register array.
+
+### What is NOT the area hog, so nobody re-derives it
+
+- **The register file.** 105 references to `r[]`, but 52 are `r[31]` and nearly all the rest
+  are constant indices - only four are variable. Constant reads are free.
+- **Replicated adders** are real - 128 distinct `Add*` nodes - but sharing them means
+  restructuring a 4,601-line FSM, and the PC alone has 19 increment sites with different
+  deltas.
+- **`fb32(o)`/`fb16(o)`** expand to four and two 24:1 byte muxes each, and
+  `fb32(ea_ofs+1)` appears at five call sites in different always blocks. Naming them as
+  shared wires **broke `tb_v60_search`** and was reverted. Worth retrying only after
+  understanding why, rather than assuming Quartus was not already sharing them.
