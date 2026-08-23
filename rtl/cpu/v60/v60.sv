@@ -48,7 +48,7 @@ module s32_v60 #(
     // dedicated instruction-fetch port (used only when FAST_IFETCH=1): request an
     // 8-byte line at if_addr; if_data/if_ack return it.  Left unconnected when
     // FAST_IFETCH=0 (the internal reads are forced to 0 so no X propagates).
-    output reg        if_req,
+    output logic      if_req,
     output     [23:0] if_addr,       // frontier byte address; s32_core reads the
                                      // containing 8-byte line and returns it already
                                      // aligned so byte0 == the frontier byte (the
@@ -138,8 +138,8 @@ assign dbg_halted = halted;
 reg        dbus_req, dbus_we;
 reg [31:0] dbus_addr, dbus_wdata;
 reg  [1:0] dbus_size;
-reg        pf_req;               // instruction-prefetch bus request
-reg [31:0] pf_addr;
+wire       pf_req;               // instruction-prefetch bus request, from v60_ifetch
+wire [31:0] pf_addr;   // driven by v60_ifetch
 localparam [1:0] OWN_NONE = 2'd0, OWN_D = 2'd1, OWN_PF = 2'd2;
 reg  [1:0] bus_owner;
 reg        bus_req_d;   // bus_req delayed one ce: gates a fresh grant so bus_req
@@ -164,80 +164,35 @@ wire pf_ack = bus_ack && (bus_owner == OWN_PF);
 // the decode-visible fb_valid while the EXU executes.  A rebased or shifted
 // window discards a stale ack via an epoch tag; the data port keeps priority.
 // ---------------------------------------------------------------------------
-reg        pf_busy;           // 0 = idle, 1 = awaiting pf_ack (pf_addr drives the bus)
+// pf_busy and pf_addr live in v60_ifetch now.
 reg  [3:0] pf_epoch;          // bumped on every window rebase/flush
 reg  [3:0] pf_iss_epoch;      // epoch captured when the in-flight fetch issued
-reg        pf_suppress;       // 1 while in an fb_prev-cached loop: skip lookahead
-localparam [4:0] PF_HIGH = 5'd20;   // lookahead fill target (bytes ahead of PC)
-// dedicated fast-fetch port: line address of the in-flight prefetch; ack/data
-// forced to 0 when FAST_IFETCH=0 so an unconnected if_* input cannot inject X.
-assign      if_addr   = pf_addr[23:0];   // full byte address; s32_core aligns by [2:0]
-wire        if_ack_i  = FAST_IFETCH ? if_ack  : 1'b0;
-wire [63:0] if_data_i = FAST_IFETCH ? if_data : 64'b0;
-wire        fetch_ack = FAST_IFETCH ? if_ack_i : pf_ack;  // ack from the active port
+localparam [4:0] PF_HIGH = 5'd20;   // lookahead fill target, passed to v60_ifetch
+// if_addr, if_req and the FAST_IFETCH port muxing live in v60_ifetch, which owns
+// the prefetch state that drives them.
 
 // ---------------------------------------------------------------------------
 // fetch buffer: 16 bytes from PC, filled before each decode
 // ---------------------------------------------------------------------------
-reg [7:0]  fb[0:23];        // 24 bytes: worst-case instruction is 20 bytes
-reg [31:0] fb_base;          // PC the buffer window starts at
-reg [4:0]  fb_valid;         // valid byte count decode may read (0..24)
-// fb_wr: fetch/write frontier — the count of bytes already fetched into the
-// window (address of next byte to fetch = fb_base + fb_wr).  Decoupled from
-// fb_valid (the read limit) so a concurrent prefetcher can advance the fetch
-// frontier without disturbing what decode consumes (P1 scaffolding; today it
-// tracks fb_valid exactly, so behavior is bit-identical).
-reg [4:0]  fb_wr;
-// THE LOOP CACHE, and whether it earns its keep is a build option.
-//
-// 24 bytes of registers plus a full 24-byte copy in and out, a base compare and
-// the pf_suppress interlock. Defined out, a branch back into the previous window
-// refetches instead of restoring, which costs cycles and saves the copy network.
-// Measured both ways in docs/findings.md.
-`ifndef V60_NO_LOOP_CACHE
-reg [7:0]  fb_prev[0:23];   // previous sequential window for tight loops
-reg [31:0] fb_prev_base;
-reg [4:0]  fb_prev_valid;
-`else
-// Tied off: the restore path below tests fb_prev_valid != 0, which is never true
-// here, so the whole copy network optimises away while the code stays readable.
-wire [7:0]  fb_prev[0:23] = '{default: 8'd0};
-wire [31:0] fb_prev_base  = 32'd0;
-wire [4:0]  fb_prev_valid = 5'd0;
-`endif
-reg        fb_realigning;
+// THE FETCH WINDOW LIVES IN v60_ifetch NOW. It is exposed flat and unpacked
+// here, so the ~70 places the decoder reads fb[] are unchanged.
+wire [191:0] fb_flat;
+wire [7:0]   fb[0:23];
+generate
+    genvar fbi;
+    for (fbi = 0; fbi < 24; fbi = fbi + 1) begin : g_fb
+        assign fb[fbi] = fb_flat[fbi*8 +: 8];
+    end
+endgenerate
+wire [31:0] fb_base;
+wire [4:0]  fb_valid, fb_need, fb_wr;
+wire        fill_ready;
+
 localparam [4:0] FB_THRESH = 5'd20;   // max instruction length
 wire [7:0] opcode = fb[0];
 
-// Conservative early-decode threshold.  Complex addressing modes keep the
-// 20-byte worst-case requirement; only fixed encodings used heavily in branch
-// loops decode sooner.  This avoids five 32-bit fetches after every taken
-// branch while preserving the existing safety margin for variable-length EAs.
-reg [4:0] fb_need;
-always @* begin
-    fb_need = FB_THRESH;
-    if (fb_valid != 0) begin
-        casez (fb[0])
-            8'h00,                         // HALT
-            8'hc8, 8'hc9, 8'hca, 8'hcd: fb_need = 5'd1; // BRK/V, RSR, NOP
-            8'b0110_????:                fb_need = 5'd2; // Bcc disp8
-            8'b0111_????, 8'h48:          fb_need = 5'd3; // Bcc/BSR disp16
-            8'hc6, 8'hc7:                 fb_need = 5'd4; // DBcc/TB
-            8'h2d: begin
-                // F2 MOVW #imm32,Rn: 2D, 20|Rn, F4, imm32.
-                // Wait for the mode byte before choosing the exact length.
-                if (fb_valid < 3) fb_need = 5'd3;
-                else if (fb[1][7:5] == 3'b001 && fb[2] == 8'hf4)
-                    // Fetch through a following four-byte DBcc.  The saved
-                    // window below can then serve a tight MOVW/DBcc loop
-                    // without any repeated ROM transactions.
-                    fb_need = 5'd11;
-            end
-            default: ;
-        endcase
-    end
-end
-
+// The window accessors stay here with the decoder that uses them; only the
+// storage and its fill logic moved.
 function automatic [31:0] fb32(input [4:0] o);
     fb32 = {fb[o+3], fb[o+2], fb[o+1], fb[o]};
 endfunction
@@ -245,10 +200,6 @@ function automatic [15:0] fb16(input [4:0] o);
     fb16 = {fb[o+1], fb[o]};
 endfunction
 
-// ---------------------------------------------------------------------------
-// EA engine state
-// ---------------------------------------------------------------------------
-// plan for current instruction operands
 reg        ea_want_addr;    // 0 = ReadAM (value), 1 = ReadAMAddress
 reg [1:0]  ea_dim;          // 0=B 1=H 2=W
 reg        ea_modm;
@@ -729,12 +680,7 @@ if (rst) begin
     xdiv_active <= 0;
     bus_owner <= OWN_NONE;
     bus_req_d <= 0;
-    pf_req <= 0;
-    if_req <= 0;
-    pf_busy <= 0;
-    pf_epoch <= 0;
-    pf_iss_epoch <= 0;
-    pf_suppress <= 0;
+    // pf_req, if_req and the prefetch state reset inside v60_ifetch.
 end
 else if (ce) begin
     // bus ownership: grant per-transaction, data priority, hold until ack.  A
@@ -777,14 +723,7 @@ else if (ce) begin
         trmode <= 0;
         adtr0 <= 0; adtr1 <= 0; adtmr0 <= 0; adtmr1 <= 0;
         halted <= 0;
-        fb_base <= START_PC;
-        fb_valid <= 0;
-        fb_wr <= 0;
-`ifndef V60_NO_LOOP_CACHE
-        fb_prev_base <= START_PC;
-        fb_prev_valid <= 0;
-`endif
-        fb_realigning <= 0;
+        // The fetch window resets inside v60_ifetch.
         st <= S_FILL;
         st_after_fill <= S_DECODE;
        
@@ -798,104 +737,13 @@ else if (ce) begin
     //    Other misses invalidate normally.
     //  - top-up 4 bytes per 32-bit logical read until fb_need is valid.
     S_FILL: begin
-        if (fb_base != pc) begin
-            logic [31:0] delta;
-            delta = pc - fb_base;
-            if (delta < {27'b0, fb_valid}) begin
-                // Consume min(delta,4) bytes this cycle.
-                //
-                // WIDENED TO 8 ON 2026-08-22 AND REVERTED ON 2026-08-23, ON
-                // MEASUREMENTS RATHER THAN THE ORIGINAL GUESS. Each of the 24
-                // bytes in fb[] needs a mux selecting fb[i..i+s], so 4 is a 5:1
-                // mux per byte and 8 is a 9:1, multiplied by 24 bytes of 8 bits.
-                // Built both, Quartus 17.0, the V60 alone:
-                //
-                //     shift 8   20,614 ALM        STANDALONE
-                //     shift 4   20,129 ALM        485 ALM apart
-                //
-                // AND THAT 485 IS A STANDALONE ARTEFACT. Measured again in the
-                // full core, which is the only number that decides anything:
-                //
-                //     shift 8   17,817 ALM   +0.331 ns slack
-                //     shift 4   17,771 ALM   +0.639 ns slack
-                //
-                // FORTY-SIX ALM, inside fit-to-fit noise. What the narrower shift
-                // really buys is TIMING - the 9:1 mux was on the critical path,
-                // and 0.3 ns of slack on a design that has been down to +0.024 ns
-                // is worth more than 2% of CPU speed. That is the reason it is 4;
-                // the area argument this comment first gave was wrong.
-                //
-                // and it bought 1.7% - mean CPI 17.9 -> 17.6 - because the
-                // shifting bucket was already only 1.0 cycle an instruction. A
-                // state census puts S_FILL at 33% of all CPU cycles but splits it
-                //
-                //     shifting  1.0/instruction     dispatch 1.0/instruction
-                //     starved-aligned 3.3/instruction
-                //
-                // so the win was never in the shift width. With the core at 72%
-                // of the device and a rasterizer still to fit, 485 ALM for 1.7%
-                // is the wrong trade.
-                //
-                // The note this replaces said "Revisit only with a real STA
-                // report" and that has now been done: the core closes at
-                // +0.331 ns, so the timing objection has gone - the AREA one
-                // has not.
-                logic [4:0] s;
-                s = (delta >= 32'd4) ? 5'd4 : delta[4:0];
-`ifndef V60_NO_LOOP_CACHE
-                if (!fb_realigning) begin
-                    for (int i = 0; i < 24; i++) fb_prev[i] <= fb[i];
-                    fb_prev_base  <= fb_base;
-                    fb_prev_valid <= fb_valid;
-                end
-`endif
-                for (int i = 0; i < 24; i++)
-                    if (i + s < 24) fb[i] <= fb[i + s];
-                fb_base  <= fb_base + {27'b0, s};
-                fb_valid <= fb_valid - s;
-                fb_wr    <= fb_wr - s;   // frontier shifts down with the window
-                fb_realigning <= (delta > 32'd4);
-            end
-            else begin
-                fb_realigning <= 0;
-                // window rebased (branch out of window / loop-cache restore):
-                // void any prefetch already in flight for the old window.
-                pf_epoch <= pf_epoch + 4'd1;
-                if (fb_prev_valid != 0 && pc == fb_prev_base) begin
-                    for (int i = 0; i < 24; i++) fb[i] <= fb_prev[i];
-                    fb_valid <= fb_prev_valid;
-                    fb_wr    <= fb_prev_valid;   // restored window: frontier = restored count
-                    fb_base  <= fb_prev_base;
-                    pf_suppress <= 1'b1;         // loop-cache hit: let the cache serve it
-                end
-                else begin
-                    fb_valid <= 0;
-                    fb_wr    <= 0;
-                    fb_base  <= pc;
-`ifndef V60_NO_LOOP_CACHE
-                    fb_prev_valid <= 0;
-`endif
-                    pf_suppress <= 1'b0;         // real branch out: resume lookahead
-                end
-            end
-        end
-        else begin
-            // window aligned (fb_base==pc): dispatch once the PFU has fetched
-            // enough bytes, else wait here while the prefetch fills the window.
-            fb_realigning <= 0;
-            if (fb_valid >= fb_need)
-                st <= st_after_fill;
-        end
+        // The window lives in v60_ifetch now; this state only waits for it.
+        if (fill_ready) st <= st_after_fill;
     end
-    // S_FILLW is retained for the enum but no longer reached: instruction fetch
-    // is performed asynchronously by the PFU (see the prefetch block below).
+    // S_FILLW is retained for the enum but no longer reached: the fetch is
+    // asynchronous in v60_ifetch, which owns the window it used to write.
     S_FILLW: if (dack) begin
         dbus_req <= 0;
-        for (int i = 0; i < 24; i++)
-            if (i >= fb_wr && i < fb_wr + 4)
-                fb[i] <= bus_rdata[(i - fb_wr)*8 +: 8];
-        fb_valid <= (fb_wr > 5'd20) ? 5'd24 : fb_wr + 5'd4;
-        fb_wr    <= (fb_wr > 5'd20) ? 5'd24 : fb_wr + 5'd4;
         st <= S_FILL;
     end
 
@@ -3190,92 +3038,7 @@ else if (ce) begin
     default: st <= S_RESET;
     endcase
 
-    // ---- Instruction Prefetch Unit (PFU) ------------------------------------
-    // Concurrent with the main FSM: keep the fetch window full by issuing 32-bit
-    // reads on the pf_* port (data has bus priority) while the window is aligned
-    // and has room.  A single fetch is in flight at a time.  On ack the four
-    // bytes are appended above the frontier fb_wr, UNLESS the window was rebased
-    // meanwhile (epoch mismatch), the frontier address moved (branch), or the
-    // main FSM is shifting/rebasing the window this very cycle (S_FILL realign) --
-    // in those cases the bytes are discarded and the frontier is simply refetched.
-    if (!pf_busy) begin
-        // Issue while the window is aligned and either the current instruction
-        // still lacks bytes (fb_wr < fb_need -- correctness, never starves) or we
-        // want lookahead up to PF_HIGH.  Lookahead is skipped inside an
-        // fb_prev-cached loop (pf_suppress): the loop cache already serves those
-        // bytes with zero bus traffic, so prefetching them just thrashes SDRAM.
-        // fb_wr<=20 keeps the append within the 24-byte window.
-        if (fb_base == pc && !fb_realigning && fb_wr <= 5'd20
-            && (fb_wr < fb_need || (fb_wr < PF_HIGH && !pf_suppress))) begin
-            pf_addr      <= fb_base + {27'b0, fb_wr};
-            pf_iss_epoch <= pf_epoch;
-            pf_busy      <= 1'b1;
-            if (FAST_IFETCH) if_req <= 1'b1;   // wide 8-byte icache line via if_addr
-            else             pf_req <= 1'b1;    // 32-bit read via the shared adapter
-        end
-    end
-    else if (fetch_ack) begin
-        pf_req  <= 1'b0;
-        if_req  <= 1'b0;
-        pf_busy <= 1'b0;
-        if (pf_iss_epoch == pf_epoch
-            && pf_addr == fb_base + {27'b0, fb_wr}
-            && !(st == S_FILL && fb_base != pc)) begin
-            if (FAST_IFETCH) begin
-                // append the 8-byte line from the frontier offset to the line end
-                // (1..8 bytes).  s32_core has ALREADY aligned if_data so byte 0 is
-                // the frontier byte (the >>foff barrel shift lives there, off this
-                // tight clock domain), so we only place bytes at the frontier fb_wr
-                // -- the same simple (i-fb_wr)*8 index the legacy 4-byte path uses.
-                // navail = bytes from the frontier to the line end (1..8).
-                logic [4:0]  foff, navail, ncom;
-                foff    = {2'b0, pf_addr[2:0]};
-                navail  = 5'd8 - foff;
-                ncom    = ((fb_wr + navail) > 5'd24) ? (5'd24 - fb_wr) : navail;
-                for (int i = 0; i < 24; i++)
-                    if (i >= fb_wr && i < fb_wr + ncom)
-                        fb[i] <= if_data_i[(i - fb_wr)*8 +: 8];
-                fb_wr    <= fb_wr + ncom;
-                fb_valid <= fb_wr + ncom;
-            end
-            else begin
-                for (int i = 0; i < 24; i++)
-                    if (i >= fb_wr && i < fb_wr + 4)
-                        fb[i] <= bus_rdata[(i - fb_wr)*8 +: 8];
-                fb_wr    <= (fb_wr > 5'd20) ? 5'd24 : fb_wr + 5'd4;
-                fb_valid <= (fb_wr > 5'd20) ? 5'd24 : fb_wr + 5'd4;
-            end
-        end
-    end
-
-    // Self-modifying-code guard (audit R20 V60-19): a completing data write that
-    // overlaps the live or retained fetch window invalidates it, so a subsequent
-    // execution refetches instead of running stale bytes (e.g. a tight backward
-    // loop that patches its own body, which the retained window would otherwise
-    // serve forever).  A data write and a prefetch ack are mutually exclusive
-    // (one bus owner), so this never races the prefetch commit above.
-    if (dbus_req && dbus_we && dack) begin
-        logic [31:0] wr_end, fb_end, pv_end;
-        logic [2:0]  wr_sz;
-        wr_sz  = (dbus_size == 2'd0) ? 3'd1 : (dbus_size == 2'd1) ? 3'd2 : 3'd4;
-        wr_end = dbus_addr + {29'b0, wr_sz};
-        // Guard the full FETCHED frontier (fb_wr), not just the decode-visible
-        // count (fb_valid): prefetched-but-not-yet-decoded bytes must also be
-        // dropped if a store overwrites them (fb_wr==fb_valid pre-prefetch, so
-        // this is bit-identical today).
-        fb_end = fb_base + {27'b0, fb_wr};
-        pv_end = fb_prev_base + {27'b0, fb_prev_valid};
-        if (fb_wr != 0 && dbus_addr < fb_end && wr_end > fb_base) begin
-            fb_valid <= 5'd0;
-            fb_wr    <= 5'd0;
-            pf_epoch <= pf_epoch + 4'd1;  // void any in-flight prefetch too
-        end
-`ifndef V60_NO_LOOP_CACHE
-        // Self-modifying code invalidates the cached window.
-        if (fb_prev_valid != 0 && dbus_addr < pv_end && wr_end > fb_prev_base)
-            fb_prev_valid <= 5'd0;
-`endif
-    end
+    // The prefetch unit and the self-modifying-code guard live in v60_ifetch.
 
     // Port 1 is applied second so the final queued write retains the original
     // nonblocking-assignment priority when both ports address the same bit.
@@ -4666,5 +4429,25 @@ task automatic fp_exec;
     end
 endtask
 `endif
+
+
+// ---------------------------------------------------------------------------
+// Instruction fetch: the 24-byte window, its realign network, the loop cache
+// and the prefetch unit. Extracted so the area can be measured - the V60 was a
+// single flat 17,771-ALM entity and nothing could report where that went.
+// ---------------------------------------------------------------------------
+v60_ifetch #(
+    .START_PC(START_PC), .FB_THRESH(FB_THRESH),
+    .PF_HIGH(PF_HIGH),   .FAST_IFETCH(FAST_IFETCH)
+) u_ifetch (
+    .clk(clk), .rst_n(~rst), .ce(ce),
+    .pc(pc), .fill_active(st == S_FILL), .fill_ready(fill_ready),
+    .fb_flat(fb_flat), .fb_base(fb_base), .fb_valid(fb_valid),
+    .fb_need(fb_need), .fb_wr(fb_wr),
+    .if_req(if_req), .if_addr(if_addr), .if_data_i(if_data), .if_ack(if_ack),
+    .pf_req(pf_req), .pf_addr_o(pf_addr), .pf_ack(pf_ack), .bus_rdata(bus_rdata),
+    .dbus_req(dbus_req), .dbus_we(dbus_we), .dack(dack),
+    .dbus_addr(dbus_addr), .dbus_size(dbus_size)
+);
 
 endmodule

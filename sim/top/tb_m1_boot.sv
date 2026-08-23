@@ -228,7 +228,7 @@ integer v_cyc = 0, v_dstall = 0, v_fstall = 0, v_anystall = 0;
 always @(posedge clk_cpu) begin
     if (rst_n_cpu && ce) begin
         automatic bit ds = main.cpu.dbus_req && !main.cpu.dack;
-        automatic bit fs = main.cpu.if_req  && !main.cpu.if_ack_i;
+        automatic bit fs = main.cpu.if_req  && !main.cpu.u_ifetch.if_ack_i;
         v_cyc = v_cyc + 1;
         if (ds)       v_dstall   = v_dstall   + 1;
         if (fs)       v_fstall   = v_fstall   + 1;
@@ -958,9 +958,9 @@ end
 integer fill_shift = 0;
 integer fill_inflight = 0, fill_suppress = 0, fill_noissue = 0;
 always @(posedge clk_cpu) if (rst_n_cpu && ce && main.cpu.st == 7'd1) begin
-    if (main.cpu.fb_base != main.cpu.pc)
+    if (main.cpu.u_ifetch.fb_base_r != main.cpu.pc)
         fill_shift = fill_shift + 1;
-    else if (main.cpu.fb_valid >= main.cpu.fb_need)
+    else if (main.cpu.u_ifetch.fb_valid_r >= main.cpu.u_ifetch.fb_need)
         fill_realign = fill_realign + 1;      // the dispatch cycle itself
     else begin
         fill_starved = fill_starved + 1;      // aligned, waiting for bytes
@@ -971,8 +971,8 @@ always @(posedge clk_cpu) if (rst_n_cpu && ce && main.cpu.st == 7'd1) begin
         // issued reads as "none issued" here even though the engine is running
         // back to back. Count the issue edge separately or this bucket reads as
         // a stall that is not one.
-        if (main.cpu.pf_busy)          fill_inflight = fill_inflight + 1;
-        else if (main.cpu.pf_suppress) fill_suppress = fill_suppress + 1;
+        if (main.cpu.u_ifetch.pf_busy)          fill_inflight = fill_inflight + 1;
+        else if (main.cpu.u_ifetch.pf_suppress) fill_suppress = fill_suppress + 1;
         else                           fill_noissue  = fill_noissue  + 1;
     end
 end
