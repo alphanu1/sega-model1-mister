@@ -158,9 +158,20 @@ cat > "$stage/Model1.sdc" <<'EOF'
 # fault and constraints cannot fix it; see docs/findings.md. This step is here to
 # measure the interface before changing how the clock is produced.
 if {[info exists ::env(MODEL1_SDRAM_SDC)]} {
-set sdram_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
+# SOURCED FROM general[2], THE PLL OUTPUT, AND NOT INVERTED.
+#
+# It used to source general[0] - clk_sys - with -invert, which modelled
+# `assign SDRAM_CLK = ~clk_sys`. That is no longer what drives the pin: outclk_2
+# is a dedicated 80 MHz output at 180 degrees, so the inversion is inside the PLL
+# and applying it again here would model a relationship that does not exist.
+#
+# This is the arrangement the established recipe uses - the generated clock
+# sourced from a PLL OUTPUT PIN - precisely so the phase can be tuned when the
+# I/O timing fails. See retroramblings.net/?p=515 and rtl/pll/pll_0002.v's
+# phase_shift2.
+set sdram_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[2].*|divclk}]
 if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
-    create_generated_clock -name sdram_clk -source $sdram_src -invert \
+    create_generated_clock -name sdram_clk -source $sdram_src \
         [get_ports {SDRAM_CLK}]
 
     set sys_clk_for_sdram [get_clocks -nowarn \
@@ -173,6 +184,20 @@ if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
     set_output_delay -clock sdram_clk -min -0.8 $sdram_out
 
     # Reads come back on the same forwarded clock.
+    # THE INPUT SIDE IS OPT-IN AGAIN, because it needs the multicycle below and
+    # Quartus 17.0's fitter SEGFAULTS on that - reproduced again on 2026-08-27,
+    # ten minutes into the fit. 17.0 is not negotiable for MiSTer cores, so the
+    # read path simply cannot be modelled on this toolchain.
+    #
+    # MODEL1_SDRAM_SDC=1     output side only - completes, and reports a REAL number
+    # MODEL1_SDRAM_SDC=full  adds the read path - segfaults on 17.0
+    #
+    # Output-only is worth having on its own: it previously reported sdram_clk at
+    # -0.150 ns, which is small, real, and on exactly the path the framework tries
+    # to improve - Template.qsf asks for Fast Output Register=ON on SDRAM_* and
+    # ours are REFUSED, sixteen times, because sd_a carries both a clear and a
+    # load.
+    if {[string equal $::env(MODEL1_SDRAM_SDC) "full"]} {
     set sdram_in [get_ports -nowarn {SDRAM_DQ[*]}]
     set_input_delay -clock sdram_clk -max 6.0 $sdram_in
     set_input_delay -clock sdram_clk -min 2.5 $sdram_in
@@ -204,6 +229,8 @@ if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
     } else {
         post_message -type error "Model1: clk_sys not found - read path left single-cycle"
     }
+    }
+
 
     post_message "Model1: SDRAM interface constrained (tSU 1.5 / tHD 0.8 / tAC 6.0 / tOH 2.5)"
 } else {
