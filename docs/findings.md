@@ -4386,3 +4386,39 @@ So the chain is complete and consistent with everything else measured:
 **The missing text is not a video fault and never was.** The renderer is drawing exactly what
 tile RAM contains. What the content diff added is proof rather than inference: a named word,
 a named instruction, and a count of zero.
+
+### tgp_trace with a wide window: 75,175 instructions of agreement, then a named divergence
+
+`make tgp_trace SECONDS_RUN=16 BOOT_CYCLES=1500000000` - the widest window this has ever
+been run at, against the previous 342.
+
+    loops collapsed on both sides: 910 in common, 1 with differing counts
+    tgp_trace: DIVERGES at instruction 75175
+
+    MAME:  0051 addd -> 0052 brul alw d -> 0053 -> 009B
+    ours:  0051      -> 0052            -> 0064
+
+`brul alw d` branches to whatever is in `d`, so MAME lands at 0x53 and we land at 0x64 - a
+difference of exactly 0x11. And `d` was built three instructions earlier:
+
+    004D: mov (x1), b      b loaded from memory
+    004F: mov bh, d        d = bh
+    0050: lia #0x53        a = 0x53
+    0051: addd             d = d + a
+
+**`bh` is register 0x14, and it is NOT the high half of B** - `read_reg` returns
+`get_exp(m_b)`, the floating-point exponent, `(val >> 23) & 0xff`. Our `mb86233_regs` does
+exactly that for 0x14, so the accessor is right.
+
+    MAME   get_exp(b) = 0x00   ->  d = 0x53
+    ours   get_exp(b) = 0x11   ->  d = 0x64
+
+**So the fault is the VALUE IN B**, loaded by `mov (x1), b` at 0x004D - either the word at
+(x1) or x1 itself. Not the decode, not the register accessor, not the branch.
+
+**This is the deepest the coprocessor has ever been verified.** The previous claim was
+"IDENTICAL for 342 instructions", which was a 3-second window in which the reference's TGP
+is idle almost throughout; 75,175 with 910 loops agreeing is a different order of evidence.
+The next step is to trace what writes the word at (x1), which is the same escalation
+`tgp_wrtrace` used to find nine bugs: stop comparing streams, compare the value and find its
+writer.
