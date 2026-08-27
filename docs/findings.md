@@ -4310,3 +4310,39 @@ the game is drawing would produce a number that means nothing.
 `0x900000-0x903fff`, 8192 words, and `m1_mainram` declares `pram_c_lo[8192]` indexed
 `addr[13:1]`. The Model 2 aliasing bug - 4096 entries for an 8192-entry region, so half of
 every write folded onto the low half - does not exist here.
+
+### BUILT, and it names things in one run: the content diff — 2026-08-27
+
+`tb_m1_frame` now dumps the tile RAM (32,768 words) and palette (8,192 entries) our CPU
+builds; `tools/mame_m1_dump.lua` captures the reference's; `tools/tram_diff.py` compares them
+word for word. First run:
+
+    tile RAM: 13,329 of 32,768 words differ (40.7%)
+      our HIGH byte is 00 where the reference's is not:  12,951
+      exactly ours|0x8000 == ref:                         3,470
+    palette:     591 of 8,192 entries differ (7.2%)
+      strides 1 x284 and 16 x94
+
+**Two distinct faults, and both are addressable in a way no count ever was:**
+
+1. **Tile RAM word 0 holds `0020` here and `8020` in the reference** - and so do thousands of
+   others. `8020` is a space with **bit 15, the CATEGORY bit, set**; ours is a space with it
+   clear. That is a single word at a fixed address with a known wrong value, which is exactly
+   what `make v60_trace` can be aimed at: find the instruction that writes tile RAM word 0.
+
+2. **Where the reference holds characters - `830a`, `8309`, `8303` - we hold `0020`,** the
+   screen-clear space. So the clear ran and the draw did not, at specific addresses rather
+   than "no text on screen".
+
+The palette shows the same shape: 111 entries where we hold `0000` and the reference holds a
+colour, on a stride of 16 - a zeroing loop that walks 32 bytes, exactly the pattern Model 2
+found - and entry 0 is `fd02` there and `0000` here.
+
+**This is the instrument that has been missing all along.** Every previous measurement was an
+aggregate: pixels won per layer, character writes, non-zero mask writes, scroll register
+values. None of them could say *which word*. Two runs of this say it directly.
+
+**The caveat it carries**, and it is the one that has already produced a wrong finding here
+once: the two sides must be at the same point IN THE PROGRAM, not at the same frame number.
+This core runs at about 84% of real speed, so equal frame counts are different program
+states. `tools/tram_diff.py` says so in its header.

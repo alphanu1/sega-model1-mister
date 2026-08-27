@@ -46,6 +46,8 @@ module tb_m1_frame #(
     parameter longint RUN_CYCLES = 120000000,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     parameter string  PPMOUT     = "build/frame.ppm",
+    parameter string  TRAMOUT    = "build/frame_tram.hex",
+    parameter string  PALOUT     = "build/frame_pal.hex",
 
     // One line per frame: backdrop share, per-tilemap census, window control and
     // the V60's PC. Off by default because a long run prints hundreds of lines.
@@ -1043,6 +1045,40 @@ initial begin
              f_uc_csum, f_uc_ok);
     $display("FRAME: TGP writes to copro RAM=%0d  sync word=%04h (board row 0D)",
              f_tgp_ramwr, f_sync_word);
+    // ------------------------------------------------ CONTENT DUMP
+    //
+    // WHAT COUNTS AND SHARES CANNOT SAY. Everything measured on this core so far
+    // is an aggregate - pixels won per layer, character writes, non-zero mask
+    // writes, scroll register values - and none of them can name WHICH WORD is
+    // wrong. The Model 2 core had this same symptom, a menu with coloured values
+    // and no white labels, and named it in one step by dumping the tile RAM and
+    // palette its own CPU had built and diffing them against the reference:
+    // "tile RAM differs in 13 words of 32768 ... pal[1] <= 0000 at instruction
+    // 1713595", which located a CPU divergence past the window it had been
+    // verified to.
+    //
+    // Written as plain hex, one word per line, so tools/tram_diff.py can compare
+    // it against a MAME capture without either side parsing the other's format.
+    fd = $fopen(TRAMOUT, "w");
+    if (fd == 0) $display("FRAME: could not open %s", TRAMOUT);
+    else begin
+        for (i = 0; i < 32768; i = i + 1)
+            $fwrite(fd, "%04h\n", {core.main.rams.tram_v_hi[i],
+                                   core.main.rams.tram_v_lo[i]});
+        $fclose(fd);
+        $display("FRAME: wrote %s (32768 tile-RAM words)", TRAMOUT);
+    end
+
+    fd = $fopen(PALOUT, "w");
+    if (fd == 0) $display("FRAME: could not open %s", PALOUT);
+    else begin
+        for (i = 0; i < 8192; i = i + 1)
+            $fwrite(fd, "%04h\n", {core.main.rams.pram_v_hi[i],
+                                   core.main.rams.pram_v_lo[i]});
+        $fclose(fd);
+        $display("FRAME: wrote %s (8192 palette entries)", PALOUT);
+    end
+
     fd = $fopen(PPMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PPMOUT);
     else begin
