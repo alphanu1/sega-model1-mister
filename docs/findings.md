@@ -4346,3 +4346,43 @@ values. None of them could say *which word*. Two runs of this say it directly.
 once: the two sides must be at the same point IN THE PROGRAM, not at the same frame number.
 This core runs at about 84% of real speed, so equal frame counts are different program
 states. `tools/tram_diff.py` says so in its header.
+
+### The content diff closes the causal chain: we never reach the drawing code
+
+Tracing the one wrong word the diff named - tile RAM word 0, `0020` here against `8020` in
+the reference - gives the whole story in three steps.
+
+**Who writes it.** A write tap on 0x700000 in the reference: four writes, and the last one
+decides it.
+
+    w 1  data=0000  pc=fe026c
+    w 2  data=0020  pc=fe6a71
+    w 3  data=0020  pc=ffe60b
+    w 4  data=8020  pc=ff92d5    <- sets bit 15, the CATEGORY bit
+
+**What that instruction is part of.** An unrolled tile-RAM fill:
+
+    FE215A: bsr     FE326F
+    FE326F: mov.w   #700000, R0        tile RAM base
+    FE3276: jsr     FF92C9[PC]
+    FF92C9: mov.h   #8020, R1          a space WITH the category bit
+    FF92CE: mov.w   #40, R2
+    FF92D5: mov.h   R1, [R0+]          x64
+
+**Whether we execute it.** MAME runs `ff92d5` **128 times**; we run it **zero**, and never
+enter the `ff92` page at all. Every step of the call chain - `fe2145`, `fe214c`, `fe2154`,
+`fe215a`, `fe326f` - is likewise 1 in MAME and 0 here.
+
+**And it is not a branch taken differently.** `ff92c9` sits at collapsed instruction 87,277
+of MAME's 5,193,988, while our entire stream is 25,685 long. **We stop progressing about a
+third of the way there**, at `ff9754` - `in.w [R23], R2`, a coprocessor result read.
+
+So the chain is complete and consistent with everything else measured:
+
+    coprocessor diverges -> V60 blocks on in.w at ff9754 -> never reaches FF92C9
+      -> tile RAM keeps 0020 instead of 8020 -> every tile is category 0
+      -> the text layer draws nothing
+
+**The missing text is not a video fault and never was.** The renderer is drawing exactly what
+tile RAM contains. What the content diff added is proof rather than inference: a named word,
+a named instruction, and a count of zero.
