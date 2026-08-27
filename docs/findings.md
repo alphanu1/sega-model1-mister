@@ -4267,3 +4267,46 @@ simulation, at a defined program point rather than a cycle count. `make tgp_trac
 does that for the retire stream and reports IDENTICAL for its window; extending that window
 is the honest way forward, not comparing two machines that were never going to interleave
 alike.
+
+## The instrument this core is missing: diff tile RAM and palette CONTENT against MAME
+
+From the Model 2 core, which had the same symptom - a test menu with coloured values and no
+white labels - and named it in one step:
+
+> `test_m2_boot` now dumps the tile RAM, palette and xlat OUR CPU builds, and
+> `test_m2_video_frame` renders those instead of MAME's capture: 468 non-black pixels
+> against the reference's 2054, and the picture is the bench photograph. The diff names it.
+> Tile RAM differs in 13 words of 32768. The palette differs in 64 entries, all at 1+16k,
+> each written 0000 where the reference holds a colour, and entry 1 is white:
+>
+>     pal[1] <= ffff  at instruction 1478810
+>     pal[1] <= 0000  at instruction 1713595
+>
+> So the CPU executes something MAME does not, at 1713595 - past the 803355 instructions it
+> has been differentially verified to.
+
+**Model 1 has never done the content diff.** Everything measured here has been a COUNT or a
+SHARE - pixels won per layer, character writes, non-zero mask writes, scroll register values -
+and none of those can say *which word* is wrong. `tb_m1_frame` already renders our own state;
+what is missing is dumping tile RAM and the palette and diffing them word for word against a
+MAME capture at the same point.
+
+That converts "no text on screen" into "this entry holds X where the reference holds Y", and
+then `make v60_trace` can be aimed at the instruction that wrote it - which is exactly how
+`tgp_wrtrace` found nine coprocessor bugs.
+
+**And the warning that came with it**, which this core has nearly repeated twice:
+
+> Also removes the tile-RAM fold probe. It cost 64 M10K, because Quartus duplicated the array
+> for a third read port, and could never be read: the menu cannot be held still and a fold of
+> a moving screen compares against nothing. **Its precondition was not checked before it was
+> built.**
+
+A checksum of something that moves compares against nothing. The SDRAM and microcode
+read-backs here work because ROM contents are static; the same trick aimed at tile RAM while
+the game is drawing would produce a number that means nothing.
+
+**Palette sizing checked at the same time and Model 1 is correct:** MAME maps
+`0x900000-0x903fff`, 8192 words, and `m1_mainram` declares `pram_c_lo[8192]` indexed
+`addr[13:1]`. The Model 2 aliasing bug - 4096 entries for an 8192-entry region, so half of
+every write folded onto the low half - does not exist here.
