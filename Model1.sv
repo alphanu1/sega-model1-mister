@@ -244,13 +244,14 @@ module emu
   //     clock-group pattern and the MiSTer documentation require.
   //
   // 80 MHz and 19.2 MHz; see docs/m1-m4-plan.md for why those two numbers.
-  wire clk_sys, clk_cpu, pll_locked;
+  wire clk_sys, clk_cpu, clk_sdram, pll_locked;
 
   pll pll (
     .refclk   (CLK_50M),
     .rst      (1'b0),
     .outclk_0 (clk_sys),
     .outclk_1 (clk_cpu),
+    .outclk_2 (clk_sdram),
     .locked   (pll_locked)
   );
 
@@ -396,7 +397,21 @@ assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
   );
 
   assign SDRAM_DQ  = sd_dq_oe ? sd_dq_o : 16'bZ;
-  assign SDRAM_CLK = ~clk_sys;   // clock the device on the falling edge
+  // SDRAM_CLK COMES FROM THE PLL NOW, NOT FROM FABRIC.
+  //
+  // It was `~clk_sys` assigned to the pin - a fixed 180-degree inversion routed
+  // through fabric, with no phase to adjust. The established MiSTer recipe for
+  // constraining an SDRAM interface sources the generated clock from a PLL
+  // OUTPUT, because the documented fix when the I/O timing fails is to shift
+  // that clock's phase, "typically ranging between -0.5 ns and -2.5 ns"
+  // (retroramblings.net/?p=515). Our design had no such knob: rd_lat_sel picks a
+  // capture depth in WHOLE CYCLES, which is a coarse substitute for a
+  // sub-nanosecond phase.
+  //
+  // outclk_2 starts at 6250 ps, exactly half of the 12500 ps period, so this is
+  // bit-identical to the inversion it replaces. Tuning it is then one parameter
+  // in rtl/pll/pll_0002.v rather than a redesign.
+  assign SDRAM_CLK = clk_sdram;
 
   // ------------------------------------------------------------------- core
   wire [7:0] vid_r, vid_g, vid_b;
