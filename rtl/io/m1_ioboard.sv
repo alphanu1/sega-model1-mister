@@ -141,7 +141,23 @@ module m1_ioboard #(
   // fe1433 forever, which is exactly where our core sat while every input byte
   // underneath it was correct.
   parameter bit          PUSH_BLOCK = 1'b1,
-  parameter logic [10:0] BLOCK_BASE = 11'h100
+  parameter logic [10:0] BLOCK_BASE = 11'h100,
+
+  // DPRAM byte 0x21, set once and never changed.
+  //
+  // MEASURED, not inferred: watching 0xc00042 on the reference across a boot it
+  // goes 00 -> 40 at frame 9, just after the status flag at byte 0x20 is set at
+  // frame 7, and holds 40 for the rest of the run. Our HLE never wrote it at
+  // all, so a whole-DPRAM diff against MAME showed 0x21 as the one persistent
+  // difference in 2048 bytes.
+  //
+  // The other byte that differed, 0x11, is NOT a fault: it is a live
+  // command/response cell cycling ff -> 01/46/36 -> ff, and our 36 is one of
+  // those values caught at a different phase. Two bytes differed and only one
+  // was a bug - which is why the byte was watched over frames before anything
+  // was changed.
+  parameter logic [10:0] STAT_ADDR  = 11'h021,
+  parameter logic [7:0]  STAT_VALUE = 8'h40
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -281,6 +297,7 @@ module m1_ioboard #(
   // byte. Two flags rather than one because all three share the single port and
   // completion has to be attributed to whichever was actually issued.
   logic wr_block;
+  logic wr_stat, stat_done;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -296,6 +313,8 @@ module m1_ioboard #(
       blk_idx  <= '0;
       blk_done <= ~PUSH_BLOCK;
       wr_block <= 1'b0;
+      wr_stat  <= 1'b0;
+      stat_done <= 1'b0;
     end else begin
       if (gap != GAP_W'(SWEEP_GAP)) gap <= gap + GAP_W'(1);
 
@@ -318,6 +337,8 @@ module m1_ioboard #(
         end else if (wr_block) begin
           if (blk_idx == 7'h7f) blk_done <= 1'b1;
           else                  blk_idx  <= blk_idx + 7'd1;
+        end else if (wr_stat) begin
+          stat_done <= 1'b1;
         end else begin
           // Wrapped explicitly: SWEEP_BYTES is 15, so the counter's own natural
           // wrap at 16 would index two bytes past the end of in_bytes.
@@ -334,6 +355,17 @@ module m1_ioboard #(
           io_din   <= REPLY;
           wr_reply <= 1'b1;
           wr_block <= 1'b0;
+          wr_stat  <= 1'b0;
+        end else if (!stat_done && replies != 16'd0) begin
+          // After the first handshake, matching the reference's ordering: the
+          // flag at byte 0x20 is answered first and this appears two frames
+          // later.
+          io_we    <= 1'b1;
+          io_addr  <= STAT_ADDR;
+          io_din   <= STAT_VALUE;
+          wr_reply <= 1'b0;
+          wr_block <= 1'b0;
+          wr_stat  <= 1'b1;
         end else if (!blk_done) begin
           // Ahead of the sweep, and at full rate rather than the sweep's gap.
           // The V60 reads this window once, right after its first handshake is
@@ -344,12 +376,14 @@ module m1_ioboard #(
           io_din   <= blk_byte;
           wr_reply <= 1'b0;
           wr_block <= 1'b1;
+          wr_stat  <= 1'b0;
         end else if (PUBLISH_INPUTS && gap == GAP_W'(SWEEP_GAP)) begin
           io_we    <= 1'b1;
           io_addr  <= INPUT_BASE + 11'(pub_idx);
           io_din   <= pub_byte;
           wr_reply <= 1'b0;
           wr_block <= 1'b0;
+          wr_stat  <= 1'b0;
         end
       end
     end
