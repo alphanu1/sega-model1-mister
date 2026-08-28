@@ -157,85 +157,82 @@ cat > "$stage/Model1.sdc" <<'EOF'
 # does. That the clock's own delay to the pin is a ROUTING RESULT is the deeper
 # fault and constraints cannot fix it; see docs/findings.md. This step is here to
 # measure the interface before changing how the clock is produced.
-if {[info exists ::env(MODEL1_SDRAM_SDC)]} {
-# SOURCED FROM general[2], THE PLL OUTPUT, AND NOT INVERTED.
+# CONSTRAINED BY DEFAULT NOW - it was opt-in and therefore never on.
 #
-# It used to source general[0] - clk_sys - with -invert, which modelled
-# `assign SDRAM_CLK = ~clk_sys`. That is no longer what drives the pin: outclk_2
-# is a dedicated 80 MHz output at 180 degrees, so the inversion is inside the PLL
-# and applying it again here would model a relationship that does not exist.
+# The interface had no generated clock on the port, no input delay and no output
+# delay, in sys_top.sdc or here, which is why RD_LAT had to be found empirically
+# on hardware rather than derived, and why a build whose only change was a debug
+# counter once produced a garbage picture with +0.296 ns reported slack and no
+# new warnings. The fitter was never told those paths matter.
 #
-# This is the arrangement the established recipe uses - the generated clock
-# sourced from a PLL OUTPUT PIN - precisely so the phase can be tuned when the
-# I/O timing fails. See retroramblings.net/?p=515 and rtl/pll/pll_0002.v's
-# phase_shift2.
-set sdram_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[2].*|divclk}]
-if {[llength $sdram_src] > 0 && [llength [get_ports -nowarn {SDRAM_CLK}]] > 0} {
-    create_generated_clock -name sdram_clk -source $sdram_src \
-        [get_ports {SDRAM_CLK}]
+# Structure taken from the Model 2 core, which reports it gave "better testing,
+# probing and consistent boot":
+#
+#   * FENCED AWAY FROM quartus_map. Only the fitter and TimeQuest need I/O
+#     constraints, and applying them in synthesis is what crashed a Model 1 build
+#     inside quartus_map's scl_execute_syn on 2026-08-27 - written off at the time
+#     as contention from three concurrent builds, which it was not.
+#   * A CRITICAL WARNING IF THE COLLECTION IS EMPTY, because an empty collection
+#     is a silent no-op and that is the exact failure this block exists to catch.
+#   * The generated clock sourced from the PLL OUTPUT that drives the pin -
+#     general[2], 80 MHz at 180 degrees - not from clk_sys with -invert, because
+#     the inversion lives inside the PLL now.
+#
+# The read path is MULTI-CYCLE BY DESIGN: m1_sdram captures CL+N cycles after the
+# device drives the bus, N selectable CL+2..CL+5, so a next-edge assumption
+# describes a design this is not.
+set sdc_exe ""
+catch { set sdc_exe $::quartus(nameofexecutable) }
+if {[string equal $sdc_exe "quartus_map"]} {
+    # Deliberately constrained nowhere in synthesis; the fitter enforces it.
+} else {
 
-    set sys_clk_for_sdram [get_clocks -nowarn \
-        {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
+set sdram_clk_src [get_pins -nowarn {*|pll|pll_inst|altera_pll_i|general[2].*|divclk}]
+set sdram_clk_prt [get_ports -nowarn {SDRAM_CLK}]
+
+if {[llength $sdram_clk_src] == 0 || [llength $sdram_clk_prt] == 0} {
+    post_message -type critical_warning \
+      "Model1.sdc: SDRAM_CLK generated clock NOT created -- source pins \
+       [llength $sdram_clk_src], ports [llength $sdram_clk_prt]. The SDRAM \
+       interface is UNCONSTRAINED and this build's memory timing is luck."
+} else {
+    create_generated_clock -name SDRAM_CLK_pin -source $sdram_clk_src $sdram_clk_prt
+
+    set_input_delay -clock SDRAM_CLK_pin -max 6.4 [get_ports {SDRAM_DQ[*]}]
+    set_input_delay -clock SDRAM_CLK_pin -min 1.0 [get_ports {SDRAM_DQ[*]}]
 
     set sdram_out [get_ports -nowarn {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] \
-                                      SDRAM_DQML SDRAM_DQMH SDRAM_nCS \
-                                      SDRAM_nRAS SDRAM_nCAS SDRAM_nWE SDRAM_CKE}]
-    set_output_delay -clock sdram_clk -max  1.5 $sdram_out
-    set_output_delay -clock sdram_clk -min -0.8 $sdram_out
+                                      SDRAM_nCS SDRAM_nRAS SDRAM_nCAS SDRAM_nWE \
+                                      SDRAM_DQML SDRAM_DQMH SDRAM_CKE}]
+    set_output_delay -clock SDRAM_CLK_pin -max  1.5 $sdram_out
+    set_output_delay -clock SDRAM_CLK_pin -min -0.8 $sdram_out
 
-    # Reads come back on the same forwarded clock.
-    # THE INPUT SIDE IS OPT-IN AGAIN, because it needs the multicycle below and
-    # Quartus 17.0's fitter SEGFAULTS on that - reproduced again on 2026-08-27,
-    # ten minutes into the fit. 17.0 is not negotiable for MiSTer cores, so the
-    # read path simply cannot be modelled on this toolchain.
+    # THE MULTICYCLES ARE OPT-IN: Quartus 17.0's fitter SEGFAULTS on them here,
+    # three times now, and 17.0 is required for MiSTer cores. Model 2 runs the
+    # same four lines successfully, so the difference is ours to find - the crash
+    # lands immediately after sixteen "cannot simultaneously use clear and load"
+    # failures packing sd_a into the I/O cells, which is the first thing to fix.
     #
-    # MODEL1_SDRAM_SDC=1     output side only - completes, and reports a REAL number
-    # MODEL1_SDRAM_SDC=full  adds the read path - segfaults on 17.0
-    #
-    # Output-only is worth having on its own: it previously reported sdram_clk at
-    # -0.150 ns, which is small, real, and on exactly the path the framework tries
-    # to improve - Template.qsf asks for Fast Output Register=ON on SDRAM_* and
-    # ours are REFUSED, sixteen times, because sd_a carries both a clear and a
-    # load.
-    if {[string equal $::env(MODEL1_SDRAM_SDC) "full"]} {
-    set sdram_in [get_ports -nowarn {SDRAM_DQ[*]}]
-    set_input_delay -clock sdram_clk -max 6.0 $sdram_in
-    set_input_delay -clock sdram_clk -min 2.5 $sdram_in
+    # Without them TimeQuest assumes next-edge capture on the read path, which
+    # this controller does not do; the OUTPUT side is still fully constrained and
+    # is where the framework's Fast Output Register request lives.
+    if {[info exists ::env(MODEL1_SDRAM_MCP)]} {
+    set_multicycle_path -setup -end 3 \
+      -from [get_clocks SDRAM_CLK_pin] \
+      -to   [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
+    set_multicycle_path -hold -end 2 \
+      -from [get_clocks SDRAM_CLK_pin] \
+      -to   [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
 
-    # THE READ IS MULTICYCLE BY DESIGN, and leaving that out reported -7.192 ns on
-    # a path with 2.4 ns of delay and one logic level.
-    #
-    # dq_r registers the pin EVERY cycle and a tag pipeline selects which sample to
-    # use, at a depth of CL+2..CL+5 chosen from the OSD. That selectable depth IS
-    # the read phase. So the data is not required to arrive by the next clk_sys
-    # edge — it is allowed a further cycle, and the pipeline accounts for it.
-    # Without a multicycle, STA analyses the very next edge and reports a failure
-    # the design never intended to avoid.
-    #
-    # Two periods, not more: the capture register must still be stable at the edge
-    # the tag depth expects, so this describes the real requirement rather than
-    # relaxing it until the numbers look pleasant.
-    # Expressed CLOCK TO CLOCK. The -from <ports> -to <registers> form made
-    # Quartus 17.0's fitter die with "Fatal Error: Segment Violation at 0xc" —
-    # a tool crash, not a constraint error, and it takes twenty-five minutes to
-    # discover. Clock-to-clock is the conventional spelling and is what the STA
-    # engine wants.
-    if {[llength $sys_clk_for_sdram] > 0} {
-        set_multicycle_path -setup 2 -from [get_clocks sdram_clk] \
-                            -to $sys_clk_for_sdram
-        set_multicycle_path -hold  1 -from [get_clocks sdram_clk] \
-                            -to $sys_clk_for_sdram
-        post_message "Model1: SDRAM read capture is multicycle 2 (tag depth CL+2..CL+5)"
-    } else {
-        post_message -type error "Model1: clk_sys not found - read path left single-cycle"
+    set_multicycle_path -setup -end 2 \
+      -from [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}] \
+      -to   [get_clocks SDRAM_CLK_pin]
+    set_multicycle_path -hold -end 1 \
+      -from [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}] \
+      -to   [get_clocks SDRAM_CLK_pin]
     }
-    }
-
-
-    post_message "Model1: SDRAM interface constrained (tSU 1.5 / tHD 0.8 / tAC 6.0 / tOH 2.5)"
-} else {
-    post_message -type error "Model1: SDRAM_CLK or the core PLL not found - constraints NOT applied"
 }
+
 }
 
 set sys_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]

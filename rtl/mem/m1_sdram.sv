@@ -484,6 +484,19 @@ module m1_sdram #(
       // and the init sequence writes all three before the first real command, so
       // their power-up value is unobservable.
       cmd <= C_NOP;
+      // HELD, NOT CLEARED, so the register carries a LOAD and no CLEAR and can
+      // pack into the I/O cell. Sixteen "cannot simultaneously use clear and
+      // load signals" warnings kept sd_a in fabric, and with the interface
+      // constrained the fitter SEGFAULTS immediately after them - three builds,
+      // with and without the multicycle, so it is not the multicycle as our own
+      // note claimed.
+      //
+      // Safe: sd_a is don't-care whenever cmd is NOP, and the init sequence
+      // writes it before the first real command, so its power-up value is
+      // unobservable. That is the same reasoning that already left it out of the
+      // reset list; this states the hold explicitly instead of leaving the
+      // register unassigned in this branch.
+      sd_a <= sd_a;
       sd_dq_o <= '0; sd_dq_oe <= 1'b0;
       state <= S_INIT; ready <= 1'b0;
       init_cnt <= 16'(INIT_NOP);

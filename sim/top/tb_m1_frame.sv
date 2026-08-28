@@ -47,6 +47,7 @@ module tb_m1_frame #(
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     parameter string  PPMOUT     = "build/frame.ppm",
     parameter string  TRAMOUT    = "build/frame_tram.hex",
+    parameter string  DPRAMOUT   = "build/frame_dpram.hex",
     parameter string  PALOUT     = "build/frame_pal.hex",
 
     // One line per frame: backdrop share, per-tilemap census, window control and
@@ -1059,6 +1060,24 @@ initial begin
     //
     // Written as plain hex, one word per line, so tools/tram_diff.py can compare
     // it against a MAME capture without either side parsing the other's format.
+    // The DPRAM the I/O board writes and the V60 reads. MAME maps it at
+    // 0xc00000-0xc00fff with umask16(0x00ff) - 2048 BYTES on the low lane, an
+    // mb8421 dual-port RAM - so only the low byte of each word is real.
+    //
+    // WHY IT IS DUMPED: our I/O board is an HLE (D9), reproducing a protocol read
+    // out of the Z80 ROM by disassembly rather than by running it, where MAME's
+    // model is LLE and correct by construction. If the bytes the V60 reads differ,
+    // that is a blocker and the ~1,700 ALM for a real Z80 stops being optional.
+    // Cheaper to test than to build.
+    fd = $fopen(DPRAMOUT, "w");
+    if (fd == 0) $display("FRAME: could not open %s", DPRAMOUT);
+    else begin
+        for (i = 0; i < 2048; i = i + 1)
+            $fwrite(fd, "%02h\n", core.main.rams.dpram_lo[i]);
+        $fclose(fd);
+        $display("FRAME: wrote %s (2048 DPRAM bytes)", DPRAMOUT);
+    end
+
     fd = $fopen(TRAMOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", TRAMOUT);
     else begin

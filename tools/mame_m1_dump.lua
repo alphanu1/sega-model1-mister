@@ -36,5 +36,13 @@ notif = emu.add_machine_frame_notifier(function()
     end
     f:close()
 
-    print(string.format("dumped tile RAM and palette at frame %d", nf))
+    -- The I/O board's shared RAM: 0xc00000-0xc00fff, umask16(0x00ff), so 2048
+    -- BYTES on the low lane of a 16-bit space (mb8421 dual-port).
+    f = io.open("mame_dpram.hex", "w")
+    for i = 0, 2047 do
+        f:write(string.format("%02x\n", sp:read_u8(0xc00000 + i*2)))
+    end
+    f:close()
+
+    print(string.format("dumped tile RAM, palette and DPRAM at frame %d", nf))
 end)
