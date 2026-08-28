@@ -4422,3 +4422,36 @@ is idle almost throughout; 75,175 with 910 loops agreeing is a different order o
 The next step is to trace what writes the word at (x1), which is the same escalation
 `tgp_wrtrace` used to find nine bugs: stop comparing streams, compare the value and find its
 writer.
+
+### The Z80 LLE: a cost D9 did not count, and where the ROM has to live — 2026-08-27
+
+Raised after the Model 2 core found a flaw in its I/O path: should Model 1 run the real Z80
+instead of the HLE, and would it fit?
+
+**D9's condition is not met.** It says "revisit when the resource count is final, which is not
+the same as reversing" - and the rasterizer (4-6 k ALM) and sound (8-9 k) are still estimates
+against 11,878 free. The uncertainty the HLE was chosen under is exactly as large as it was.
+
+**And there is a cost the decision did not count.** D9 prices the LLE at ~2,000 ALM against
+the HLE's ~300, in ALM only. The Z80 also needs `EPR-14869`, **64 KB**, which on-chip is about
+**52 M10K** - and M10K is now the binding resource at 452 of 553, with the rasterizer's band
+buffer wanting ~51 of the 101 free. That would leave nothing.
+
+**The ROM belongs in SDRAM**, where every other ROM already is. A 4 MHz Z80 is negligible
+traffic against a controller already serving five masters, and it is already in `vr.zip` so
+no new asset is needed. That reduces the memory cost to the 8 KB work SRAM, about 7 M10K, and
+leaves the decision an ALM question as D9 framed it.
+
+**What would make it a correctness question rather than an area one:** our HLE reproduces a
+protocol read out of the Z80 ROM BY DISASSEMBLY, not by running it. MAME's model is LLE and
+therefore correct by construction. If a defect is ever traced to the I/O board, the ~1,700 ALM
+stops being optional - which is an argument for keeping the interface interchangeable, as D9
+already ensures: `m1_ioboard`'s ports do not change between the two.
+
+**Checked at the same time, from the Model 2 finding:** its bridge suite modelled I/O as
+COMBINATIONAL when the peripherals are registered, and used FULL-WIDTH accesses when the
+failing one is a single byte. Neither applies here - `tb_m1_ioboard` models the edge
+explicitly ("the RAM samples its inputs on the edge, so the byte that lands is the one
+presented before the clock") and is byte-oriented throughout. And the composition it names as
+the remaining untested link - CPU through bridge into I/O board on real code - is what
+`make m1_boot` has been doing here all along.
