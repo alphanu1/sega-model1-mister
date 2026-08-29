@@ -4673,3 +4673,35 @@ interpreter shutdown.
 ran. Three earlier crashes were attributed to them and the SDRAM constraints were made
 opt-out in response — that is a workaround built on a misattribution, and the constraints can
 stay on.
+
+### The coprocessor is now blocked on the V60, not on commands — 2026-08-29
+
+With the empty-FIFO fix in, `tb_m1_frame` was instrumented with 64-bit counters (the RTL's
+`dbg_retires` and `dbg_fifo_pops` are 16 bits and **wrap with no saturation**, so
+"retires=57660" is `57,660 + 65,536k` and cannot be divided by a cycle count):
+
+    TGP cycles=36,273,868  retires=385,340   ->  94 cycles per instruction
+      mem_req   25,248,162    70% of all cycles
+      fifo_rd      128,484     0.4%
+      fifo_wr   24,991,194    69%          <- stalled WRITING results
+    V60 read the result FIFO 20 times in 109 frames (0/frame)
+    TGP pushed 36 results
+
+**`fifo_out_push` requires `!fifo_out_full`, the FIFO is 16 deep, and 36 results went in — so
+it is full and the coprocessor has been stalled on the 37th push ever since.** That is the
+correct interlock (MAME halts the TGP on a full outbound FIFO too); what is wrong is the
+other end.
+
+**The reference's V60 reads that FIFO about 1,185 times a frame** — 710,722 over 600 frames,
+in I/O space via `in.w`. Ours reads it 20 times in 109 frames. The V60's `IN`/`OUT` are
+already real bus transactions here (that was fixed after the `fed5a4` poll), so the path
+exists and the V60 simply is not executing the code that uses it.
+
+So the coprocessor is **not** starved of commands — pushes match the reference exactly, 61
+against 61 — and the 94 cycles per instruction is almost entirely one blocked write. The next
+question is a V60 control-flow question, and `make v60_trace` is the instrument: it currently
+parts at instruction 197,251 on `cmp.h R0, FE[R11]` / `be`, where `0x40e8fe` reads `0000`
+there and `ffff` here.
+
+Note the 2.5:1 clock ratio recorded above is a real difference but is NOT what this is —
+a stalled writer does not care how fast its clock is.
