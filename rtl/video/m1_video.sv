@@ -532,7 +532,14 @@ module m1_video #(
           end
         end
 
-        // hscr = tile_ram[0x5000 + layer]
+        // hscr = tile_ram[0x5000 + layer], where `layer` here is OUR 0..3 map
+        // index — NOT MAME's parameter of the same name, which runs 0..7.
+        // model1_v.cpp calls draw() with 0,1,2,3,4,5,6,7; segaic24 takes
+        // `tpri = layer & 1` and the mask base from `layer & 4`, then does
+        // `layer >>= 1`. So MAME's `0x5000 + (layer >> 1)` and our
+        // `0x5000 + cur_layer` are THE SAME ADDRESS, and the quoted formulas
+        // above read as an off-by-one against this code only if the two
+        // meanings of "layer" are conflated. They were, here, on 2026-08-29.
         Q_HSCR: begin
           seq_tram_addr <= 15'h5000 + {13'd0, cur_layer};
           q             <= Q_HSCR_W;
