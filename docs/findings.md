@@ -4601,3 +4601,42 @@ which a parked core satisfies. It now requires the core to make progress with th
 `pc=00a7` is the instruction after the two consecutive FIFO reads at 0x00a5/0x00a6 — the
 multiply whose result is written back — so the coprocessor is in its working path rather
 than polling. 168x the retires from one acknowledge.
+
+### The TGP:V60 clock ratio is 1:1 here and 2.5:1 on the board — 2026-08-29
+
+    reference     V60 16 MHz (32_MHz_XTAL/2)    TGP 40 MHz (40_MHz_XTAL)    ratio 2.5 : 1
+    ours          V60 19.2 MHz                  TGP 19.2 MHz                ratio 1.0 : 1
+
+`Model1.sv` ties `.ce_cpu(1'b1)` and both processors run on `clk_cpu`, PLL `outclk_1` at
+19.2 MHz. The "dual-clock" note on `m1_tgp` refers only to the microcode load port, not to
+running the core faster. So **our coprocessor has 2.5x less throughput relative to the CPU
+than the real board.**
+
+**This makes instruction-level lockstep of the TGP impossible as a metric, and that is not a
+statement about correctness.** 004D-0052 is a poll: which way `0052 brul alw d` goes depends
+on whether the FIFO happens to hold a command at that instant, so the instruction stream
+encodes the relative speed of the two processors. Diffing it compares timing, not semantics.
+
+Demonstrated by the fix on the same day. Before, a read of an empty FIFO stalled, which
+**synchronised** our TGP to the data and hid the ratio; `tgp_trace` agreed for 75,175
+instructions. After, with the correct return-zero behaviour, it parts at instruction 89 —
+with the roles reversed:
+
+    before   MAME 0052 -> 0053 (idle)      ours 0052 -> 0064 (dispatch)
+    after    MAME 0052 -> 0055 (dispatch)  ours 0052 -> 0053 (idle)
+
+`get_exp(0x01000000)` is 2, so the reference dispatches to `0x53 + 2 = 0x55`; we read an
+empty FIFO. **The longer agreement was the buggier build**, because stalling made our TGP
+data-driven rather than time-driven. A metric that rewards the wrong behaviour is the wrong
+metric.
+
+**So M0 exit criterion 2 needs a timing-independent comparator**, and the candidates are the
+data-memory WRITE streams (`make tgp_wrtrace`, already built) and the sequence of dispatched
+handlers with their results. The command interface itself is already known bit-exact — 61
+pushes, 61 pops — so what is left to prove is that each command produces the same work, which
+is a value question, not a schedule question.
+
+Whether the ratio should be corrected in RTL is open and is NOT required for the criterion.
+It would need the TGP in its own faster domain, which costs timing closure at 29,771 ALM and
++0.634 ns; and our V60's CPI is ~15 against real silicon's ~8, so the two errors are not
+independent and fixing only the clock would not make the machine match the board.
