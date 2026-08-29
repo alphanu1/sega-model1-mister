@@ -29,9 +29,31 @@ against the reference. Yesterday's "differs at the FIRST pop" is withdrawn — s
 family: mismatched filters, taps at different LEVELS, and a registered signal sampled on its
 own write edge.
 
+**And then the blocker moved, and it is the V60's SPEED.** Four measurements, each answering
+the one before:
+
+    TGP fifo_wr asserted 69% of all cycles   -> blocked PUSHING results, not starved
+    V60 reads the result FIFO 20x/109 frames -> reference does ~1,185 PER FRAME
+    v60_trace DIVERGES at instruction 25,281 -> MAME jsr FF8ABC, we land at fe02bc
+    our loops run at 47% of MAME's counts    -> 8,769 vs 4,102, repeatedly
+
+`fe02bc` is entered from five different predecessors in our own trace, so it is an interrupt
+handler, not a subroutine: **we take an interrupt the reference has not taken yet.** The loop
+counts say why — those are time-based waits, so the ratio IS our relative speed. Same
+wall-clock IRQ rate against half the instruction throughput puts the interrupt earlier in the
+instruction stream.
+
+So the TGP is waiting behind the CPU. `tgp_wrtrace`'s value divergence at write 268
+(`41ef3336` there, `bdcccccd` here, sourced from `x0 = 0x100`) is the V60 having pushed
+different data after taking a different path — not TGP arithmetic.
+
+**`clk_cpu` closes at 24.94 MHz and runs at 19.2**, so 30% is available from a PLL change
+alone. It does not close a 2x gap, and `m1_ioboard`'s `LATENCY = 740684` is derived from
+19.2 MHz and must move with it. Recorded, not done.
+
 **Still open:** the background scrolls on the wrong axis and flickers. Worth re-testing on
-hardware *after* this fix rather than before — the V60 was waiting on a coprocessor that
-never answered, so what it wrote into the scroll registers was downstream of a dead TGP.
+hardware *after* these fixes — the V60 was waiting on a coprocessor that never answered, so
+what it wrote into the scroll registers was downstream of a dead TGP.
 
 ## 2026-08-19 — the coprocessor works, and the reason nothing drew was a reset
 
