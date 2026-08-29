@@ -1,5 +1,38 @@
 # HANDOFF
 
+## 2026-08-29 — the coprocessor stops parking: an empty command FIFO reads as ZERO
+
+**The TGP was blocked at its own dispatch, and the cause was our FIFO being too strict.**
+`004D` pops a command into `b`; `0052 brul alw d` jumps to `d = get_exp(b) + 0x53`, so
+004D-0052 is a computed dispatch whose command type rides in the exponent field. `get_exp` is
+`(val >> 23) & 0xff`, so **an empty FIFO gives `b = 0` and `d = 0x53` — the IDLE handler**,
+which loops back to `0x9b` and polls again.
+
+We stalled the pop until data arrived, so `b = 0` was unreachable, the idle path was
+unreachable, and the core parked at `004C` the first time it polled an empty FIFO.
+
+    before   TGP retires=342    pc=004c  pushes=61 returns=20
+    after    TGP retires=57660  pc=00a7  pushes=61 returns=36
+
+`gen_fifo.h` is explicit and the comment in `m1_tgp.sv` claimed the opposite of it:
+*"Called on a pop with an empty fifo... **the pop itself will then return zero**."* Over a
+16-second window the reference makes **61 pushes and fills a 300-entry pop capture** — polling
+an empty FIFO is its normal state.
+
+**The outbound FIFO keeps its stall and must not be made symmetric.** That direction is the
+V60 reading results, where acknowledging an empty read returned a stale word and hung the CPU
+at `fed5a4`; MAME halts the maincpu there instead.
+
+**The command interface itself was never wrong.** 61 pushes and 61 pops, both bit-exact
+against the reference. Yesterday's "differs at the FIRST pop" is withdrawn — see
+`docs/findings.md` for the three stacked instrument faults that produced it, all of the same
+family: mismatched filters, taps at different LEVELS, and a registered signal sampled on its
+own write edge.
+
+**Still open:** the background scrolls on the wrong axis and flickers. Worth re-testing on
+hardware *after* this fix rather than before — the V60 was waiting on a coprocessor that
+never answered, so what it wrote into the scroll registers was downstream of a dead TGP.
+
 ## 2026-08-19 — the coprocessor works, and the reason nothing drew was a reset
 
 **Read this section first.** It supersedes anything below it about the TGP or the missing
