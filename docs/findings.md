@@ -4963,3 +4963,30 @@ thing per flash.
 run with the fix ON, which deadlocks at ~frame 340. **About 87% of those frames were a halted
 machine**, so "the scroll registers never change" was largely a statement about a dead V60,
 not about the scroll logic. Re-measured against the shipped configuration.
+
+### The reference does not scroll before ~frame 400 either — 2026-08-29
+
+`tools/mame_scroll_census.lua` samples from frame 400 and reports at 2,000, so every
+comparison against our 108-frame bench window was comparing different points in the attract
+sequence. Measured directly (`build/dasm/early.lua`):
+
+    MAME  f=20..160    hscr2=0000  ctrl01=0000  ctrl23=0000   hscr2 changed on 0 frames
+    ours  f=0..108     hscr2 changed once, window ctrl pair23=0000
+
+**So at matched frames we agree with the reference**, and "we never enter window mode where
+MAME always does" would have been a false finding. The reference's own numbers only diverge
+from that later:
+
+    f=400   hscr2=000b  ctrl23=2015          layer 2 hscr CHANGED on 1,345 of 2,000 frames
+    f=800   hscr2=000e  ctrl23=23db          layers 0/1/3 changed on 18 / 0 / 0
+    f=1200  hscr2=0102  ctrl23=23fc          0x4000 per-line table: 0 of 2048 non-zero
+    f=1600  hscr2=03dc  ctrl23=23ce
+
+Pair 2/3 is mode 1 throughout — `ctrl & 0x6000` is `0x2000` on every counted frame — with the
+low bits moving, so the horizon's split line slides while `hscr` scrolls the pair sideways.
+**Vertical movement without horizontal is what you get if the split line moves and `hscr`
+does not**, which is the reported symptom, but establishing that needs our run to reach frame
+400+ and the 108-frame window cannot show it.
+
+The per-line H-scroll table stays struck off: still 0 of 2048 words non-zero over 2,000
+frames, and no layer ever sets `hscr` bit 15.
