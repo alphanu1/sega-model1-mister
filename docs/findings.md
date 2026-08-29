@@ -4840,3 +4840,15 @@ with `MODEL1_NO_SDRAM_MCP` as the escape hatch.
 **Two workarounds were stacked on one misattribution**: the constraints were made opt-out AND
 the multicycles opt-in, both to dodge a crash in neither of them. The measurement that
 separated them was reading the stack trace instead of the exit code.
+
+**And the multicycles close it.** Same design, `MODEL1_NO_SDRAM_MCP` unset:
+
+    clk_sys setup        -8.186 ns  ->  +0.378 ns
+    SDRAM_CLK_pin setup  -0.387 ns  ->  +10.582 ns
+    worst setup / hold   failing    ->  +0.321 / +0.253 ns, no negative slack anywhere
+    ALM / M10K           30,101     ->  29,979 / 452
+
+So the -8.186 WAS the sixteen read-capture paths and not internal `clk_sys` logic — the
+rebuild is what settled that, rather than reading the transfer matrix and assuming. **A full
+compilation now meets timing with the SDRAM interface constrained**, which is the first time
+that has been true here.
