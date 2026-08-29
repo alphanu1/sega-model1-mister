@@ -4640,3 +4640,36 @@ Whether the ratio should be corrected in RTL is open and is NOT required for the
 It would need the TGP in its own faster domain, which costs timing closure at 29,771 ALM and
 +0.634 ns; and our V60's CPI is ~15 against real silicon's ~8, so the two errors are not
 independent and fixing only the clock would not make the machine match the board.
+
+### quartus_fit segfaults AT EXIT, and the multicycles were not the cause — 2026-08-29
+
+`make rbf` reported `Error (23031): Evaluation of Tcl script qsh_flow.tcl unsuccessful` and
+produced no `.rbf`. That message names neither the stage nor the cause, and the log two lines
+above it says the opposite:
+
+    Info: Quartus Prime Fitter was successful. 0 errors, 45 warnings
+    *** Fatal Error: Segment Violation
+    Module: quartus_fit
+       0x32ee4f: STA_COLLECTION_ATCL_OBJ::~STA_COLLECTION_ATCL_OBJ()
+        0x2b0be: ATCL_OBJ::tcl_freeInternalRepProc(Tcl_Obj*)
+       0x130ec1: UnsetVarStruct
+       0x131253: TclDeleteNamespaceVars
+       0x103fc0: TclTeardownNamespace
+        0x19d82: atcl_exe_fini()
+
+**The fit succeeds — 30,099 ALM, 452 M10K, 0 errors — and the crash is in the TEARDOWN**,
+freeing STA collection objects that the SDC left in Tcl variables. Because it dies at exit,
+no fit report is written and the assembler never runs, so the build has no `.rbf` while
+claiming success. The stale `.rbf` from an earlier build is still sitting in `output_files/`,
+which makes it look as though something was produced. **Check the `.rbf` timestamp, not its
+existence.**
+
+Fix: `unset -nocomplain sdram_clk_src sdram_clk_prt sdram_out sys_clk cpu_clk sdc_exe` at the
+end of the SDC, so the collections are freed inside the STA session rather than at
+interpreter shutdown.
+
+**THE MULTICYCLE PATHS WERE BLAMED FOR THIS AND ARE NOT THE CAUSE.** They are opt-in behind
+`MODEL1_SDRAM_MCP`, which was **not set** on the build that crashed, so those four lines never
+ran. Three earlier crashes were attributed to them and the SDRAM constraints were made
+opt-out in response — that is a workaround built on a misattribution, and the constraints can
+stay on.

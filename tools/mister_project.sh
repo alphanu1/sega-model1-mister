@@ -261,6 +261,34 @@ if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
     post_message -type error \
         "Model1: core PLL clocks not found - check the pll/pll_inst/altera_pll_i names"
 }
+
+# FREE EVERY STA COLLECTION BEFORE THE INTERPRETER GOES AWAY.
+#
+# quartus_fit SEGFAULTS AT EXIT OTHERWISE, after reporting success. Measured
+# 2026-08-29: "Quartus Prime Fitter was successful. 0 errors, 45 warnings",
+# then
+#
+#     *** Fatal Error: Segment Violation
+#     Module: quartus_fit
+#     0x32ee4f: STA_COLLECTION_ATCL_OBJ::~STA_COLLECTION_ATCL_OBJ()
+#     0x2b0be:  ATCL_OBJ::tcl_freeInternalRepProc(Tcl_Obj*)
+#     0x130ec1: UnsetVarStruct
+#     0x131253: TclDeleteNamespaceVars
+#     0x103fc0: TclTeardownNamespace
+#     0x19d82:  atcl_exe_fini()
+#
+# The fit itself is fine - 30,099 ALM, 452 M10K, 0 errors. What dies is the
+# teardown of the Tcl namespace, freeing collection objects that outlived the
+# STA session. No fit report is written and the assembler never runs, so the
+# build produces NO .rbf while claiming the fitter succeeded, and the flow
+# reports only "Evaluation of Tcl script qsh_flow.tcl unsuccessful" - which
+# names neither the stage nor the cause.
+#
+# THE MULTICYCLES WERE BLAMED FOR THIS AND ARE NOT THE CAUSE. They are opt-in
+# behind MODEL1_SDRAM_MCP and were NOT set on the build that crashed. Three
+# earlier crashes were attributed to them and the constraints were disabled in
+# response; the trace says the collections are what matters.
+unset -nocomplain sdram_clk_src sdram_clk_prt sdram_out sys_clk cpu_clk sdc_exe
 EOF
 
 # Project settings: the template's, with the entity and the file list swapped.

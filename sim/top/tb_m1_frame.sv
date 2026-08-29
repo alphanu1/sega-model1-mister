@@ -336,6 +336,40 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// WHERE THE COPROCESSOR'S CYCLES ACTUALLY GO.
+//
+// In comparable windows - 15s of simulated time here against MAME's 16s - our
+// TGP retires 395,631 instructions where the reference retires 11,367,862. Only
+// 2.08x of that 29x gap is the clock (ours runs at clk_cpu's 19.2 MHz, the board
+// runs the TGP at 40 MHz against a 16 MHz V60). The rest is stall, and these
+// counters say WHICH stall rather than leaving it to be inferred.
+//
+// 64-bit, because dbg_retires inside m1_tgp is a 16-bit counter that WRAPS with
+// no saturation - "retires=57660" out of that port is 57,660 + 65,536k and
+// cannot be divided by a cycle count.
+longint tgp_cycles = 0, tgp_retires = 0, tgp_memwait = 0, tgp_fifordwait = 0,
+        tgp_fifowrwait = 0, v60_fifo_reads = 0, v60_fifo_pushed = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n) begin
+        tgp_cycles <= tgp_cycles + 1;
+        if (core.main.tgp.core.retire)  tgp_retires    <= tgp_retires + 1;
+        if (core.main.tgp.core.mem_req) tgp_memwait    <= tgp_memwait + 1;
+        if (core.main.tgp.fifo_rd)      tgp_fifordwait <= tgp_fifordwait + 1;
+        if (core.main.tgp.fifo_wr)      tgp_fifowrwait <= tgp_fifowrwait + 1;
+        // AND WHAT THE V60 DOES ABOUT IT. The outbound FIFO is 16 deep and full
+        // halts the producer, so if the V60 does not drain it the TGP stalls on
+        // the push - which is what fifo_wr at 69% of cycles says is happening.
+        // The reference's V60 reads the FIFO about 1,185 times a FRAME (710,722
+        // over 600 frames, in I/O space via in.w). dbg_fifo_pops in the RTL is
+        // 16 bits and WRAPS, so it cannot answer this; count it here instead.
+        if (core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+            && !core.main.copro.we && core.main.copro.sel_fifo
+            && !core.main.copro.a1)
+          v60_fifo_reads <= v60_fifo_reads + 1;
+        if (core.main.copro.fifo_out_push) v60_fifo_pushed <= v60_fifo_pushed + 1;
+    end
+end
+
 // HOW OFTEN EACH SCROLL REGISTER CHANGES.
 //
 // The board scrolls the background VERTICALLY and flickers, where the reference
@@ -503,6 +537,12 @@ task automatic report_census;
                  f_layer_px[0], f_layer_px[1], f_layer_px[2], f_layer_px[3],
                  496 * 384);
         $display("FRAME: window ctrl  pair01=%04h pair23=%04h", f_ctrl[0], f_ctrl[1]);
+        $display("FRAME: TGP cycles=%0d retires=%0d (%0d cyc/instr)  mem_req=%0d fifo_rd=%0d fifo_wr=%0d",
+                 tgp_cycles, tgp_retires,
+                 tgp_retires ? tgp_cycles / tgp_retires : 0,
+                 tgp_memwait, tgp_fifordwait, tgp_fifowrwait);
+        $display("FRAME: V60 read the result FIFO %0d times (%0d/frame; reference does ~1185), TGP pushed %0d results",
+                 v60_fifo_reads, v60_fifo_reads / (frames ? frames : 1), v60_fifo_pushed);
         $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d pops=%0d returns=%0d",
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
     end
