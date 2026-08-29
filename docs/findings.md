@@ -4507,3 +4507,49 @@ Also recorded, because it cost a run: `tgp.state["PC"]` does not exist - `PC` is
 in `state_add` - and **a bad state key throws inside a tap and is silently swallowed**, so
 the first capture produced an empty file and looked like a tap that never fired. Use `GENPC`,
 which is the NEXT pc, so it reads `0x4e` while `0x4d` executes.
+
+### Where the 452 M10K actually go, and the 80 that are recoverable — 2026-08-29
+
+Measured from the fitter's own *Resource Utilization by Entity* table, `M10Ks` column, not
+from grepping instance names — a grep of `altsyncram:<name>` counted `o_a_poly_mem` at 62
+blocks when it is **1**, because the report names each memory in several sections. The
+counts also failed to sum to 452, which is the tell.
+
+    tram_c_lo/hi + tram_v_lo/hi   128     tile RAM, HALF OF IT DUPLICATION
+    dl0_lo/hi + dl1_lo/hi         128     display lists, genuinely double-buffered
+    cxlat_lo/hi                    32
+    pram_c_lo/hi + pram_v_lo/hi    32     palette, HALF OF IT DUPLICATION
+    ram                            32
+    g_bank                         32
+    ascal (framework)              42
+    osd_buffer / prog / misc       ~26
+
+**32 blocks per 32768x8 byte lane is the FLOOR, so the byte-array idiom is already optimal.**
+M10K's widest useful configuration is 1024x8, so a 32768-deep lane needs 32 blocks whatever
+the width: 262,144 bits into 8,192 usable bits each. Going to one 32768x16 array would be
+*worse*, not better — the 512x16 configuration needs 64. Depth dominates, not width. The
+82% "implementation bits" against 61% actual bits is this, and it is not recoverable.
+
+**The recoverable M10K is the CPU/video DUPLICATION: 64 on tile RAM, 16 on palette.**
+`m1_mainram` keeps `tram_c` for the CPU read port and `tram_v` for the video read port,
+written identically from `clk`, because an M10K has two ports and write + CPU read + video
+read is three. But port A can serve the write AND the CPU read, leaving port B for the video
+read — which is two, and is what M10K true-dual-port mode exists for.
+
+**Quartus 17.0 will not INFER it, tested small both ways** (`build/m10ktest`, 1024 entries,
+seconds per run, per the rule about testing a memory idiom small):
+
+  * one write + two reads on different clocks — Quartus silently **replicates the array into
+    two Simple Dual Port blocks**, 16,384 bits for an 8,192-bit array. That is exactly what
+    `m1_mainram` already does by hand, so merging the declarations saves nothing.
+  * the true-dual-port template, both ports read and write — **`Error (276001): Cannot
+    synthesize dual-port RAM logic "mem"`**. Refused outright.
+
+So it needs an explicit `altsyncram` in `BIDIR_DUAL_PORT` with two clocks, plus a
+behavioural model under `` `ifdef VERILATOR `` since Verilator cannot compile the
+megafunction. That is a sim/synth divergence risk on the most heavily used memory in the
+design, which is why it is written down rather than done in the middle of the TGP work.
+
+**`MISTER_DISABLE_ADAPTIVE` is NOT worth it.** It sets ascal's `ADAPTIVE("false")`, and the
+memory that guards is `o_a_poly_mem` — **1 M10K**. ascal's 42 are mostly its four scaler line
+buffers at 5 each. `MISTER_SMALL_VBUF` changes DDR3 `RAMSIZE` only and touches no M10K.
