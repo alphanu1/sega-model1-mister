@@ -44,7 +44,27 @@ module m1_tgp #(
   parameter bit MATH_ZERO = 1'b0,
   // AS_PROGRAM is 0x000-0x7ff. The microcode is exactly this size, so a smaller
   // parameter would silently alias rather than fail.
-  parameter int unsigned PROG_WORDS = 2048
+  parameter int unsigned PROG_WORDS = 2048,
+  // AN EMPTY COMMAND FIFO READS AS ZERO -- CORRECT, AND OFF BY DEFAULT.
+  //
+  // gen_fifo.h: "the pop itself will then return zero", and the microcode needs
+  // that zero. 0052 `brul alw d` jumps to d = get_exp(b) + 0x53, so an empty
+  // FIFO gives 0x53 - the idle handler, which loops back to 0x9b and polls
+  // again. Stalling instead makes b = 0 unreachable and parks the core at 004C
+  // forever. All of that is measured and stands; see docs/findings.md.
+  //
+  // BUT TURNING IT ON DEADLOCKS THE MACHINE, on the board and in simulation.
+  // Unparking the coprocessor means it starts PRODUCING results, and our V60
+  // never drains them: `fout` fills at ~400 M cycles, the TGP then stops taking
+  // commands, `fin` fills, and both halt permanently around frame 340. On
+  // hardware that is sky and sea with no glyphs and nothing moving - WORSE than
+  // the parked behaviour, which at least left the V60 running and drawing text.
+  //
+  // The interlocks are right and must not be relaxed. What is wrong is the
+  // V60's 1.63x speed deficit, which keeps it off the code that reads results.
+  // FLIP THIS TO 1 WHEN THAT IS FIXED - it is the correct behaviour, and the
+  // deadlock cannot arm once the V60 keeps up.
+  parameter bit EMPTY_FIFO_READS_ZERO = 1'b0
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -262,7 +282,8 @@ module m1_tgp #(
   // read a duplicate for its next result and go wrong a command later.
   assign fifo_out_push = fifo_wr && !fifo_out_full && !pushed;
   assign fifo_out_data = fifo_wdata;
-  assign fifo_rdata    = popped ? pop_data : (fifo_in_valid ? fifo_in_data : 32'd0);
+  assign fifo_rdata    = popped ? pop_data
+                       : (fifo_in_valid || EMPTY_FIFO_READS_ZERO) ? fifo_in_data : 32'd0;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -282,7 +303,7 @@ module m1_tgp #(
       pop_data <= 32'd0;
     end else if (!fifo_rd) begin
       popped   <= 1'b0;
-    end else if (fifo_rd && !popped) begin
+    end else if (fifo_rd && !popped && (EMPTY_FIFO_READS_ZERO || fifo_in_valid)) begin
       // Latched on the first cycle of the access whether or not the FIFO had
       // anything, so one access yields one value. Without this an access held
       // across S_SRC and S_SRC_W could read 0 on one cycle and a word the V60
@@ -327,7 +348,7 @@ module m1_tgp #(
   // The OUTBOUND fifo keeps its stall. That direction is the V60 reading results,
   // where acknowledging an empty read returned a stale word and hung the CPU at
   // fed5a4; MAME halts the maincpu there rather than letting it proceed.
-  assign fifo_ack = fifo_rd ? 1'b1
+  assign fifo_ack = fifo_rd ? (EMPTY_FIFO_READS_ZERO || fifo_in_valid || popped)
                   : fifo_wr ? (!fifo_out_full || pushed)
                   : 1'b0;
 

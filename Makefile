@@ -333,8 +333,14 @@ test_glue:
 # The coprocessor on REAL microcode. Outside `make test` because it needs
 # 315-5573.bin extracted, the same way m1_boot needs a ROM image:
 #   python3 tools/build_tgp_rom.py vr ~/roms/vr ~/roms/vr.zip -o build/rom
+# BUILT WITH EMPTY_FIFO_READS_ZERO=1, which is NOT the hardware default.
+# The zero-on-empty behaviour is what MAME does and what the microcode's idle
+# dispatch needs, so it is what this suite verifies. It is off in the shipped
+# build because it deadlocks against our too-slow V60 - see the parameter's
+# comment in m1_tgp.sv. Flip both when the V60 keeps up.
 m1_tgp:
 	verilator --cc --exe --build -O2 -Wno-fatal $(VFLAGS) --top-module m1_tgp \
+	  -GEMPTY_FIFO_READS_ZERO=1 \
 	  -CFLAGS "-O2 -std=c++17" \
 	  $(SRCS_m1_tgp) sim/tgp/tb_m1_tgp.cpp -o tb_m1_tgp --Mdir obj_m1_tgp
 	./obj_m1_tgp/tb_m1_tgp
