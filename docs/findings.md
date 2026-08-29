@@ -4904,3 +4904,31 @@ deadlock is a *consequence* of the V60 never reaching the code that drains resul
 the interrupt-timing divergence at instruction 25,281 and the 1.63x speed deficit recorded
 above. **Fix the speed and the deadlock cannot arm.** Adding an escape hatch to the FIFOs
 would hide it and produce a machine that silently drops geometry instead.
+
+### The V60's CPI is TRIMODAL, so a targeted fix beats pipelining — 2026-08-29
+
+`make m1_boot BOOT_CYCLES=400000000`, retire-to-retire histogram over 6,292,761 instructions:
+
+    mean 14.9   median 9
+
+    25 cyc   1,672,426 instr   26.6% of instrs   44.4% of ALL CYCLES
+     9 cyc   3,421,949 instr   54.4%             32.7%
+    33 cyc     409,890 instr    6.5%             14.4%
+     3 cyc     538,100 instr    8.6%              1.7%
+    30 cyc      64,092 instr    1.0%              2.0%
+
+**A third of the instructions consume 59% of the cycles.** `tb_m1_boot`'s own comment poses
+the question this answers: *"A UNIFORM ~11 means every instruction is genuinely multi-cycle
+and a split pays; a BIMODAL distribution means a short average dragged by a few slow classes,
+which pipelining barely touches and a targeted fix does."* Median 9 against mean 14.9, with
+four sharp peaks at 3 / 9 / 25 / 33, is emphatically the second.
+
+**So the V60 split should target the 25-cycle class, not general pipelining.** If that class
+came down to ~12 cycles it is worth ~23% of all cycles — CPI 14.9 -> ~11.5, which is 1.30x and
+**more than the 1.25x the 1.63x speed target needs from CPI**. That is an estimate of the
+prize, not a measurement of the fix: what the 25-cycle class actually IS has not been
+identified yet, and a per-opcode breakdown is the next instrument. The shape says where to
+point it.
+
+The tail is negligible and should not be chased: everything above 33 cycles together is under
+2% of cycles, and the `63 or more` bucket is 0.5%.
