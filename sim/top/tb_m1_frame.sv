@@ -285,6 +285,38 @@ reg [31:0] ucode [0:2047];
 wire        tgp_mem_req;
 wire [24:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
+// WHAT THE COPROCESSOR POPS FROM THE COMMAND FIFO.
+//
+// tgp_trace parts at instruction 75,175 on `0052 brul alw d`, because
+// d = get_exp(b) + 0x53 differs - 0x53 there, 0x64 here. b is loaded three
+// instructions earlier by `004D: mov (x1), b` with x1 = 0x100, and 0x100 is not
+// RAM: copro_data_map has map(0x0100,0x0100).r(m_copro_fifo_in), so that load is
+// POPPING A COMMAND. Our decode matches - sel_fifo_in = (addr == 0x100) && !we -
+// and our FIFO stalls correctly when empty, so the difference is the DATA the
+// V60 pushed.
+//
+// The reference's first pops, captured with tools/tgp_x1.lua, alternate
+// 00000000 and 01000000. get_exp(0) is 0x00, which is what MAME has at the
+// divergence; ours gives 0x11, so the sequences part somewhere before it.
+integer pop_n = 0;
+integer pop_f;
+initial pop_f = $fopen("build/frame_pops.txt", "w");
+always @(posedge clk_cpu) begin
+    // FILTERED TO THE SAME INSTRUCTION AS THE REFERENCE CAPTURE.
+    //
+    // tools/tgp_x1.lua records pops only where GENPC == 0x4e, which is the load
+    // at 0x004D. Capturing every pop here instead produced a sequence that
+    // "diverged at pop 2" purely because the two sides were filtered
+    // differently - MAME alternating 0/01000000 against ours carrying real
+    // geometry. Two sequences with different filters cannot be diffed, and that
+    // would have been a false finding.
+    if (core.main.tgp.fifo_in_pop && core.main.tgp.core.seq_pc == 16'h004d
+        && pop_n < 300) begin
+        pop_n = pop_n + 1;
+        $fwrite(pop_f, "%4d val=%08h\n", pop_n, core.main.tgp.pop_data);
+    end
+end
+
 // HOW OFTEN EACH SCROLL REGISTER CHANGES.
 //
 // The board scrolls the background VERTICALLY and flickers, where the reference
@@ -1070,6 +1102,8 @@ initial begin
              f_rb_csum);
     $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
+    $fclose(pop_f);
+    $display("FRAME: captured %0d command-FIFO pops to build/frame_pops.txt", pop_n);
     $display("FRAME: scroll changes over %0d frames: hscr[5002]=%0d  vscr[5006]=%0d",
              fr_seen, h_changes, v_changes);
     $display("FRAME: microcode RAM read back = %06h, sweep done=%0b (board row 0C)",

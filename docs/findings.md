@@ -4455,3 +4455,43 @@ explicitly ("the RAM samples its inputs on the edge, so the byte that lands is t
 presented before the clock") and is byte-oriented throughout. And the composition it names as
 the remaining untested link - CPU through bridge into I/O board on real code - is what
 `make m1_boot` has been doing here all along.
+
+### The coprocessor's command stream differs at the FIRST pop — 2026-08-29
+
+`tgp_trace` parts at instruction 75,175 on `0052 brul alw d`, because
+`d = get_exp(b) + 0x53` is `0x53` in the reference and `0x64` here. Tracing `b` back three
+instructions gives `004D: mov (x1), b` with `x1 = 0x100` - and **0x100 is not RAM**:
+
+    copro_data_map:
+      map(0x0000, 0x00ff).ram();
+      map(0x0100, 0x0100).r(m_copro_fifo_in,  read);    <- the COMMAND FIFO
+      map(0x0200, 0x03ff).ram();
+      map(0x0400, 0x0400).w(m_copro_fifo_out, write);
+
+So that load is **popping a command**. Our decode matches exactly, including the
+direction-specificity - `sel_fifo_in = (addr == 0x100) && !we` - and our FIFO stalls
+correctly when empty, so neither the map nor the interlock is at fault.
+
+**Captured on both sides at that same instruction:**
+
+    pop      1          2          then
+    MAME     00000000   01000000   alternating 0 / 01000000
+    ours     04000000   428c0000   428c0000 repeating
+
+**They differ at the first pop**, so the divergence is not 75,175 instructions deep at all -
+the coprocessor is fed a different command stream from the start, and `tgp_trace` only
+noticed when the difference finally changed a branch. What to compare next is what the V60
+PUSHES, not what the coprocessor pops.
+
+### A filtering mistake that would have been a false finding
+
+The first comparison put MAME's `00000000, 01000000, ...` against ours of
+`00000000, 04000000, 01000000, 3f400000, 428c0000, ...` and appeared to diverge at pop 2.
+It was an artefact: **the reference capture was filtered to `GENPC == 0x4e`** - pops at
+instruction `0x004D` only - while ours counted EVERY pop. Two sequences with different
+filters cannot be diffed.
+
+Also recorded, because it cost a run: `tgp.state["PC"]` does not exist - `PC` is `.noshow()`
+in `state_add` - and **a bad state key throws inside a tap and is silently swallowed**, so
+the first capture produced an empty file and looked like a tap that never fired. Use `GENPC`,
+which is the NEXT pc, so it reads `0x4e` while `0x4d` executes.
