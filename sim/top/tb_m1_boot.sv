@@ -1073,12 +1073,18 @@ end
 //
 // Counted in CPU-clock cycles between PC changes, which is retire to retire.
 integer cpi_hist [0:63];
+reg [23:0] slow_pc [0:31];
+integer    slow_n  [0:31];
+integer    slow_j, slow_seen;
 integer cpi_run, cpi_i;
 integer cpi_stall_run;
 reg [23:0] cpi_last_pc = 24'hffffff;
 
 initial begin
     for (cpi_i = 0; cpi_i < 64; cpi_i = cpi_i + 1) cpi_hist[cpi_i] = 0;
+    for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1) begin
+        slow_pc[slow_j] = 24'h0; slow_n[slow_j] = 0;
+    end
     cpi_run = 0; cpi_stall_run = 0;
 end
 
@@ -1090,6 +1096,31 @@ always @(posedge clk_cpu) begin
         if (dbg_pc != cpi_last_pc) begin
             cpi_hist[(cpi_run > 63) ? 63 : cpi_run] =
                 cpi_hist[(cpi_run > 63) ? 63 : cpi_run] + 1;
+            // WHICH INSTRUCTIONS ARE THE 25-CYCLE CLASS.
+            //
+            // The histogram is trimodal - 3 / 9 / 25 / 33 - and the 25-cycle
+            // bucket is 26.6% of instructions and 44.4% of ALL CYCLES. Knowing
+            // the shape says a targeted fix beats pipelining; it does not say
+            // what to target. This records the PC that ENDED each slow run, so
+            // the retiring instruction can be looked up in the disassembly.
+            //
+            // A small direct-mapped table rather than a full PC histogram: the
+            // V60's address space is 24 bits and only the hot handful matter.
+            if (cpi_run >= 23 && cpi_run <= 27) begin
+                slow_seen = 0;
+                for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1)
+                    if (slow_pc[slow_j] == cpi_last_pc) begin
+                        slow_n[slow_j] = slow_n[slow_j] + 1;
+                        slow_seen = 1;
+                    end
+                if (!slow_seen)
+                    for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1)
+                        if (!slow_seen && slow_n[slow_j] == 0) begin
+                            slow_pc[slow_j] = cpi_last_pc;
+                            slow_n[slow_j]  = 1;
+                            slow_seen = 1;
+                        end
+            end
             cpi_run     = 0;
             cpi_last_pc = dbg_pc;
         end
@@ -1504,6 +1535,13 @@ initial begin
         $display("BOOT:   instructions=%0d  mean=%0d.%0d  median=%0d  (63 = 63 or more)",
                  tot, sum / ((tot == 0) ? 1 : tot),
                  ((sum * 10) / ((tot == 0) ? 1 : tot)) % 10, med);
+        // The PCs that RETIRE at 23-27 cycles - the 25-cycle class, which is a
+        // quarter of the instructions and 44% of the cycles. Look each up in
+        // the disassembly to name the opcode; that is what a targeted fix needs.
+        $display("BOOT: PCs retiring in the 25-cycle class (top of a 32-entry table):");
+        for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1)
+            if (slow_n[slow_j] > 0)
+                $display("BOOT:   pc=%06h  n=%0d", slow_pc[slow_j], slow_n[slow_j]);
     end
     $display("BOOT: data-bus latency by page (page, accesses, total stall cycles, avg):");
     for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1)

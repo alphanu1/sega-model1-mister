@@ -4990,3 +4990,38 @@ does not**, which is the reported symptom, but establishing that needs our run t
 
 The per-line H-scroll table stays struck off: still 0 of 2048 words non-zero over 2,000
 frames, and no layer ever sets `hscr` bit 15.
+
+### Where the V60's cycles go: work RAM at 36 cycles an access — 2026-08-30
+
+`make m1_boot BOOT_CYCLES=300000000`, data-bus latency by page:
+
+    500000   n=1,289,439   46,511,564 stall cycles   avg 36     <- RAMB, the game's work RAM
+    400000   n=   87,312    2,995,996                avg 34
+    100000-280000 (ROM)    ~1.2 M each               avg 36
+    780000-7d0000          ~0.9 M each               avg 32
+    600000/610000 (copro RAM)                        avg  8
+    700000 (tile RAM)                                avg  8
+    910000 (palette) / c00000                        avg  8
+
+**One page absorbs 1.29 M accesses at 36 cycles — 46.5 M stall cycles in a 300 M-cycle run.**
+`model1.cpp:992` maps `0x500000-0x53ffff` as `.ram()`: RAMB, 256 KB of work RAM, which lives
+in SDRAM here.
+
+**Two separate costs, and neither is SDRAM physics.**
+
+  * **The bus baseline is 8 cycles**, paid by every access including on-chip block RAM. A
+    registered M10K read is one cycle; the rest is the req/ack round trip, which must be HELD
+    rather than pulsed (see the acknowledge rule in HANDOFF).
+  * **SDRAM adds ~28 more.** At 19.2 MHz that is ~150 cycles of the 80 MHz `clk_sys` domain,
+    where a CAS-2 read after an activate is roughly 9. So the penalty is the CDC handshake and
+    the controller's per-access sequencing, not the memory.
+
+**This is the concrete target for the 1.25x CPI the speed deficit needs**, and it is bus work
+rather than CPU work — which matters, because it does not touch the V60's verified behaviour.
+Caching RAMB is not obviously the answer: it is read/write, and 256 KB is 256 M10K against
+101 free. Shortening the handshake helps every page at once.
+
+**Caveat on the histogram**: 4.6 M instructions retired in a 300 M-cycle window is ~65
+cycles/instruction overall, against the histogram's mean of 14.9. The histogram bins
+retire-to-retire runs and caps at 63, so long waits are undercounted. Treat 14.9 as the shape
+of the common case, and `v60_trace`'s 1.63x against MAME as the reliable relative figure.
