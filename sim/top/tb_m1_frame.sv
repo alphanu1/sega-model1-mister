@@ -298,22 +298,41 @@ wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 // The reference's first pops, captured with tools/tgp_x1.lua, alternate
 // 00000000 and 01000000. get_exp(0) is 0x00, which is what MAME has at the
 // divergence; ours gives 0x11, so the sequences part somewhere before it.
-integer pop_n = 0;
-integer pop_f;
-initial pop_f = $fopen("build/frame_pops.txt", "w");
+integer pop_n = 0, push_n = 0;
+integer pop_f, push_f;
+initial pop_f  = $fopen("build/frame_pops.txt",  "w");
+initial push_f = $fopen("build/frame_pushes.txt", "w");
 always @(posedge clk_cpu) begin
-    // FILTERED TO THE SAME INSTRUCTION AS THE REFERENCE CAPTURE.
+    // UNFILTERED, AND COMPARED AGAINST THE REFERENCE'S PUSHES.
     //
-    // tools/tgp_x1.lua records pops only where GENPC == 0x4e, which is the load
-    // at 0x004D. Capturing every pop here instead produced a sequence that
-    // "diverged at pop 2" purely because the two sides were filtered
-    // differently - MAME alternating 0/01000000 against ours carrying real
-    // geometry. Two sequences with different filters cannot be diffed, and that
-    // would have been a false finding.
-    if (core.main.tgp.fifo_in_pop && core.main.tgp.core.seq_pc == 16'h004d
-        && pop_n < 300) begin
+    // This capture was filtered to seq_pc == 0x004d to match tools/tgp_x1.lua,
+    // which recorded pops only where GENPC == 0x4e. Both filters were then
+    // dropped and the sequences compared again - and the reference's UNFILTERED
+    // pops turn out to carry extra 00000000 entries that are not commands at
+    // all: MAME's read tap fires on a read of an EMPTY fifo, which returns 0 and
+    // is retried. We stall instead, so we never log those. Two instruments at
+    // different levels, which is how "diverges at the first pop" was read out of
+    // agreeing streams.
+    //
+    // The PUSH stream is the artefact-free comparator: v60_copro_fifo_w pushes
+    // once per pair of 16-bit writes, so MAME's pushes are exactly the command
+    // sequence, and every word pushed must be popped once in the same order.
+    if (core.main.tgp.fifo_in_pop && pop_n < 300) begin
         pop_n = pop_n + 1;
-        $fwrite(pop_f, "%4d val=%08h\n", pop_n, core.main.tgp.pop_data);
+        // pop_data is a REGISTER - `pop_data <= fifo_in_data` on this very
+        // edge - so sampling it here yields the PREVIOUS pop, and the log came
+        // out led by the reset value 00000000 and shifted one word behind. That
+        // read as a phantom command and very nearly became a third false
+        // finding in this same investigation. fifo_in_data is the head itself.
+        $fwrite(pop_f, "%4d val=%08h\n", pop_n, core.main.tgp.fifo_in_data);
+    end
+    if (core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+        && core.main.copro.we && core.main.copro.sel_fifo
+        && core.main.copro.a1 && !core.main.copro.fin_full
+        && push_n < 300) begin
+        push_n = push_n + 1;
+        $fwrite(push_f, "%4d val=%04h%04h\n", push_n,
+                core.main.copro.wdata, core.main.copro.lat_lo);
     end
 end
 

@@ -4456,32 +4456,44 @@ presented before the clock") and is byte-oriented throughout. And the compositio
 the remaining untested link - CPU through bridge into I/O board on real code - is what
 `make m1_boot` has been doing here all along.
 
-### The coprocessor's command stream differs at the FIRST pop — 2026-08-29
+### WITHDRAWN: "the command stream differs at the FIRST pop" — 2026-08-29
 
-`tgp_trace` parts at instruction 75,175 on `0052 brul alw d`, because
-`d = get_exp(b) + 0x53` is `0x53` in the reference and `0x64` here. Tracing `b` back three
-instructions gives `004D: mov (x1), b` with `x1 = 0x100` - and **0x100 is not RAM**:
+**It does not differ at all.** The command interface is bit-exact: over the same window the
+V60 pushes **61 commands and the coprocessor pops 61**, and both streams match the reference
+word for word.
 
-    copro_data_map:
-      map(0x0000, 0x00ff).ram();
-      map(0x0100, 0x0100).r(m_copro_fifo_in,  read);    <- the COMMAND FIFO
-      map(0x0200, 0x03ff).ram();
-      map(0x0400, 0x0400).w(m_copro_fifo_out, write);
+    our pushes vs MAME pushes:  IDENTICAL, 61 words
+    our pops   vs MAME pushes:  IDENTICAL, 61 words
 
-So that load is **popping a command**. Our decode matches exactly, including the
-direction-specificity - `sel_fifo_in = (addr == 0x100) && !we` - and our FIFO stalls
-correctly when empty, so neither the map nor the interlock is at fault.
+That restores the earlier result recorded above under *"The V60's command stream is CORRECT —
+it just never stops"*, which this entry had contradicted on the strength of a bad instrument.
 
-**Captured on both sides at that same instruction:**
+**Three instrument faults of the same family produced the false finding, one after another,
+in one investigation.** All three compared two captures that were not the same measurement:
 
-    pop      1          2          then
-    MAME     00000000   01000000   alternating 0 / 01000000
-    ours     04000000   428c0000   428c0000 repeating
+1. **Different filters.** The reference capture was filtered to `GENPC == 0x4e`; ours counted
+   every pop. Recorded below.
+2. **Different LEVELS.** MAME's read tap on `0x100` fires on a read of an **empty** FIFO,
+   which returns `0` and is retried; we stall instead and never log those. So the reference's
+   pop log carries `00000000` entries that are not commands, and ours cannot. The two logs
+   were never comparable in either direction.
+3. **A registered signal sampled on its own write edge.** `pop_data <= fifo_in_data` updates
+   on the very edge `fifo_in_pop` asserts, so logging `pop_data` there yields the PREVIOUS
+   pop. Our log came out led by the reset value `00000000` and shifted one word behind — which
+   read exactly like a phantom command ahead of the stream, and was written up as "offset by
+   one" before being caught. `fifo_in_data` is the head itself and is what to log.
 
-**They differ at the first pop**, so the divergence is not 75,175 instructions deep at all -
-the coprocessor is fed a different command stream from the start, and `tgp_trace` only
-noticed when the difference finally changed a branch. What to compare next is what the V60
-PUSHES, not what the coprocessor pops.
+**The artefact-free comparator is the PUSH stream.** `v60_copro_fifo_w` pushes once per pair
+of 16-bit writes — offset 0 latches the low half, **offset 1 supplies the high half and
+performs the push** — so the pushes are exactly the command sequence, with no empty-read
+entries and no retries. A tap on `0xd80000-0xd80001` alone sees every low half and **no
+pushes at all**: 61 writes of `0000`, which is also precisely what `0x01000000`'s low half
+looks like. Tap `0xd80000-0xd80003` and assemble on the odd offset.
+
+**So the divergence at instruction 75,175 is genuinely 75,175 instructions deep**, and the
+inputs are not the cause. `x1 = 0x100` at `004D` was read off a static trace back; whether
+`x1` still holds `0x100` at the divergence is unverified, and is the next thing to measure
+rather than infer.
 
 ### A filtering mistake that would have been a false finding
 
