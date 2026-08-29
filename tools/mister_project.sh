@@ -181,6 +181,20 @@ cat > "$stage/Model1.sdc" <<'EOF'
 # The read path is MULTI-CYCLE BY DESIGN: m1_sdram captures CL+N cycles after the
 # device drives the bus, N selectable CL+2..CL+5, so a next-edge assumption
 # describes a design this is not.
+# M1_NO_SDRAM_SDC=1 skips the whole block.
+#
+# Quartus 17.0 segfaults AFTER A SUCCESSFUL FIT - in timing analysis - on some
+# netlists with these constraints: reproducibly for a given netlist, and not at
+# all for others. The build that first turned them on completed and reported
+# SDRAM_CLK_pin at +0.323 ns; adding one RTL change to m1_main made every retry
+# crash with the Fitter still reporting 0 errors. Until that is understood there
+# has to be a way to get a testable .rbf out, and an unconstrained build is
+# better than no build.
+if {[info exists ::env(M1_NO_SDRAM_SDC)]} {
+    post_message -type critical_warning \
+      "Model1.sdc: SDRAM constraints SKIPPED by M1_NO_SDRAM_SDC -- the interface \
+       is unconstrained and this build's memory timing is luck."
+} else {
 set sdc_exe ""
 catch { set sdc_exe $::quartus(nameofexecutable) }
 if {[string equal $sdc_exe "quartus_map"]} {
@@ -231,6 +245,8 @@ if {[llength $sdram_clk_src] == 0 || [llength $sdram_clk_prt] == 0} {
       -from [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}] \
       -to   [get_clocks SDRAM_CLK_pin]
     }
+}
+
 }
 
 }
