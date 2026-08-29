@@ -4852,3 +4852,29 @@ So the -8.186 WAS the sixteen read-capture paths and not internal `clk_sys` logi
 rebuild is what settled that, rather than reading the transfer matrix and assuming. **A full
 compilation now meets timing with the SDRAM interface constrained**, which is the first time
 that has been true here.
+
+### The hardware degradation REPRODUCES in simulation — 2026-08-29
+
+`make m1_frame FRAME_CYCLES=3600000000`, 2,611 frames:
+
+    at    109 frames   tm0=9787   tm1=0  tm2=180677  tm3=0    text layer drawing
+    at  2,611 frames   tm0=0      tm1=0  tm2=190464  tm3=0    tilemap 2 over everything
+    scroll changes over 2,610 frames:  hscr[5002]=1  vscr[5006]=1   (MAME: hscr 1,344/2,000)
+    window ctrl  pair01=0000  pair23=0000                            (never set)
+    V60 pc pinned at feb673 from ~620 M cycles - frame ~469 - onward
+
+**The V60 enters a loop at `feb673` around frame 469 and never leaves**, and the picture
+collapses to the sky-and-sea state. That is the same failure reported from the board — "after
+about 10 minutes we hit a black screen; after a core reset we go back to the broken sky and
+sea only, and a full reload gets it back" — and it is now **reproducible without hardware**,
+which is the difference between a 25-minute build plus a person watching a screen and a
+105-second bench.
+
+`FRAME_CYCLES`, not `BOOT_CYCLES`: `tb_m1_frame`'s parameter is `RUN_CYCLES` and the Makefile
+passes `-GRUN_CYCLES="64'd$(FRAME_CYCLES)"`. Every earlier run in this session that passed
+`BOOT_CYCLES=1500000000` to `m1_frame` silently used the 120,000,000 default — 109 frames —
+which is why the degradation had not been seen there.
+
+Note the 109-frame numbers are not the healthy state either: `window ctrl` is `0000` in both,
+where the reference sets pair 2/3 to `0x2xxx`. The run reaches the attract screen and then
+falls out of it rather than never getting there.
