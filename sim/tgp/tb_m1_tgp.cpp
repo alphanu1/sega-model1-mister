@@ -17,7 +17,7 @@
 // What it can establish, and what it deliberately does not claim:
 //
 //   IT CAN show that the microcode loads, that the core fetches and retires,
-//   that it blocks on an empty input FIFO rather than proceeding on rubbish,
+//   that an empty input FIFO reads as zero and lets the microcode keep polling,
 //   that it drains a queued command block, and that it never asserts
 //   `unimplemented`.
 //
@@ -126,18 +126,30 @@ int main(int argc, char** argv) {
           "the microcode hit an instruction the core does not implement");
   }
 
-  printf("test: it blocks on an empty input FIFO rather than reading rubbish\n");
+  printf("test: an empty input FIFO reads as ZERO and the microcode keeps polling\n");
   {
-    // The TGP has no status register for this — MAME's generic_fifo simply
-    // blocks — so a read of an empty FIFO must stall the core. If it did not,
-    // the microcode would consume a stale word and every command would be one
-    // out of step.
+    // THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-08-29, and it was wrong.
+    //
+    // It said "a read of an empty FIFO must stall the core", citing MAME's
+    // generic_fifo as blocking. gen_fifo.h says the reverse for the pop itself:
+    // on_fifo_empty_pre_sync is "called on a pop with an empty fifo... THE POP
+    // ITSELF WILL THEN RETURN ZERO."
+    //
+    // The microcode needs that zero. 004D pops a command into b and 0052 is
+    // `brul alw d` with d = get_exp(b) + 0x53 - a computed jump. get_exp is
+    // (val >> 23) & 0xff, so an empty FIFO gives d = 0x53, the idle handler,
+    // which loops back to 0x9b and polls again. Stalling means b = 0 is
+    // unreachable, so the idle path is unreachable, and the core parks at 004C
+    // the first time it polls an empty FIFO.
+    //
+    // The old test could not see that: it only checked `unimplemented`, so a
+    // parked core passed it. The core must make PROGRESS with the FIFO empty.
     uint16_t before = d->dbg_retires;
     for (int i = 0; i < 4000; i++) { serve(); tick(); }
     uint16_t after = d->dbg_retires;
-    // Either it is still executing elsewhere, or it is parked waiting. What it
-    // must not do is assert unimplemented or run away.
     check(d->dbg_unimplemented == 0, "unimplemented asserted while idle");
+    check(after != before,
+          "the core parked on an empty FIFO instead of polling its idle loop");
     printf("  retires went %u -> %u with the FIFO empty\n",
            (unsigned)before, (unsigned)after);
   }

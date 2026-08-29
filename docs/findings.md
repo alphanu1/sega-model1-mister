@@ -4553,3 +4553,42 @@ design, which is why it is written down rather than done in the middle of the TG
 **`MISTER_DISABLE_ADAPTIVE` is NOT worth it.** It sets ascal's `ADAPTIVE("false")`, and the
 memory that guards is `o_a_poly_mem` — **1 M10K**. ascal's 42 are mostly its four scaler line
 buffers at 5 each. `MISTER_SMALL_VBUF` changes DDR3 `RAMSIZE` only and touches no M10K.
+
+### The TGP parks because an empty command FIFO must return ZERO, not stall — 2026-08-29
+
+`tgp_trace` agrees for 75,175 instructions and then splits, and the split is one branch:
+
+    MAME   ... 0051 0052 -> 0053 -> 009b 009c 009d 009e 009f 004c 004d ...   keeps polling
+    ours   ... 0051 0052 -> 0064 -> 01c8 01c9 01ca ...                       dispatches
+
+`0052 brul alw d` is a **computed jump**, and `d = get_exp(b) + 0x53` makes 004D-0052 a
+dispatch table with base 0x53. `b` is loaded at `004D: mov (x1), b` with `x1 = 0x100`, which
+`copro_data_map` maps to the command FIFO, so **the command type is carried in the exponent
+field** and selects a handler above the base.
+
+`get_exp` is `(val >> 23) & 0xff`, so **an empty FIFO gives `b = 0`, `d = 0x53`** — and 0x53
+is the IDLE handler, which jumps back to 0x9b and polls again. That is the whole of what the
+reference is doing at the divergence: its FIFO is empty and it is spinning in its idle loop.
+
+**We stalled the pop instead, so `b = 0` was unreachable and the idle path was unreachable.**
+The core parks at 004C the first time it polls an empty FIFO and never comes back. That is
+exactly the recorded symptom — `pc=004c`, 342 retires, about fourteen io accesses per run
+where the reference makes 158,391 in 400 frames.
+
+**MAME's FIFO does not block on the pop, and the comment in `m1_tgp.sv` that said it did was
+citing the one thing gen_fifo.h contradicts.** `on_fifo_empty_pre_sync`: *"Called on a pop
+with an empty fifo. Must ask the destination to try again... **the pop itself will then
+return zero**."* The halt only follows a machine sync that finds it still empty.
+
+Measured over the same 16-second window: **61 pushes against a pop capture that filled its
+300-entry cap.** Nearly every pop the reference makes is of an empty FIFO. A design that
+stalls on empty cannot reproduce a machine whose normal state is polling nothing.
+
+**The outbound FIFO keeps its stall and must.** That direction is the V60 reading results,
+where acknowledging an empty read returned a stale word and hung the CPU at `fed5a4`; MAME
+halts the maincpu there rather than letting it proceed. The two directions are not
+symmetric in MAME and must not be made symmetric here.
+
+`tb_m1_tgp` asserted the wrong behaviour until now — "it blocks on an empty input FIFO" —
+and **could not have caught this**, because it only checked that `unimplemented` stayed low,
+which a parked core satisfies. It now requires the core to make progress with the FIFO empty.

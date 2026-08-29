@@ -262,7 +262,7 @@ module m1_tgp #(
   // read a duplicate for its next result and go wrong a command later.
   assign fifo_out_push = fifo_wr && !fifo_out_full && !pushed;
   assign fifo_out_data = fifo_wdata;
-  assign fifo_rdata    = popped ? pop_data : fifo_in_data;
+  assign fifo_rdata    = popped ? pop_data : (fifo_in_valid ? fifo_in_data : 32'd0);
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -282,9 +282,13 @@ module m1_tgp #(
       pop_data <= 32'd0;
     end else if (!fifo_rd) begin
       popped   <= 1'b0;
-    end else if (fifo_in_pop) begin
+    end else if (fifo_rd && !popped) begin
+      // Latched on the first cycle of the access whether or not the FIFO had
+      // anything, so one access yields one value. Without this an access held
+      // across S_SRC and S_SRC_W could read 0 on one cycle and a word the V60
+      // pushed in between on the next.
       popped   <= 1'b1;
-      pop_data <= fifo_in_data;
+      pop_data <= fifo_in_valid ? fifo_in_data : 32'd0;
     end
   end
 
@@ -294,12 +298,36 @@ module m1_tgp #(
     else if (fifo_out_push)   pushed <= 1'b1;
   end
 
-  // A read of an empty inbound FIFO must NOT acknowledge, or the microcode
-  // proceeds on a stale word. MAME's generic_fifo blocks the same way; that is
-  // how the TGP waits for the V60 without a status register. Once the word has
-  // been taken the access is complete even though the FIFO may now be empty,
-  // which is what `popped` carries.
-  assign fifo_ack = fifo_rd ? (fifo_in_valid || popped)
+  // A READ OF AN EMPTY INBOUND FIFO RETURNS ZERO AND COMPLETES. It must not
+  // block, and the comment that used to stand here - "MAME's generic_fifo blocks
+  // the same way" - was wrong about the one thing it was cited for.
+  // gen_fifo.h, on_fifo_empty_pre_sync: "Called on a pop with an empty fifo.
+  // Must ask the destination to try again. THE POP ITSELF WILL THEN RETURN ZERO."
+  //
+  // THE MICROCODE DEPENDS ON THAT ZERO. 004D-0052 is a dispatch:
+  //
+  //     004D  mov (x1), b        x1 = 0x100, so this POPS a command
+  //     ...
+  //     0052  brul alw d         d = get_exp(b) + 0x53 - a COMPUTED JUMP
+  //
+  // get_exp is `(val >> 23) & 0xff`, so an empty FIFO gives b = 0, d = 0x53, and
+  // 0x53 is the IDLE handler, which loops back to 0x9b and polls again. The
+  // command type is carried in the exponent field and selects a handler above it.
+  //
+  // Blocking here means the microcode can NEVER see b = 0 and can never reach its
+  // idle path, so it parks at 004C forever the first time it polls an empty FIFO.
+  // That is precisely the recorded symptom - pc=004c, 342 retires, and about
+  // fourteen io accesses per run where the reference makes 158,391 in 400 frames.
+  // tgp_trace agreed for 75,175 instructions and then split exactly here: the
+  // reference took 0052 -> 0053 -> 009b and kept polling, we took 0052 -> 0064.
+  //
+  // Measured, same 16s window: 61 pushes against a pop capture that filled its
+  // 300-entry cap. Nearly every pop the reference makes is an empty one.
+  //
+  // The OUTBOUND fifo keeps its stall. That direction is the V60 reading results,
+  // where acknowledging an empty read returned a stale word and hung the CPU at
+  // fed5a4; MAME halts the maincpu there rather than letting it proceed.
+  assign fifo_ack = fifo_rd ? 1'b1
                   : fifo_wr ? (!fifo_out_full || pushed)
                   : 1'b0;
 
