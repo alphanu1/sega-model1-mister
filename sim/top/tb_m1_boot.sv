@@ -1186,6 +1186,41 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// HOW MUCH OF THE SDRAM PATH IS ARBITRATION.
+//
+// The CPU's data port pays 27.9 clk_cpu cycles between sdr_req and sdr_ack -
+// about 116 cycles of this 80 MHz domain, where a read after an activate needs
+// roughly 9. These counters split that inside the controller: how long port 0
+// waits for a grant, and how long the access itself then takes.
+//
+// NOTE the tile-fetch engine is NOT a competitor here: this bench ties p_req[1]
+// low (see the assign above), so the only other masters are instruction fetch on
+// port 2 and the TGP on port 3. An arbitration figure from this bench is a LOWER
+// BOUND on the hardware's, where the video engine reads continuously.
+integer arb_n = 0, arb_wait = 0, arb_svc = 0;
+integer arb_t0, arb_tg;
+reg     arb_busy = 1'b0, arb_granted = 1'b0;
+reg     arb_req_d = 1'b0;
+always @(posedge clk) begin
+    arb_req_d <= dbg_req_v[0];
+    if (rst_n_sys) begin
+        if (dbg_req_v[0] && !arb_req_d) begin
+            arb_busy <= 1'b1; arb_granted <= 1'b0; arb_t0 = sys_cycles;
+        end
+        if (arb_busy && !arb_granted && dbg_grant_v[0]) begin
+            arb_granted <= 1'b1; arb_tg = sys_cycles;
+        end
+        if (arb_busy && arb_granted && !dbg_req_v[0]) begin
+            arb_busy <= 1'b0;
+            arb_n    = arb_n + 1;
+            arb_wait = arb_wait + (arb_tg - arb_t0);
+            arb_svc  = arb_svc + (sys_cycles - arb_tg);
+        end
+    end
+end
+integer sys_cycles = 0;
+always @(posedge clk) sys_cycles = sys_cycles + 1;
+
 // ------------------------------------------------- text writes census
 // The routine at FF8AC3 copies a NUL-terminated string out as 16-bit tile codes:
 //
@@ -1573,6 +1608,10 @@ initial begin
                  ph_n, ph_a/ph_n, ((ph_a*10)/ph_n)%10,
                  ph_b/ph_n, ((ph_b*10)/ph_n)%10,
                  ph_c/ph_n, ((ph_c*10)/ph_n)%10);
+    if (arb_n > 0)
+        $display("BOOT: SDRAM port 0 over %0d grants (80 MHz cycles): wait-for-grant=%0d.%0d  service=%0d.%0d",
+                 arb_n, arb_wait/arb_n, ((arb_wait*10)/arb_n)%10,
+                 arb_svc/arb_n, ((arb_svc*10)/arb_n)%10);
     $display("BOOT: data-bus latency by page (page, accesses, total stall cycles, avg):");
     for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1)
         if (lat_cnt[lat_i] > 10000)

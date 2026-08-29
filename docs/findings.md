@@ -5068,3 +5068,33 @@ Candidates, in the order worth measuring: arbitration against the tile-fetch eng
 reads SDRAM continuously and would queue the CPU behind it (`docs/HANDOFF.md` already carries
 an unexplained 103-cycle character fetch wait); the two CDC crossings; and per-access
 activate/precharge sequencing with no open-row reuse.
+
+### The SDRAM controller is innocent: 8.7 cycles of ~116 — 2026-08-30
+
+Instrumented inside `m1_sdram` on its own 80 MHz clock, port 0 (the V60's data port),
+1,504,699 grants:
+
+    wait-for-grant   1.1 cycles
+    service          7.6 cycles
+                     ----
+                     8.7 of the ~116 the CPU waits
+
+**So neither the memory nor the arbiter is the cost.** 7.6 cycles is close to the ~9 a read
+needs after an activate, and arbitration is essentially free at 1.1.
+
+**And it is not contention with the video engine, at least not here**: `tb_m1_boot` ties
+`p_req[1]` low, so the tile-fetch port is not connected in this bench at all. The only other
+masters are instruction fetch (port 2) and the TGP (port 3). That also means this arbitration
+figure is a LOWER BOUND on the hardware's, where the video engine reads continuously — worth
+re-measuring on `tb_m1_frame`, which drives the real port map.
+
+**~107 cycles of the 80 MHz domain are therefore outside the controller**, in the CDC and the
+bus FSM. `m1_cdc_port` uses 3-flop toggle synchronisers, and at the 19.2/80 ratio those cost
+about 3 CPU cycles on the A side and 3 domain cycles on the B side — roughly **4 CPU cycles of
+the 26 unaccounted for**. The remainder is NOT yet explained and should not be guessed at: the
+next measurement is `a_req` to `b_req` and `ack_tog` to `a_ack` on the CPU's own CDC instance,
+which splits synchroniser latency from anything serialising behind `a_busy`.
+
+Worth checking in that measurement: whether a partial write's read-modify-write is being
+counted as one access at the `m1_main` level but two transactions at the controller — 814,355
+page-0x50 accesses against 1,504,699 total grants leaves room for it.
