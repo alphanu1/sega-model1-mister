@@ -568,18 +568,29 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
   // lanes enabled. If the underlying fault is ever found this becomes an
   // optimisation to remove rather than a workaround to unpick.
   logic        rmw_active;   // this transaction is the READ half of a partial write
-  logic        rmw_done;     // the merged word is ready; issue the full-width write
+  logic        rmw_done;     // the merged word is ready
+  // SET ONLY FOR THE DISPATCH THAT IS THE WRITE HALF.
+  //
+  // rmw_done alone is not safe to gate sdr_din on: it stays set from the read
+  // completing until the write is acknowledged, and ANY other SDRAM write
+  // dispatched in that window - a full-word one, or a fresh partial after the
+  // CPU dropped the first request - would write the stale merged word instead of
+  // its own data. That corrupts memory progressively, survives a core reset
+  // because nothing reloads SDRAM, and clears only on a full MRA reload. Which
+  // is exactly how it presented: correct for about ten minutes, then a black
+  // screen, then the pre-fix picture after a reset.
+  logic        rmw_wr;
   logic [15:0] rmw_merged;
   wire         needs_rmw = m_we && (m_be != 2'b11);
 
   assign sdr_we  = rmw_active ? 1'b0 : m_we;
   assign sdr_be  = rmw_active ? 2'b11 : (m_we ? 2'b11 : m_be);
-  assign sdr_din = rmw_done ? rmw_merged : m_wdata;
+  assign sdr_din = rmw_wr ? rmw_merged : m_wdata;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       bst <= B_IDLE; sdr_req <= 1'b0; sdr_addr <= '0;
-      rmw_active <= 1'b0; rmw_done <= 1'b0; rmw_merged <= '0;
+      rmw_active <= 1'b0; rmw_done <= 1'b0; rmw_merged <= '0; rmw_wr <= 1'b0;
       rdata_r <= '0; ack_r <= 1'b0; sdr_ack_d <= 1'b0;
     end else begin
       sdr_ack_d <= sdr_ack;
@@ -594,8 +605,14 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
               sdr_req  <= 1'b1;
               if (needs_rmw && !rmw_done) begin
                 rmw_active <= 1'b1;
+                rmw_wr     <= 1'b0;
                 bst        <= B_SDRAM_RMW;
               end else begin
+                // The merged word is used ONLY by the write half of the very
+                // sequence that produced it; anything else takes m_wdata and
+                // clears the flag, so a stale merge can never escape.
+                rmw_wr     <= needs_rmw && rmw_done;
+                rmw_done   <= 1'b0;
                 bst        <= B_SDRAM;
               end
             end else begin
@@ -611,7 +628,7 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
           if (sdr_ack && !sdr_ack_d) begin
             rdata_r  <= sdr_dout;
             ack_r    <= 1'b1;
-            rmw_done <= 1'b0;
+            rmw_wr   <= 1'b0;
             bst      <= B_ACK;
           end
         end

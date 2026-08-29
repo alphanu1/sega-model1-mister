@@ -285,6 +285,34 @@ reg [31:0] ucode [0:2047];
 wire        tgp_mem_req;
 wire [24:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
+// HOW OFTEN EACH SCROLL REGISTER CHANGES.
+//
+// The board scrolls the background VERTICALLY and flickers, where the reference
+// drifts it horizontally: a MAME census over 2,000 frames found tilemap 2's hscr
+// changing on 1,344 of them while vscr crept slowly. If ours is the other way
+// round, the game is writing the axes we think it is and something else is
+// wrong; if it matches, the difference is downstream.
+//
+// Counted per frame on the pair that draws the horizon: [5002] is its hscr and
+// [5006] its vscr, which is also the ctrl word.
+integer h_changes = 0, v_changes = 0, fr_seen = 0;
+reg [15:0] h_prev = 16'hffff, v_prev = 16'hffff;
+reg vbl_d = 0;
+always @(posedge clk) begin
+    vbl_d <= core.video.vblank_start;
+    if (core.video.vblank_start && !vbl_d) begin
+        fr_seen = fr_seen + 1;
+        if ({core.main.rams.tram_v_hi['h5002], core.main.rams.tram_v_lo['h5002]} != h_prev) begin
+            h_changes = h_changes + 1;
+            h_prev = {core.main.rams.tram_v_hi['h5002], core.main.rams.tram_v_lo['h5002]};
+        end
+        if ({core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]} != v_prev) begin
+            v_changes = v_changes + 1;
+            v_prev = {core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]};
+        end
+    end
+end
+
 // Cumulative tile-RAM init writes, to compare directly against the board's row 05.
 wire [11:0] f_tm0_wr, f_mask_wr;
 wire [11:0] f_tm0_text;
@@ -1042,6 +1070,8 @@ initial begin
              f_rb_csum);
     $display("FRAME: read-back bursts completed=%0d of 4096", f_rb_n);
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
+    $display("FRAME: scroll changes over %0d frames: hscr[5002]=%0d  vscr[5006]=%0d",
+             fr_seen, h_changes, v_changes);
     $display("FRAME: microcode RAM read back = %06h, sweep done=%0b (board row 0C)",
              f_uc_csum, f_uc_ok);
     $display("FRAME: TGP writes to copro RAM=%0d  sync word=%04h (board row 0D)",
