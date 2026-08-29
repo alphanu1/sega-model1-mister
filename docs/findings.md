@@ -4705,3 +4705,56 @@ there and `ffff` here.
 
 Note the 2.5:1 clock ratio recorded above is a real difference but is NOT what this is —
 a stalled writer does not care how fast its clock is.
+
+### The chain closes: the V60 takes an interrupt early, and everything follows — 2026-08-29
+
+Four measurements taken in sequence, each answering the one before:
+
+**1. The TGP is not starved of commands, it is blocked pushing results.** `fifo_wr` is
+asserted for 69% of all TGP cycles; 36 results went into a 16-deep outbound FIFO and it has
+been stalled on the 37th ever since. That interlock is correct — MAME halts the TGP on a full
+outbound FIFO too.
+
+**2. The V60 does not drain it.** 20 reads in 109 frames, against the reference's ~1,185 per
+frame. The `IN`/`OUT` path is real here, so the V60 is simply not executing that code.
+
+**3. `v60_trace` says why: DIVERGES at instruction 25,281**, and it is an interrupt.
+
+    MAME   FC57C5: jsr FF8ABC  ->  FF8ABC
+    ours   fc57c5              ->  fe02bc
+
+A `jsr` target is fixed, so ours cannot have gone to `fe02bc` by executing it. `fe02bc` is
+reached from **five different predecessors** in our own trace — `fe1435`, `fe1433`, `fe143d`,
+`fe10cd`, `fc57c5` — which is the signature of an interrupt handler, not a subroutine. **We
+take an interrupt the reference has not taken yet.**
+
+**4. And the cause is speed.** The same run reports our loops running about HALF the
+reference's iterations:
+
+    fe1433,fe1435,fe143d    MAME 8769    ours 4102    (-53.2%)
+
+repeated across many sites. These are time-based waits, so the iteration count IS the
+relative speed of the two machines. Our V60 executes ~1.28 MIPS (19.2 MHz at CPI ~15) against
+real silicon's ~2.0 (16 MHz at CPI ~8).
+
+**So the TGP work is downstream of CPU speed, not of the coprocessor.** `tgp_wrtrace`'s
+value-level divergence at write 268 — `41ef3336` (29.9) there against `bdcccccd` (-0.1) here,
+from `x0 = 0x100`, the command FIFO — is the V60 having pushed different data after taking a
+different path. It is not a TGP arithmetic fault.
+
+### A fifth instrument fault, and this one nearly stood: the MIRROR
+
+`map(0xd80000, 0xd80003).mirror(0x1fffc)` means the coprocessor FIFO answers across the whole
+of `0xd80000-0xd9ffff`. A write tap on the four base bytes catches **61 pushes** where a tap
+on the mirrored range fills a 4,000-entry cap immediately. 61 could never have been the whole
+stream for a window in which the reference dispatches 265,555 commands, and that contradiction
+is what exposed it.
+
+**The prefix comparison survives, checked rather than assumed**: the first 61 pushes of the
+full capture are byte-identical to the base-only capture, so "61 pushes, 61 pops, bit-exact"
+holds for that prefix and the withdrawal of "differs at the FIRST pop" stands. What does NOT
+follow is that the command stream is correct in general — beyond the prefix our V60 diverges
+and pushes far fewer commands.
+
+**Our own decode was never at fault**: `m1_decode` matches `hi == 8'hd8 || hi == 8'hd9`, which
+is the full mirror, and `a1` is `addr[1]`, which is MAME's `offset` under mirroring too.
