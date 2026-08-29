@@ -4932,3 +4932,34 @@ point it.
 
 The tail is negligible and should not be chased: everything above 33 cycles together is under
 2% of cycles, and the `63 or more` bucket is 0.5%.
+
+### Isolation on the board: the empty-FIFO fix WAS the regression — 2026-08-29
+
+Flashed with `EMPTY_FIFO_READS_ZERO = 1` and the board went to **sky and sea with no glyphs
+and nothing moving**, from an image that had been drawing the attract text, `INSERT COIN(S)`,
+`CREDIT 0` and the high-score table. Rebuilt with the parameter at 0 and **the picture came
+back**.
+
+The SDRAM constraints and the read-path multicycles were unchanged between those two images
+and stayed on, so they are cleared: the regression is the coprocessor being unparked.
+
+    77bec12b   EMPTY_FIFO_READS_ZERO=1, SDRAM constrained   sky and sea, no glyphs
+    e85a33ed   EMPTY_FIFO_READS_ZERO=0, SDRAM constrained   attract text back
+
+**This is the deadlock, and it was predicted before the flash rather than after.** Unparking
+the coprocessor makes it PRODUCE results; the V60 never drains them; `fout` fills, the TGP
+stops taking commands, `fin` fills, and both halt. A halted V60 draws nothing new, which on a
+screen is a frozen sky and sea.
+
+**Two process failures, both mine.** The flash bundled the empty-FIFO fix WITH the SDRAM
+timing change, so the board could not say which regressed, and the working `.rbf` was
+overwritten without a copy, forcing a 13-minute rebuild to recover a known-good image. Keep
+the last-known-good `.rbf` in `build/` under a name that says what is in it, and change ONE
+thing per flash.
+
+### And it invalidates the scroll census
+
+`FRAME: scroll changes over 2,610 frames: hscr[5002]=1 vscr[5006]=1` was measured on the
+run with the fix ON, which deadlocks at ~frame 340. **About 87% of those frames were a halted
+machine**, so "the scroll registers never change" was largely a statement about a dead V60,
+not about the scroll logic. Re-measured against the shipped configuration.
