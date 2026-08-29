@@ -4758,3 +4758,26 @@ and pushes far fewer commands.
 
 **Our own decode was never at fault**: `m1_decode` matches `hi == 8'hd8 || hi == 8'hd9`, which
 is the full mirror, and `a1` is `addr[1]`, which is MAME's `offset` under mirroring too.
+
+### clk_cpu closes at 24.94 MHz and runs at 19.2 — 30% is sitting unused — 2026-08-29
+
+From the last successful build's STA, `Fmax Summary`:
+
+    24.94 MHz   emu|pll|...|general[1]|divclk     <- clk_cpu, RUN AT 19.2
+    83.43 MHz   emu|pll|...|general[0]|divclk     <- clk_sys, run at 80
+
+**The V60 is the machine's critical path now** — see the interrupt divergence above — and a
+30% speedup needs only a PLL output change, no RTL. It takes ~1.28 MIPS to ~1.66 against real
+silicon's ~2.0 (16 MHz at CPI ~8). **It does not close the gap**; our loops run at 47% of the
+reference's iteration counts and 30% does not make that 100%, so CPI work is still what
+matters.
+
+**It is not free of consequences, and this is the dependency that would break silently.**
+`m1_ioboard`'s `LATENCY = 740684` is *derived from the clock*: the reference's I/O board takes
+38,577 us to answer the boot handshake, which is 740,684 cycles **at 19.2 MHz**. Change the
+clock and that constant has to move with it, or the deadline stops meaning 38,577 us. The
+property that matters is that the deadline exceeds the V60's once-a-frame doorbell interval,
+so a wrong constant would not fail loudly — it would change boot behaviour.
+
+Left as a measured option rather than done, because it changes how fast the whole machine
+runs and interacts with hardware testing that is mid-flight.
