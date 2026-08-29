@@ -4781,3 +4781,33 @@ so a wrong constant would not fail loudly — it would change boot behaviour.
 
 Left as a measured option rather than done, because it changes how fast the whole machine
 runs and interacts with hardware testing that is mid-flight.
+
+### How much speed is actually missing: 1.63x, measured two independent ways — 2026-08-29
+
+**Interrupts per instruction**, from `v60_trace`'s RAW streams (`our_pc_raw.txt`,
+`mame_pc_raw.txt` — the collapsed files CANNOT answer this, one collapsed line stands for
+thousands of iterations, and comparing them gives a meaningless 31-against-31):
+
+    ours    31 entries to fe02bc in   949,429 instructions   ->  1 per 30,627
+    MAME    19 entries in the same    949,429 instructions   ->  1 per 49,970
+    MAME   107 entries in           3,996,841 instructions   ->  1 per 37,354
+
+The interrupt arrives on wall-clock time and is the same rate on both sides, so
+**interrupts-per-instruction is a direct measure of relative throughput**: we take 1.63x as
+many, so we execute about **61%** of the reference's instructions per unit time.
+
+That agrees with the arithmetic from the other direction — 19.2 MHz at CPI ~15 is ~1.28 MIPS
+against 16 MHz at CPI ~8, which is ~2.0, and 1.28/2.0 = 64%. Two unrelated instruments, 61%
+and 64%.
+
+**So the target is 1.63x, and it decomposes:**
+
+    clk_cpu 19.2 -> 24.94 MHz (its measured Fmax, PLL change only)   1.30x
+    CPI 15 -> 12 (the remainder)                                     1.25x
+                                                                     ----
+                                                                     1.63x
+
+CPI 15 -> 12 is a 20% improvement on a figure that has already moved 18.4 -> 17.9 -> 14.9 in
+this project. **This is a reachable target, not an open-ended one**, and it is the thing
+standing between the coprocessor and useful work: the V60 never reaches the code that drains
+the result FIFO, so the TGP sits stalled on a full outbound FIFO at 69% of its cycles.
