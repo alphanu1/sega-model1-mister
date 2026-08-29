@@ -1186,6 +1186,43 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// AND HOW MUCH IS THE CROSSING ITSELF.
+//
+// The controller accounts for 8.7 of the ~116 cycles of this domain that the CPU
+// waits, so ~107 are the CDC and the bus FSM. The 3-flop toggle synchronisers
+// should cost about 3 A-domain cycles one way and 3 B-domain cycles the other -
+// roughly 4 CPU cycles of the 26 unaccounted for. This splits the A side three
+// ways rather than assuming which part is slow:
+//
+//   issue   a_req accepted (a_busy rises) to b_req seen by the controller
+//   serve   b_req to b_ack
+//   ret     b_ack to a_ack back in the CPU's domain
+//
+// Counted in CPU-domain cycles, which is the unit the 27.9 is quoted in.
+integer cdc_n = 0, cdc_issue = 0, cdc_serve = 0, cdc_ret = 0;
+integer cdc_t0, cdc_tb, cdc_te;
+reg     cdc_busy = 1'b0, cdc_saw_b = 1'b0, cdc_saw_e = 1'b0;
+reg     cdc_req_d = 1'b0;
+always @(posedge clk_cpu) begin
+    cdc_req_d <= data_cdc.a_req;
+    if (rst_n_cpu) begin
+        if (data_cdc.a_req && !cdc_req_d && !cdc_busy) begin
+            cdc_busy <= 1'b1; cdc_saw_b <= 1'b0; cdc_saw_e <= 1'b0; cdc_t0 = cycles;
+        end
+        if (cdc_busy && !cdc_saw_b && m_sdr_req) begin cdc_saw_b <= 1'b1; cdc_tb = cycles; end
+        if (cdc_busy && cdc_saw_b && !cdc_saw_e && m_sdr_ack) begin cdc_saw_e <= 1'b1; cdc_te = cycles; end
+        if (cdc_busy && data_cdc.a_ack) begin
+            cdc_busy <= 1'b0;
+            if (cdc_saw_b && cdc_saw_e) begin
+                cdc_n     = cdc_n + 1;
+                cdc_issue = cdc_issue + (cdc_tb - cdc_t0);
+                cdc_serve = cdc_serve + (cdc_te - cdc_tb);
+                cdc_ret   = cdc_ret   + (cycles - cdc_te);
+            end
+        end
+    end
+end
+
 // HOW MUCH OF THE SDRAM PATH IS ARBITRATION.
 //
 // The CPU's data port pays 27.9 clk_cpu cycles between sdr_req and sdr_ack -
@@ -1608,6 +1645,11 @@ initial begin
                  ph_n, ph_a/ph_n, ((ph_a*10)/ph_n)%10,
                  ph_b/ph_n, ((ph_b*10)/ph_n)%10,
                  ph_c/ph_n, ((ph_c*10)/ph_n)%10);
+    if (cdc_n > 0)
+        $display("BOOT: data CDC over %0d accesses (CPU cycles): issue=%0d.%0d  serve=%0d.%0d  return=%0d.%0d",
+                 cdc_n, cdc_issue/cdc_n, ((cdc_issue*10)/cdc_n)%10,
+                 cdc_serve/cdc_n, ((cdc_serve*10)/cdc_n)%10,
+                 cdc_ret/cdc_n, ((cdc_ret*10)/cdc_n)%10);
     if (arb_n > 0)
         $display("BOOT: SDRAM port 0 over %0d grants (80 MHz cycles): wait-for-grant=%0d.%0d  service=%0d.%0d",
                  arb_n, arb_wait/arb_n, ((arb_wait*10)/arb_n)%10,

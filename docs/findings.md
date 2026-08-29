@@ -5098,3 +5098,18 @@ which splits synchroniser latency from anything serialising behind `a_busy`.
 Worth checking in that measurement: whether a partial write's read-modify-write is being
 counted as one access at the `m1_main` level but two transactions at the controller — 814,355
 page-0x50 accesses against 1,504,699 total grants leaves room for it.
+
+**The CDC split did not measure and the reason is worth keeping.** The counters were written
+entirely on `clk_cpu`, but `m_sdr_req`/`m_sdr_ack` are `clk_sys` signals — 80 MHz against
+19.2, a ratio of 4.17 — so a one-cycle pulse in the fast domain falls between two slow-domain
+edges and is never seen. `cdc_n` stayed 0 and the report printed nothing at all, which looks
+identical to a counter that was never reached.
+
+**Sample each signal in ITS OWN domain and hand the timestamp across**, or the measurement is
+of the sampling, not the design. That is the sixth instrument fault of this family in two
+days: mismatched filters, taps at different levels, a registered signal read on its own write
+edge, a tap on a base address with a mirror, a census over a window the machine was dead for,
+and now a fast-domain pulse sampled slowly.
+
+What stands without it: **8.7 of ~116 cycles are the controller**, so ~26 of the CPU's 36
+cycles are the crossing and the bus FSM, and that is where the 1.25x CPI lives.
