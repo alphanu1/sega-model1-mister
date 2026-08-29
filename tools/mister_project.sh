@@ -221,16 +221,22 @@ if {[llength $sdram_clk_src] == 0 || [llength $sdram_clk_prt] == 0} {
     set_output_delay -clock SDRAM_CLK_pin -max  1.5 $sdram_out
     set_output_delay -clock SDRAM_CLK_pin -min -0.8 $sdram_out
 
-    # THE MULTICYCLES ARE OPT-IN: Quartus 17.0's fitter SEGFAULTS on them here,
-    # three times now, and 17.0 is required for MiSTer cores. Model 2 runs the
-    # same four lines successfully, so the difference is ours to find - the crash
-    # lands immediately after sixteen "cannot simultaneously use clear and load"
-    # failures packing sd_a into the I/O cells, which is the first thing to fix.
+    # THE MULTICYCLES ARE ON BY DEFAULT AS OF 2026-08-29, and the segfault they
+    # were blamed for was not theirs.
     #
-    # Without them TimeQuest assumes next-edge capture on the read path, which
-    # this controller does not do; the OUTPUT side is still fully constrained and
-    # is where the framework's Fast Output Register request lives.
-    if {[info exists ::env(MODEL1_SDRAM_MCP)]} {
+    # They were made opt-in after quartus_fit crashed three times. The crash is
+    # in the Tcl TEARDOWN - freeing STA collections this script left in
+    # variables, see the unset at the end of this file - and it happens with the
+    # multicycles OFF, which is how it was caught: MODEL1_SDRAM_MCP was not set
+    # on the build that crashed.
+    #
+    # Turning them off has a measured cost. With the constraints analysed and no
+    # multicycles, clk_sys misses by 8.186 ns with TNS -127.5, and the failing
+    # transfer is exactly SDRAM_CLK_pin -> clk_sys, 16 paths - the sixteen DQ
+    # read-capture paths. TimeQuest assumes next-edge capture there and this
+    # controller does not do that. The violation was invisible for as long as the
+    # constraints were suppressed, which is what suppressing them bought.
+    if {![info exists ::env(MODEL1_NO_SDRAM_MCP)]} {
     set_multicycle_path -setup -end 3 \
       -from [get_clocks SDRAM_CLK_pin] \
       -to   [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]

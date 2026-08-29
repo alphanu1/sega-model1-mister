@@ -4811,3 +4811,32 @@ CPI 15 -> 12 is a 20% improvement on a figure that has already moved 18.4 -> 17.
 this project. **This is a reachable target, not an open-ended one**, and it is the thing
 standing between the coprocessor and useful work: the V60 never reaches the code that drains
 the result FIFO, so the TGP sits stalled on a full outbound FIFO at 69% of its cycles.
+
+### With the constraints actually analysed, the SDRAM read path misses by 8.186 ns — 2026-08-29
+
+Once `quartus_fit` stopped crashing at exit, a full compilation ran with the SDRAM SDC in
+force for the first time — and the design **does not meet timing**:
+
+    clk_sys (general[0])   -8.186 ns    TNS -127.514
+    SDRAM_CLK_pin          -0.387 ns
+
+The earlier `+0.514 ns` on `clk_sys` came from builds with the constraints suppressed, so
+**this violation had been invisible for as long as the workaround was in place.** That is what
+suppressing a constraint buys: not a faster design, a quieter report.
+
+**The failing transfer names itself.** From the Setup Transfers matrix:
+
+    From SDRAM_CLK_pin  ->  To clk_sys      16 paths
+
+Sixteen paths is the sixteen `SDRAM_DQ` bits: the **read-capture path**. TimeQuest assumes
+next-edge capture there and this controller does not do that — which is precisely what the
+four `set_multicycle_path` lines in the SDC exist to express, and they were **opt-in behind
+`MODEL1_SDRAM_MCP` because they had been blamed for the fitter segfault**.
+
+They are not the cause. The crash is the Tcl teardown recorded above, and it happened on a
+build where `MODEL1_SDRAM_MCP` was **not set**. So the multicycles are now **on by default**,
+with `MODEL1_NO_SDRAM_MCP` as the escape hatch.
+
+**Two workarounds were stacked on one misattribution**: the constraints were made opt-out AND
+the multicycles opt-in, both to dodge a crash in neither of them. The measurement that
+separated them was reading the stack trace instead of the exit code.
