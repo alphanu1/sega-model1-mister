@@ -453,7 +453,8 @@ module m1_main #(
   );
 
   // --------------------------------------------------------- bus routing
-  typedef enum logic [1:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK } bstate_t;
+  // B_SDRAM_RMW reads a word before a partial write; see the note at the state.
+typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate_t;
   bstate_t bst;
 
   // ------------------------------------------------- coprocessor interface
@@ -549,13 +550,36 @@ module m1_main #(
 
   assign m_rdata = rdata_r;
   assign m_ack   = ack_r;
-  assign sdr_we  = m_we;
-  assign sdr_din = m_wdata;
-  assign sdr_be  = m_be;
+  // A PARTIAL WRITE NEVER REACHES THE DEVICE AS A MASK.
+  //
+  // From the Model 2 core, measured on hardware: "DQM tied low is common on
+  // these boards and would make every byte write land in all four lanes exactly
+  // as observed - invisible to every test we own, because they all test the
+  // FPGA." Their symptom was a loop counter reading 27272727 where MAME holds
+  // 00000027, which made a 39-pass loop run 656 million times.
+  //
+  // WE HAVE THE SAME EXPOSURE AND IT IS NOT SMALL: 11,918 sub-word writes reach
+  // SDRAM over 600 M cycles of boot, against 686,647 full-word ones. Every one
+  // of those would land in both lanes if DQM is ignored, and character RAM - the
+  // glyph data - is in SDRAM.
+  //
+  // So the design stops depending on it. A partial write reads the word first,
+  // merges the enabled byte in fabric, and writes back full width with both
+  // lanes enabled. If the underlying fault is ever found this becomes an
+  // optimisation to remove rather than a workaround to unpick.
+  logic        rmw_active;   // this transaction is the READ half of a partial write
+  logic        rmw_done;     // the merged word is ready; issue the full-width write
+  logic [15:0] rmw_merged;
+  wire         needs_rmw = m_we && (m_be != 2'b11);
+
+  assign sdr_we  = rmw_active ? 1'b0 : m_we;
+  assign sdr_be  = rmw_active ? 2'b11 : (m_we ? 2'b11 : m_be);
+  assign sdr_din = rmw_done ? rmw_merged : m_wdata;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       bst <= B_IDLE; sdr_req <= 1'b0; sdr_addr <= '0;
+      rmw_active <= 1'b0; rmw_done <= 1'b0; rmw_merged <= '0;
       rdata_r <= '0; ack_r <= 1'b0; sdr_ack_d <= 1'b0;
     end else begin
       sdr_ack_d <= sdr_ack;
@@ -568,7 +592,12 @@ module m1_main #(
               // One transaction per request RISING edge — see m1_sdram.sv.
               sdr_addr <= sdram_word;
               sdr_req  <= 1'b1;
-              bst      <= B_SDRAM;
+              if (needs_rmw && !rmw_done) begin
+                rmw_active <= 1'b1;
+                bst        <= B_SDRAM_RMW;
+              end else begin
+                bst        <= B_SDRAM;
+              end
             end else begin
               // On-chip reads are registered, so give them a cycle. Registers
               // and unmapped space resolve in the same slot.
@@ -580,9 +609,24 @@ module m1_main #(
         B_SDRAM: begin
           sdr_req <= 1'b0;
           if (sdr_ack && !sdr_ack_d) begin
-            rdata_r <= sdr_dout;
-            ack_r   <= 1'b1;
-            bst     <= B_ACK;
+            rdata_r  <= sdr_dout;
+            ack_r    <= 1'b1;
+            rmw_done <= 1'b0;
+            bst      <= B_ACK;
+          end
+        end
+
+        // The READ half of a partial write. The merge happens here and the write
+        // is re-dispatched from B_IDLE with both lanes enabled, so no mask ever
+        // reaches the device.
+        B_SDRAM_RMW: begin
+          sdr_req <= 1'b0;
+          if (sdr_ack && !sdr_ack_d) begin
+            rmw_merged <= {m_be[1] ? m_wdata[15:8] : sdr_dout[15:8],
+                           m_be[0] ? m_wdata[7:0]  : sdr_dout[7:0]};
+            rmw_active <= 1'b0;
+            rmw_done   <= 1'b1;
+            bst        <= B_IDLE;
           end
         end
 

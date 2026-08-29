@@ -999,6 +999,41 @@ always @(posedge clk_cpu) if (rst_n_cpu && ce) begin
     if (!main.c_req) st_free[main.cpu.st] = st_free[main.cpu.st] + 1;
 end
 
+// ------------------------------------- SUB-WORD WRITES REACHING SDRAM
+// From the Model 2 core, measured on hardware: "DQM tied low is common on these
+// boards and would make every byte write land in all four lanes exactly as
+// observed - invisible to every test we own, because they all test the FPGA."
+// Their symptom was a loop counter reading 27272727 instead of 00000027.
+//
+// We drive sd_dqm <= ~be_r and pass sdr_be straight through, so we have the same
+// exposure - and CHARACTER RAM, the glyph data, lives in SDRAM. If byte writes
+// there land in both lanes, glyphs are corrupted, which is what the board shows.
+//
+// Counted by destination, because a byte write to on-chip RAM is unaffected.
+integer sw_sdram = 0, sw_local = 0, ww_sdram = 0;
+integer sw_page [0:255];
+integer swp_i;
+initial for (swp_i = 0; swp_i < 256; swp_i = swp_i + 1) sw_page[swp_i] = 0;
+// COUNTED ON THE CONTROLLER'S OWN PORT, not on the V60's intent. Counting
+// m_we/m_be double-counts once the read-modify-write lands, because each partial
+// write then makes two passes through B_IDLE - which is exactly what it looked
+// like: 11,918 became 23,814.
+//
+// What matters is whether a MASK ever reaches the device, so measure sdr_we and
+// sdr_be at the port.
+reg sdr_req_d = 0;
+always @(posedge clk) begin
+    sdr_req_d <= sdr_req;
+    if (sdr_req && !sdr_req_d && sdr_we) begin
+        if (sdr_be != 2'b11) sw_sdram = sw_sdram + 1;
+        else                 ww_sdram = ww_sdram + 1;
+    end
+end
+always @(posedge clk_cpu) begin
+    if (main.m_req && main.m_we && main.bst == 3'd0 && !main.to_sdram
+        && main.m_be != 2'b11) sw_local = sw_local + 1;
+end
+
 // ------------------------------------------- data access size census
 // Every page costs an identical 36 fast cycles - 9 CPU cycles - including block
 // RAM, so the cost is the HANDSHAKE and not the memory. A 32-bit access is two
@@ -1442,6 +1477,9 @@ initial begin
             if (st_free[sc_i] == 0 && st_cyc[sc_i] == 0) $write(" %0d", sc_i);
         $display("");
     end
+    $display("BOOT: sub-word writes: to SDRAM=%0d (full-word to SDRAM=%0d), to on-chip=%0d",
+             sw_sdram, ww_sdram, sw_local);
+    $display("BOOT:   (counted at the controller port: a mask reaching the device)");
     $display("BOOT: data access sizes: byte=%0d half=%0d word=%0d (word unaligned=%0d)",
              sz_b, sz_h, sz_w, sz_un);
     $display("BOOT:   bus cycles now = %0d; with a 32-bit path = %0d (%0d%% fewer)",
