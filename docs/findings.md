@@ -5025,3 +5025,46 @@ Caching RAMB is not obviously the answer: it is read/write, and 256 KB is 256 M1
 cycles/instruction overall, against the histogram's mean of 14.9. The histogram bins
 retire-to-retire runs and caps at 63, so long waits are undercounted. Treat 14.9 as the shape
 of the common case, and `v60_trace`'s 1.63x against MAME as the reliable relative figure.
+
+### The scroll asymmetry is real, and it is program state — 2026-08-30
+
+`make m1_frame FRAME_CYCLES=2000000000`, 1,461 frames, shipped configuration (coprocessor
+parked, so no deadlock and the V60 runs throughout):
+
+    ours   hscr[5002] changed  86 of 1,460 frames    vscr[5006] changed 372
+           window ctrl  pair01=0000  pair23=2305
+           layer px  tm0=11038  tm1=11733  tm2=59412  tm3=0
+
+    MAME   layer 2 hscr changed 1,345 of 2,000 frames   (~982 scaled to 1,460)
+           pair 2/3 ctrl = 0x2xxx on every frame
+
+**Window mode is working**: our `pair23 = 2305` is mode 1 with a split line, the same shape as
+the reference's `0x2xxx`. The video path is not at fault.
+
+**The asymmetry is in what the V60 WRITES.** Our vertical register moves 372 times and our
+horizontal 86; the reference moves horizontal ~982 times. Mostly-vertical motion with a little
+horizontal is the reported symptom on the board, and it follows directly from those counts.
+
+So the tile movement joins the coprocessor behind the same root cause: our V60 diverges from
+the reference (interrupt at instruction 25,281, 1.63x speed deficit) and therefore writes
+different scroll values. There is nothing to fix in `m1_video` for this.
+
+### And the 36 cycles split three ways — 2026-08-30
+
+Same bench, 814,355 accesses to page 0x50:
+
+    dispatch    4.0 cycles     m_req rising to sdr_req asserted
+    sdram+cdc  27.9 cycles     sdr_req to sdr_ack
+    finish      4.0 cycles     sdr_ack to m_ack
+                -----
+               35.9
+
+Dispatch plus finish is 8, which is exactly the on-chip baseline measured on pages 0x60, 0x70,
+0x91 and 0xc0 — so that half is the req/ack round trip, paid by every access whatever answers
+it. **The 27.9 is the whole prize**: it is 116 cycles of the 80 MHz domain for a read that
+needs about 9 after an activate, so roughly a factor of thirteen is not the memory.
+
+Candidates, in the order worth measuring: arbitration against the tile-fetch engine, which
+reads SDRAM continuously and would queue the CPU behind it (`docs/HANDOFF.md` already carries
+an unexplained 103-cycle character fetch wait); the two CDC crossings; and per-access
+activate/precharge sequencing with no open-row reuse.

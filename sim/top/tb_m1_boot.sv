@@ -1140,6 +1140,9 @@ integer lat_cnt [0:255];
 integer lat_pg, lat_start, lat_i;
 reg     lat_busy = 1'b0;
 reg     lat_req_d = 1'b0;
+integer ph_t0, ph_disp, ph_sdack;
+integer ph_n = 0, ph_a = 0, ph_b = 0, ph_c = 0;
+reg     ph_busy = 1'b0;
 
 initial for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1) begin
     lat_tot[lat_i] = 0; lat_cnt[lat_i] = 0;
@@ -1157,6 +1160,28 @@ always @(posedge clk_cpu) begin
             lat_busy <= 1'b0;
             lat_tot[lat_pg] = lat_tot[lat_pg] + (cycles - lat_start);
             lat_cnt[lat_pg] = lat_cnt[lat_pg] + 1;
+        end
+
+        // WHERE THE 36 CYCLES GO, split three ways.
+        //
+        // Work RAM at 0x500000 costs 36 cycles an access and on-chip pages cost
+        // 8, but "36" does not say WHAT to shorten. 36 cycles at 19.2 MHz is
+        // ~150 cycles of the 80 MHz domain and an SDRAM read needs about 9, so
+        // most of it is not the memory. These three counters say how much is
+        // getting the request out (bus FSM dispatch), how much is the SDRAM plus
+        // its two CDC crossings, and how much is finishing the handshake - which
+        // cannot be pulsed and so costs a full round trip on its own.
+        if (main.m_req && !lat_req_d && main.m_addr[23:16] == 8'h50) begin
+            ph_busy <= 1'b1; ph_t0 = cycles; ph_disp = -1; ph_sdack = -1;
+        end
+        if (ph_busy && ph_disp < 0 && main.sdr_req) ph_disp  = cycles;
+        if (ph_busy && ph_sdack < 0 && main.sdr_ack) ph_sdack = cycles;
+        if (ph_busy && main.m_ack) begin
+            ph_busy <= 1'b0;
+            ph_n = ph_n + 1;
+            if (ph_disp  >= 0) ph_a = ph_a + (ph_disp - ph_t0);
+            if (ph_sdack >= 0 && ph_disp >= 0) ph_b = ph_b + (ph_sdack - ph_disp);
+            if (ph_sdack >= 0) ph_c = ph_c + (cycles - ph_sdack);
         end
     end
 end
@@ -1543,6 +1568,11 @@ initial begin
             if (slow_n[slow_j] > 0)
                 $display("BOOT:   pc=%06h  n=%0d", slow_pc[slow_j], slow_n[slow_j]);
     end
+    if (ph_n > 0)
+        $display("BOOT: page 50 access split over %0d accesses: dispatch=%0d.%0d  sdram+cdc=%0d.%0d  finish=%0d.%0d cycles",
+                 ph_n, ph_a/ph_n, ((ph_a*10)/ph_n)%10,
+                 ph_b/ph_n, ((ph_b*10)/ph_n)%10,
+                 ph_c/ph_n, ((ph_c*10)/ph_n)%10);
     $display("BOOT: data-bus latency by page (page, accesses, total stall cycles, avg):");
     for (lat_i = 0; lat_i < 256; lat_i = lat_i + 1)
         if (lat_cnt[lat_i] > 10000)
