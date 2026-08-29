@@ -4592,3 +4592,12 @@ symmetric in MAME and must not be made symmetric here.
 `tb_m1_tgp` asserted the wrong behaviour until now — "it blocks on an empty input FIFO" —
 and **could not have caught this**, because it only checked that `unimplemented` stayed low,
 which a parked core satisfies. It now requires the core to make progress with the FIFO empty.
+
+**Measured immediately after the change**, `make m1_frame BOOT_CYCLES=1500000000`:
+
+    before   TGP retires=342    pc=004c  pushes=61 returns=20      parked at dispatch
+    after    TGP retires=57660  pc=00a7  pushes=61 returns=36      running
+
+`pc=00a7` is the instruction after the two consecutive FIFO reads at 0x00a5/0x00a6 — the
+multiply whose result is written back — so the coprocessor is in its working path rather
+than polling. 168x the retires from one acknowledge.
