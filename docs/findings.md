@@ -4878,3 +4878,29 @@ which is why the degradation had not been seen there.
 Note the 109-frame numbers are not the healthy state either: `window ctrl` is `0000` in both,
 where the reference sets pair 2/3 to `0x2xxx`. The run reaches the attract screen and then
 falls out of it rather than never getting there.
+
+### The black screen is a MUTUAL DEADLOCK between the V60 and the TGP — 2026-08-29
+
+`make m1_frame FRAME_CYCLES=800000000`, with FIFO occupancy added to the periodic report:
+
+    400 M cycles  pc=fe1435  fin= 0/16  fout=16/16  v60_stall=0  tgp_wr=1
+    420 M cycles  pc=ff9323  fin= 0/16  fout=16/16  v60_stall=0  tgp_wr=1
+    440 M cycles  pc=feb673  fin=16/16  fout=16/16  v60_stall=1  tgp_wr=1
+    540 M cycles  pc=feb673  fin=16/16  fout=16/16  v60_stall=1  tgp_wr=1   (never recovers)
+
+**The order matters and it names the cause.** The OUTBOUND fifo is full first, at 400 M, while
+the inbound is still empty and the V60 is running: the coprocessor is already blocked pushing
+results that nobody is reading. It therefore stops taking commands. The V60 keeps pushing
+until the INBOUND fifo fills too, and then it blocks on `fin_full`. From 440 M onward both
+processors are waiting for the other and `pc` never moves again.
+
+**This is the board's failure, reproduced.** "After about 10 minutes we hit a black screen;
+after a core reset we go back to the broken sky and sea only, and a full reload gets it back."
+A deadlock is exactly that shape — permanent, and unrecoverable by anything short of a reload.
+
+**Both interlocks are CORRECT and neither should be relaxed.** MAME halts the TGP on a full
+outbound fifo and the V60 on a full inbound one; `m1_copro_if`'s tests assert both. The
+deadlock is a *consequence* of the V60 never reaching the code that drains results, which is
+the interrupt-timing divergence at instruction 25,281 and the 1.63x speed deficit recorded
+above. **Fix the speed and the deadlock cannot arm.** Adding an escape hatch to the FIFOs
+would hide it and produce a machine that silently drops geometry instead.

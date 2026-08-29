@@ -1112,8 +1112,18 @@ initial begin
                 // only makes sense if they all happen in a phase where the
                 // engine is starved rather than slow. If it plateaus, they are
                 // a boot transient and steady state is clean.
-                $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d",
-                         cycles/1000000, dbg_pc, frames, dbg_overruns);
+                // FIFO OCCUPANCY, because a pc that stops moving has two very
+                // different explanations and they look identical from outside.
+                // The coprocessor is blocked pushing results whenever the
+                // outbound FIFO is full; if the V60 is simultaneously blocked
+                // pushing COMMANDS into a full inbound FIFO, neither can drain
+                // the other and the machine is DEADLOCKED rather than slow.
+                // v60_stall is m1_copro_if's own `fin_full`.
+                $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d  fin=%0d/16 fout=%0d/16 v60_stall=%0b tgp_wr=%0b",
+                         cycles/1000000, dbg_pc, frames, dbg_overruns,
+                         core.main.copro.fin_wr - core.main.copro.fin_rd,
+                         core.main.copro.fout_wr - core.main.copro.fout_rd,
+                         core.main.copro.v60_stall, core.main.tgp.fifo_wr);
                 $fflush;
             end
     end
