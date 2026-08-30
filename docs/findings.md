@@ -5146,3 +5146,31 @@ is not sufficient alone, and the V60's own execution CPI is back on the critical
 
 **Check the clock a testbench counter runs on before quoting it.** The by-page table has been
 in this bench for weeks and its unit was never stated.
+
+### clk_cpu 19.2 -> 22.857 MHz, and why not 23 — 2026-08-30
+
+23 MHz is not synthesisable by this PLL: `Error: PLL Output Counter parameter
+'output_clock_frequency' is set to an illegal value of '23.0 MHz'`. The VCO is 480 MHz
+(480/25 = 19.2, 480/6 = 80) and the output counters are integer divisors, so the legal values
+either side are **480/21 = 22.857 MHz** and 480/20 = 24 MHz. 24 leaves 0.3% against a measured
+Fmax of 24.08 and was rejected; 22.857 leaves about 5%.
+
+**Fmax is 24.08 MHz, not the 24.94 recorded earlier.** That figure came from a build without
+the read-path multicycles; the current configuration's `clk_cpu` setup slack is +10.549 ns on
+a 52.08 ns period, so the critical path is 41.53 ns.
+
+    result   worst setup +0.408 ns, no negative setup slack anywhere
+             30,186 ALM, 452 M10K, 0 errors
+
+**The dependent constant moved with the clock.** `m1_ioboard`'s `LATENCY` is 38,577 us
+expressed in CPU cycles: 740,684 at 19.2 MHz becomes **881,760** at 22.857. Still inside the
+20-bit counter, and still longer than the V60's once-a-frame doorbell, which is the property
+that makes the flag stay set after boot. The Makefile's `-GLATENCY`/`-DLATENCY_CFG` pair and
+`tb_m1_frame`'s clock period were changed in the same commit.
+
+**Measured effect before flashing**, `m1_frame` at the default window: the V60 reads the
+coprocessor result FIFO **276 times (2/frame)** where at 19.2 MHz it managed 20 (0/frame). The
+reference does ~1,185/frame, so this is a long way short - but it is the quantity whose being
+zero armed the deadlock, and it is no longer zero.
+
+Gain is 1.19x of the 1.63x needed. The rest is execution CPI.

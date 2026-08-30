@@ -112,7 +112,7 @@ localparam integer PRELOAD_WORDS = 32'h420000;
 // the real ones do instead of lining up every fourth cycle forever.
 reg clk = 0, clk_cpu = 0, rst_n = 0;
 always #6.25 clk     = ~clk;      // 80 MHz
-always #21.739 clk_cpu = ~clk_cpu;  // 23 MHz, matching the PLL
+always #21.875 clk_cpu = ~clk_cpu;  // 22.857 MHz, matching the PLL
 
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
