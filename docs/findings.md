@@ -5414,3 +5414,41 @@ bits in total. It is structural rather than accidental — the four-lane split e
 per-lane byte-enable is the one idiom Quartus 17.0 will not infer as RAM at all, and merging
 lanes would need four write ports, which no M10K has. Worth revisiting only with a different
 line-buffer scheme.
+
+### Two counting faults, and a V60 bug that was not one — 2026-08-30
+
+**1. `dbg_pc == X` counts CYCLES, not executions.** `dbg_pc` is a level, so the comparison
+holds for every cycle the instruction occupies. It showed up as `FF84A2` (a ~25-cycle `cmp`)
+at 452 against the `bgt` immediately after it at 174 — consecutive instructions cannot execute
+different numbers of times. Edge-detecting the PC transition gives executions, and the numbers
+change completely:
+
+    counted as cycles     ff84a2=452  ff84ae=174  ff850c=194  fe1469=2,035,042
+    counted as executions ff84a2=7    ff84ae=7    ff850c=6    fefa25=1
+
+So "the gate diverts on 390 of 452 visits" was wrong twice over: those were cycles, and the
+gate does not divert at all — `a0 > b0` on **0 of 174** samples taken at `FF84AE` itself, with
+`a0=0x257` against `b0=0x157c`.
+
+**2. Our PC trace emits only on a PC CHANGE**, `core.dbg_pc !== pc_prev` in `tb_m1_frame`.
+MAME's tracer emits every instruction. **A self-branch therefore records ONCE here and N times
+there**, and `FFA6BD` is exactly that:
+
+    FFA6B4: pushm #1
+    FFA6B6: mov.w #1388, R0        ; 5000
+    FFA6BD: dbr   R0, FFA6BD[PC]   ; branches to ITSELF
+
+MAME 30,000 (6 calls x 5000), ours 6. That looked like a broken `dbr` falling straight
+through — a delay loop after a write to the sound USART at `0xC40002`, which would have been a
+serious find. **It is a tracing artefact and `dbr` is fine**: the decode reads
+`rf_raddr_a = fb[1][4:0]` in `S_DECODE`, `cc4 = 4'ha` maps to `cond_true = 1`, and the loop
+executes normally.
+
+Self-loops are the only thing this collapses, and they are ~0.75% of the reference's
+instructions, so the interrupts-per-instruction ratio recorded earlier is not materially
+affected.
+
+**What still stands:** our V60 executes the per-frame geometry update roughly **once in 526
+frames** where the reference runs it every frame — `fefa25=1`, `fefb40=1`, `feef14=1`, and
+nothing upstream gates it: `fef325` (the divert) is 0 and `fef9d8` (the skip) is 0. The path
+is simply not being called, and finding its caller is the next step.

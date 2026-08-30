@@ -396,6 +396,29 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// THE GATE VALUES AT THE MOMENT OF THE BRANCH, not at rest.
+//
+// FF84A2 compares 0x5011B0 against 0x5011A0 and FF84AE branches to FF8582 -
+// past every result read - on the wrong result. We divert on 390 of 452 visits
+// where the reference falls through, yet sampling those two words at the END of
+// the run gives 0 and 0x157c, identical to the reference. So they must differ
+// WHILE the branch is being taken, and an end-of-run sample cannot see that.
+//
+// Latched when dbg_pc is at FF84AE, which is the cycle the decision is made.
+// V60 byte B is device.mem word 0xF80000 + (B-0x500000)/2, so 0x5011A0 is word
+// 0xF808D0 and 0x5011B0 is 0xF808D8.
+logic [31:0] gate_a0_seen, gate_b0_seen;
+longint gate_hits = 0, gate_a0_gt = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n && core.dbg_pc == 24'hff84ae && core.dbg_pc != dbg_pc_d) begin
+        gate_hits    <= gate_hits + 1;
+        gate_a0_seen <= {device.mem['hF808D1], device.mem['hF808D0]};
+        gate_b0_seen <= {device.mem['hF808D9], device.mem['hF808D8]};
+        if ({device.mem['hF808D1], device.mem['hF808D0]}
+          > {device.mem['hF808D9], device.mem['hF808D8]}) gate_a0_gt <= gate_a0_gt + 1;
+    end
+end
+
 // DOES OUR V60 EVER EXECUTE THE ROUTINES THAT COMPUTE THE SCROLL VALUE?
 //
 // We write hscr[0x5002] 1.9 times a frame - MORE often than the reference's 1.0
@@ -421,10 +444,26 @@ longint pc_fefb40 = 0, pc_ff84a2 = 0, pc_ff84ae = 0, pc_ff8582 = 0, pc_ff84b1 = 
 // commands to [R24] and reads results with in.w [R23] - and it is called from a
 // list walk at FEF9C6 that compares each entry against R17 and skips the call
 // on a mismatch (FEF9CC bne FEF9D8).
+// Upstream of the submit chain: FEEF14 cmp.b #0,501A35 / FEEF1C bne FEF047 is
+// the entry, and FEF04E/FEF059 divert to FEF325 when 501A28 is 3 or 4.
+longint pc_feef14 = 0, pc_feef1c = 0, pc_fef047 = 0, pc_fef04e = 0, pc_fef325 = 0;
 longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
         pc_fefa93 = 0, pc_fefad1 = 0, pc_fefb00 = 0, pc_fef9d8 = 0;
+// EDGE-DETECTED. dbg_pc is a level, so `dbg_pc == X` is true for EVERY CYCLE
+// the instruction at X occupies - these counted cycles, not executions. It
+// showed up as FF84A2 (a ~25-cycle cmp) at 452 against the bgt immediately
+// after it at 174: consecutive instructions cannot execute different numbers of
+// times. Counting the TRANSITION to X gives executions.
+reg [23:0] dbg_pc_d = 24'hffffff;
+// WHERE THE V60 ACTUALLY SPENDS ITS INSTRUCTIONS, by 256-byte bucket of the
+// low 16 bits of PC. The per-frame geometry update runs ONCE in 526 frames and
+// nothing gates it, so the interesting question is what is running instead.
+longint pc_hist [256];
+initial for (int hi = 0; hi < 256; hi++) pc_hist[hi] = 0;
 always @(posedge clk_cpu) begin
-    if (core.main.rst_n) begin
+    dbg_pc_d <= core.dbg_pc;
+    if (core.main.rst_n && core.dbg_pc != dbg_pc_d) begin
+        pc_hist[core.dbg_pc[15:8]] <= pc_hist[core.dbg_pc[15:8]] + 1;
         if (core.dbg_pc == 24'hfe48d5) pc_fe48d5 <= pc_fe48d5 + 1;
         if (core.dbg_pc == 24'hfef3b5) pc_fef3b5 <= pc_fef3b5 + 1;
         if (core.dbg_pc == 24'hfe1469) pc_fe1469 <= pc_fe1469 + 1;
@@ -435,6 +474,11 @@ always @(posedge clk_cpu) begin
         if (core.dbg_pc == 24'hff84ae) pc_ff84ae <= pc_ff84ae + 1;
         if (core.dbg_pc == 24'hff84b1) pc_ff84b1 <= pc_ff84b1 + 1;
         if (core.dbg_pc == 24'hff8582) pc_ff8582 <= pc_ff8582 + 1;
+        if (core.dbg_pc == 24'hfeef14) pc_feef14 <= pc_feef14 + 1;
+        if (core.dbg_pc == 24'hfeef1c) pc_feef1c <= pc_feef1c + 1;
+        if (core.dbg_pc == 24'hfef047) pc_fef047 <= pc_fef047 + 1;
+        if (core.dbg_pc == 24'hfef04e) pc_fef04e <= pc_fef04e + 1;
+        if (core.dbg_pc == 24'hfef325) pc_fef325 <= pc_fef325 + 1;
         if (core.dbg_pc == 24'hfef9c6) pc_fef9c6 <= pc_fef9c6 + 1;
         if (core.dbg_pc == 24'hfef9cc) pc_fef9cc <= pc_fef9cc + 1;
         if (core.dbg_pc == 24'hfef9d2) pc_fef9d2 <= pc_fef9d2 + 1;
@@ -1322,8 +1366,28 @@ initial begin
     // The reference holds 501A35 = 01 throughout and 501A28 = 0 then 1.
     // V60 byte B is device.mem word 0xF80000 + (B-0x500000)/2; 0x501A28 is word
     // 0xF80D14 and 0x501A35 is the HIGH byte of word 0xF80D1A.
+    $display("FRAME: at FF84AE: hits=%0d  a0>b0 on %0d of them  last a0=%08h b0=%08h",
+             gate_hits, gate_a0_gt, gate_a0_seen, gate_b0_seen);
     $display("FRAME: geometry gate: 501A35=%02h  501A28=%04h%04h   (reference: 01 and 00000001)",
              device.mem['hF80D1A][15:8], device.mem['hF80D15], device.mem['hF80D14]);
+    begin
+        integer hi, best, bi;
+        longint tot;
+        tot = 0;
+        for (hi = 0; hi < 256; hi = hi + 1) tot = tot + pc_hist[hi];
+        $display("FRAME: PC histogram, top buckets of %0d instructions:", tot);
+        for (bi = 0; bi < 10; bi = bi + 1) begin
+            best = 0;
+            for (hi = 0; hi < 256; hi = hi + 1)
+                if (pc_hist[hi] > pc_hist[best]) best = hi;
+            if (pc_hist[best] > 0)
+                $display("FRAME:   pc ??%02h.. : %0d  (%0d%%)", best, pc_hist[best],
+                         (pc_hist[best]*100)/(tot == 0 ? 1 : tot));
+            pc_hist[best] = 0;
+        end
+    end
+    $display("FRAME: upstream: feef14=%0d feef1c=%0d -> fef047=%0d fef04e=%0d fef325(divert)=%0d",
+             pc_feef14, pc_feef1c, pc_fef047, pc_fef04e, pc_fef325);
     $display("FRAME: submit chain: fef9c6=%0d fef9cc=%0d -> fef9d2(call)=%0d fef9d8(skip)=%0d | fefa25=%0d fefa93=%0d fefad1=%0d fefb00=%0d",
              pc_fef9c6, pc_fef9cc, pc_fef9d2, pc_fef9d8,
              pc_fefa25, pc_fefa93, pc_fefad1, pc_fefb00);
