@@ -1,5 +1,47 @@
 # HANDOFF
 
+## 2026-08-30 — the V60 matches the reference, and three findings are withdrawn
+
+**The instruction streams AGREE for the whole traced window.** `v60_trace` had parted at
+instruction 25,281 since it was built. That divergence was the INTERRUPT: it arrives on
+wall-clock time, so on a machine with a different CPI it lands at a different instruction
+count, and the diff called that a control-flow fault. `tools/v60_strip_isr.py` removes the
+handler (fe02bc to its `retis` at fe0343, with an entry/exit count check) before
+`v60_collapse.py` normalises the loops. With both applied the two traces agree for **26,336 of
+our 26,338 collapsed instructions** — to the end of the shorter one.
+
+**Three things I reported are withdrawn, all measurement faults:**
+
+  * *"The V60 never enters the geometry submission path."* Measured with the coprocessor
+    enabled, which DEADLOCKS at frame ~340, so the machine was frozen and reported zero for
+    everything downstream. It enters it, and the gate values match the reference exactly.
+  * *"The gate diverts on 390 of 452 visits."* `dbg_pc == X` is a level, so those were CYCLES
+    at that PC, not executions — visible as a 25-cycle `cmp` at 452 against the `bgt` after it
+    at 174. Edge-detected, the gate never diverts: `a0 > b0` on 0 of 174.
+  * *"The V60 spins on DPRAM 0x40 where our board answers 0x20."* Byte against word:
+    `umask16(0x00ff)` means only even V60 byte addresses exist, so byte `0xC00040` IS word
+    index `0x20`, which is what `m1_ioboard` answers. And it is a TIMED wait — all 36,131 polls
+    are the single 38.4 ms boot handshake, which the reference also performs and after which it
+    never waits again.
+
+**A V60 instruction bug was nearly reported and is not one.** `FFA6BD` is `dbr R0, FFA6BD` —
+a 5,000-iteration delay after a write to the sound USART — branching to ITSELF. Our tracer
+emits only on a PC change, so a self-branch records once; MAME's emits every instruction. 6
+against 30,000, and `dbr` is correct.
+
+**What is actually established:** the V60 executes the reference's program correctly for ~1 M
+instructions; every difference found so far is timing. The scroll registers are written at the
+reference's rate with a value that barely moves, and that value comes from a coprocessor the
+deadlock keeps parked. M10K went 452 -> 372 (see `m1_tdp_ram`), and `clk_cpu` is 22.857 MHz.
+
+**Next:** a 14-second trace on both sides — the first window that reaches frame 400, where the
+reference starts scrolling. The window must be matched: the script takes `SECONDS_RUN` for the
+reference and `CYCLES` (of the 80 MHz domain) for ours, and a mismatch reports a clean
+"DIVERGES" that is only where the shorter trace stopped.
+
+**And do not edit a shell script while it is running.** Bash reads incrementally; a 25-minute
+trace died on a syntax error in a file that was valid before and after.
+
 ## 2026-08-29 — the coprocessor stops parking: an empty command FIFO reads as ZERO
 
 **The TGP was blocked at its own dispatch, and the cause was our FIFO being too strict.**
