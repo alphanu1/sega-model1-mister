@@ -25,7 +25,7 @@ was the deadlock's other half. Both FIFO directions stall on empty, as before.
 0x53 is a real command, "add the next two words", not an idle path) and should be deleted.
 
 **Images in `build/`:** `Model1_infix_seed3.rbf` (`0bcb4984`, IN fix only, timing met) and
-`Model1_in_cdc_fix_seed3.rbf` (both fixes, building). The board is still on `81800464`
+`Model1_in_cdc_fix_seed3.rbf` (`ab4ae51c`, both fixes: 0 errors, worst setup +0.375 ns, no negative slack, 30,138 ALM, 372 M10K). The board is still on `81800464`
 (22.857 MHz, neither fix). Nothing flashed since.
 
 **Still real and separately measured:** the V60 is ~1.25x slower than the board (frame tick
