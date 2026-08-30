@@ -6407,3 +6407,40 @@ just by a comment.** 19,613 fuzzed points: one differed by a single pixel
 out, and a difference rate near the measured 0.002% — because a systematically
 wrong reciprocal would pass a "within one pixel" check on every point while
 differing on far too many of them.
+
+---
+
+## The painter's sort needs a quad store, and it does not fit in M10K
+
+**2026-08-30**, from `sort_quads` and `quad_t::compare` (model1_v.cpp:535-560).
+
+Model 1 has no Z-buffer. `draw_quads` paints in sorted order — **z descending,
+ties broken by submission order** — so every quad of a viewport has to be
+collected before any of it can be drawn. VR uses a single viewport for the whole
+list (measured: one `viewport 248,231 0,39 495,422` across 1,200 frames), so
+"every quad of a viewport" is every quad of the frame: **up to 5,831**.
+
+That store is the problem, and it is worth stating before more of M3 is built on
+the assumption it is free.
+
+A quad needs four screen vertices, a colour and a sort key — about 184 bits packed,
+so 5,831 of them is **1.07 Mbit, roughly 105 M10K blocks**. The current build
+leaves 170 free (383 of 553 used), and the band buffer wants 62 of those single-
+buffered. 105 + 62 = 167 of 170, with the binning structures and everything else
+in M3 still to come. It does not fit.
+
+**So the quad store belongs in SDRAM, not M10K.** 5,831 quads is 134 KB a frame to
+write; with a 64-row band buffer the picture is six bands, and a quad is read once
+per band it touches — call it 1.5 on average, so ~335 KB a frame, **19 MB/s**.
+That is nothing for the controller, and the polygon ROM traffic measured earlier
+(233 KB a frame, 13 MB/s) sits alongside it comfortably. SDRAM has ~6.5 MB spare
+after the 25.4 MB ROM image.
+
+The sort itself is affordable: 5,831 elements is ~76,000 comparisons at log2 n,
+against 397,515 cycles in a frame. It is the STORAGE that forced the decision, not
+the comparisons.
+
+The comparator is exact and must stay exact — descending z with ties resolved by
+submission order. `qsort` is not stable, so MAME makes the order total by falling
+back on the address; an approximate bucket sort by z would reorder coincident
+quads and is not a shortcut available here.
