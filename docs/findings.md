@@ -5748,3 +5748,43 @@ comparison that put the first divergence at command 77.
 **The lesson, and it is the same one as the deadlocked-window census:** an experimental switch
 left on turns every subsequent measurement into a measurement of the switch. Check the
 configuration is the shipped one before believing anything downstream of it.
+
+### CORRECTION to the withdrawal above: the deadlock happens WITHOUT the parameter too
+
+The withdrawal said "with the parameter off there is no deadlock". **That is wrong.** It came
+from reading `fin=0/16 fout=0/16` at 80 M cycles — early in a run, not at the end. Measured to
+completion with `EMPTY_FIFO_READS_ZERO = 0`, the shipped default:
+
+    640 M cycles  pc=ff8504  frames=483  fin=16/16 fout=16/16 v60_stall=1 tgp_wr=1
+    700 M cycles  pc=ff8504  frames=526  fin=16/16 fout=16/16 v60_stall=1 tgp_wr=1
+
+So the deadlock is real and is NOT an artefact of that parameter. `pc=ff8504` is inside the
+result-reading block, one instruction before `FF850C`'s `in.w`, so the V60 is stalled writing
+a command while trying to read results.
+
+What the parameter withdrawal does still stand on: handler 0x53 IS a command handler, reading
+an empty FIFO as zero DOES emit 17 answers nobody asked for, and stalling IS what MAME does.
+Those are measured. Only the "and therefore no deadlock" conclusion was wrong.
+
+### Open lead: our command stream looks DOUBLED
+
+Logging one line per increment of the FIFO write pointer `fin_wr`, in the shipped
+configuration:
+
+    ours   2,098 pushes, 1,121 of them adjacent-equal
+    MAME   04000000 01000000 3f400000 428c0000 ...   no adjacent duplicates
+    ours   04000000 04000000 01000000 01000000 ...
+
+The per-frame rate matches the reference (4.0 against 4.3), so this is not extra traffic — it
+is **half as many distinct commands, each pushed twice**, which would fill the inbound FIFO at
+twice the necessary rate and is a plausible cause of the deadlock.
+
+**NOT CONFIRMED, and the check that would settle it did not run.** Two explanations remain
+open: the V60 issuing two bus writes to the command port, or `m1_copro_if` pushing twice for
+one access. Counting the V60's acknowledged high-half writes against the pushes separates
+them; that probe failed to compile and was not retried.
+
+Weighing against the doubling being real: an earlier measurement compared 61 of our pushes
+against the reference's 61 and found them IDENTICAL, which a doubled stream cannot be. Either
+something regressed between those two measurements, or one of the two probes is wrong. **That
+contradiction has to be resolved before acting on this.**
