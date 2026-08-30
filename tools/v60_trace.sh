@@ -16,7 +16,7 @@
 # access sequences did not.
 #
 #   make v60_trace                  # default 2 emulated seconds
-#   make v60_trace SECONDS=5 CYCLES=200000000
+#   make v60_trace SECONDS_RUN=14 CYCLES=1120000000   # 14s both sides
 #
 # THE noloop FLAG IS NOT OPTIONAL. Without it MAME's tracer collapses loops and
 # prints "(loops for 620 instructions)" instead of the instructions. Diffing
@@ -35,6 +35,25 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${OUT:-$root/build/v60trace}"
 seconds="${SECONDS_RUN:-2}"
 cycles="${CYCLES:-80000000}"
+
+# THE TWO WINDOWS HAVE TO MATCH, AND A WRONG VARIABLE NAME IS SILENT.
+#
+# The reference side takes SECONDS_RUN and our side takes CYCLES, which is our
+# 80 MHz domain - so N seconds is N * 80,000,000. Passing BOOT_CYCLES (the name
+# the boot and TGP benches use) is ignored here, and the run then compares 14
+# emulated seconds of reference against 1 second of ours while reporting a clean
+# "DIVERGES at ..." that is really just where the shorter trace stopped. That
+# happened on 2026-08-30 and cost a 25-minute run.
+if [ -n "${BOOT_CYCLES:-}" ] && [ -z "${CYCLES:-}" ]; then
+    echo "v60_trace: BOOT_CYCLES is set and CYCLES is not - this script takes CYCLES." >&2
+    echo "           Using BOOT_CYCLES=$BOOT_CYCLES so the window is not silently the default." >&2
+    cycles="$BOOT_CYCLES"
+fi
+want=$(( seconds * 80000000 ))
+if [ "$cycles" -lt $(( want / 2 )) ]; then
+    echo "v60_trace: WARNING - CYCLES=$cycles is far short of ${seconds}s (${want} at 80 MHz)." >&2
+    echo "           The diff will end where OUR trace stops, not at a real divergence." >&2
+fi
 game="${GAME:-vr}"
 rompath="${ROMPATH:-$HOME/roms}"
 
