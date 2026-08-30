@@ -5374,3 +5374,43 @@ differs is the RATE: the reference executes `ff850c` about 202 times a frame, we
 everything downstream of the freeze, and that zero is about the freeze, not about the code.
 This is the second finding in two days built on a window in which the machine was not running
 — the other being a scroll census over 2,610 frames of which ~87% were post-deadlock.
+
+### The M10K duplication is gone: 452 -> 372 blocks — 2026-08-30
+
+`m1_tdp_ram` shares the tile RAM and palette between the CPU and video ports instead of
+keeping a copy each. Quartus confirms a single memory:
+
+    altsyncram:u_ram ... M10K block ; True Dual Port ; 32768 x 16 ; 32768 x 16 ; 524288 bits
+
+524,288 bits is exactly one copy of 32768x16, where the inferred form produced two. Full
+build:
+
+    M10K   452 -> 372   (-80, and 372/553 is 67% against 82%)
+    ALM  30,186 -> 30,139
+    worst setup +0.141 ns, no negative setup or hold slack anywhere
+
+**The Model 2 core solves the same problem the same way** and `rtl/mem/m2_tdp_ram.sv` is the
+reference. What differs here: our two ports are on DIFFERENT CLOCKS, so port B needs
+`address_reg_b`/`outdata_reg_b`/`indata_reg_b`/`wrcontrol_wraddress_reg_b`/`byteena_reg_b` all
+on `CLOCK1` — leaving any of them at `CLOCK0` silently puts that part of port B back on the
+CPU's clock. And our CPU port is byte-enabled, so the two byte-wide arrays become one 16-bit
+array with a `byteena`. **Both ports must be the same width** or the block is replicated again.
+
+**A 10 ps timing miss is placement luck, not a design fault.** The default seed landed
+`clk_sys` at -0.010 ns; `M1_SEED=3` gives +0.141 with nothing negative. Try a seed before
+changing logic.
+
+### What is left, and none of it is duplication
+
+    dl0/dl1  128   two genuinely different buffers (the V60 writes one while the renderer
+                   reads the other), one read port each, 32 blocks per byte lane is the floor
+    ram       32   the coprocessor RAM, single-ported behind m1_copro_if's arbiter
+    cxlat     32   at its floor
+    g_bank    32   the video line buffers - THE LARGEST REMAINING INEFFICIENCY
+
+`g_bank` is 2 banks x 4 layers x 4 lanes = **32 separate memories of 128x15 bits**, each in
+its own M10K: 1,920 bits of a 10,240-bit block, **19% utilisation**, 32 blocks holding 61,440
+bits in total. It is structural rather than accidental — the four-lane split exists because a
+per-lane byte-enable is the one idiom Quartus 17.0 will not infer as RAM at all, and merging
+lanes would need four write ports, which no M10K has. Worth revisiting only with a different
+line-buffer scheme.

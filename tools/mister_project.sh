@@ -325,6 +325,12 @@ sed -e 's/^source files.qip$/source files.qip/' \
 # That is our shape too: the flat V60 build has MORE ALM (30,227) and closes at
 # +0.639 ns, while the split has less (29,992) and closes at +0.143. Changing RTL
 # to fix a placement result would be the wrong lever.
+# SEED 3 IS THE ONE THAT CLOSES as of 2026-08-30. Sharing the tile RAM and
+# palette between the CPU and video ports (m1_tdp_ram) freed 80 M10K and cost a
+# little placement luck: the default seed lands clk_sys at -0.010 ns, a 10 ps
+# miss, and seed 3 puts it at +0.141 with no negative setup or hold slack
+# anywhere. A marginal miss is a placement outcome, not a design fault - try a
+# seed before changing logic.
 if [ -n "${M1_SEED:-}" ]; then
     # The template's last line has no trailing newline, so append one first or
     # the assignment lands on the end of it and Quartus rejects the file.
