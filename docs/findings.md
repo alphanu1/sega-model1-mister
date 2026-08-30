@@ -6119,3 +6119,36 @@ rendering side back to the game, so the absent rasterizer is not throttling `FEE
 judge the scroll against, so the next measurement of it is worth more after the rasterizer
 than before. The chain is recorded above to the exact instruction (`FEEE49 test.b 40DC8C`,
 266 executions against 3) for whoever picks it up.
+
+### M2's exit criterion is met, and the coprocessor does NOT do the vertex transform — 2026-08-30
+
+**M2's criterion**, `docs/m2-tgp-integration.md` step 6: "Polygon list capture off
+`copro_fifo_out`, diffed frame by frame against MAME. Bit-exact agreement with the reference,
+checked in volume." Measured today with `tools/copro_stream_diff.py`, shipped configuration:
+
+    commands  IDENTICAL over all 4,000 captured
+    answers   IDENTICAL over all 4,336 captured    (answers ARE copro_fifo_out)
+    sincos    IDENTICAL over 1,545 events
+
+That is the criterion, and it became true when the `IN`-to-memory and CDC-port bugs were
+fixed. Volume is moderate rather than the millions the unit fuzzes ran to, so the honest form
+is: bit-exact over every command and answer in a 526-frame window, with the streams captured
+at the FIFO on both sides.
+
+**And the same data corrects the doc's premise about the transform.** That file says "The TGP
+does the transform *and* the maths the game logic consumes". The output volume says otherwise:
+
+    coprocessor answers   168 per frame (58,868 over 350)
+    objects per frame     ~50, each with a size bound of 5500
+    a per-vertex transform of 50 objects x 10 polys x 4 vertices would be ~2,000/frame
+
+168 results a frame cannot carry the frame's transformed geometry - it is not even enough for
+a 4x4 matrix per object (800 floats). The display list also carries `poly_adr` POINTERS into
+polygon ROM (`push_object(tex_adr, poly_adr, size)`), and `model1_v.cpp` transforms that
+model-space data itself at draw time. So the transform is downstream of the coprocessor, in
+the video hardware, and **M3's scope includes vertex transform, projection and frustum
+clipping** - not just the fill path that exists.
+
+That is a materially bigger M3 than "wire up the fill unit", and it is better known now than
+after building the wrong thing. What exists (`m1_raster_fill`, verified over 152,025 quads)
+takes ALREADY-PROJECTED screen coordinates, which is the last stage of that pipeline.
