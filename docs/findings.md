@@ -5292,3 +5292,28 @@ reads find it EMPTY. `m1_copro_if` deliberately withholds the acknowledge on an 
 outbound read, which should stall the V60 — and it plainly does not hang. Either those reads
 are the always-completing high half at offset 1, or the interlock is not doing what its
 comment says. That is worth settling on its own terms.
+
+### The interlock works, and the "V60 reads the FIFO N times" figure was STALL CYCLES — 2026-08-30
+
+Settling the open question above:
+
+    result-FIFO reads: offset0=273  offset1=20
+      of offset0: empty=253, acked-while-empty=0
+
+**The interlock is correct**: not one read of an empty outbound FIFO was ever acknowledged.
+
+But `v60_acc` is `req && !served && ...`, and `served` only latches on the acknowledge — so an
+unacknowledged access asserts it on EVERY cycle it is held. The counter was therefore counting
+**stall cycles, not reads**. Offset 1 always completes and is counted once per access, so the
+true number of completed result reads is **20**, matching the 20 results the parked
+coprocessor had pushed. The 253 are cycles spent waiting, spread across those 20 reads.
+
+**This withdraws a claim made in support of the clock change.** "The V60 now reads the result
+FIFO 276 times (2/frame) where at 19.2 MHz it managed 20 (0/frame)" compared the same broken
+metric before and after, so it is not evidence that raising the clock improved anything. The
+clock change stands on its own terms — Fmax headroom that was measured and unused — but that
+particular justification does not.
+
+**Counting an event on a held request counts cycles.** Latch the completion edge, or count a
+signal that is asserted once per transaction. The same shape as the `pop_data` fault and the
+`m_addr[14:0]` fault: the instrument, not the design.

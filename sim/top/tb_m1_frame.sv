@@ -370,6 +370,32 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// DOES AN EMPTY RESULT-FIFO READ ACTUALLY STALL THE V60?
+//
+// m1_copro_if withholds the acknowledge when the V60 reads an EMPTY outbound
+// FIFO - the fix made after the CPU span at fed5a4 on stale data. But the V60
+// reads that FIFO ~2 times a frame while the coprocessor, parked, has pushed
+// almost nothing, so most of those reads meet an empty FIFO and the machine
+// plainly does not hang. Either they are the always-completing high half at
+// offset 1, or the interlock is not doing what its comment says.
+//
+// Counted separately: reads at offset 0 (which should stall on empty) against
+// reads at offset 1 (which must always complete), and how many of each were
+// acknowledged while the FIFO was empty.
+longint rd_lo = 0, rd_hi = 0, rd_lo_empty = 0, rd_lo_empty_acked = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n && core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+        && !core.main.copro.we && core.main.copro.sel_fifo) begin
+        if (!core.main.copro.a1) begin
+            rd_lo <= rd_lo + 1;
+            if (core.main.copro.fout_empty) begin
+                rd_lo_empty <= rd_lo_empty + 1;
+                if (core.main.copro.ack) rd_lo_empty_acked <= rd_lo_empty_acked + 1;
+            end
+        end else rd_hi <= rd_hi + 1;
+    end
+end
+
 // DOES OUR V60 EVER EXECUTE THE ROUTINES THAT COMPUTE THE SCROLL VALUE?
 //
 // We write hscr[0x5002] 1.9 times a frame - MORE often than the reference's 1.0
@@ -1256,6 +1282,8 @@ initial begin
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
     $fclose(pop_f);
     $display("FRAME: captured %0d command-FIFO pops to build/frame_pops.txt", pop_n);
+    $display("FRAME: result-FIFO reads: offset0=%0d offset1=%0d  of offset0, empty=%0d and acked-while-empty=%0d",
+             rd_lo, rd_hi, rd_lo_empty, rd_lo_empty_acked);
     $display("FRAME: W1400 writes by pc: fe48d5=%0d  fef3b5=%0d  fe1469=%0d  other=%0d",
              w1400_48d5, w1400_f3b5, w1400_1469, w1400_other);
     $display("FRAME: scroll-value routines reached: fe48d5=%0d  fef3b5=%0d  fe1469=%0d",
