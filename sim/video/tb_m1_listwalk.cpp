@@ -76,8 +76,11 @@ static std::vector<Ev> model(const std::vector<uint16_t>& m) {
             }
             off += 4;
         } else if (type == 3) {
+            // The viewport's seven values are indices 0..6: the 32-bit word,
+            // then six 16-bit ones. Restarting the count at 0 for the second
+            // phase would make the first two events indistinguishable.
             ev.push_back({3, 0, readi(off + 2), 0});
-            for (int i = 0; i < 6; i++) ev.push_back({3, i, readi16(off + 4 + 2 * i), 0});
+            for (int i = 0; i < 6; i++) ev.push_back({3, i + 1, readi16(off + 4 + 2 * i), 0});
             off += 16;
         } else if (type == 4 || type == 5 || type == 6) {
             ev.push_back({(int)type, 0, readi(off + 2), 0});

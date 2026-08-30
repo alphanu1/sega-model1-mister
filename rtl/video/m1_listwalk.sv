@@ -335,9 +335,20 @@ module m1_listwalk #(
                     // differ, which is why the flag is explicit rather than
                     // inferred from p_base.
                     if (!p2) begin
+                      // PHASE TWO CONTINUES THE NUMBERING AT 1, it does not
+                      // restart at 0. Both phases are header parameters, so
+                      // ev_body cannot separate them; restarting makes the
+                      // 32-bit word and the first 16-bit word both index 0 and
+                      // a consumer cannot tell them apart. That is why
+                      // m1_raster3d's viewport handler was left a stub, and why
+                      // xc and yc stayed at zero and stretched the whole frame.
+                      //
+                      // p_base stays 2, so parameter i sits at off + 2 + 2i:
+                      // index 1 lands on word 4 and index 6 on word 14, which is
+                      // where MAME reads them.
                       p2     <= 1'b1;
-                      p_idx  <= 16'd0; p_n <= 16'd6;
-                      p_base <= AW'(4); p_w32 <= 1'b0;
+                      p_idx  <= 16'd1; p_n <= 16'd7;
+                      p_base <= AW'(2); p_w32 <= 1'b0;
                       cur    <= off_w + AW'(4);
                       st     <= S_PARAM;
                     end else begin

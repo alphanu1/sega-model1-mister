@@ -154,6 +154,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The C++-orchestrated render prints xc=248 yc=191 zoom 210,280 view 0,-30
+    // from the same list. Any difference here is the RTL's decode of it.
+    {
+        auto u2f_ = [](uint32_t u){ float f; memcpy(&f,&u,4); return f; };
+        printf("view state: xc=%g yc=%g zoom=%g,%g view=%g,%g\n",
+               u2f_(d->dbg_xc), u2f_(d->dbg_yc),
+               u2f_(d->dbg_zoomx), u2f_(d->dbg_zoomy),
+               u2f_(d->dbg_viewx), u2f_(d->dbg_viewy));
+    }
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);

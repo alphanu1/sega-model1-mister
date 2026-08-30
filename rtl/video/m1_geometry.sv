@@ -79,7 +79,24 @@ module m1_geometry (
   output logic [31:0] q_z,
   output logic        q_moire,
 
-  output logic [15:0] dbg_records, dbg_quads, dbg_culled, dbg_nolink
+  output logic [15:0] dbg_records, dbg_quads, dbg_culled, dbg_nolink,
+
+  // A NORMALIZE SERVICE, for the caller's light vector.
+  //
+  // MAME normalizes the light on upload (set_light_direction is
+  // glm::normalize), and the display list's vector is NOT unit length - the
+  // measured one is 1.0941, so every dot product comes out 9.4% large and every
+  // polygon a luminance level too bright. The caller needs a normalize once per
+  // frame, and building it a second m1_geo_norm would cost another ~450 ALM of
+  // multiplier and adder for one vector.
+  //
+  // So the walker's normalize is lent out while the stage is idle. Granted only
+  // when !busy, which is exactly when the caller is between objects.
+  input  logic        ext_nrm_valid,
+  output logic        ext_nrm_ready,
+  input  logic [31:0] ext_nrm_x, ext_nrm_y, ext_nrm_z,
+  output logic        ext_nrm_out_valid,
+  output logic [31:0] ext_nrm_out_x, ext_nrm_out_y, ext_nrm_out_z
 );
 
   localparam int unsigned NC = 5;
@@ -121,8 +138,10 @@ module m1_geometry (
   logic        dt_valid, dt_ready, dt_out_valid, dt_out_positive;
   logic [31:0] dt_p1x, dt_p1y, dt_p1z, dt_p2x, dt_p2y, dt_p2z;
   logic [31:0] dt_p3x, dt_p3y, dt_p3z, dt_out_det;
-  logic        nm_valid, nm_ready, nm_out_valid;
-  logic [31:0] nm_x, nm_y, nm_z, nm_out_x, nm_out_y, nm_out_z;
+  logic        nm_valid;
+  logic        nm_ready, nm_out_valid;
+  logic [31:0] nm_x, nm_y, nm_z;
+  logic [31:0] nm_out_x, nm_out_y, nm_out_z;
   logic        cl_valid, cl_ready, cl_out_valid;
   logic [31:0] cl_nx, cl_ny, cl_nz, cl_lp_d, cl_lp_a, cl_lp_s;
   logic [15:0] cl_tex;
@@ -209,16 +228,35 @@ module m1_geometry (
     .out_valid(dt_out_valid), .out_det(dt_out_det), .out_positive(dt_out_positive)
   );
 
+  // The service only gets in when the geometry stage is idle, so the walker
+  // never contends with it.
+  wire        lend      = !busy;
+  wire        n_valid   = lend ? ext_nrm_valid : nm_valid;
+  wire [31:0] n_x       = lend ? ext_nrm_x : nm_x;
+  wire [31:0] n_y       = lend ? ext_nrm_y : nm_y;
+  wire [31:0] n_z       = lend ? ext_nrm_z : nm_z;
+  logic       n_ready, n_out_valid;
+  logic [31:0] n_ox, n_oy, n_oz;
+
+  assign nm_ready          = !lend && n_ready;
+  assign ext_nrm_ready     =  lend && n_ready;
+  assign nm_out_valid      = !lend && n_out_valid;
+  assign ext_nrm_out_valid =  lend && n_out_valid;
+  assign nm_out_x = n_ox; assign nm_out_y = n_oy; assign nm_out_z = n_oz;
+  assign ext_nrm_out_x = n_ox;
+  assign ext_nrm_out_y = n_oy;
+  assign ext_nrm_out_z = n_oz;
+
   m1_geo_norm u_norm (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(nm_valid), .in_ready(nm_ready),
-    .in_x(nm_x), .in_y(nm_y), .in_z(nm_z),
+    .in_valid(n_valid), .in_ready(n_ready),
+    .in_x(n_x), .in_y(n_y), .in_z(n_z),
     .mul_req(mul_req[3]), .mul_a(mul_a[3]), .mul_b(mul_b[3]),
     .mul_gnt(mul_gnt[3]), .mul_rsp(mul_rsp[3]), .mul_res(mul_res),
     .add_req(add_req[3]), .add_a(add_a[3]), .add_b(add_b[3]), .add_sub(add_sub[3]),
     .add_gnt(add_gnt[3]), .add_rsp(add_rsp[3]), .add_res(add_res),
-    .out_valid(nm_out_valid),
-    .out_x(nm_out_x), .out_y(nm_out_y), .out_z(nm_out_z)
+    .out_valid(n_out_valid),
+    .out_x(n_ox), .out_y(n_oy), .out_z(n_oz)
   );
 
   m1_geo_color u_color (

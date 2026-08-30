@@ -111,7 +111,12 @@ module m1_raster3d #(
   output logic [15:0] dbg_objects,
   output logic [15:0] dbg_quads,
   output logic [15:0] dbg_dropped,
-  output logic [15:0] dbg_frames
+  output logic [15:0] dbg_frames,
+
+  // The view state the geometry is actually using. Exposed because "2,001 quads
+  // in both" proves the walk agrees and says nothing about the projection - two
+  // renders can agree on every quad and disagree on where each one lands.
+  output logic [31:0] dbg_xc, dbg_yc, dbg_zoomx, dbg_zoomy, dbg_viewx, dbg_viewy
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -122,7 +127,9 @@ module m1_raster3d #(
   // walk goes, so an object command uses whatever was most recently set - which
   // is what tgp_render does, and why the walk cannot be reordered.
   logic [31:0] vxc, vyc, vzoomx, vzoomy, vviewx, vviewy;
-  logic [31:0] vlx, vly, vlz;
+  logic [31:0] vlx, vly, vlz;          // NORMALIZED, as MAME stores it
+  logic [31:0] rlx, rly, rlz;          // as the display list gave it
+  logic        light_pending;
   logic        vspec;
   logic [31:0] obj_tex, obj_poly, obj_size;
   logic [31:0] old_z;
@@ -163,6 +170,17 @@ module m1_raster3d #(
     .dbg_bad_type(lw_bad), .dbg_overrun(lw_over)
   );
 
+  // The viewport centre arrives as two 16-bit words and the projection needs
+  // floats, so it is converted here - once per viewport command, not per pixel.
+  logic [31:0] vp_flt;
+  logic        vp_lat;
+
+  // xc is the word as-is; yc is 383 - (word - 39), which is 422 - word.
+  wire signed [15:0] vp_int = (lw_ev_idx == 16'd2)
+                            ? (16'sd422 - $signed(lw_ev_data[15:0]))
+                            : $signed(lw_ev_data[15:0]);
+  fp_from_int u_vp (.i(vp_int), .f(vp_flt));
+
   // ---------------------------------------------------------------- geometry
   logic        geo_start, geo_busy, geo_done;
   logic [31:0] geo_oldz_out;
@@ -175,6 +193,10 @@ module m1_raster3d #(
   logic [31:0] q_z;
   logic        q_moire;
   logic [15:0] g_rec, g_qds, g_cull, g_nolink;
+
+  // The borrowed normalize, used once a frame for the light vector.
+  logic        nrm_valid, nrm_ready, nrm_out_valid;
+  logic [31:0] nrm_ox, nrm_oy, nrm_oz;
 
   m1_geometry u_geo (
     .clk(clk), .rst_n(rst_n),
@@ -197,7 +219,11 @@ module m1_raster3d #(
     .q_x2(q_x2), .q_y2(q_y2), .q_x3(q_x3), .q_y3(q_y3),
     .q_col(q_col), .q_z(q_z), .q_moire(q_moire),
     .dbg_records(g_rec), .dbg_quads(g_qds),
-    .dbg_culled(g_cull), .dbg_nolink(g_nolink)
+    .dbg_culled(g_cull), .dbg_nolink(g_nolink),
+    .ext_nrm_valid(nrm_valid), .ext_nrm_ready(nrm_ready),
+    .ext_nrm_x(rlx), .ext_nrm_y(rly), .ext_nrm_z(rlz),
+    .ext_nrm_out_valid(nrm_out_valid),
+    .ext_nrm_out_x(nrm_ox), .ext_nrm_out_y(nrm_oy), .ext_nrm_out_z(nrm_oz)
   );
 
   // ---------------------------------------------------------------- quad store
@@ -315,9 +341,14 @@ module m1_raster3d #(
   wire in_disp_band = disp_valid && ({6'd0, scan_y} >= 10'(disp_band) * 10'(BAND_H))
                                  && ({6'd0, scan_y} <  (10'(disp_band) + 10'd1) * 10'(BAND_H));
 
-  assign scan_rgb = {rd_col_sel[15:11], 3'b0,
-                     rd_col_sel[10:5],  2'b0,
-                     rd_col_sel[4:0],   3'b0};
+  // REPLICATE THE TOP BITS, do not zero-fill. Five bits of 0x1f must expand to
+  // 0xff and not 0xf8, or white is dim and every colour is biased dark by up to
+  // 3%. This is what MAME's pal5bit does - (v << 3) | (v >> 2) - and the same
+  // convention m1_geo_color already uses on the way in, so zero-filling here
+  // undoes it on the way out.
+  assign scan_rgb = {rd_col_sel[15:11], rd_col_sel[15:13],
+                     rd_col_sel[10:5],  rd_col_sel[10:9],
+                     rd_col_sel[4:0],   rd_col_sel[4:2]};
   assign scan_hit = rd_hit_sel && in_disp_band;
 
   // ---------------------------------------------------------------- sequencer
@@ -342,6 +373,16 @@ module m1_raster3d #(
   assign bd_clear_req[1] = (st == T_BAND_CLR) && (wr_buf == 1'b1);
   assign fill_band       = cur_band;
 
+  // Issued only while the geometry is idle, which the service also enforces.
+  assign nrm_valid = light_pending && !geo_busy;
+
+  assign dbg_xc    = vxc;
+  assign dbg_yc    = vyc;
+  assign dbg_zoomx = vzoomx;
+  assign dbg_zoomy = vzoomy;
+  assign dbg_viewx = vviewx;
+  assign dbg_viewy = vviewy;
+
   assign dbg_objects = lw_objs;
   assign dbg_quads   = qs_count;
   assign dbg_dropped = qs_dropped;
@@ -349,11 +390,13 @@ module m1_raster3d #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      vp_lat <= 1'b0;
       wr_buf <= 1'b0; old_z <= '0;
       disp_band <= '0; disp_valid <= 1'b0;
       vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
       vspec <= 1'b0;
+      rlx <= '0; rly <= '0; rlz <= '0; light_pending <= 1'b0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0;
@@ -363,6 +406,20 @@ module m1_raster3d #(
 
       // ---- display-list events. Latched wherever the walk is, because a
       // command changes state for every object that follows it.
+      // The viewport centre, converted and latched. Driven from the event and
+      // taken the same cycle, since fp_from_int is combinational.
+      // The normalized light, when the borrowed unit returns it.
+      if (nrm_out_valid && light_pending) begin
+        vlx <= nrm_ox; vly <= nrm_oy; vlz <= nrm_oz;
+        light_pending <= 1'b0;
+      end
+
+      vp_lat <= 1'b0;
+      if (lw_ev_valid && !lw_ev_body && lw_ev_kind == 8'h03) begin
+        if (lw_ev_idx == 16'd1) vxc <= vp_flt;
+        if (lw_ev_idx == 16'd2) vyc <= vp_flt;
+      end
+
       // Header parameters only. Commands 9, 0x0a, 0x0b and 0x0c have no body, so
       // this is belt and braces for them - but taking a body item as a matrix
       // element is exactly the class of mistake ev_body exists to prevent, and
@@ -370,20 +427,48 @@ module m1_raster3d #(
       if (lw_ev_valid && !lw_ev_body) begin
         case (lw_ev_kind)
           8'h03: begin
-            // Viewport. MAME's own transformation of the words: the centre's y
-            // is 383 - (word - 39), and the edges likewise. Only the centre is
-            // needed here; the fill unit is clipped to the band instead.
-            if (lw_ev_idx == 16'd0) ;                      // the 32-bit word
-            else if (lw_ev_idx == 16'd0) ;
+            // Viewport, indices 0..6: a 32-bit word this design does not use,
+            // then six 16-bit ones.
+            //
+            //     xc = readi16(+4)
+            //     yc = 383 - (readi16(+6) - 39)
+            //
+            // MAME's own transformation, and the y one is not cosmetic: the
+            // display list gives a top-down coordinate and the projection wants a
+            // bottom-up one. Leaving it out puts the horizon in the wrong place
+            // and tilts every object with it.
+            //
+            // The four edge words are read and ignored here on purpose - the fill
+            // unit is clipped to the BAND rather than to the viewport, so the
+            // screen extents do not reach it. They are still numbered so a later
+            // consumer can take them without renumbering anything.
+            if (lw_ev_idx == 16'd1) vp_lat <= 1'b1;        // xc next cycle
+            else if (lw_ev_idx == 16'd2) vp_lat <= 1'b1;   // yc next cycle
           end
           8'h09: begin
-            if (lw_ev_idx == 16'd0) vzoomx <= lw_ev_data;
-            else                    vzoomy <= lw_ev_data;
+            // TIMES FOUR. MAME: `set_zoom(readf(+2) * 4, readf(+4) * 4)`. Taking
+            // the word as written under-zooms the entire scene by exactly four,
+            // which does not look like a missing multiply - it looks like a
+            // stretched picture with objects wandering off the edges, and the
+            // quad count is identical either way.
+            //
+            // Multiplying a float by four is exact and free: add two to the
+            // exponent. No pool operation, no rounding.
+            if (lw_ev_idx == 16'd0)
+              vzoomx <= {lw_ev_data[31], lw_ev_data[30:23] + 8'd2, lw_ev_data[22:0]};
+            else
+              vzoomy <= {lw_ev_data[31], lw_ev_data[30:23] + 8'd2, lw_ev_data[22:0]};
           end
           8'h0a: begin
-            if      (lw_ev_idx == 16'd0) vlx <= lw_ev_data;
-            else if (lw_ev_idx == 16'd1) vly <= lw_ev_data;
-            else                         vlz <= lw_ev_data;
+            // The light direction is NOT unit length as the list gives it -
+            // measured at 1.0941 - and MAME normalizes it on upload
+            // (set_light_direction is glm::normalize). Storing it raw makes
+            // every dot product 9.4% too large and every polygon one luminance
+            // level too bright: a picture that looks right and is uniformly
+            // washed out. Latched here and normalized below.
+            if      (lw_ev_idx == 16'd0) rlx <= lw_ev_data;
+            else if (lw_ev_idx == 16'd1) rly <= lw_ev_data;
+            else begin rlz <= lw_ev_data; light_pending <= 1'b1; end
           end
           8'h0b: begin
             mat_we   <= 1'b1;

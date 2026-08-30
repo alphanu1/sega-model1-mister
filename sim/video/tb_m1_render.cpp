@@ -312,6 +312,23 @@ int main(int argc, char** argv) {
                    t.quads[i].x[2], t.quads[i].y[2], t.quads[i].x[3], t.quads[i].y[3]);
     }
 
+    // How many quads would not survive a 16-bit store? m1_raster3d truncates
+    // screen coordinates to 16 bits, and a coordinate outside that range wraps
+    // rather than clipping - so this is the first thing to rule in or out when
+    // the two renders disagree on pixels while agreeing on quads.
+    {
+        long oob = 0, worst = 0;
+        for (const Quad& q : t.quads)
+            for (int v = 0; v < 4; v++) {
+                long ax = labs((long)q.x[v]), ay = labs((long)q.y[v]);
+                if (ax > 32767 || ay > 32767) { oob++; break; }
+                if (ax > worst) worst = ax;
+                if (ay > worst) worst = ay;
+            }
+        printf("quads with a coordinate outside +/-32767: %ld of %zu (largest in range %ld)\n",
+               oob, t.quads.size(), worst);
+    }
+
     // ---------------------------------------------------------- painter's sort
     // z DESCENDING, ties by submission order - quad_t::compare exactly.
     std::stable_sort(t.quads.begin(), t.quads.end(), [](const Quad& a, const Quad& b) {

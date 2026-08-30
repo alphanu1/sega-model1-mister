@@ -288,6 +288,7 @@ test_raster_band:
 render3d:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_raster3d \
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
+	  rtl/video/fp_from_int.sv \
 	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_store.sv \
 	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
 	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
@@ -348,6 +349,12 @@ test_geo_project:
 	  sim/video/geo_wrappers.sv \
 	  sim/video/tb_m1_geo_project.cpp -o tb_geo_project --Mdir obj_geo_project
 	./obj_geo_project/tb_geo_project
+
+test_fp_from_int:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_from_int \
+	  rtl/video/fp_from_int.sv sim/video/tb_fp_from_int.cpp \
+	  -o tb_fp_from_int --Mdir obj_fp_from_int
+	./obj_fp_from_int/tb_fp_from_int
 
 test_fp_to_int:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fp_to_int \

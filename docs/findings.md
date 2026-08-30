@@ -6697,3 +6697,51 @@ The core is not the slow part. Two thirds of every cycle is spent waiting on
 memory, and that is where a 3.2x lives. Clocking from 22.857 to 23.529 is 2.9% of
 it. The clock change is still right — the CPU should not be below the target rate
 — but it should not be mistaken for progress on throughput.
+
+---
+
+## The 3D block renders the reference frame: 100.0% agreement, four bugs on the way
+
+**2026-08-31.** `make render3d` drives `m1_raster3d` alone - a frame pulse and
+five memories in, a pixel out - and captures each band through the scanout port
+the video path will use. Nothing orchestrated from C++: the list walk, the
+per-object geometry, the sort, the band sequencing and the presentation are the
+module's own.
+
+    RTL block vs the C++-orchestrated render
+      agree within RGB565 rounding   190,462 of 190,464   100.0%
+      differ by more than 8                            2
+
+**Four bugs stood between "it produces a picture" and that number, and every one
+of them produced a picture.**
+
+1. **The band geometry was three constants that disagreed.** Halving the band
+   height to 32 for the sound budget left a 6-bit band mask, a 3-bit band select
+   and a row-to-band index written as `y[8:6]` - a division by 64 that does not
+   say so. A 3-bit counter compared against `3'(12-1)` truncates to 3, so the
+   frame stopped dead after band 3, correct as far as it went.
+2. **The viewport handler was an empty stub**, left that way because command 3
+   emits `idx 0` for its 32-bit word AND for the first of its six 16-bit words.
+   `xc`/`yc` stayed at zero and stretched the whole frame. Fixed at the source:
+   the viewport's seven values now number 0..6.
+3. **The zoom was missing its x4.** MAME's command 9 is
+   `set_zoom(readf(+2) * 4, ...)`. Taking the word as written under-zooms the
+   scene by exactly four - which looks like a stretched picture with objects
+   wandering off the edges, and the quad count is identical either way. The
+   multiply is free: add two to the exponent.
+4. **The light vector was not normalized.** `set_light_direction` is
+   `glm::normalize`, and the display list's vector is **1.0941** long - so every
+   dot product came out 9.4% large and every polygon one luminance level too
+   bright. A picture that looks right and is uniformly washed out.
+
+Number 4 is the one worth remembering. It showed up as a *colour* difference
+confined to one surface in the diff image, with the road and the HUD agreeing
+exactly - and the quad count, the coverage and the geometry were all already
+perfect. Diffing the render against a reference is what found it; no unit test
+could, because the light vector is an input to the colour unit and both sides of
+its bench used the same one.
+
+The normalize is **borrowed rather than duplicated**: `m1_geometry` lends its
+`m1_geo_norm` out while the stage is idle, which is exactly when the caller is
+between objects. A second one would have cost ~450 ALM of multiplier and adder to
+normalize one vector per frame.
