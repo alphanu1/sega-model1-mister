@@ -6152,3 +6152,38 @@ clipping** - not just the fill path that exists.
 That is a materially bigger M3 than "wire up the fill unit", and it is better known now than
 after building the wrong thing. What exists (`m1_raster_fill`, verified over 152,025 quads)
 takes ALREADY-PROJECTED screen coordinates, which is the last stage of that pipeline.
+
+### M3 and M4 sizing, measured — the polygon ROM is not loaded and sound is 8,837 ALM
+
+**The `polygons` region is absent from our MRA.** Virtua Racing's ROM regions against
+`mra/Virtua Racing.mra`:
+
+    maincpu          12 files, all 12 present     5.2 MB
+    copro_data        4 files, all  4 present     2.0 MB
+    tgp_copro         4 files, only 1 present     4.1 MB   <- partial
+    polygons          8 files, NONE present      16.0 MB   <- the 3D models
+    ioboard:eeprom    1 file,  none present        128 B
+                                        total     27.4 MB
+
+**There is nothing for a rasterizer to draw until those eight files are loaded.** This is the
+same class of miss as the coprocessor data ROM, which CLAUDE.md records as costing two
+sessions of a stalled coprocessor with a 2.25 MB length mismatch sitting in plain sight -
+and `make verify_mra` exists precisely to catch it.
+
+27.4 MB fits the single 32 MB stick D2 requires (D2 sized it at "roughly 31 MB"), but the
+polygon ROM is over half of it, and the rasterizer's traffic against it has never been in a
+bandwidth budget.
+
+**M4's area is measured, not estimated - from the Model 2 core's own fit report**, which
+builds the same sound board (68000 + YM3438 + 2 x MultiPCM):
+
+    m2_sound_board   8,837 ALM        fx68k          1,995
+      multipcm x2    3,703              pcm_fetch x2 2,273
+      jt12 (YM3438)    631
+
+**8,837, against my guess of 6-8k and against 11,772 ALM free.** That leaves ~2,900 for the
+whole of M3, which the transform, projection, clipping, sort and band buffer will not fit
+into. Freeing area is therefore a prerequisite for M3+M4 together, not a later tidy-up, and
+the debug overlay is only **207 ALM** (`m1_diag`; the 1,058 in `osd:*` is the framework's
+menu, not ours). The V60 is 17,643 - 59% of the design - and Model 2's i960 does a comparable
+job in 7,200.
