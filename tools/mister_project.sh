@@ -68,6 +68,27 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_diag.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listctl.sv
 
+# The 3D path. Every one of these was built and verified as a standalone module
+# before any of it was in the hardware project, which is how a night's work ends
+# up sitting BESIDE the core instead of in it. Listed here so that stops being
+# possible: the staged .qsf names its sources explicitly, so a module absent from
+# this list compiles in simulation and is simply not in the build.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fp_to_int.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_fp_pool.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_xform.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_project.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_det.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_rsqrt.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_norm.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_color.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_walk.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geometry.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listwalk.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_store.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_div.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_fill.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_band.sv
+
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_tdp_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_mainram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_main.sv

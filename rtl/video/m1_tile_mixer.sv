@@ -86,7 +86,18 @@ module m1_tile_mixer (
   input  logic [11:0]      backdrop,
 
   output logic [11:0]      pixel,
-  output logic [3:0]       source       // one-hot-ish debug: which slot won
+  output logic [3:0]       source,      // one-hot-ish debug: which slot won
+
+  // THE 3D LAYER IS RGB, NOT AN INDEX, so the mixer cannot produce its colour.
+  //
+  // fill_quad writes into a bitmap_rgb32 because the lighting MULTIPLIES a
+  // palette entry by a luminance and lands between entries - an index cannot
+  // carry that (docs/findings.md). Two ways out were recorded: move the whole
+  // mixer downstream of the palette and work in RGB throughout, or keep the
+  // mixer indexed and have it say only WHO WON, muxing the real colour after the
+  // palette lookup. This is the second, which keeps the tile path indexed and
+  // costs one wire.
+  output logic             poly_won
 );
 
   // A tilemap contributes to the category-1 pass when its tile says so, and to
@@ -102,6 +113,10 @@ module m1_tile_mixer (
       hit_cat0[i] = !disabled[i] && !masked[i] && !prio[i] && (!transparent[i] || opaque_pass);
     end
   end
+
+  // The 3D layer wins whenever no category-1 tile is in front of it.
+  assign poly_won = poly_valid && !hit_cat1[0] && !hit_cat1[1]
+                                && !hit_cat1[2] && !hit_cat1[3];
 
   always_comb begin
     // Front to back. The first hit wins, which is the same result as painting
