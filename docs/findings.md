@@ -5953,3 +5953,45 @@ broken port; presenting the old address for one more edge, as the core does, mak
 port fail (`addr 3ecf read 0858, expected b7aa`) and the new one pass. Both were run.
 
     m1_cdc_port: checks=254848 -> 254853 fails=0     make test 38/38
+
+### THE COPROCESSOR IS BIT-EXACT AGAINST THE REFERENCE — 2026-08-30
+
+With both fixes in - `IN` storing to memory, and the CDC port not re-accepting a held
+request with its old address - the frame bench over 526 frames, shipped configuration:
+
+    commands   IDENTICAL over all 4,000 captured      (was: diverged at 673)
+    answers    IDENTICAL over all 4,336 captured      (was: diverged at 259, then 767)
+    sincos     IDENTICAL over 1,545 events            (was: diverged at 250)
+    fin/fout   0/16 throughout, no deadlock           (was: both 16/16 from frame ~340)
+    TGP pushed 75,669 results (~144/frame; reference ~168 at 1.25x our speed)
+    layers     tm0=7449 tm1=6919 tm2=176096  window ctrl pair23=202a
+    scroll     hscr[5002] changed 44 of 525 frames, vscr 73   (was 33 / 96)
+
+Every word the V60 pushes and every word the coprocessor answers matches MAME for the
+whole traced window. M0 exit criterion 2 asked for instruction-accuracy on real microcode
+over a busy window; this is the value-level form of it, and it is stronger than the PC diff,
+which cannot compare a poll loop across two machines with different clock ratios.
+
+**On the scroll count.** 44 changes in 526 frames is not the reference's 67% of frames, but
+the reference's `hscr` only starts moving around frame 300 and drifts slowly at first
+(`000b` at f=400, `000e` at f=800), and at 1.25x slower our frame 526 is the reference's
+~420. The scroll VALUE is derived from coprocessor answers that are now identical, so the
+value-level check is the one that counts; a longer run would settle the rate.
+
+**Two V60-side facts from the same run that are NOT problems:** `TGP retires=9217 pc=004c`
+is the 16-bit counter wrapped and the idle park, and "read the result FIFO 8,605,502 times"
+is the held-access cycle counter, not reads. Both were documented as unreliable yesterday.
+
+**What it took, for the record.** Two bugs, neither in the place the symptoms pointed:
+
+  1. `S_IN_RD` overrode `wb_op2`'s `S_WB_MEM` with a guard that read the old `st`, so every
+     `in.w [R23], [Rn+]` read the port and dropped the store. Found by logging the matrix
+     routine's bus accesses: the read returned the reference's exact value and no write
+     followed.
+  2. `m1_cdc_port` re-accepted a level request on the ack+1 edge with its old address, so two
+     back-to-back coprocessor table reads returned the first's word for the second. Found by
+     logging the sincos unit's traffic on both sides after the answer streams diverged on
+     identical commands.
+
+Both have directed tests that fail on the old RTL and pass on the new; both suites and the
+38-suite baseline are clean.

@@ -1,5 +1,38 @@
 # HANDOFF
 
+## 2026-08-30 (evening) — the coprocessor is bit-exact, and the deadlock and scroll are two bugs
+
+**Fixed, with directed tests that fail on the old RTL:**
+
+  1. **V60 `IN` with a memory destination never stored** (`S_IN_RD` overrode `wb_op2`'s
+     `S_WB_MEM`; same pattern at `S_ROTC`). Every `in.w [R23], [Rn+]` read the coprocessor
+     correctly and threw the value away. `sim/cpu/tb_v60_in_mem.sv`, in `make test` as
+     `v60_in_mem`.
+  2. **`m1_cdc_port` re-accepted a held request on the ack+1 edge with its OLD address.** The
+     TGP core holds its request as a level, so two back-to-back table reads returned the
+     first's word for the second. Guard `!(a_ack && a_req_d)`; the level-requester case is in
+     `tb_m1_cdc_port` and models the core's one-cycle lag, which it had to.
+
+**Result, frame bench, 526 frames:** commands identical over 4,000, answers identical over
+4,336, sincos identical over 1,545, no deadlock, both text layers drawing, window mode on.
+`tools/copro_stream_diff.py` and `tools/sincos_diff.py` are the instruments.
+
+**Reverted the same day:** the outbound zero-on-empty in `m1_copro_if`. `gen_fifo` returns
+zero AND retries, so the zero is never consumed; returning it and completing let the V60
+consume zeros before the results existed, and the unread results then filled `fout` - that
+was the deadlock's other half. Both FIFO directions stall on empty, as before.
+`EMPTY_FIFO_READS_ZERO` in `m1_tgp` stays 0 for the same reason on the inbound side (handler
+0x53 is a real command, "add the next two words", not an idle path) and should be deleted.
+
+**Images in `build/`:** `Model1_infix_seed3.rbf` (`0bcb4984`, IN fix only, timing met) and
+`Model1_in_cdc_fix_seed3.rbf` (both fixes, building). The board is still on `81800464`
+(22.857 MHz, neither fix). Nothing flashed since.
+
+**Still real and separately measured:** the V60 is ~1.25x slower than the board (frame tick
+overruns 2.7% of frames; `v60_trace` parts at collapsed instruction 33,401 on exactly that).
+It is not what caused any of the above. `clk_cpu` cannot go higher than 22.857 on this PLL
+without breaking Fmax; the remainder is execution CPI.
+
 ## 2026-08-30 — the V60 matches the reference, and three findings are withdrawn
 
 **The instruction streams AGREE for the whole traced window.** `v60_trace` had parted at
