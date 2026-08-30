@@ -5543,3 +5543,34 @@ The variable is added, mirroring `BOOT_DEFS`.
 **A define that does not reach the build is worse than no test**, because it produces the
 answer you were hoping for. Check that the switch moved something — here, `halted=1` and a
 blank screen are what the define actually doing its job looks like.
+
+### The V60 agrees for 7 M instructions; the first real divergence is a frame-tick overrun — 2026-08-30
+
+With the interrupt stripped, loops collapsed, and the tracer's cap raised (it was silently
+ending the window at 4,000,000 entries — about 2.5 emulated seconds):
+
+    MAME   27,467,032 instructions, 798 interrupts  -> 4,163,971 collapsed
+    ours    7,011,730 instructions, 281 interrupts  ->    48,413 collapsed
+    DIVERGES at collapsed instruction 33,401
+
+and the divergence is:
+
+    FE13F3: cmp.b #3, 500501
+    FE13FB: blt   FE1406        MAME takes it (value < 3); we do not (value >= 3)
+
+`0x500501` is a **frame tick**: the interrupt handler increments it at `FE0320` once a frame
+and the main loop drains it at `FE1406`. The reference only ever holds 0, 1 or 2 — measured,
+590 writes over 400 frames, values `00`/`01`/`02` only. Ours:
+
+    0=134  1=134  2=133  |  3=2  4=2  5=2  6=2  7+=6
+
+**So we keep up on 97.3% of frames and overrun on 14 of 526.** That is the ~1.25x speed
+deficit expressed in the game's own terms, and it is what the trace caught. Interrupts per
+instruction now: ours 1/27,536 against the reference's 1/34,432, so **1.25x** — down from the
+1.63x measured before `clk_cpu` went 19.2 -> 22.857 MHz, which is the 1.19x that change was
+worth. Two independent measurements agreeing.
+
+**But 2.7% of frames does not explain the object dispatch.** `FE1C09` runs 0.44 times a frame
+here against the reference's 5.6, and its indirect call fires on 11% of iterations against
+66%. A 12x gap is not a 2.7% overrun, so there is a second cause still unaccounted for, and
+it sits between the frame tick and the object list.

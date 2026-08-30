@@ -468,6 +468,15 @@ longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
 // after it at 174: consecutive instructions cannot execute different numbers of
 // times. Counting the TRANSITION to X gives executions.
 reg [23:0] dbg_pc_d = 24'hffffff;
+// THE FRAME TICK THE MAIN LOOP IS SUPPOSED TO DRAIN. The ISR does `inc.b
+// 500501` at FE0320 once a frame and the main loop resets it at FE1406. The
+// reference only ever holds 0, 1 or 2 - `cmp.b #3, 500501 / blt` always takes.
+// If ours reaches 3 or more, the main loop is falling behind the interrupt,
+// which is the speed deficit in the game's own terms rather than a logic fault.
+// V60 byte 0x500501 is the HIGH byte of device.mem word 0xF80280.
+longint tick_hist [8];
+initial for (int th = 0; th < 8; th++) tick_hist[th] = 0;
+reg [7:0] tick_prev = 8'hff;
 // WHERE THE V60 ACTUALLY SPENDS ITS INSTRUCTIONS, by 256-byte bucket of the
 // low 16 bits of PC. The per-frame geometry update runs ONCE in 526 frames and
 // nothing gates it, so the interesting question is what is running instead.
@@ -475,6 +484,13 @@ longint pc_hist [256];
 initial for (int hi = 0; hi < 256; hi++) pc_hist[hi] = 0;
 always @(posedge clk_cpu) begin
     dbg_pc_d <= core.dbg_pc;
+    if (core.main.rst_n && device.mem['hF80280][15:8] != tick_prev) begin
+        tick_prev <= device.mem['hF80280][15:8];
+        tick_hist[(device.mem['hF80280][15:8] > 8'd7) ? 7
+                  : device.mem['hF80280][15:8]] <=
+            tick_hist[(device.mem['hF80280][15:8] > 8'd7) ? 7
+                      : device.mem['hF80280][15:8]] + 1;
+    end
     if (core.main.rst_n && core.dbg_pc != dbg_pc_d) begin
         pc_hist[core.dbg_pc[15:8]] <= pc_hist[core.dbg_pc[15:8]] + 1;
         if (core.dbg_pc == 24'hfe48d5) pc_fe48d5 <= pc_fe48d5 + 1;
@@ -1404,6 +1420,9 @@ initial begin
             pc_hist[best] = 0;
         end
     end
+    $display("FRAME: frame-tick 0x500501 values seen: 0=%0d 1=%0d 2=%0d 3=%0d 4=%0d 5=%0d 6=%0d 7+=%0d  (reference only ever 0/1/2)",
+             tick_hist[0], tick_hist[1], tick_hist[2], tick_hist[3],
+             tick_hist[4], tick_hist[5], tick_hist[6], tick_hist[7]);
     $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
              pc_fe1c09, pc_fe1c12, pc_fe1c15, pc_fe1c18, pc_feeb10);
     $display("FRAME: upstream: feef14=%0d feef1c=%0d -> fef047=%0d fef04e=%0d fef325(divert)=%0d",
