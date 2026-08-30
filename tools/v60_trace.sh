@@ -109,6 +109,7 @@ echo "  $(wc -l < "$out/mame_pc.txt") instructions"
 echo "=== our core (${cycles} cycles) ==="
 cd "$root"
 make m1_frame FRAME_TRACE=0 FRAME_CYCLES="$cycles" V60_PCTRACE=1 \
+     V60_PCTRACE_MAX="${PCTRACE_MAX:-40000000}" \
   > "$out/ours.log" 2>&1 || true
 grep '^PCT ' "$out/ours.log" | awk '{print $2}' > "$out/our_pc_raw.txt"
 # Align on the first ROM instruction; our trace starts at the reset vector.

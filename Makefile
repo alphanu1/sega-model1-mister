@@ -653,7 +653,7 @@ m1_frame:
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GTRACE_FRAMES=$(FRAME_TRACE) \
-	  -GPCTRACE=$(V60_PCTRACE) -GWRTRACE=$(V60_WRTRACE) \
+	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
 	./build/m1frame/m1frame
@@ -675,6 +675,8 @@ FRAME_TRACE ?= 0
 # One line per retired V60 instruction, for tools/v60_trace.sh. A firehose; off
 # unless that script asks for it.
 V60_PCTRACE ?= 0
+# Raise for a longer comparison window; 4 M stops at ~2.5 emulated seconds.
+V60_PCTRACE_MAX ?= 4000000
 V60_WRTRACE ?= 0
 
 # The ROM arrives over ioctl by default, because that is what hardware does and

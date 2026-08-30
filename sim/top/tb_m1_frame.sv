@@ -86,6 +86,13 @@ module tb_m1_frame #(
     // Emit one line per retired instruction, for tools/v60_trace.sh to diff
     // against MAME's own debugger trace. Off by default: it is a firehose.
     parameter bit     PCTRACE    = 0,
+    // THE CAP IS A LIMIT ON THE COMPARISON WINDOW, so it is a parameter rather
+    // than a literal. At 4,000,000 a run stops tracing after about 2.5 emulated
+    // seconds however many cycles were asked for, and the diff then ends where
+    // the TRACE stopped rather than where the run did - reported as
+    // "IDENTICAL for N" with no hint that N was the cap. Measured 2026-08-30:
+    // 3,965,222 kept plus 34,776 stripped is exactly 4,000,000.
+    parameter longint PCTRACE_MAX = 4000000,
 
     // Every CPU write, in order, with the PC that made it — the counterpart to
     // PCTRACE. Identical instruction streams with different memory means a write
@@ -942,7 +949,7 @@ reg [23:0] pc_prev = 24'hffffff;
 always @(posedge clk_cpu) begin
     if (core.main.ce && core.dbg_pc !== pc_prev) begin
         pc_prev <= core.dbg_pc;
-        if (PCTRACE && pctr < 4000000) $display("PCT %06h", core.dbg_pc);
+        if (PCTRACE && pctr < PCTRACE_MAX) $display("PCT %06h", core.dbg_pc);
         pctr = pctr + 1;
     end
 end
