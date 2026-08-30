@@ -80,6 +80,8 @@ module m1_raster3d #(
 
   // ---- colour word memory, palette and colour translation. Registered reads.
   output logic [19:0] tex_addr,
+  output logic        tex_req,
+  input  logic        tex_valid,
   input  logic [15:0] tex_data,
   output logic [12:0] pal_addr,
   input  logic [15:0] pal_data,
@@ -210,7 +212,8 @@ module m1_raster3d #(
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
-    .tex_addr(tex_addr), .tex_data(tex_data),
+    .tex_addr(tex_addr), .tex_req(tex_req),
+    .tex_valid(tex_valid), .tex_data(tex_data),
     .lp_addr(lp_addr), .lp_d(lp_d), .lp_a(lp_a), .lp_s(lp_s), .lp_p(lp_p),
     .pal_addr(pal_addr), .pal_data(pal_data),
     .xlat_addr(xlat_addr), .xlat_data(xlat_data),

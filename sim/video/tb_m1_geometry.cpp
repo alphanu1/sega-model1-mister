@@ -213,11 +213,16 @@ struct Dut {
         d->lp_d = f2u(lp.d); d->lp_a = f2u(lp.a); d->lp_s = f2u(lp.s); d->lp_p = lp.p;
     }
     void tick() {
-        // The polygon ROM answers one cycle after the request.
+        // The polygon ROM and tgp_ram both answer one cycle after the request.
+        // tgp_ram is in SDRAM in the real design and takes far longer; one cycle
+        // is the fastest a correct consumer must tolerate, and the handshake is
+        // what makes any latency safe.
         int req = d->rom_req; uint32_t addr = d->rom_addr;
+        int treq = d->tex_req; uint32_t taddr = d->tex_addr;
         memories();
         cycles++; d->clk = 0; d->eval();
         d->rom_valid = req; d->rom_data = req ? prom[addr & 0xffff] : 0;
+        d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->eval();
         if (d->q_valid) {
@@ -232,7 +237,7 @@ struct Dut {
         }
     }
     void reset() {
-        d->rst_n = 0; d->start = 0; d->mat_we = 0; d->rom_valid = 0;
+        d->rst_n = 0; d->start = 0; d->mat_we = 0; d->rom_valid = 0; d->tex_valid = 0;
         for (int i = 0; i < 8; i++) tick();
         d->rst_n = 1;
         for (int i = 0; i < 8; i++) tick();

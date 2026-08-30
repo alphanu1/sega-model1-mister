@@ -60,6 +60,8 @@ module m1_geometry (
   input  logic [31:0] rom_data,
 
   output logic [19:0] tex_addr,
+  output logic        tex_req,
+  input  logic        tex_valid,
   input  logic [15:0] tex_data,
 
   output logic [7:0]  lp_addr,
@@ -156,7 +158,8 @@ module m1_geometry (
     .old_z_in(old_z_in), .old_z_out(old_z_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
-    .tex_addr(tex_addr), .tex_data(tex_data),
+    .tex_addr(tex_addr), .tex_req(tex_req),
+    .tex_valid(tex_valid), .tex_data(tex_data),
     .lp_addr(lp_addr), .lp_d(lp_d), .lp_a(lp_a), .lp_s(lp_s), .lp_p(lp_p),
     .frame_odd(frame_odd),
     .xf_valid(xf_valid), .xf_ready(xf_ready),

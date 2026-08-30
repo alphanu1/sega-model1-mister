@@ -63,8 +63,18 @@ module m1_geo_walk (
   input  logic        rom_valid,
   input  logic [31:0] rom_data,
 
-  // tgp_ram, for the colour word. Registered read.
+  // tgp_ram, for the colour word. REQUEST/VALID, not a registered read.
+  //
+  // tgp_ram is 786,432 words - far too large for M10K, and declaring it as an
+  // array would have Quartus build it out of flip-flops silently (CLAUDE.md
+  // records that costing 28,816 ALM once). So it lives in SDRAM, which answers
+  // in tens of cycles rather than one, and the walker has to wait for it.
+  //
+  // The single-cycle version was correct only for a block RAM and would have
+  // read whatever happened to be on the bus once the memory moved.
   output logic [19:0] tex_addr,
+  output logic        tex_req,
+  input  logic        tex_valid,
   input  logic [15:0] tex_data,
 
   // Light parameter bank, indexed by the record's lightmode. Registered read.
@@ -162,6 +172,7 @@ module m1_geo_walk (
   logic [31:0] nvx, nvy, nvz;      // normalized
   logic [1:0]  xf_which;           // 0 = vn, 1 = p0, 2 = p1
   logic [31:0] qz;
+  logic [15:0] tex_hold;      // latched, since tex_data is only valid on the ack
 
   assign busy      = (st != W_IDLE);
   assign rom_addr  = padr;
@@ -173,6 +184,7 @@ module m1_geo_walk (
   // Found by rendering a real frame, not by any unit test: the per-stage benches
   // supply tex_data directly and cannot see the address arithmetic.
   assign tex_addr  = tadr[19:0] - 20'h40000;
+  assign tex_req   = (st == W_TEX);
   assign old_z_out = oldz;
 
   // lightmode: bits 20:17 of the flags, with bit 22 selecting the second bank.
@@ -180,7 +192,7 @@ module m1_geo_walk (
   assign lp_addr = {flags[22], 3'b000, flags[20:17]};
 
   assign cl_nx = nvx; assign cl_ny = nvy; assign cl_nz = nvz;
-  assign cl_tex = tex_data;
+  assign cl_tex = tex_hold;
   assign cl_lp_d = lp_d; assign cl_lp_a = lp_a; assign cl_lp_s = lp_s;
   assign cl_lp_p = lp_p;
 
@@ -267,6 +279,7 @@ module m1_geo_walk (
       st <= W_IDLE;
       padr <= '0; tadr <= '0; nleft <= '0; wi <= '0; hdr_i <= '0;
       flags <= '0; link <= '0; zmode <= '0; moire <= 1'b0; nocull <= 1'b0;
+      tex_hold <= '0;
       oldz <= '0; qz <= '0; xf_which <= '0;
       o0x <= '0; o0y <= '0; o0z <= '0; o1x <= '0; o1y <= '0; o1z <= '0;
       o0sx <= '0; o0sy <= '0; o1sx <= '0; o1sy <= '0;
@@ -412,9 +425,12 @@ module m1_geo_walk (
           st <= W_TEX;
         end
 
-        // tex_addr has been driven since the record was decoded; one cycle here
-        // covers the registered read of both tgp_ram and the light bank.
-        W_TEX: st <= W_COL;
+        // Wait for the colour word. The light bank is a small block RAM and
+        // answers well inside this, so one handshake covers both.
+        W_TEX: if (tex_valid) begin
+          tex_hold <= tex_data;
+          st       <= W_COL;
+        end
 
         W_COL:  if (cl_ready) st <= W_COLW;
         W_COLW: if (cl_out_valid) begin

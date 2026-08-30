@@ -102,16 +102,19 @@ int main(int argc, char** argv) {
         d->lp_s = f2u(lp.s); d->lp_p = lp.p;
     };
     auto tick = [&]() {
-        int dreq = d->dl_req, rreq = d->rom_req;
+        int dreq = d->dl_req, rreq = d->rom_req, treq = d->tex_req;
+        uint32_t taddr = d->tex_addr;
         memories();
         cycles++; d->clk = 0; d->eval();
         d->dl_valid = dreq; d->rom_valid = rreq;
+        d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->eval();
     };
 
     d->rst_n = 0; d->frame_start = 0; d->frame_odd = 0; d->dl_sel = 0;
     d->scan_x = 0; d->scan_y = 0; d->dl_valid = 0; d->rom_valid = 0;
+    d->tex_valid = 0;
     for (int i = 0; i < 8; i++) tick();
     d->rst_n = 1;
     for (int i = 0; i < 8; i++) tick();

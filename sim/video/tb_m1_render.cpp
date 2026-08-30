@@ -98,10 +98,13 @@ struct Dut {
     }
     void tick() {
         int req = d->g_rom_req; uint32_t addr = d->g_rom_addr;
+        int treq = d->g_tex_req; uint32_t taddr = d->g_tex_addr;
         memories();
         cycles++; d->clk = 0; d->eval();
         d->g_rom_valid = req;
         d->g_rom_data  = req ? (addr < prom.size() ? prom[addr] : 0) : 0;
+        d->g_tex_valid = treq;
+        d->g_tex_data  = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->eval();
         if (d->g_q_valid) {
@@ -122,7 +125,7 @@ struct Dut {
     }
     void reset() {
         d->rst_n = 0; d->g_start = 0; d->mat_we = 0; d->g_rom_valid = 0;
-        d->f_in_valid = 0; d->f_span_ready = 1;
+        d->f_in_valid = 0; d->f_span_ready = 1; d->g_tex_valid = 0;
         for (int i = 0; i < 8; i++) tick();
         d->rst_n = 1;
         for (int i = 0; i < 8; i++) tick();
