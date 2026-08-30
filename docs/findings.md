@@ -5605,3 +5605,37 @@ generates it. The speed deficit is real and separately measured at 1.25x — the
 address, which a write tap on either side answers directly. The object array is at V60
 0x400f80 (pointer at 0x501324, count 15 at 0x501118), and in `tb_m1_frame` that is
 `device.mem` word 0xFA07C0 — V60 byte B in the 0x400000 region maps to 0xFA0000 + (B-0x400000)/2.
+
+### Model 1's tile scroll VALUE comes from the coprocessor — verified at register level
+
+Model 2 drives tiles and 3D separately from the CPU, which predicts that Model 1's tile scroll
+should not depend on the geometry engine. On Model 1 it does, and this is the data flow rather
+than an inference from a PC range:
+
+    FEF372: mov.w   #E800000, [R24]     CPU pushes a command to the coprocessor
+    FEF37A: movs.hw E5[R25], [R24]      ...with an angle from the object
+    FEF380: mov.w   #C3800000, [R24]
+    FEF388: in.w    [R23], R0           READS THE RESULT BACK
+    FEF38B: cvt.sw  R0, R0
+    FEF3A4: mov.w   R0, 501424          -> the scroll input
+    FEF3AB: and.h   #FFF, R0
+    FEF3B0: or.h    #2000, R0
+    FEF3B5: mov.h   R0, 50140A          -> the ctrl/scroll word
+
+`or.h #2000` then the store is exactly the `0x2000 | (value & 0xfff)` measured from outside,
+so the two agree. **And `[R23]` was checked rather than assumed** — a read tap filtered to
+`pc == 0xfef388` reports `io d80000` and `io d80002`, 28 each over 300 frames, which is the
+32-bit coprocessor FIFO read in both halves. `R23` being the result port was originally
+inherited from `FF850C`, a different routine, which is not evidence.
+
+**The plumbing is still CPU-driven** — the coprocessor never touches tile RAM. The V60 pushes,
+reads back, masks and writes the tile register itself. What has a data dependency on the
+geometry engine is the scroll VALUE, at about 0.09 reads a frame, matching the ~63 frames in
+400 on which the scroll registers change.
+
+**Consequence:** with the coprocessor parked, `in.w` returns zero, `R0` is constant, and the
+background cannot scroll horizontally. That part of the chain stands.
+
+**The earlier evidence for this did not.** It was a read tap over the 368-byte range
+`fef250-fef3c0` that found 256 reads of `d80000` among 9,216, which would have supported the
+claim whether or not it was true.
