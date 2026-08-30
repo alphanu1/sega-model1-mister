@@ -6202,3 +6202,41 @@ ROM budget with it.
 SEPARATE 4 MB sample regions in every Model 1 set, so dropping one loses whatever sounds live
 in that half rather than reducing the voice count on a shared bank. Acceptable to get sound in
 at all; it will be audibly missing something specific rather than thinner.
+
+### M3: the 3D path carries LIT RGB, not a palette index, and 24bpp doubles the band — 2026-08-30
+
+**The compositing interface in `m1_tile_mixer` is the wrong shape for the real thing.** It
+takes `poly_index[11:0]`, a palette index, at priority between the cat1 and cat0 tiles. But
+MAME's quad colour is
+
+    cquad.col = scale_color(machine().pens[0x1000 | (m_tgp_ram[tex_adr-0x40000] & 0x3ff)],
+                            MIN(1.0, ln));
+
+a palette entry **multiplied by a lighting factor**, which lands between palette entries -
+hence `fill_quad` writing into a `bitmap_rgb32` while the tile path stays indexed. An index
+cannot carry it.
+
+Two ways to composite, and the mixer needs a change either way:
+
+  * the mixer keeps deciding the winner and gains a "the poly won" output, with the final
+    RGB muxed after the palette lookup - small, and keeps the tile path indexed;
+  * or the mixer moves downstream of the palette and works in RGB throughout - larger.
+
+**And the pixel width is not a linear trade, because M10K packs by configuration:**
+
+    17 bits  x20 (512x20)    62 blocks single, 124 double
+    16 bits  x16 (512x16)    62 blocks single, 124 double
+    25 bits  x32 (256x32)   124 blocks single, 248 double    <- 24-bit RGB + hit
+                                                     free: 181
+
+**24-bit colour DOUBLES the band buffer**, because 25 bits rounds up to a x32 configuration
+and halves the words per block. So RGB565 + hit at 62 blocks is the efficient point, and
+`docs/m3-rasterizer-spec.md`'s "16bpp costs nothing in fidelity" is right about the palette
+entries being xBGR-555 but does not account for the lighting multiply - lit polygons DO get
+quantised to 5-6-5.
+
+**A third option preserves full precision at the same 62 blocks**: store the 10-bit palette
+index plus a ~5-bit lighting level plus the hit bit, and apply `scale_color` at scanout. It
+costs a second palette read port, which the current single-ported `m1_palette` does not have.
+Recorded rather than taken - it is the better answer if the port is affordable when the
+scanout is built.
