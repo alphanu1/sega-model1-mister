@@ -459,6 +459,13 @@ longint pc_fefb40 = 0, pc_ff84a2 = 0, pc_ff84ae = 0, pc_ff8582 = 0, pc_ff84b1 = 
 //   FE1C15 jsr   [A[R25]]      - indirect call through a pointer at R25+0xA
 //   FEEB10                     - the geometry routine itself
 longint pc_fe1c09 = 0, pc_fe1c12 = 0, pc_fe1c15 = 0, pc_fe1c18 = 0, pc_feeb10 = 0;
+// THE GEOMETRY SUBMISSION LOOP THE REFERENCE NEVER ENTERS.
+//   FEB651 test1 #1A, 0[R22]   - bit 26 of the object
+//   FEB65A be    FEB688        - skip when CLEAR; the reference ALWAYS skips
+//   FEB661..FEB687             - the body, which writes to the coprocessor
+//   FEB673                     - where our V60 pins when the FIFO fills
+// FEB673 does not appear once in 14 emulated seconds of reference trace.
+longint pc_feb651 = 0, pc_feb65a = 0, pc_feb661 = 0, pc_feb673 = 0, pc_feb688 = 0;
 longint pc_feef14 = 0, pc_feef1c = 0, pc_fef047 = 0, pc_fef04e = 0, pc_fef325 = 0;
 longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
         pc_fefa93 = 0, pc_fefad1 = 0, pc_fefb00 = 0, pc_fef9d8 = 0;
@@ -503,6 +510,11 @@ always @(posedge clk_cpu) begin
         if (core.dbg_pc == 24'hff84ae) pc_ff84ae <= pc_ff84ae + 1;
         if (core.dbg_pc == 24'hff84b1) pc_ff84b1 <= pc_ff84b1 + 1;
         if (core.dbg_pc == 24'hff8582) pc_ff8582 <= pc_ff8582 + 1;
+        if (core.dbg_pc == 24'hfeb651) pc_feb651 <= pc_feb651 + 1;
+        if (core.dbg_pc == 24'hfeb65a) pc_feb65a <= pc_feb65a + 1;
+        if (core.dbg_pc == 24'hfeb661) pc_feb661 <= pc_feb661 + 1;
+        if (core.dbg_pc == 24'hfeb673) pc_feb673 <= pc_feb673 + 1;
+        if (core.dbg_pc == 24'hfeb688) pc_feb688 <= pc_feb688 + 1;
         if (core.dbg_pc == 24'hfe1c09) pc_fe1c09 <= pc_fe1c09 + 1;
         if (core.dbg_pc == 24'hfe1c12) pc_fe1c12 <= pc_fe1c12 + 1;
         if (core.dbg_pc == 24'hfe1c15) pc_fe1c15 <= pc_fe1c15 + 1;
@@ -1423,6 +1435,22 @@ initial begin
     $display("FRAME: frame-tick 0x500501 values seen: 0=%0d 1=%0d 2=%0d 3=%0d 4=%0d 5=%0d 6=%0d 7+=%0d  (reference only ever 0/1/2)",
              tick_hist[0], tick_hist[1], tick_hist[2], tick_hist[3],
              tick_hist[4], tick_hist[5], tick_hist[6], tick_hist[7]);
+    // THE OBJECT WORDS THE LOOP TESTS. FEB651 tests bit 26 of word 0 of each
+    // object; the reference's are 0x80000000 or 0 and it always skips, ours has
+    // one with bit 26 set and falls into the submission body. The array is at
+    // V60 0x400f80 (pointer at 0x501324, count 15 at 0x501118); V60 byte B in
+    // the 0x400000 region is device.mem word 0xFA0000 + (B-0x400000)/2, so
+    // 0x400f80 is word 0xFA07C0.
+    begin
+        integer oi;
+        $write("FRAME: object word0 at 0x400f80, stride 0x100:");
+        for (oi = 0; oi < 6; oi = oi + 1)
+            $write(" %04h%04h", device.mem['hFA07C0 + oi*128 + 1],
+                                device.mem['hFA07C0 + oi*128]);
+        $write("   (reference: 80000000 / 00000000, bit26 clear)\n");
+    end
+    $display("FRAME: geometry loop: feb651=%0d feb65a=%0d -> body feb661=%0d feb673=%0d | skip feb688=%0d  (reference: body NEVER)",
+             pc_feb651, pc_feb65a, pc_feb661, pc_feb673, pc_feb688);
     $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
              pc_fe1c09, pc_fe1c12, pc_fe1c15, pc_fe1c18, pc_feeb10);
     $display("FRAME: upstream: feef14=%0d feef1c=%0d -> fef047=%0d fef04e=%0d fef325(divert)=%0d",

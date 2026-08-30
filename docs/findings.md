@@ -5574,3 +5574,34 @@ worth. Two independent measurements agreeing.
 here against the reference's 5.6, and its indirect call fires on 11% of iterations against
 66%. A 12x gap is not a 2.7% overrun, so there is a second cause still unaccounted for, and
 it sits between the frame tick and the object list.
+
+### The deadlock is ONE BIT: object 0 word 0 is 84000000 here and 80000000 there — 2026-08-30
+
+Our V60 pins at `FEB673` when the coprocessor FIFO fills. **`FEB673` does not appear once in
+fourteen emulated seconds of reference trace.** Walking back through our own trace:
+
+    FEB643: mov.w 501118, R28      loop count (15)
+    FEB64A: mov.w 501324, R22      object array pointer -> 0x400f80
+    FEB651: test1 #1A, 0[R22]      bit 26 of the object's word 0
+    FEB65A: be    FEB688           skip when CLEAR
+      ours   feb651 feb65a -> feb65c   falls through, into the submission body
+      MAME   FEB651 FEB65A -> FEB688   branches, EVERY time
+
+and the body writes geometry to `[R24]`, the coprocessor. The object words:
+
+    ours       84000000  00000000  00000000  00000000  00000000  80000000
+    reference  80000000  ...                                     (bit 26 never set)
+
+**One bit — `0x04000000` — on object 0.** It puts us in a submission loop the reference never
+enters, which fills the outbound FIFO, which halts the coprocessor, which stops it consuming
+commands, which fills the inbound FIFO, which halts the V60. The whole deadlock hangs off it.
+
+**What this displaces.** The deadlock was attributed to the V60 being too slow to drain
+results. It is not: the reference does not drain that traffic either, because it never
+generates it. The speed deficit is real and separately measured at 1.25x — the frame tick at
+`0x500501` overruns on 2.7% of frames — but it is not what arms the deadlock.
+
+**Next: what sets bit 26 of the object at 0x400f80.** That is a single-bit write to a known
+address, which a write tap on either side answers directly. The object array is at V60
+0x400f80 (pointer at 0x501324, count 15 at 0x501118), and in `tb_m1_frame` that is
+`device.mem` word 0xFA07C0 — V60 byte B in the 0x400000 region maps to 0xFA0000 + (B-0x400000)/2.
