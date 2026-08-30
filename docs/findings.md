@@ -6635,3 +6635,31 @@ Still missing from the picture: the frustum clipper, so geometry crossing the
 screen edge relies on the fill unit's 2D clamp; the band buffer, so this renders
 to a full framebuffer rather than in 64-row bands; and the 2D tilemaps, so there
 is no sky, no horizon and no HUD behind or over it.
+
+---
+
+## The sound section needs ~57 M10K, measured — and it decided the band height
+
+**2026-08-30.** From Model 2's own fit report, `output_files/Model2.fit.rpt`:
+
+    m2_sound_board    8,837 ALM    572,427 block memory bits   ~57 M10K
+
+Read from the **Block Memory Bits** column, which is column 11 of the hierarchy
+table. Column 14 is *Virtual Pins*, and reading that instead reports every block
+as using zero memory - which is exactly the answer one wants to hear and is wrong.
+Checked the header before quoting it.
+
+This settled the 3D layer's band height. At 64 rows a band buffer is 53 M10K and
+the pair 106, so the 3D layer took 145 of the 181 free and left **36** - twenty
+short of what sound needs, and it would not have been discovered until the
+rasterizer had been built around it. At 32 rows the pair is 54, the 3D layer is
+93, and **88** remain.
+
+The cost is twelve bands instead of six, and the quad store's band filter makes
+that nearly free: a quad is replayed only for the bands its rows touch, so halving
+the band height moves a typical quad from one or two bands to two or three, not
+from six to twelve.
+
+**The caveat is that Model 2's sound is an SCSP and Model 1's is a YM3438 with TWO
+MultiPCMs.** 57 blocks is the closest measured analogue, not a guarantee, and the
+~31 spare is thinner than it looks.

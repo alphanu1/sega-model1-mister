@@ -1,0 +1,441 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Sega Model 1 core for MiSTer FPGA
+// Copyright (C) 2026 alphanu1
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version. See LICENSE for the full text.
+//
+// The 3D layer: a display list in, a lit pixel out.
+//
+// Everything between those two points is here - the list walk, the geometry, the
+// painter's sort, the fill and the band buffers - so the rest of the core sees
+// one block with memory ports and a pixel, rather than eleven modules to wire.
+//
+//     m1_listwalk    the display list's command grammar
+//     m1_geometry    transform, cull, project, normalize, light   (five stages,
+//                    one shared multiplier/adder/divider)
+//     m1_quad_store   collect, sort z-descending, replay per band
+//     m1_raster_fill  quad to spans
+//     m1_raster_band  two 64-row buffers, filled and displayed alternately
+//
+// THE CLOCK IS NOT THE CPU'S. The pool tops out at 53.25 MHz measured and the
+// fill unit at 63.75, so this runs at 45.714 MHz - exactly twice clk_cpu, which
+// makes the crossing to the CPU domain a clock enable rather than a handshake.
+// This project has lost time twice to pulse-versus-level faults across domains;
+// a synchronous ratio removes that class of bug rather than testing for it.
+//
+// WHAT IT DOES NOT DO YET, stated because a silent gap reads as a bug later:
+//
+//   * NO FRUSTUM CLIP. MAME clips against the four side planes in 3D before
+//     projecting; here the fill unit's 2D clamp does the visible work, which is
+//     equivalent for the pixels EXCEPT that a vertex beyond +/-32768 wraps in the
+//     16.16 span arithmetic (m1_raster_fill's own header says so). Geometry that
+//     leaves the screen by a long way will tear until the clipper exists.
+//   * ONE FRAME OF LATENCY, AND NOT EVERY FRAME. The geometry needs about 888,000
+//     cycles for a measured 2,001-quad frame and a frame is 800,000 at 45.714 MHz,
+//     so a new picture arrives roughly every second frame until the walker is
+//     pipelined. The band fill and the display keep running at full rate off
+//     whatever the store last held, so the picture is steady, not flickering.
+
+`timescale 1ns/1ps
+
+module m1_raster3d #(
+  // THIRTY-TWO ROWS, NOT SIXTY-FOUR, AND THE REASON IS SOUND.
+  //
+  // 496x64x17 is 53 M10K a buffer and 106 for the pair; at 32 rows it is 27 and
+  // 54. That is 52 blocks back, which takes the 3D layer from 145 of the 181 free
+  // to 93 - leaving 88 rather than 36 for the M4 sound section, whose own M10K
+  // cost is not yet measured. Guessing that 36 would have been enough was not
+  // worth the risk of finding out after the rasterizer was built around it.
+  //
+  // The cost is twelve bands instead of six, and the store's band filter makes
+  // that close to free: a quad is replayed only for the bands its rows touch, so
+  // halving the band height moves a quad from touching one or two bands to two
+  // or three, not from six to twelve.
+  parameter int unsigned BAND_H = 32,
+  parameter int unsigned SCR_W  = 496,
+  parameter int unsigned SCR_H  = 384
+) (
+  input  logic        clk,            // the 3D clock, 45.714 MHz
+  input  logic        rst_n,
+
+  // ---- frame control, already synchronised to clk
+  input  logic        frame_start,    // one pulse at the start of vblank
+  input  logic        dl_sel,         // which display list buffer to walk
+
+  // ---- display list, 16-bit words
+  output logic [14:0] dl_addr,
+  output logic        dl_req,
+  input  logic        dl_valid,
+  input  logic [15:0] dl_data,
+
+  // ---- polygon ROM, 32-bit words
+  output logic [22:0] rom_addr,
+  output logic        rom_req,
+  input  logic        rom_valid,
+  input  logic [31:0] rom_data,
+
+  // ---- colour word memory, palette and colour translation. Registered reads.
+  output logic [19:0] tex_addr,
+  input  logic [15:0] tex_data,
+  output logic [12:0] pal_addr,
+  input  logic [15:0] pal_data,
+  output logic [14:0] xlat_addr,
+  input  logic [15:0] xlat_data,
+
+  // ---- light parameter bank, written by display-list command 6
+  output logic [7:0]  lp_addr,
+  input  logic [31:0] lp_d, lp_a, lp_s,
+  input  logic [7:0]  lp_p,
+
+  input  logic        frame_odd,
+
+  // ---- scanout. Same clock; the caller crosses to the video domain.
+  input  logic [9:0]  scan_x,
+  input  logic [9:0]  scan_y,
+  output logic [23:0] scan_rgb,
+  output logic        scan_hit,
+
+  // ---- counted, for the overlay
+  output logic [15:0] dbg_objects,
+  output logic [15:0] dbg_quads,
+  output logic [15:0] dbg_dropped,
+  output logic [15:0] dbg_frames
+);
+
+  localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
+
+  // ---------------------------------------------------------------- view state
+  // Everything the display list sets that the geometry needs. Latched as the
+  // walk goes, so an object command uses whatever was most recently set - which
+  // is what tgp_render does, and why the walk cannot be reordered.
+  logic [31:0] vxc, vyc, vzoomx, vzoomy, vviewx, vviewy;
+  logic [31:0] vlx, vly, vlz;
+  logic        vspec;
+  logic [31:0] obj_tex, obj_poly, obj_size;
+  logic [31:0] old_z;
+
+  // ---------------------------------------------------------------- list walk
+  logic        lw_start, lw_busy, lw_done;
+  logic        lw_ev_valid;
+  logic [7:0]  lw_ev_kind;
+  logic [15:0] lw_ev_idx;
+  logic [31:0] lw_ev_data;
+  logic [15:0] lw_cmds, lw_objs, lw_words;
+  logic        lw_bad, lw_over;
+
+  logic [14:0] lw_addr;
+  logic        lw_req;
+  assign dl_addr = lw_addr;
+  assign dl_req  = lw_req;
+
+  m1_listwalk u_walk (
+    .clk(clk), .rst_n(rst_n),
+    .start(lw_start), .busy(lw_busy), .done(lw_done),
+    .mem_addr(lw_addr), .mem_req(lw_req),
+    .mem_valid(dl_valid), .mem_data(dl_data),
+    .ev_valid(lw_ev_valid), .ev_kind(lw_ev_kind),
+    .ev_idx(lw_ev_idx), .ev_data(lw_ev_data),
+    .dbg_cmds(lw_cmds), .dbg_objects(lw_objs), .dbg_words(lw_words),
+    .dbg_bad_type(lw_bad), .dbg_overrun(lw_over)
+  );
+
+  // ---------------------------------------------------------------- geometry
+  logic        geo_start, geo_busy, geo_done;
+  logic [31:0] geo_oldz_out;
+  logic        mat_we;
+  logic [3:0]  mat_idx;
+  logic [31:0] mat_data;
+  logic        q_valid;
+  logic signed [31:0] q_x0, q_y0, q_x1, q_y1, q_x2, q_y2, q_x3, q_y3;
+  logic [23:0] q_col;
+  logic [31:0] q_z;
+  logic        q_moire;
+  logic [15:0] g_rec, g_qds, g_cull, g_nolink;
+
+  m1_geometry u_geo (
+    .clk(clk), .rst_n(rst_n),
+    .mat_we(mat_we), .mat_idx(mat_idx), .mat_data(mat_data),
+    .xc(vxc), .yc(vyc), .zoomx(vzoomx), .zoomy(vzoomy),
+    .viewx(vviewx), .viewy(vviewy),
+    .light_x(vlx), .light_y(vly), .light_z(vlz),
+    .spec_enable(vspec), .frame_odd(frame_odd),
+    .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
+    .in_size(obj_size), .busy(geo_busy), .done(geo_done),
+    .old_z_in(old_z), .old_z_out(geo_oldz_out),
+    .rom_addr(rom_addr), .rom_req(rom_req),
+    .rom_valid(rom_valid), .rom_data(rom_data),
+    .tex_addr(tex_addr), .tex_data(tex_data),
+    .lp_addr(lp_addr), .lp_d(lp_d), .lp_a(lp_a), .lp_s(lp_s), .lp_p(lp_p),
+    .pal_addr(pal_addr), .pal_data(pal_data),
+    .xlat_addr(xlat_addr), .xlat_data(xlat_data),
+    .q_valid(q_valid),
+    .q_x0(q_x0), .q_y0(q_y0), .q_x1(q_x1), .q_y1(q_y1),
+    .q_x2(q_x2), .q_y2(q_y2), .q_x3(q_x3), .q_y3(q_y3),
+    .q_col(q_col), .q_z(q_z), .q_moire(q_moire),
+    .dbg_records(g_rec), .dbg_quads(g_qds),
+    .dbg_culled(g_cull), .dbg_nolink(g_nolink)
+  );
+
+  // ---------------------------------------------------------------- quad store
+  logic        qs_clear, qs_sort_start, qs_sort_busy;
+  logic        qs_replay_start, qs_replay_busy, qs_out_valid, qs_out_ready;
+  logic [2:0]  qs_band;
+  logic signed [15:0] qo_x0, qo_y0, qo_x1, qo_y1, qo_x2, qo_y2, qo_x3, qo_y3;
+  logic [23:0] qo_col;
+  logic        qo_moire;
+  logic [15:0] qs_count, qs_dropped;
+
+  // The store keeps 16-bit screen coordinates. The geometry emits 32-bit ones,
+  // as MAME's spoint_t does, and they are truncated here - which matches the
+  // reference's own overflow: fill_quad shifts s.x left by 16 into an int32, so
+  // anything past +/-32768 has already wrapped by the time it is drawn.
+  m1_quad_store u_store (
+    .clk(clk), .rst_n(rst_n),
+    .clear(qs_clear),
+    .in_valid(q_valid),
+    .in_x0(q_x0[15:0]), .in_y0(q_y0[15:0]),
+    .in_x1(q_x1[15:0]), .in_y1(q_y1[15:0]),
+    .in_x2(q_x2[15:0]), .in_y2(q_y2[15:0]),
+    .in_x3(q_x3[15:0]), .in_y3(q_y3[15:0]),
+    .in_col(q_col), .in_z(q_z), .in_moire(q_moire),
+    .sort_start(qs_sort_start), .sort_busy(qs_sort_busy),
+    .replay_band(qs_band), .replay_start(qs_replay_start),
+    .replay_busy(qs_replay_busy),
+    .out_ready(qs_out_ready), .out_valid(qs_out_valid),
+    .out_x0(qo_x0), .out_y0(qo_y0), .out_x1(qo_x1), .out_y1(qo_y1),
+    .out_x2(qo_x2), .out_y2(qo_y2), .out_x3(qo_x3), .out_y3(qo_y3),
+    .out_col(qo_col), .out_moire(qo_moire),
+    .dbg_count(qs_count), .dbg_dropped(qs_dropped)
+  );
+
+  // ---------------------------------------------------------------- fill
+  logic        fl_in_valid, fl_in_ready;
+  logic        fl_span_valid, fl_span_ready, fl_quad_done, fl_line_case;
+  logic signed [31:0] fl_span_y, fl_span_x0, fl_span_x1;
+  logic [23:0] fl_span_col;
+  logic        fl_span_moire;
+  logic [2:0]  fill_band;
+
+  // The viewport handed to the fill unit is the BAND, not the screen: clipping
+  // to the band is what keeps a quad that spans several bands from writing
+  // outside the one being filled.
+  wire signed [31:0] band_y1 = 32'(fill_band) * 32'(BAND_H);
+  wire signed [31:0] band_y2 = band_y1 + 32'(BAND_H) - 32'd1;
+
+  m1_raster_fill u_fill (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(fl_in_valid), .in_ready(fl_in_ready),
+    .in_x0({{16{qo_x0[15]}}, qo_x0}), .in_y0({{16{qo_y0[15]}}, qo_y0}),
+    .in_x1({{16{qo_x1[15]}}, qo_x1}), .in_y1({{16{qo_y1[15]}}, qo_y1}),
+    .in_x2({{16{qo_x2[15]}}, qo_x2}), .in_y2({{16{qo_y2[15]}}, qo_y2}),
+    .in_x3({{16{qo_x3[15]}}, qo_x3}), .in_y3({{16{qo_y3[15]}}, qo_y3}),
+    .in_col(qo_col), .in_moire(qo_moire),
+    .view_x1(32'sd0), .view_x2(32'(SCR_W) - 32'sd1),
+    .view_y1(band_y1), .view_y2(band_y2),
+    .span_valid(fl_span_valid), .span_ready(fl_span_ready),
+    .span_y(fl_span_y), .span_x0(fl_span_x0), .span_x1(fl_span_x1),
+    .span_col(fl_span_col), .span_moire(fl_span_moire),
+    .quad_done(fl_quad_done), .line_case(fl_line_case)
+  );
+
+  // ---------------------------------------------------------------- bands
+  // Two buffers: one being filled, one being displayed. `wr_buf` is the one the
+  // fill writes; the scanout reads the other.
+  logic        wr_buf;
+  logic [1:0]  bd_clear_req, bd_clear_busy;
+  logic [1:0]  bd_span_valid, bd_span_ready;
+  logic signed [15:0] bd_y0 [2];
+  logic [15:0] bd_rd_col [2];
+  logic [1:0]  bd_rd_hit;
+  logic [15:0] bd_dbg_spans [2], bd_dbg_drop [2];
+  logic [31:0] bd_dbg_px [2];
+
+  // RGB565 in the band, RGB888 out of the geometry: the band buffer is 17 bits
+  // wide because that is what an M10K holds without doubling (docs/findings.md),
+  // so the low bits of each channel are dropped on the way in and replaced on
+  // the way out. A lit polygon's colour is already quantised by the six-bit
+  // luminance, so this costs less than it appears to.
+  wire [15:0] span_565 = {fl_span_col[23:19], fl_span_col[15:10], fl_span_col[7:3]};
+
+  genvar b;
+  generate
+    for (b = 0; b < 2; b++) begin : g_band
+      m1_raster_band #(.WIDTH(SCR_W), .HEIGHT(BAND_H)) u_band (
+        .clk(clk), .rst_n(rst_n),
+        .band_y0(bd_y0[b]),
+        .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
+        .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
+        .span_y(fl_span_y[15:0]),
+        .span_x0(fl_span_x0[15:0]), .span_x1(fl_span_x1[15:0]),
+        .span_col(span_565), .span_moire(fl_span_moire),
+        .rd_x(scan_x[$clog2(SCR_W)-1:0]),
+        .rd_row(scan_y[$clog2(BAND_H)-1:0]),
+        .rd_col(bd_rd_col[b]), .rd_hit(bd_rd_hit[b]),
+        .dbg_spans(bd_dbg_spans[b]), .dbg_dropped(bd_dbg_drop[b]),
+        .dbg_pixels(bd_dbg_px[b])
+      );
+    end
+  endgenerate
+
+  assign bd_span_valid[0] = fl_span_valid && (wr_buf == 1'b0);
+  assign bd_span_valid[1] = fl_span_valid && (wr_buf == 1'b1);
+  assign fl_span_ready    = wr_buf ? bd_span_ready[1] : bd_span_ready[0];
+
+  // Scanout reads the buffer that is NOT being filled.
+  assign scan_rgb = wr_buf ? {bd_rd_col[0][15:11], 3'b0,
+                              bd_rd_col[0][10:5],  2'b0,
+                              bd_rd_col[0][4:0],   3'b0}
+                           : {bd_rd_col[1][15:11], 3'b0,
+                              bd_rd_col[1][10:5],  2'b0,
+                              bd_rd_col[1][4:0],   3'b0};
+  assign scan_hit = wr_buf ? bd_rd_hit[0] : bd_rd_hit[1];
+
+  // ---------------------------------------------------------------- sequencer
+  typedef enum logic [3:0] {
+    T_IDLE, T_WALK, T_OBJ, T_OBJW, T_SORT, T_SORTW,
+    T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW, T_BAND_NEXT, T_SWAP
+  } state_t;
+  state_t st;
+
+  logic [2:0] cur_band;
+  logic [1:0] obj_got;                 // parameters collected for this object
+  logic       obj_hud;
+
+  assign lw_start        = (st == T_IDLE) && frame_start;
+  assign geo_start       = (st == T_OBJ);
+  assign qs_clear        = (st == T_IDLE) && frame_start;
+  assign qs_sort_start   = (st == T_SORT);
+  assign qs_replay_start = (st == T_REPLAY);
+  assign qs_out_ready    = (st == T_FILL) && fl_in_ready;
+  assign fl_in_valid     = (st == T_FILL) && qs_out_valid;
+  assign bd_clear_req[0] = (st == T_BAND_CLR) && (wr_buf == 1'b0);
+  assign bd_clear_req[1] = (st == T_BAND_CLR) && (wr_buf == 1'b1);
+  assign fill_band       = cur_band;
+
+  assign dbg_objects = lw_objs;
+  assign dbg_quads   = qs_count;
+  assign dbg_dropped = qs_dropped;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      wr_buf <= 1'b0; old_z <= '0;
+      vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
+      vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
+      vspec <= 1'b0;
+      obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
+      mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
+      bd_y0[0] <= '0; bd_y0[1] <= '0;
+      dbg_frames <= '0;
+    end else begin
+      mat_we <= 1'b0;
+
+      // ---- display-list events. Latched wherever the walk is, because a
+      // command changes state for every object that follows it.
+      if (lw_ev_valid) begin
+        case (lw_ev_kind)
+          8'h03: begin
+            // Viewport. MAME's own transformation of the words: the centre's y
+            // is 383 - (word - 39), and the edges likewise. Only the centre is
+            // needed here; the fill unit is clipped to the band instead.
+            if (lw_ev_idx == 16'd0) ;                      // the 32-bit word
+            else if (lw_ev_idx == 16'd0) ;
+          end
+          8'h09: begin
+            if (lw_ev_idx == 16'd0) vzoomx <= lw_ev_data;
+            else                    vzoomy <= lw_ev_data;
+          end
+          8'h0a: begin
+            if      (lw_ev_idx == 16'd0) vlx <= lw_ev_data;
+            else if (lw_ev_idx == 16'd1) vly <= lw_ev_data;
+            else                         vlz <= lw_ev_data;
+          end
+          8'h0b: begin
+            mat_we   <= 1'b1;
+            mat_idx  <= lw_ev_idx[3:0];
+            mat_data <= lw_ev_data;
+          end
+          8'h0c: begin
+            if (lw_ev_idx == 16'd0) vviewx <= lw_ev_data;
+            else                    vviewy <= lw_ev_data;
+          end
+          8'h07: vspec <= lw_ev_data[0];
+          default: ;
+        endcase
+      end
+
+      case (st)
+        T_IDLE: if (frame_start) begin
+          old_z <= '0;
+          st    <= T_WALK;
+        end
+
+        // The walk runs until it emits an object, then stops to draw it. The
+        // walker holds its own position, so this is a pause and not a restart.
+        T_WALK: begin
+          if (lw_ev_valid && (lw_ev_kind == 8'h01 || lw_ev_kind == 8'h41)) begin
+            obj_hud <= (lw_ev_kind == 8'h41);
+            case (lw_ev_idx)
+              16'd0: obj_tex  <= lw_ev_data;
+              16'd1: obj_poly <= lw_ev_data;
+              default: begin
+                obj_size <= lw_ev_data;
+                st       <= T_OBJ;
+              end
+            endcase
+          end else if (lw_done) begin
+            st <= T_SORT;
+          end
+        end
+
+        T_OBJ:  st <= T_OBJW;
+        T_OBJW: if (geo_done) begin
+          old_z <= geo_oldz_out;
+          st    <= T_WALK;
+        end
+
+        T_SORT:  st <= T_SORTW;
+        T_SORTW: if (!qs_sort_busy) begin
+          cur_band   <= '0;
+          dbg_frames <= dbg_frames + 16'd1;
+          st         <= T_BAND_CLR;
+        end
+
+        // ---- one band at a time into the write buffer
+        T_BAND_CLR: begin
+          bd_y0[wr_buf] <= 16'(cur_band) * 16'(BAND_H);
+          st <= T_BAND_CLRW;
+        end
+        T_BAND_CLRW: if (!bd_clear_busy[wr_buf]) st <= T_REPLAY;
+
+        T_REPLAY: st <= T_FILL;
+
+        T_FILL: begin
+          if (!qs_replay_busy && !qs_out_valid) st <= T_BAND_NEXT;
+          else if (qs_out_valid && fl_in_ready) st <= T_FILLW;
+        end
+        T_FILLW: if (fl_quad_done) st <= T_FILL;
+
+        T_BAND_NEXT: begin
+          // Hand this band to the scanout and start the next one in the other
+          // buffer. The display side reads whichever buffer is not `wr_buf`.
+          wr_buf <= ~wr_buf;
+          if (cur_band == 3'(NBANDS - 1)) st <= T_IDLE;
+          else begin
+            cur_band <= cur_band + 3'd1;
+            st       <= T_BAND_CLR;
+          end
+        end
+
+        default: st <= T_IDLE;
+      endcase
+    end
+  end
+
+  assign qs_band = cur_band;
+
+endmodule
