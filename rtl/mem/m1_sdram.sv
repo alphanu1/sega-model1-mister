@@ -61,7 +61,7 @@
 `timescale 1ns/1ps
 
 module m1_sdram #(
-  parameter int unsigned NP = 5,      // read/write ports, see D8
+  parameter int unsigned NP = 7,      // read/write ports, see D8
 
   // Device timing, in clk cycles. Defaults suit -7E parts around 100 MHz.
   parameter int unsigned T_RCD  = 2,
@@ -150,10 +150,14 @@ module m1_sdram #(
   // from cap[2], cap[1], cap[0], so a length of 2 would take two of those from
   // stale slots. So it bursts 4 and the requester picks its half — see
   // m1_integrated, which aligns the address down and selects on bit 1.
+  // p5 is the 3D layer's polygon-model fetch: ten 32-bit words per record, read
+  // strictly in sequence, so it bursts for the same reason p1 and p2 do. p6 is
+  // its tgp_ram colour-word access - one random word per polygon, and a write
+  // path for the display list's uploads - so it stays single.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
-      1, 2, 3: blen = 4'd4;
-      default: blen = 4'd1;
+      1, 2, 3, 5: blen = 4'd4;
+      default:    blen = 4'd1;
     endcase
   endfunction
 

@@ -34,10 +34,18 @@
 #include <random>
 #include <vector>
 
-static const int NP = 5;
+// SEVEN ports now: p5 is the 3D layer's polygon-model fetch, which BURSTS like
+// p1-p3, and p6 is its tgp_ram access, which is single-word. The burst
+// configuration is the part of a new port most likely to be wrong, so both are
+// driven here rather than added to the controller and left unexercised.
+static const int NP = 7;
 
 // Burst length per port, mirroring blen() in m1_sdram.sv.
-static int burst_of(int p) { return (p == 1 || p == 2) ? 4 : 1; }
+// MUST MATCH blen() IN m1_sdram.sv. It said 1 and 2 while the RTL had said
+// 1, 2 and 3 for some time - a model that disagrees with the thing it models,
+// which passes only because the disagreement was never exercised. p5 is added
+// here at the same time as in the RTL rather than after.
+static int burst_of(int p) { return (p == 1 || p == 2 || p == 3 || p == 5) ? 4 : 1; }
 
 struct Harness {
   Vm1_sdram_harness* d;
@@ -69,8 +77,10 @@ struct Harness {
     d->clk = 0; d->rst_n = 0;
     d->wr_req = 0; d->wr_addr = 0; d->wr_din = 0; d->wr_be = 3;
     d->p0_req = d->p1_req = d->p2_req = d->p3_req = d->p4_req = 0;
+    d->p5_req = d->p6_req = 0;
     d->p0_we = 0; d->p0_din = 0; d->p0_be = 3;
     d->p0_addr = d->p1_addr = d->p2_addr = d->p3_addr = d->p4_addr = 0;
+    d->p5_addr = d->p6_addr = 0;
     d->mon_sel = 0; d->mon_snap = 0;
     d->eval();
   }
@@ -80,28 +90,36 @@ struct Harness {
     switch (p) {
       case 0: d->p0_req = v; break; case 1: d->p1_req = v; break;
       case 2: d->p2_req = v; break; case 3: d->p3_req = v; break;
-      default: d->p4_req = v; break;
+      case 4: d->p4_req = v; break;
+      case 5: d->p5_req = v; break;
+      default: d->p6_req = v; break;
     }
   }
   void setAddr(int p, uint32_t a) {
     switch (p) {
       case 0: d->p0_addr = a; break; case 1: d->p1_addr = a; break;
       case 2: d->p2_addr = a; break; case 3: d->p3_addr = a; break;
-      default: d->p4_addr = a; break;
+      case 4: d->p4_addr = a; break;
+      case 5: d->p5_addr = a; break;
+      default: d->p6_addr = a; break;
     }
   }
   bool getAck(int p) {
     switch (p) {
       case 0: return d->p0_ack; case 1: return d->p1_ack;
       case 2: return d->p2_ack; case 3: return d->p3_ack;
-      default: return d->p4_ack;
+      case 4: return d->p4_ack;
+      case 5: return d->p5_ack;
+      default: return d->p6_ack;
     }
   }
   uint64_t getDout(int p) {
     switch (p) {
       case 0: return d->p0_dout; case 1: return d->p1_dout;
       case 2: return d->p2_dout; case 3: return d->p3_dout;
-      default: return d->p4_dout;
+      case 4: return d->p4_dout;
+      case 5: return d->p5_dout;
+      default: return d->p6_dout;
     }
   }
 
