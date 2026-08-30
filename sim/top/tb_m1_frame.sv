@@ -370,6 +370,26 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// DOES OUR V60 EVER EXECUTE THE ROUTINES THAT COMPUTE THE SCROLL VALUE?
+//
+// We write hscr[0x5002] 1.9 times a frame - MORE often than the reference's 1.0
+// - but its VALUE changes on only 10% of frames against the reference's 67%. So
+// the register is written faithfully with a value that is not being recomputed.
+//
+// The value comes from a table at wram 0x501408/0x50140a. We write that table
+// from pc=fe1469 with data=0000, i.e. we CLEAR it; MAME writes it from fe48d5
+// (163x) and fef3b5 (164x) over 600 frames with computed values - 2058, 2fce,
+// 20a8 at frames 300/600/900. Counting whether we reach those PCs at all
+// separates "the routine never runs" from "it runs and computes zero".
+longint pc_fe48d5 = 0, pc_fef3b5 = 0, pc_fe1469 = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n) begin
+        if (core.dbg_pc == 24'hfe48d5) pc_fe48d5 <= pc_fe48d5 + 1;
+        if (core.dbg_pc == 24'hfef3b5) pc_fef3b5 <= pc_fef3b5 + 1;
+        if (core.dbg_pc == 24'hfe1469) pc_fe1469 <= pc_fe1469 + 1;
+    end
+end
+
 // DOES THE V60 WRITE THE SCROLL REGISTERS AT ALL?
 //
 // The value census says hscr[0x5002] CHANGES on 86 of 1,460 frames where the
@@ -751,12 +771,28 @@ endtask
 // DOES OUR V60 EVER FILL THE SCROLL TABLE? MAME writes wram 0x501408/0x50140a from
 // pc=fe48d5 (163x) and pc=fef3b5 (164x) over 600 frames — roughly once every four.
 // Ours leaves the whole 0x501400 table at zero. V60 byte 0x501408 is word 0x280a04.
-integer w1400_n = 0;
+integer w1400_n = 0, w1400_p = 0;
+longint w1400_48d5 = 0, w1400_f3b5 = 0, w1400_1469 = 0, w1400_other = 0;
 always @(posedge clk_cpu) begin
     if (core.main.m_req && core.main.m_we
         && (core.main.m_addr[23:1] == 23'h280A04
          || core.main.m_addr[23:1] == 23'h280A05)) begin
-        if (w1400_n < 8)
+        // BY WRITING PC, not just the first eight. The first eight are all the
+        // clear at fe1469, which hid that fe48d5/fef3b5 also write here - they
+        // run 15x more often than the reference yet the value barely moves, so
+        // what they WRITE is the question.
+        if (core.dbg_pc == 24'hfe48d5)      w1400_48d5 <= w1400_48d5 + 1;
+        else if (core.dbg_pc == 24'hfef3b5) w1400_f3b5 <= w1400_f3b5 + 1;
+        else if (core.dbg_pc == 24'hfe1469) w1400_1469 <= w1400_1469 + 1;
+        else                                w1400_other <= w1400_other + 1;
+        // Its own counter: w1400_n counts EVERY write and the first ~19 are the
+        // clear, so gating the print on it meant the computed writes - the ones
+        // in question - were never shown.
+        // ONLY the two computing routines. Filtering merely on "not the clear"
+        // filled the print with fe6ab0, which is another zeroing path.
+        if ((core.dbg_pc == 24'hfe48d5 || core.dbg_pc == 24'hfef3b5) && w1400_p < 12)
+            w1400_p = w1400_p + 1;
+        if ((core.dbg_pc == 24'hfe48d5 || core.dbg_pc == 24'hfef3b5) && w1400_p <= 12)
             $display("W1400 w=%06h pc=%06h data=%04h", core.main.m_addr[23:1],
                      core.dbg_pc, core.main.m_wdata);
         w1400_n = w1400_n + 1;
@@ -1220,6 +1256,10 @@ initial begin
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
     $fclose(pop_f);
     $display("FRAME: captured %0d command-FIFO pops to build/frame_pops.txt", pop_n);
+    $display("FRAME: W1400 writes by pc: fe48d5=%0d  fef3b5=%0d  fe1469=%0d  other=%0d",
+             w1400_48d5, w1400_f3b5, w1400_1469, w1400_other);
+    $display("FRAME: scroll-value routines reached: fe48d5=%0d  fef3b5=%0d  fe1469=%0d",
+             pc_fe48d5, pc_fef3b5, pc_fe1469);
     $display("FRAME: scroll WRITES: hscr[5002]=%0d  vscr[5006]=%0d  all 5000-5007=%0d",
              tw_hscr2, tw_vscr2, tw_any_scroll);
     $display("FRAME:   controls: all tile-RAM writes=%0d  all acked bus writes=%0d",

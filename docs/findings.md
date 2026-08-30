@@ -5212,3 +5212,41 @@ the divergence is later than any window measured so far.
 That is consistent with the reference itself: `hscr2` is `0000` and unchanging through frame
 160, and only starts moving around frame 400. **Every comparison of the scroll path made
 before this one was inside the window where both machines legitimately do nothing.**
+
+### The scroll value is COMPUTED and CONSTANT: 0x501408/0x50140a — 2026-08-30
+
+Past frame 400, where the reference actually scrolls, with the probe indexing fixed:
+
+    hscr[0x5002]   WRITES   ours 1.9/frame      MAME 1.0/frame
+    hscr[0x5002]   CHANGES  ours 33 of 525      MAME 1,345 of 2,000
+
+So the register is written faithfully and often; **the value it is given barely moves**. That
+value comes from a work-RAM pair at `0x501408`/`0x50140a`, and both machines compute it from
+the same two instructions:
+
+    W1400 writes by pc   ours (526 frames)   MAME (700 frames)
+      fe48d5                977                 213
+      fef3b5              1,001                 214
+      fe1469 (the clear)     19                   2
+      fe6ab0 (also zeroes)   38                   4
+
+**We run the computing routines about six times more often than the reference and they write a
+CONSTANT:**
+
+    ours   fe48d5 -> 0x501408 = 003e      fef3b5 -> 0x50140a = 2fa6
+    MAME   fe48d5 -> 0x501408 = 0001      fef3b5 -> 0x50140a = 2064, 2063, and moving
+                                                    (2058 / 2fce / 20a8 at frames 300/600/900)
+
+So this is not reachability and not the write path — **the routines' INPUT is static here**.
+`0x501408` is `0x3e` against the reference's `0x01`, which is a large difference in what looks
+like an index or counter, and is the concrete thing to trace next.
+
+**Three earlier readings of this were wrong and each is instructive:**
+
+  * "we never write the scroll registers" — a probe indexing `m_addr[14:0]` on a `[23:1]`
+    vector, so a bit that does not exist. Reported zero on a machine writing 1.9 times a frame.
+  * "only `fe1469` writes the table" — the print was capped at the first eight writes, which
+    are all the clear. The computing writes come later and were never shown.
+  * "the divergence is later than any window measured" — true, and the reason every earlier
+    scroll comparison agreed: the reference's own `hscr2` is `0000` until about frame 400, so
+    all of them sat inside the window where both machines correctly do nothing.
