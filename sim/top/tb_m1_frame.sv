@@ -1646,7 +1646,7 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
-reg mx_d = 1'b0;
+reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0;
 reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
@@ -1669,6 +1669,27 @@ always @(posedge clk_cpu) begin
         end
         mx_d <= core.main.m_we && core.main.m_ack
              && core.main.m_addr[23:1] >= 23'h2006B9 && core.main.m_addr[23:1] <= 23'h2006D0;
+        // EVERY acked data write issued from inside the matrix routine, whatever
+        // its address. feda55/59/5d are `in.w [R23], [R4+]` - a read from the
+        // coprocessor port with a MEMORY destination - and no write from them
+        // reaches 0x400d72 here while the reference's do. Either R4 points
+        // elsewhere or the instruction's memory write never happens.
+        if (core.main.m_we && core.main.m_ack && !mx_d2
+            && core.dbg_pc >= 24'hfeda50 && core.dbg_pc <= 24'hfedac0) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "FEDW %06h pc=%06h data=%04h f=%0d\n",
+                    {core.main.m_addr[23:1], 1'b0}, core.dbg_pc, core.main.m_wdata, frames);
+        end
+        mx_d2 <= core.main.m_we && core.main.m_ack;
+        // and the READS those instructions make, to see the IN side happen at all
+        if (core.main.m_req && !core.main.m_we && core.main.m_ack && !mx_d3
+            && core.dbg_pc >= 24'hfeda50 && core.dbg_pc <= 24'hfedac0
+            && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "FEDR %06h pc=%06h data=%04h f=%0d\n",
+                    {core.main.m_addr[23:1], 1'b0}, core.dbg_pc, core.main.m_rdata, frames);
+        end
+        mx_d3 <= core.main.m_req && !core.main.m_we && core.main.m_ack;
         if (core.dbg_pc == 24'hfeda02 && core.dbg_pc != mxpc_d) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ENTER feda02 f=%0d\n", frames);

@@ -1583,7 +1583,10 @@ else if (ce) begin
             set_zs(rotc_val, d2l);
             f_ov <= 0;
             wb_op2(rotc_val, d2l);
-            if (st == S_ROTC) st <= S_NEXT;  // wb_op2 may set S_WB_MEM
+            // Same dropped-store pattern as S_IN_RD: the guard read the OLD st,
+            // so a memory destination's S_WB_MEM was always overridden. Found by
+            // scanning for the pattern after the IN fix, not by a failing test.
+            if (flag2) st <= S_NEXT;
         end
         else if (rotc_cnt > 0) begin
             logic [1:0] d2l;
@@ -1727,7 +1730,24 @@ else if (ce) begin
         end else if (dack) begin
             dbus_req <= 0;
             wb_op2(dimext(bus_rdata, cur_op[2:1]), cur_op[2:1]);
-            if (st == S_IN_RD) st <= S_NEXT;   // wb_op2 may divert to S_WB_MEM
+            // IN WITH A MEMORY DESTINATION NEVER STORED. This used to read
+            //
+            //     if (st == S_IN_RD) st <= S_NEXT;   // wb_op2 may divert to S_WB_MEM
+            //
+            // but wb_op2's `st <= S_WB_MEM` is non-blocking, so `st` still reads
+            // S_IN_RD here, the guard is always true, and the later assignment
+            // wins: the port was read correctly and the value was thrown away.
+            // Register destinations were fine, which is why `in.w [R23], R0`
+            // paths worked and `in.w [R23], [R4+]` paths - the FEDA55 matrix
+            // fill, the FF850C result block into copro RAM - silently did not.
+            //
+            // Measured 2026-08-30 on the frame bench: the read at feda55 returned
+            // c34e5382, the reference's exact matrix value, and no write to
+            // 0x400d72 ever followed; the matrix stayed at its init zeros and was
+            // pushed back to the coprocessor as 00000000 x4 at command 673.
+            // No unit test covers IN with a memory destination.
+            if (flag2) st <= S_NEXT;           // register dest: done
+            // else wb_op2 has set S_WB_MEM, which issues the store
         end
     end
 

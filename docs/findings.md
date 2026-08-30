@@ -5875,3 +5875,43 @@ follows at `f=273`. One frame apart, same pass.
 
 Two hundred times rarer here. Whether ours has run `FEDA02` by ITS command 673 is what the
 frame-stamped capture answers.
+
+### THE BUG: V60 `IN` with a memory destination never stored — 2026-08-30
+
+Traced by logging every bus access the matrix routine makes (`FEDR`/`FEDW` in `tb_m1_frame`):
+
+    FEDR d80000 pc=feda55 data=5382      in.w [R23],[R4+] READS c34e5382 - the reference's
+    FEDR d80002 pc=feda55 data=c34e      exact matrix value - and NO WRITE TO 0x400d72 FOLLOWS
+
+The port read is right. The store is dropped. `rtl/cpu/v60/v60.sv`, `S_IN_RD`:
+
+    wb_op2(dimext(bus_rdata, cur_op[2:1]), cur_op[2:1]);
+    if (st == S_IN_RD) st <= S_NEXT;   // "wb_op2 may divert to S_WB_MEM"
+
+`wb_op2` sets `st <= S_WB_MEM` for a memory destination - NON-BLOCKING - so `st` still reads
+`S_IN_RD` on the next line, the guard is always true, and the later assignment wins. The
+S_WB_MEM state that issues the store is never entered. Register destinations (`flag2`) take
+`setreg` inside `wb_op2` and are unaffected, which is why `in.w [R23], R0` at FEF388 worked and
+every `in.w [R23], [Rn+]` silently did not: the FEDA55 matrix fill, and the FF850C result block
+into copro RAM.
+
+Fix: `if (flag2) st <= S_NEXT;` - a register destination is done, a memory destination has
+already been pointed at S_WB_MEM. **The same pattern at S_ROTC** (`if (st == S_ROTC) st <=
+S_NEXT` after `wb_op2`) was found by scanning for it, not by a test, and fixed the same way.
+
+    V60 unit suite   29/29     make test   37/37
+
+**No unit test covers IN with a memory destination** - `grep -rli 'in\.[bhw]' third_party/
+s32/verif/v60/` finds nothing - and the suite arrived from a System 32 project where the I/O
+space is unused, so the whole `IN`/`OUT` path was never exercised there. This is the second
+IN/OUT fault found by tracing real code (the first was OUT's swapped operands, at instruction
+197,250), and both were invisible to per-opcode fuzzing because that harness never generated
+the instruction.
+
+**What this explains, in one place:** the matrix at 72[R20] stayed at its init zeros, so
+command 673 pushed 00000000 x4 where the reference pushes four floats; the coprocessor then
+computed on zeros and its answers diverged from #259; the scroll value derived from those
+answers barely moved; and with the outbound zero-read in place, the results the V60 never
+came back for filled fout and deadlocked the pair. Each of those was measured as a separate
+symptom this weekend and attributed to something else - speed, the FIFO semantics, a
+microcode handler, a single object bit - before the store was traced.
