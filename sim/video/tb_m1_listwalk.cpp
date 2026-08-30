@@ -124,7 +124,7 @@ struct Dut {
         if (d->ev_valid) got.push_back({d->ev_kind, d->ev_idx, d->ev_data});
     }
     void reset() {
-        d->rst_n = 0; d->start = 0; d->mem_valid = 0; d->mem_data = 0;
+        d->rst_n = 0; d->start = 0; d->stall = 0; d->mem_valid = 0; d->mem_data = 0;
         for (int i = 0; i < 4; i++) tick();
         d->rst_n = 1;
         for (int i = 0; i < 4; i++) tick();
@@ -319,6 +319,58 @@ int main(int argc, char** argv) {
         check(t.d->dbg_overrun == 1, "and must report that it ran off the end");
         printf("  walked %u commands before the end of the buffer\n",
                (unsigned)t.d->dbg_cmds);
+    }
+
+    printf("test: STALLING pauses the walk without losing anything\n");
+    {
+        // The consumer needs thousands of cycles per object and this module has
+        // no output backpressure, so a stall is the only thing that stops it
+        // walking to the end of the list and emitting into a consumer that is
+        // not listening. Measured before it existed: 136 quads of an expected
+        // 2,001, and a `done` that arrived while nobody was watching.
+        L l;
+        for (int i = 0; i < 5; i++) { l.w32(1); l.w32(0x100 + i); l.w32(0x200 + i); l.w32(3); }
+        l.w32(0x0f);
+        t.reset();
+        t.mem.assign(0x8000, 0);
+        for (size_t i = 0; i < l.m.size(); i++) t.mem[i] = l.m[i];
+        std::vector<Ev> exp = model(t.mem);
+
+        t.got.clear();
+        t.d->start = 1; t.tick(); t.d->start = 0;
+        int guard = 0;
+        size_t before_stall = 0;
+        while (!t.d->done && ++guard < 200000) {
+            // Stall for a long stretch part way through, as a consumer drawing
+            // an object would.
+            if (t.got.size() >= 4 && before_stall == 0) {
+                before_stall = t.got.size();
+                t.d->stall = 1;
+                for (int k = 0; k < 500; k++) t.tick();
+                checks++;
+                if (t.got.size() != before_stall) {
+                    fails++;
+                    printf("  FAIL events were emitted while stalled (%zu -> %zu)\n",
+                           before_stall, t.got.size());
+                }
+                checks++;
+                if (t.d->done) { fails++; printf("  FAIL done asserted while stalled\n"); }
+                t.d->stall = 0;
+            }
+            t.tick();
+        }
+        checks++;
+        if (t.got.size() != exp.size()) {
+            fails++;
+            printf("  FAIL stalled walk produced %zu events, expected %zu\n",
+                   t.got.size(), exp.size());
+        } else {
+            bool ok = true;
+            for (size_t i = 0; i < exp.size(); i++) if (exp[i] != t.got[i]) ok = false;
+            checks++;
+            if (!ok) { fails++; printf("  FAIL a stalled walk produced different events\n"); }
+            else printf("  paused 500 cycles mid-walk, %zu events, all identical\n", t.got.size());
+        }
     }
 
     printf("test: fuzz on RANDOM GARBAGE - the walk must match the model exactly\n");

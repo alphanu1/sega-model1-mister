@@ -285,6 +285,14 @@ test_raster_band:
 	  rtl/video/m1_raster_band.sv sim/video/tb_m1_raster_band.cpp -o tb_raster_band --Mdir obj_raster_band
 	./obj_raster_band/tb_raster_band
 
+render3d:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_raster3d \
+	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
+	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_store.sv \
+	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
+	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
+	./obj_render3d/tb_render3d
+
 render:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_render_top \
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) $(SRCS_m1_raster_fill) sim/video/render_top.sv \
@@ -641,7 +649,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: render quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

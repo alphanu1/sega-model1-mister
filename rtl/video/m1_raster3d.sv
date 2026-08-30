@@ -99,6 +99,14 @@ module m1_raster3d #(
   output logic [23:0] scan_rgb,
   output logic        scan_hit,
 
+  // Which band the readable buffer currently holds, and whether it holds
+  // anything at all. The scanout MUST check this: the read buffer always
+  // contains SOME band, so returning its pixels for a scanline outside that
+  // band draws band N's picture over band M's rows - a plausible, wrong image
+  // rather than a blank one.
+  output logic [3:0]  disp_band,
+  output logic        disp_valid,
+
   // ---- counted, for the overlay
   output logic [15:0] dbg_objects,
   output logic [15:0] dbg_quads,
@@ -132,9 +140,19 @@ module m1_raster3d #(
   assign dl_addr = lw_addr;
   assign dl_req  = lw_req;
 
+  // Held whenever the sequencer is not listening - which is most of a frame,
+  // since drawing one object takes thousands of cycles and the walk would
+  // otherwise run to the end of the list during the first one.
+  //
+  // T_IDLE IS EXCLUDED, because `start` is asserted there. A stalled walker
+  // ignores everything including its own start, so stalling in T_IDLE means the
+  // walk never begins - which reads as an empty display list rather than as a
+  // handshake fault: zero objects, zero quads, no error.
+  wire lw_stall = (st != T_WALK) && (st != T_IDLE);
+
   m1_listwalk u_walk (
     .clk(clk), .rst_n(rst_n),
-    .start(lw_start), .busy(lw_busy), .done(lw_done),
+    .start(lw_start), .stall(lw_stall), .busy(lw_busy), .done(lw_done),
     .mem_addr(lw_addr), .mem_req(lw_req),
     .mem_valid(dl_valid), .mem_data(dl_data),
     .ev_valid(lw_ev_valid), .ev_kind(lw_ev_kind),
@@ -285,14 +303,18 @@ module m1_raster3d #(
   assign bd_span_valid[1] = fl_span_valid && (wr_buf == 1'b1);
   assign fl_span_ready    = wr_buf ? bd_span_ready[1] : bd_span_ready[0];
 
-  // Scanout reads the buffer that is NOT being filled.
-  assign scan_rgb = wr_buf ? {bd_rd_col[0][15:11], 3'b0,
-                              bd_rd_col[0][10:5],  2'b0,
-                              bd_rd_col[0][4:0],   3'b0}
-                           : {bd_rd_col[1][15:11], 3'b0,
-                              bd_rd_col[1][10:5],  2'b0,
-                              bd_rd_col[1][4:0],   3'b0};
-  assign scan_hit = wr_buf ? bd_rd_hit[0] : bd_rd_hit[1];
+  // Scanout reads the buffer that is NOT being filled, and only for the rows
+  // that buffer actually covers.
+  wire [15:0] rd_col_sel = wr_buf ? bd_rd_col[0] : bd_rd_col[1];
+  wire        rd_hit_sel = wr_buf ? bd_rd_hit[0] : bd_rd_hit[1];
+
+  wire in_disp_band = disp_valid && ({6'd0, scan_y} >= 10'(disp_band) * 10'(BAND_H))
+                                 && ({6'd0, scan_y} <  (10'(disp_band) + 10'd1) * 10'(BAND_H));
+
+  assign scan_rgb = {rd_col_sel[15:11], 3'b0,
+                     rd_col_sel[10:5],  2'b0,
+                     rd_col_sel[4:0],   3'b0};
+  assign scan_hit = rd_hit_sel && in_disp_band;
 
   // ---------------------------------------------------------------- sequencer
   typedef enum logic [3:0] {
@@ -324,6 +346,7 @@ module m1_raster3d #(
     if (!rst_n) begin
       st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
       wr_buf <= 1'b0; old_z <= '0;
+      disp_band <= '0; disp_valid <= 1'b0;
       vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
       vspec <= 1'b0;
@@ -423,7 +446,9 @@ module m1_raster3d #(
         T_BAND_NEXT: begin
           // Hand this band to the scanout and start the next one in the other
           // buffer. The display side reads whichever buffer is not `wr_buf`.
-          wr_buf <= ~wr_buf;
+          wr_buf     <= ~wr_buf;
+          disp_band  <= {1'b0, cur_band};
+          disp_valid <= 1'b1;
           if (cur_band == 3'(NBANDS - 1)) st <= T_IDLE;
           else begin
             cur_band <= cur_band + 3'd1;

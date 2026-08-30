@@ -25,6 +25,14 @@ module  pll_0002(
 	// bit-identical to the inversion it replaces. Changing it is then a one-line
 	// experiment instead of a redesign.
 	output wire outclk_2,
+	// The 3D layer's clock. Exactly twice outclk_1 (clk_cpu), so the crossing
+	// between them is a clock enable rather than a handshake - this project has
+	// lost time twice to pulse-versus-level faults across domains, and a
+	// synchronous ratio removes that class of bug instead of testing for it.
+	//
+	// 45.714 and not 80: the shared FP pool measures 53.25 MHz and the fill unit
+	// 63.75, so 80 does not close. Measured, not assumed.
+	output wire outclk_3,
 
 	// interface 'locked'
 	output wire locked
@@ -34,7 +42,7 @@ module  pll_0002(
 		.fractional_vco_multiplier("false"),
 		.reference_clock_frequency("50.0 MHz"),
 		.operation_mode("direct"),
-		.number_of_clocks(3),
+		.number_of_clocks(4),
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
@@ -44,7 +52,7 @@ module  pll_0002(
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("0 MHz"),
+		.output_clock_frequency3("45.714286 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),
@@ -93,7 +101,7 @@ module  pll_0002(
 		.pll_subtype("General")
 	) altera_pll_i (
 		.rst	(rst),
-		.outclk	({outclk_2, outclk_1, outclk_0}),
+		.outclk	({outclk_3, outclk_2, outclk_1, outclk_0}),
 		.locked	(locked),
 		.fboutclk	( ),
 		.fbclk	(1'b0),

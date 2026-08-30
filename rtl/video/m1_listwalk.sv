@@ -69,6 +69,15 @@ module m1_listwalk #(
   // which buffer to read - the buffer select is the caller's, so this module has
   // no opinion about the listctl double-buffer handshake.
   input  logic        start,
+
+  // HOLD THE WALK. The consumer of an object command needs thousands of cycles
+  // to draw it, and this module has no output backpressure - it walks to the end
+  // of the list at its own pace and emits as it goes. A consumer that stops
+  // listening loses every event in the meantime, INCLUDING `done`, and then waits
+  // for a completion that has already happened. Measured: 136 quads of an
+  // expected 2,001, and a walk that never finished.
+  input  logic        stall,
+
   output logic        busy,
   output logic        done,               // one cycle, at the end of the list
 
@@ -154,7 +163,7 @@ module m1_listwalk #(
 
   wire in_read    = (st == S_TYPE) || (st == S_PARAM)
                  || (st == S_BODY) || (st == S_DIR_FLAGS);
-  assign mem_req  = in_read && !rd_gap;
+  assign mem_req  = in_read && !rd_gap && !stall;
 
   // A word has arrived for the address we asked for. The gap is what makes that
   // unambiguous: after each accepted word the request drops for one cycle, so a
@@ -177,6 +186,12 @@ module m1_listwalk #(
       ev_valid <= 1'b0; ev_kind <= '0; ev_idx <= '0; ev_data <= '0;
       dbg_cmds <= '0; dbg_objects <= '0; dbg_words <= '0; dbg_bad_type <= 1'b0; dbg_overrun <= 1'b0;
       done <= 1'b0;
+    end else if (stall) begin
+      // Frozen: no request is issued, no state advances, and nothing is emitted.
+      // Everything already latched stays latched, so the walk resumes exactly
+      // where it paused.
+      ev_valid <= 1'b0;
+      done     <= 1'b0;
     end else begin
       ev_valid <= 1'b0;
       done     <= 1'b0;
