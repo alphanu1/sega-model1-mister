@@ -1316,6 +1316,14 @@ initial begin
              rd_lo, rd_hi, rd_lo_empty, rd_lo_empty_acked);
     $display("FRAME: W1400 writes by pc: fe48d5=%0d  fef3b5=%0d  fe1469=%0d  other=%0d",
              w1400_48d5, w1400_f3b5, w1400_1469, w1400_other);
+    // THE GATE ON THE WHOLE GEOMETRY PATH.
+    //   FEEF14 cmp.b #0, 501A35 / FEEF1C bne FEF047  - entered only when != 0
+    //   FEF04E/FEF059 cmp.w #3/#4, 501A28            - diverted when 3 or 4
+    // The reference holds 501A35 = 01 throughout and 501A28 = 0 then 1.
+    // V60 byte B is device.mem word 0xF80000 + (B-0x500000)/2; 0x501A28 is word
+    // 0xF80D14 and 0x501A35 is the HIGH byte of word 0xF80D1A.
+    $display("FRAME: geometry gate: 501A35=%02h  501A28=%04h%04h   (reference: 01 and 00000001)",
+             device.mem['hF80D1A][15:8], device.mem['hF80D15], device.mem['hF80D14]);
     $display("FRAME: submit chain: fef9c6=%0d fef9cc=%0d -> fef9d2(call)=%0d fef9d8(skip)=%0d | fefa25=%0d fefa93=%0d fefad1=%0d fefb00=%0d",
              pc_fef9c6, pc_fef9cc, pc_fef9d2, pc_fef9d8,
              pc_fefa25, pc_fefa93, pc_fefad1, pc_fefb00);

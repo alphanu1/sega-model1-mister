@@ -5352,3 +5352,25 @@ arithmetic said so all along — the reference reads that FIFO ~1,185 times a fr
 Finding what calls `FEF7xx` and why we do not is the next step, and `make v60_trace` over a
 window that reaches it is the instrument. The traced window currently ends around frame 115,
 before this routine runs, which is why every trace comparison so far has agreed.
+
+### WITHDRAWN: "the V60 never enters the geometry submission path" — 2026-08-30
+
+It enters it. The measurement that said otherwise was taken with
+`EMPTY_FIFO_READS_ZERO = 1`, the configuration that **deadlocks at frame ~340** — so the
+machine was frozen for the rest of the run and could not reach anything. Re-measured with the
+shipped configuration (coprocessor parked, V60 running throughout), same 526-frame window:
+
+    geometry gate  501A35=01  501A28=00000001      IDENTICAL to the reference
+    submit chain   fef9c6=35  fefa25=35  fefb00=18  fef9d2=75
+    call chain     fefb40=65  ff84a2=452  ff84ae=174
+                   ff84b1(reads)=259  ff8582(skip)=390  ff850c=194
+
+**So every routine in the chain runs, and the gate values match the reference exactly.** What
+differs is the RATE: the reference executes `ff850c` about 202 times a frame, we execute it
+194 times in 526 frames — 0.37 a frame. And the gate at `FF84AE` diverts to `FF8582` on 390 of
+452 visits where the reference falls through.
+
+**Measure the configuration you are asking about.** A frozen machine reports zero for
+everything downstream of the freeze, and that zero is about the freeze, not about the code.
+This is the second finding in two days built on a window in which the machine was not running
+— the other being a scroll census over 2,610 frames of which ~87% were post-deadlock.
