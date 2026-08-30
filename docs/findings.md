@@ -5250,3 +5250,45 @@ like an index or counter, and is the concrete thing to trace next.
   * "the divergence is later than any window measured" — true, and the reason every earlier
     scroll comparison agreed: the reference's own `hscr2` is `0000` until about frame 400, so
     all of them sat inside the window where both machines correctly do nothing.
+
+### The scroll animation is fed by the COPROCESSOR — the chain closes — 2026-08-30
+
+Tracing the constant scroll value back through the reference:
+
+    hscr/ctrl written from        fe48d5 (0x501408) and fef3b5 (0x50140a)
+      those read                  0x501320/22 (constant both sides),
+                                  0x501a2c/2e and 0x501424/26  <- the animating pair
+    the animating pair written by fef25c/fef265 (0x501a2c) and fef39d/fef3a4 (0x501424)
+    and THAT routine reads:
+
+        program fef000  8,128     its own code
+        program 501000    384
+        program 400000    256
+        io      d80000    256     <- THE COPROCESSOR RESULT FIFO
+        program 403000    192
+
+`0x50140a` is literally `0x2000 | (0x501424 & 0xfff)` — the window mode bits plus a split line
+taken from a value the coprocessor supplies. In the reference `0x501424` moves
+`0058 -> 0014 -> ffce -> ffda` and `0x501a2c` moves `846b -> 8162 -> 82fc -> 3fa5 -> 763c`;
+here both are static, so the split line is fixed and `hscr` barely moves.
+
+**The whole chain, every link measured:**
+
+    V60 is 1.63x too slow
+      -> enabling the coprocessor deadlocks it against the V60 (both FIFOs full)
+      -> so the coprocessor is parked
+      -> so fef25c/fef3a4 read nothing useful from 0xd80000
+      -> so the scroll inputs are constant
+      -> so the background does not scroll horizontally
+
+**This qualifies the entry above.** "The scroll asymmetry is program state, and there is
+nothing to fix in `m1_video`" is right about the video path and about the write path, and
+wrong to imply the scroll fault is independent of the coprocessor. It is not: it is the same
+root cause, two steps further downstream.
+
+**Open question worth checking before enabling the TGP again:** the V60 reads the result FIFO
+276 times per 108 frames while the coprocessor has pushed only 20 results, so most of those
+reads find it EMPTY. `m1_copro_if` deliberately withholds the acknowledge on an empty
+outbound read, which should stall the V60 — and it plainly does not hang. Either those reads
+are the always-completing high half at offset 1, or the interlock is not doing what its
+comment says. That is worth settling on its own terms.
