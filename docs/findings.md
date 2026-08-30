@@ -5489,3 +5489,34 @@ yesterday: the main loop stops here, so the per-frame object dispatch runs 0.44 
 against the reference's 5.6, the geometry submission runs once in 526 frames, the coprocessor
 is never fed or drained, and the scroll inputs never move. The interrupt handler keeps
 drawing, which is why the picture is there at all.
+
+### WITHDRAWN: "the V60 spins on DPRAM 0x40 and our I/O board answers 0x20" — 2026-08-30
+
+Wrong twice over, and both faults are ones this file already warns about.
+
+**1. Byte against word.** `model1.cpp:1013` maps the DPRAM `umask16(0x00ff)`, so only EVEN V60
+byte addresses exist and **V60 byte `0xC00040` IS DPRAM word index `0x20`** — which is exactly
+`m1_ioboard`'s `FLAG_ADDR`, since it takes `v60_addr = m_addr[11:1]`. Our board answers the
+right location. The census that appeared to prove otherwise compared MAME BYTE offsets against
+our WORD indices, and its "byte 0x21 sees zero accesses" was an odd address that does not
+exist at all — absence of a thing that cannot be there, read as evidence.
+
+**2. The divergence is the timed wait, not a stall.** Measured properly — count the polls
+between each SET and the first zero read:
+
+    sets=295   completed waits=1   over 300 frames
+      wait 1: 36,131 polls, 38,389 us
+
+**Every one of those 36,131 polls is the single boot handshake.** The reference spins in
+`FE022C/FE0232` for 38.4 ms too, and after that the flag is never cleared again and the V60
+never waits again — which is precisely what `m1_ioboard` implements and what
+`docs/io-board.md` already records. So the instruction-stream divergence at 278,920 is our
+slower CPU needing MORE INSTRUCTIONS to cover the same wall-clock wait. A timed wait compared
+in instruction counts always looks like a hang on the slower machine.
+
+**To compare past it the loop has to be collapsed on both sides**, the same treatment
+self-loops needed. `tools/v60_collapse.py` exists for exactly this and was not used here.
+
+**The Z80 I/O board is probably still the right thing** — the Model 2 core found HLE
+insufficient where the board COMPUTES rather than responds, and it is the same physical PCB —
+but the evidence offered for it above was not evidence.
