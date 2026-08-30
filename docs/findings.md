@@ -6300,3 +6300,70 @@ measured at 8,837 ALM in the Model 2 project — it does not change what fits.
 `tools/mister_project.sh`. Burning 0.272 ns of margin for 1.6% is the wrong trade while
 ALM is not the binding constraint; the setting is worth taking when sound and the
 rasterizer have actually made it binding, and the slack can be re-checked then.
+
+---
+
+## Virtua Racing draws NOTHING through the direct path — the geometry engine is mandatory
+
+**2026-08-30**, `tools/mame_dlist_census.lua`, 120 samples over 1,200 frames of attract.
+
+The 3D path has two drawing commands and they cost wildly different amounts to
+build. Command 1/0x41 is *draw object*: an address into the polygon ROM, which the
+hardware must read, transform by the current matrix, project, light and clip.
+Command 2 is *direct*: quads already in screen space, sitting in the list, needing
+a fill and a sort and nothing else.
+
+    type   1 OBJECT           7880
+    type   2 DIRECT              0        <- none, ever
+    type   b matrix            7880
+    type   3 viewport           187
+    objects drawn      7880
+    direct sub-quads   0
+    distinct objects   224
+
+**Zero direct quads.** The hoped-for shortcut — a rasterizer with a fill unit, a
+band buffer and no geometry stage, drawing whatever the list already holds in
+screen space — draws an empty screen on this game. It is not a partial win; it is
+nothing. `m1_raster_fill` and `m1_raster_band` cannot show a single pixel until
+transform and projection exist to feed them.
+
+One matrix command per object, and a single viewport all run:
+`248,231 0,39 495,422` — centre (248,231), the full 496x384 active area offset by
+the 39-line top border the reference subtracts.
+
+---
+
+## The geometry budget: 5,831 polygons in a peak frame, 34 cycles per point
+
+**2026-08-30**, `tools/mame_poly_budget.lua`, 60 sampled frames, walking each
+object in the polygon ROM exactly as `push_object` does — a 6-float header then
+10-float records until one has type 0 in its flags.
+
+    peak frame         5831 polygons in 41 objects
+    mean frame         3204 polygons in 34 objects
+    peak points/frame  11662   (2 per polygon record)
+    cycles per point   34.1    at 22.86 MHz and 57.5 Hz
+
+Measured **before** building the stage, not after, because the answer decides its
+shape. Per polygon record the reference does a 3x3 transform of two points and a
+normal, a projection divide per point, and a lighting dot product: roughly 27
+multiplies, 24 adds and **2 divides**, in the ~68 cycles two points are worth.
+
+Multiplies and adds fit comfortably — one pipelined `fp_mul` and one `fp_add` at a
+result per cycle cover 27 and 24 cycles and overlap each other.
+
+**The divider is the constraint.** `fp_div` measures `max_latency=29` and is not
+pipelined, so two projections per record is up to 58 of the 68 cycles on their
+own. One divider *just* fits with nothing to spare and no allowance for the frame
+being longer than average; the honest reading is that the geometry stage needs
+either a second divider or a table-based reciprocal.
+
+**And the reciprocal table exists in the ROM set we do not load.** MAME's
+`other_data` — `opr-14744`..`14747`, the 1/x and 1/sqrt tables — was deliberately
+left out because `fp_div` computes those instead (see the `wpair` comment in
+`gen_mra.py`). That decision was made for the coprocessor, where it is right; for
+the geometry stage the trade is the other way round, and the reversal condition is
+this measurement. Recorded, not yet taken.
+
+Data rate is not a concern either way: 5,831 records of 40 bytes is 233 KB a
+frame, 13.4 MB/s, sequential — nothing for the SDRAM controller.
