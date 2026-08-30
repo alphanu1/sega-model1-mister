@@ -54,7 +54,7 @@ SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/video/m1_diag.sv \
   rtl/video/m1_listctl.sv \
-  rtl/m1_mainram.sv rtl/m1_main.sv rtl/m1_integrated.sv \
+  rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/m1_main.sv rtl/m1_integrated.sv \
   rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
@@ -66,7 +66,7 @@ SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
 # Deferred (=), not immediate (:=): SRCS_mb86233_core is defined further down,
 # and := would expand it to nothing here.
 SRCS_m1_tgp = rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core)
-SRCS_m1_mainram := rtl/m1_mainram.sv
+SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv \
@@ -74,7 +74,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_
   rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
-  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/m1_mainram.sv \
+  rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv \
   rtl/video/m1_listctl.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
@@ -596,7 +596,7 @@ m1_boot:
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
-	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
+	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  rtl/video/m1_listctl.sv \
 	  sim/mem/sdram_model.sv rtl/m1_main.sv sim/top/tb_m1_boot.sv

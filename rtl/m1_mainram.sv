@@ -89,45 +89,37 @@ module m1_mainram (
   assign cxlat_we = we && sel_colxlat && (addr[15:1] < 15'd24576);
   assign dpram_we = we && sel_dpram;
 
-  // SCR 0x700000-0x70ffff, CPU side
-  (* ramstyle = "M10K" *) logic [7:0] tram_c_lo [32768];
-  (* ramstyle = "M10K" *) logic [7:0] tram_c_hi [32768];
-  always_ff @(posedge clk) begin
-    if (tram_we && be[0]) tram_c_lo[addr[15:1]] <= wdata[7:0];
-    if (tram_we && be[1]) tram_c_hi[addr[15:1]] <= wdata[15:8];
-    tram_q <= {tram_c_hi[addr[15:1]], tram_c_lo[addr[15:1]]};
-  end
+  // SCR 0x700000-0x70ffff and COL 0x900000-0x903fff.
+  //
+  // ONE COPY EACH, in m1_tdp_ram. These were two copies apiece - `tram_c_*` for
+  // the CPU's read port and `tram_v_*` for the video's, written identically from
+  // `clk` - because an M10K has two ports and write + CPU read + video read is
+  // three. Port A can serve the write AND the CPU read, leaving port B for the
+  // video, which is two, and Cyclone V M10K is true dual-port silicon with an
+  // independent clock per port.
+  //
+  // Measured cost of the duplication, from the fitter's by-entity M10K column:
+  // 128 blocks on tile RAM and 32 on palette, half of each wasted, 80 of a
+  // 553-block device already at 82%. Quartus 17.0 will not INFER the sharing -
+  // it replicates one template silently and refuses the other with Error 276001
+  // - so m1_tdp_ram instantiates altsyncram explicitly. See its header.
+  //
+  // The byte lanes are gone: both ports must be the SAME WIDTH or the block is
+  // replicated again, so this is 16 bits wide with a byteena rather than two
+  // byte-wide arrays.
+  m1_tdp_ram #(.AW(15)) u_tram (
+    .a_clk (clk),
+    .a_addr(addr[15:1]), .a_din(wdata), .a_be(be), .a_we(tram_we), .a_q(tram_q),
+    .b_clk (vid_clk),
+    .b_addr(vid_tram_addr), .b_q(vid_tram_data)
+  );
 
-  //                        video side, read in the video clock domain
-  (* ramstyle = "M10K" *) logic [7:0] tram_v_lo [32768];
-  (* ramstyle = "M10K" *) logic [7:0] tram_v_hi [32768];
-  always_ff @(posedge clk) begin
-    if (tram_we && be[0]) tram_v_lo[addr[15:1]] <= wdata[7:0];
-    if (tram_we && be[1]) tram_v_hi[addr[15:1]] <= wdata[15:8];
-  end
-  always_ff @(posedge vid_clk) begin
-    vid_tram_data <= {tram_v_hi[vid_tram_addr], tram_v_lo[vid_tram_addr]};
-  end
-
-  // COL 0x900000-0x903fff, CPU side
-  (* ramstyle = "M10K" *) logic [7:0] pram_c_lo [8192];
-  (* ramstyle = "M10K" *) logic [7:0] pram_c_hi [8192];
-  always_ff @(posedge clk) begin
-    if (pram_we && be[0]) pram_c_lo[addr[13:1]] <= wdata[7:0];
-    if (pram_we && be[1]) pram_c_hi[addr[13:1]] <= wdata[15:8];
-    pram_q <= {pram_c_hi[addr[13:1]], pram_c_lo[addr[13:1]]};
-  end
-
-  //                        video side, read in the video clock domain
-  (* ramstyle = "M10K" *) logic [7:0] pram_v_lo [8192];
-  (* ramstyle = "M10K" *) logic [7:0] pram_v_hi [8192];
-  always_ff @(posedge clk) begin
-    if (pram_we && be[0]) pram_v_lo[addr[13:1]] <= wdata[7:0];
-    if (pram_we && be[1]) pram_v_hi[addr[13:1]] <= wdata[15:8];
-  end
-  always_ff @(posedge vid_clk) begin
-    vid_pal_data <= {pram_v_hi[{1'b0, vid_pal_addr}], pram_v_lo[{1'b0, vid_pal_addr}]};
-  end
+  m1_tdp_ram #(.AW(13)) u_pram (
+    .a_clk (clk),
+    .a_addr(addr[13:1]), .a_din(wdata), .a_be(be), .a_we(pram_we), .a_q(pram_q),
+    .b_clk (vid_clk),
+    .b_addr({1'b0, vid_pal_addr}), .b_q(vid_pal_data)
+  );
 
   // TGP 0x600000-0x60ffff
   (* ramstyle = "M10K" *) logic [7:0] dl0_lo [32768];
@@ -258,19 +250,13 @@ module m1_mainram (
   initial begin
     for (zc = 0; zc < 8; zc = zc + 1)
       for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
-        tram_c_lo[zi] = 8'd0; tram_c_hi[zi] = 8'd0;
-        tram_v_lo[zi] = 8'd0; tram_v_hi[zi] = 8'd0;
+        // tile RAM and palette are cleared inside m1_tdp_ram now.
         dl0_lo[zi]    = 8'd0; dl0_hi[zi]    = 8'd0;
         dl1_lo[zi]    = 8'd0; dl1_hi[zi]    = 8'd0;
       end
     for (zc = 0; zc < 6; zc = zc + 1)
       for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
         cxlat_lo[zi] = 8'd0; cxlat_hi[zi] = 8'd0;
-      end
-    for (zc = 0; zc < 2; zc = zc + 1)
-      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
-        pram_c_lo[zi] = 8'd0; pram_c_hi[zi] = 8'd0;
-        pram_v_lo[zi] = 8'd0; pram_v_hi[zi] = 8'd0;
       end
     for (zi = 0; zi < 2048; zi = zi + 1) begin
       dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;

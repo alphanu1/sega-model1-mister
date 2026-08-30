@@ -68,6 +68,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_diag.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listctl.sv
 
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_tdp_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_mainram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_main.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_integrated.sv

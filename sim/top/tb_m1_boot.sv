@@ -1488,7 +1488,7 @@ initial begin
         for (m = 0; m < 4; m = m + 1) begin
             nz = 0; cat1 = 0;
             for (i = 0; i < 4096; i = i + 1) begin
-                w = {main.rams.tram_c_hi[m*4096 + i], main.rams.tram_c_lo[m*4096 + i]};
+                w = {main.rams.u_tram.mem_hi[m*4096 + i], main.rams.u_tram.mem_lo[m*4096 + i]};
                 if (w[13:0] != 0) nz = nz + 1;
                 if (w[15])        cat1 = cat1 + 1;
             end
@@ -1497,11 +1497,11 @@ initial begin
         $write("BOOT: scroll/ctrl:");
         for (i = 0; i < 8; i = i + 1)
             $write(" [%04h]=%04h", 15'h5000 + i,
-                   {main.rams.tram_c_hi[15'h5000 + i], main.rams.tram_c_lo[15'h5000 + i]});
+                   {main.rams.u_tram.mem_hi[15'h5000 + i], main.rams.u_tram.mem_lo[15'h5000 + i]});
         $display("");
         nz = 0;
         for (i = 0; i < 2048; i = i + 1)
-            if ({main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]} != 0)
+            if ({main.rams.u_tram.mem_hi[15'h6000 + i], main.rams.u_tram.mem_lo[15'h6000 + i]} != 0)
                 nz = nz + 1;
         // THE REFERENCE WRITES NO MASK CONTENT UNTIL FRAME 276, measured with
         // tools/mame_mask_writers.lua: the first non-zero write is pc=fc4076 into
@@ -1518,8 +1518,8 @@ initial begin
                 $write("TM%0d %04h", mi[3:0], i[15:0]);
                 for (mj = 0; mj < 16; mj = mj + 1)
                     $write(" %04h",
-                           {main.rams.tram_c_hi[15'(mi*4096 + i + mj)],
-                            main.rams.tram_c_lo[15'(mi*4096 + i + mj)]});
+                           {main.rams.u_tram.mem_hi[15'(mi*4096 + i + mj)],
+                            main.rams.u_tram.mem_lo[15'(mi*4096 + i + mj)]});
                 $display("");
             end
         $display("BOOT: row mask 0x6000: %0d/2048 nonzero (reference: none before frame 276, 528 by frame 900)", nz);
@@ -1528,9 +1528,9 @@ initial begin
         // its mask bit is 1. Dump the words so they can be diffed against
         // tools/mame_rowmask.lua's output line for line.
         for (i = 0; i < 2048; i = i + 1)
-            if ({main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]} != 0)
+            if ({main.rams.u_tram.mem_hi[15'h6000 + i], main.rams.u_tram.mem_lo[15'h6000 + i]} != 0)
                 $display("RM %04h %04h", i[15:0],
-                         {main.rams.tram_c_hi[15'h6000 + i], main.rams.tram_c_lo[15'h6000 + i]});
+                         {main.rams.u_tram.mem_hi[15'h6000 + i], main.rams.u_tram.mem_lo[15'h6000 + i]});
     end
 
     // THE OLD EXPECTATION HERE WAS WRONG, AND IT ACCUSED THE PACKER.

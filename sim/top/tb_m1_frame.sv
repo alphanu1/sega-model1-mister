@@ -510,13 +510,13 @@ always @(posedge clk) begin
     vbl_d <= core.video.vblank_start;
     if (core.video.vblank_start && !vbl_d) begin
         fr_seen = fr_seen + 1;
-        if ({core.main.rams.tram_v_hi['h5002], core.main.rams.tram_v_lo['h5002]} != h_prev) begin
+        if ({core.main.rams.u_tram.mem_hi['h5002], core.main.rams.u_tram.mem_lo['h5002]} != h_prev) begin
             h_changes = h_changes + 1;
-            h_prev = {core.main.rams.tram_v_hi['h5002], core.main.rams.tram_v_lo['h5002]};
+            h_prev = {core.main.rams.u_tram.mem_hi['h5002], core.main.rams.u_tram.mem_lo['h5002]};
         end
-        if ({core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]} != v_prev) begin
+        if ({core.main.rams.u_tram.mem_hi['h5006], core.main.rams.u_tram.mem_lo['h5006]} != v_prev) begin
             v_changes = v_changes + 1;
-            v_prev = {core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]};
+            v_prev = {core.main.rams.u_tram.mem_hi['h5006], core.main.rams.u_tram.mem_lo['h5006]};
         end
     end
 end
@@ -733,8 +733,8 @@ task automatic tram_content_census;
         for (L = 0; L < 4; L = L + 1) begin
             tm_have[L] = 0;
             for (i = 0; i < 'h1000; i = i + 4) begin
-                w = {core.main.rams.tram_v_hi[L * 'h1000 + i],
-                     core.main.rams.tram_v_lo[L * 'h1000 + i]};
+                w = {core.main.rams.u_tram.mem_hi[L * 'h1000 + i],
+                     core.main.rams.u_tram.mem_lo[L * 'h1000 + i]};
                 if (w != 16'h0000 && (w & 16'h3fff) != 16'h0020)
                     tm_have[L] = tm_have[L] + 1;
             end
@@ -760,15 +760,15 @@ task automatic tram_block_census;
         // once, with 0x0000.
         $write("  scrollregs:");
         for (b = 0; b < 8; b = b + 1)
-          $write(" %04h", {core.main.rams.tram_v_hi['h5000 + b],
-                           core.main.rams.tram_v_lo['h5000 + b]});
+          $write(" %04h", {core.main.rams.u_tram.mem_hi['h5000 + b],
+                           core.main.rams.u_tram.mem_lo['h5000 + b]});
         $write("   ctrl_latched=%04h,%04h\n", f_ctrl[0], f_ctrl[1]);
         $write("  tram blocks:");
         for (b = 0; b < 8; b = b + 1) begin
             n = 0;
             for (i = 0; i < 'h1000; i = i + 1) begin
-                w = {core.main.rams.tram_v_hi[b * 'h1000 + i],
-                     core.main.rams.tram_v_lo[b * 'h1000 + i]};
+                w = {core.main.rams.u_tram.mem_hi[b * 'h1000 + i],
+                     core.main.rams.u_tram.mem_lo[b * 'h1000 + i]};
                 if (w != 16'h0000 && (w & 16'h3fff) != 16'h0020)
                     n = n + 1;
             end
@@ -811,7 +811,7 @@ task automatic dump_wram(input integer fr);
     integer k;
     begin
         $write("=== SIM frame %0d  ctrl=%04h\n", fr,
-               {core.main.rams.tram_v_hi['h5006], core.main.rams.tram_v_lo['h5006]});
+               {core.main.rams.u_tram.mem_hi['h5006], core.main.rams.u_tram.mem_lo['h5006]});
         $write("  wram1400 501400:");
         for (k = 0; k < 20; k = k + 1) $write(" %04h", device.mem['hF80A00 + k]);
         $write("\n  wram1480 501480:");
@@ -1387,8 +1387,8 @@ initial begin
     if (fd == 0) $display("FRAME: could not open %s", TRAMOUT);
     else begin
         for (i = 0; i < 32768; i = i + 1)
-            $fwrite(fd, "%04h\n", {core.main.rams.tram_v_hi[i],
-                                   core.main.rams.tram_v_lo[i]});
+            $fwrite(fd, "%04h\n", {core.main.rams.u_tram.mem_hi[i],
+                                   core.main.rams.u_tram.mem_lo[i]});
         $fclose(fd);
         $display("FRAME: wrote %s (32768 tile-RAM words)", TRAMOUT);
     end
@@ -1397,8 +1397,8 @@ initial begin
     if (fd == 0) $display("FRAME: could not open %s", PALOUT);
     else begin
         for (i = 0; i < 8192; i = i + 1)
-            $fwrite(fd, "%04h\n", {core.main.rams.pram_v_hi[i],
-                                   core.main.rams.pram_v_lo[i]});
+            $fwrite(fd, "%04h\n", {core.main.rams.u_pram.mem_hi[i],
+                                   core.main.rams.u_pram.mem_lo[i]});
         $fclose(fd);
         $display("FRAME: wrote %s (8192 palette entries)", PALOUT);
     end
