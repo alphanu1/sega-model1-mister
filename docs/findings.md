@@ -5174,3 +5174,41 @@ reference does ~1,185/frame, so this is a long way short - but it is the quantit
 zero armed the deadlock, and it is no longer zero.
 
 Gain is 1.19x of the 1.63x needed. The rest is execution CPI.
+
+### A probe that indexed a bit outside its vector, and what it hid — 2026-08-30
+
+`m_addr` in `m1_main` is declared `logic [23:1]` — a byte address with bit 0 omitted — so the
+word index inside a 64 KB page is `m_addr[15:1]`. A probe written as `m_addr[14:0]` selects a
+bit that **does not exist**, never matches, and reports **zero**.
+
+That produced a confident wrong finding and it survived a control check: the controls
+(108,098 tile-RAM writes, 1,406,540 acked bus writes) were healthy, because they did not use
+the broken index. "Zero writes to the scroll registers while tile RAM is clearly being
+written" then looked like evidence of a write-path bug, and the region histogram — also built
+on the wrong bits — appeared to corroborate it.
+
+    broken probe   hscr[5002]=0    vscr[5006]=0    all 5000-5007=0
+    correct probe  hscr[5002]=130  vscr[5006]=130  all 5000-5007=788
+
+**A control has to exercise the same expression as the measurement**, or it confirms only that
+the testbench is running. The other probe in this same file has used `m_addr[15:1]` throughout.
+
+### At matched frames the scroll path AGREES with the reference — 2026-08-30
+
+With the index fixed, over 108 frames:
+
+    ours   130 writes to 0x5002   (~1.2 per frame)
+    MAME  2003 writes over 2000   (~1.0 per frame)
+
+**The registers are written at the reference's rate.** What differs is the VALUE: ours barely
+changes while the reference's moves constantly from ~frame 400 onward.
+
+The value comes from a table in work RAM. Ours writes `0x501408` from `pc=fe1469` with
+`data=0000`; the reference writes `0x501408`/`0x50140a` from `fe48d5` and `fef3b5` with
+computed values. But **neither side reaches `fe48d5` or `fef3b5` in the traced window**, and
+both execute `fe1469` **exactly 64,512 times** — identical. So the early behaviour matches and
+the divergence is later than any window measured so far.
+
+That is consistent with the reference itself: `hscr2` is `0000` and unchanging through frame
+160, and only starts moving around frame 400. **Every comparison of the scroll path made
+before this one was inside the window where both machines legitimately do nothing.**

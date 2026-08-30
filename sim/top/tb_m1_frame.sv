@@ -370,6 +370,53 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// DOES THE V60 WRITE THE SCROLL REGISTERS AT ALL?
+//
+// The value census says hscr[0x5002] CHANGES on 86 of 1,460 frames where the
+// reference changes it on ~982. Two very different faults produce that number
+// and a value census cannot tell them apart:
+//
+//   * the V60 never executes the code that writes it   -> program state, and
+//     downstream of the speed deficit;
+//   * the V60 writes it and the write does not land    -> a write-path bug,
+//     independent of speed and fixable now.
+//
+// Counting the WRITES separates them. A high write count with a low change
+// count means the game is writing the same value repeatedly, which is a third
+// answer again and also worth knowing.
+longint tw_hscr2 = 0, tw_vscr2 = 0, tw_any_scroll = 0, tw_all_tram = 0, tw_all_acks = 0;
+// Tile-RAM writes by region, so "we never write the scroll registers" can be
+// separated from "we write them somewhere else". Regions per m1_main.sv:
+//   [0] 0x0000-0x1fff maps 0/1   [1] 0x2000-0x3fff maps 2/3
+//   [2] 0x4000-0x5fff scroll     [3] 0x6000-0x7fff row masks
+longint tw_reg [4];
+longint tw_5xxx = 0;
+initial begin tw_reg[0]=0; tw_reg[1]=0; tw_reg[2]=0; tw_reg[3]=0; end
+always @(posedge clk_cpu) begin
+    // m_addr is declared [23:1] - byte address with bit 0 omitted - so the word
+    // index inside the 64 KB page is m_addr[15:1]. BIT 0 DOES NOT EXIST: an
+    // earlier version of this probe used m_addr[14:0], which selects a bit
+    // outside the vector, never matched, and reported zero writes to the scroll
+    // registers on a machine that writes them. The other probe in this file has
+    // used m_addr[15:1] all along.
+    if (core.main.rst_n && core.main.m_we && core.main.sel_tileram && core.main.m_ack) begin
+        if (core.main.m_addr[15:1] == 15'h5002) tw_hscr2 <= tw_hscr2 + 1;
+        if (core.main.m_addr[15:1] == 15'h5006) tw_vscr2 <= tw_vscr2 + 1;
+        if (core.main.m_addr[15:1] >= 15'h5000 && core.main.m_addr[15:1] <= 15'h5007)
+            tw_any_scroll <= tw_any_scroll + 1;
+        tw_all_tram <= tw_all_tram + 1;
+        tw_reg[core.main.m_addr[15:14]] <= tw_reg[core.main.m_addr[15:14]] + 1;
+        if (core.main.m_addr[15:13] == 3'h2 && core.main.m_addr[13:12] == 2'h1) tw_5xxx <= tw_5xxx + 1;
+    end
+    // CONTROLS. A zero from a probe that cannot see anything reads exactly like
+    // a zero from a machine that does nothing, and that mistake has been made
+    // repeatedly here. tw_all_tram counts every tile-RAM write and tw_all_acks
+    // every acknowledged bus write, so if the scroll counts are zero while these
+    // are not, the zero is about the game rather than the probe.
+    if (core.main.rst_n && core.main.m_we && core.main.m_ack)
+        tw_all_acks <= tw_all_acks + 1;
+end
+
 // HOW OFTEN EACH SCROLL REGISTER CHANGES.
 //
 // The board scrolls the background VERTICALLY and flickers, where the reference
@@ -1173,6 +1220,12 @@ initial begin
     $display("FRAME: control sweep, V60 ROM at word 0 = %06h (board row 0E)", f_rb_csum0);
     $fclose(pop_f);
     $display("FRAME: captured %0d command-FIFO pops to build/frame_pops.txt", pop_n);
+    $display("FRAME: scroll WRITES: hscr[5002]=%0d  vscr[5006]=%0d  all 5000-5007=%0d",
+             tw_hscr2, tw_vscr2, tw_any_scroll);
+    $display("FRAME:   controls: all tile-RAM writes=%0d  all acked bus writes=%0d",
+             tw_all_tram, tw_all_acks);
+    $display("FRAME:   tram writes by region: maps01=%0d maps23=%0d scroll4-5=%0d masks6-7=%0d  (of which 0x5xxx=%0d)",
+             tw_reg[0], tw_reg[1], tw_reg[2], tw_reg[3], tw_5xxx);
     $display("FRAME: scroll changes over %0d frames: hscr[5002]=%0d  vscr[5006]=%0d",
              fr_seen, h_changes, v_changes);
     $display("FRAME: microcode RAM read back = %06h, sweep done=%0b (board row 0C)",
