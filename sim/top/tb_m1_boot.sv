@@ -81,6 +81,12 @@ localparam integer PRELOAD_WORDS = 32'h420000;
 // work together, in a design where a lost transaction shows up as a CPU that
 // stops rather than as an assertion.
 reg clk = 0, clk_cpu = 0, rst_n = 0;
+// NEITHER OF THESE IS THE HARDWARE'S CLOCK, and that has always been true here.
+// The board runs clk_sys at 80 MHz and clk_cpu at 19.2 (23 as of 2026-08-30),
+// so this bench models a memory 25% faster and a CPU 30% faster than the thing
+// it is predicting. The RATIO is close - 4.0 here against 4.17 on hardware - so
+// cycle-count ratios such as CPI survive, but absolute latencies do not, and a
+// figure quoted from here in nanoseconds is wrong for the board.
 always #5  clk     = ~clk;        // 100 MHz, memory and video
 always #20 clk_cpu = ~clk_cpu;    // 25 MHz, the V60
 

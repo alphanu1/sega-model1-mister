@@ -352,7 +352,7 @@ test_copro_if:
 	  --Mdir obj_copro_if
 	./obj_copro_if/tb_copro_if
 
-# BUILT TWICE, at LATENCY 64 and at the measured 740,684 — the same reason
+# BUILT TWICE, at LATENCY 64 and at the measured 887,271 — the same reason
 # bw_monitor and m1_diag are built twice. The narrow build cannot reach the 20-bit
 # deadline counter the real figure needs, and it cannot express the property the
 # measurement establishes at all: a doorbell arriving every 333,913 cycles only
@@ -364,7 +364,7 @@ test_ioboard:
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard --Mdir obj_ioboard
 	./obj_ioboard/tb_ioboard
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
-	  -GPUBLISH_INPUTS=0 -GLATENCY=740684 -CFLAGS -DLATENCY_CFG=740684 \
+	  -GPUBLISH_INPUTS=0 -GLATENCY=887271 -CFLAGS -DLATENCY_CFG=887271 \
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard_slow \
 	  --Mdir obj_ioboard_slow
 	./obj_ioboard_slow/tb_ioboard_slow

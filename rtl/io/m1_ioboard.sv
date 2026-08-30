@@ -63,7 +63,7 @@ module m1_ioboard #(
   //
   //   The V60 raises the flag at pc=fe03fd and polls it 36,308 times over
   //   38,577.3 us before the Z80 clears it. That is 617,236 V60 cycles at
-  //   16 MHz, or 740,684 of this domain's at 19.2 MHz. It is not a mailbox
+  //   16 MHz, or 887,271 of this domain's at 23 MHz. It is not a mailbox
   //   turnaround at all — it is the I/O board's Z80 powering up and running its
   //   own self-test before it ever looks at the flag, which is why the figure is
   //   enormous and why it happens exactly once.
@@ -76,14 +76,14 @@ module m1_ioboard #(
   // ONE NUMBER REPRODUCES BOTH BEHAVIOURS, which is why there is no second
   // parameter and no one-shot rule here. A request re-arms the counter (see
   // `pending` below), the doorbell arrives every 333,913 cycles, and 333,913 is
-  // less than 740,684 — so once the game is running the count never expires and
+  // less than 887,271 — so once the game is running the count never expires and
   // the flag stays set on its own. At boot the V60 raises it once and then only
   // polls, so the count does expire and the single reply lands.
   //
   // A CONSEQUENCE FOR THE OVERLAY: `replies` now reaches 1 and stops, which is
   // the healthy value rather than a stalled counter. docs/debug-overlay.md row
   // 0B is corrected to say so.
-  parameter int          LATENCY = 740684,
+  parameter int          LATENCY = 887271,
 
   // PUBLISHING INPUT STATE INTO THE SHARED RAM
   //
