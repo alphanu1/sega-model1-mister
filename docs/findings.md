@@ -5788,3 +5788,20 @@ Weighing against the doubling being real: an earlier measurement compared 61 of 
 against the reference's 61 and found them IDENTICAL, which a doubled stream cannot be. Either
 something regressed between those two measurements, or one of the two probes is wrong. **That
 contradiction has to be resolved before acting on this.**
+
+### RESOLVED: the "doubled command stream" was the probe, inserted twice — 2026-08-30
+
+The anchor used to insert the command/answer logger —
+`if (core.main.rst_n && core.main.m_we && core.main.m_ack` — occurs **twice** in
+`tb_m1_frame.sv` (once with `sel_tileram`, once as the write-ack control counter), and the
+insertion was a text replace without a count. The logger therefore landed in two separate
+always blocks and wrote every command and every answer twice, sharing one counter. That is
+the whole of the "2,098 pushes, 1,121 adjacent-equal pairs" result, and the "17 spurious
+answers" count was doubled the same way (it was 17 real ones - that part stands).
+
+The 61-for-61 identical push comparison stands; the doubled stream is withdrawn; and the
+"first differing command at 97" from the pair-halved stream is unverified pending a clean run.
+
+**A text replace without a count is an edit to every match.** Count the anchor first, or
+insert at something unique. `tools/copro_stream_diff.py` now does the comparison from a single
+probe placed at `endmodule`.

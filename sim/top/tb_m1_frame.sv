@@ -1633,4 +1633,34 @@ initial begin
     $finish;
 end
 
+// ---------------------------------------------------------------------------
+// THE COPROCESSOR'S COMMAND AND ANSWER STREAMS, ONE LINE EACH, INSERTED ONCE.
+//
+// A previous version of this probe was inserted with a text replace whose
+// anchor occurred TWICE in this file, so it landed in two always blocks and
+// logged every command and answer twice - which read as "the V60 pushes each
+// command twice" and nearly became a finding. Placed at a unique anchor and
+// counted with grep before being believed.
+//
+// The command condition is exactly m1_copro_if's own push condition in S_IDLE,
+// which fires once per access because `served` drops v60_acc the next cycle;
+// fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
+integer strm_n = 0, strm_f;
+initial strm_f = $fopen("build/frame_streams.txt", "w");
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n && strm_n < 20000) begin
+        if (core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+            && core.main.copro.we && core.main.copro.sel_fifo && core.main.copro.a1
+            && !core.main.copro.fin_full) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "CMD %04h%04h\n", core.main.copro.wdata, core.main.copro.lat_lo);
+        end
+        if (core.main.copro.fifo_out_push) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,
+                    core.main.tgp.core.seq_pc);
+        end
+    end
+end
+
 endmodule
