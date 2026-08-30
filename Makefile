@@ -282,6 +282,12 @@ GEO_SRCS := rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv \
             rtl/video/m1_fp_pool.sv rtl/video/fp_to_int.sv \
             $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv
 
+render:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_render_top \
+	  -Irtl/tgp -Irtl/video $(GEO_SRCS) $(SRCS_m1_raster_fill) sim/video/render_top.sv \
+	  sim/video/tb_m1_render.cpp -o tb_render --Mdir obj_render
+	./obj_render/tb_render
+
 test_geometry:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geometry \
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) \
@@ -626,7 +632,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: render quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

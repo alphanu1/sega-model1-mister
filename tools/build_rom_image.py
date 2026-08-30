@@ -190,6 +190,11 @@ def main():
                     help='16-bit words of the packed image to emit; the default '
                          'covers ROMX, ROM0, the banked data ROMs the boot ROM '
                          'checksums, and the coprocessor regions above them')
+    ap.add_argument('-b', '--bin', action='store_true',
+                    help='also write the WHOLE packed stream as raw bytes. The '
+                         'hex preload deliberately stops before the polygon '
+                         'region - 16 MB of it as text is 60 MB - so anything '
+                         'that needs the models reads the binary instead.')
     args = ap.parse_args()
 
     stream = pack_stream(args.zip, args.game)
@@ -208,6 +213,12 @@ def main():
         for i in range(words):
             f.write('%04x\n' % (stream[i*2] | (stream[i*2+1] << 8)))
     print(f"{hexp}: {words} words ({len(stream)} bytes packed)")
+
+    if args.bin:
+        binp = os.path.join(args.out, f'{args.game}_stream.bin')
+        with open(binp, 'wb') as f:
+            f.write(stream)
+        print(f"{binp}: {len(stream)} bytes, polygons at 0x840000")
 
     vec = 0x100000 + (0xfffff0 - 0xf80000)
     print("reset vector 0xfffffff0 -> stream 0x%06x -> bytes %s" %

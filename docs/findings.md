@@ -6589,3 +6589,49 @@ one of them would have produced an obviously broken screen:
 
 Each is a one-line fix and each produces a picture. That is the argument for
 comparing against a transcribed reference rather than looking at output.
+
+---
+
+## The geometry stage draws Virtua Racing — a real frame, from real RTL
+
+**2026-08-30.** `make render` puts one frame of the reference's own state through
+`m1_geometry` and `m1_raster_fill` and writes an image.
+
+Everything the stage reads is the reference's: `tools/mame_dump_frame.lua` writes
+out the display list, the palette, the colour-translation table, the colour words
+and the light banks at a chosen frame, and the models come from the polygon ROM in
+the packed image. So a difference in the picture is the RTL's and not the input's.
+
+    display list: 33 objects, 1 viewport
+    viewport xc=248 yc=191  x 0..495  y 0..383  zoom 210,280  view 0,-30
+    records 3604, culled 884, link-0 686, quads emitted 2001
+    filled 2001 quads (168 were wireframes), 414,570 pixels painted
+
+The picture is the attract-mode chase camera: a car, the red-and-white kerb, the
+track surface, a second car up the road, and the SEGA logo. 99.8% of the frame is
+painted.
+
+**And it found a bug no unit test could have.** The first render came out entirely
+black with the geometry perfect — every quad in the right place, every one the
+same shade. `tex_data` read `0xffff` for every record, because
+`m1_geo_walk` indexed `tgp_ram` with the RAW texture address where MAME indexes
+`m_tgp_ram[tex_adr - 0x40000]`. Off by 0x40000 words, the read lands outside the
+written region and returns 0xffff, which is a **valid-looking colour word with the
+unlit bit set** - so nothing errored and nothing looked broken except the colour.
+
+The per-stage benches cannot see this: they supply `tex_data` directly and never
+exercise the address arithmetic. The integration bench cannot either, because it
+uses the same synthetic memory for both sides. It took a real dump, where the
+address means something, to expose it. **That is the argument for rendering a real
+frame as a test and not only as a demonstration.**
+
+Two pieces of the chain are still C++ rather than RTL, and both are named in the
+bench: the display-list interpretation (`m1_listwalk` is verified separately and
+decodes the same grammar) and the painter's sort (the quad store is an SDRAM
+decision that is not built yet). Everything between an object address and a span
+is RTL.
+
+Still missing from the picture: the frustum clipper, so geometry crossing the
+screen edge relies on the fill unit's 2D clamp; the band buffer, so this renders
+to a full framebuffer rather than in 64-row bands; and the 2D tilemaps, so there
+is no sky, no horizon and no HUD behind or over it.

@@ -166,7 +166,13 @@ module m1_geo_walk (
   assign busy      = (st != W_IDLE);
   assign rom_addr  = padr;
   assign rom_req   = (st == W_HDR_RD) || (st == W_REC_RD);
-  assign tex_addr  = tadr[19:0];
+  // MAME indexes `m_tgp_ram[tex_adr - 0x40000]`, so the BASE IS SUBTRACTED here.
+  // Without it every colour word is read from 0x40000 words too high, which on a
+  // real dump returns 0xffff - a valid-looking colour word with the unlit bit
+  // set - so the geometry is perfect and the entire picture comes out one shade.
+  // Found by rendering a real frame, not by any unit test: the per-stage benches
+  // supply tex_data directly and cannot see the address arithmetic.
+  assign tex_addr  = tadr[19:0] - 20'h40000;
   assign old_z_out = oldz;
 
   // lightmode: bits 20:17 of the flags, with bit 22 selecting the second bank.
