@@ -50,6 +50,21 @@
 `timescale 1ns/1ps
 
 module m1_copro_if #(
+  // AN EMPTY RESULT-FIFO READ RETURNS ZERO AND COMPLETES.
+  //
+  // MAME's gen_fifo returns zero from a pop on an empty fifo - the same rule
+  // that the TGP's inbound side needed - and the V60 POLLS this port: the
+  // reference reads 0xd80000 about 1,185 times a FRAME, 710,722 over 600 frames,
+  // spinning on in.w / test.b / bne. Every one of those reads completes.
+  //
+  // Withholding the acknowledge instead blocks the V60 on its FIRST poll, so it
+  // makes ONE read where the reference makes 1,185. Measured with the
+  // coprocessor enabled: 259 reads in ~340 frames, 0.76 per frame, a factor of
+  // ~1,500 - which no 1.63x speed deficit can explain, and which is why the
+  // outbound FIFO fills and the two processors deadlock.
+  //
+  // The stall was introduced to replace returning STALE data, which really did
+  // hang the CPU at fed5a4. Zero is the third option and the one MAME uses.
   // 8192 32-bit words: `copro_ram_data[adr & 0x1fff]` on both sides.
   parameter int unsigned RAM_WORDS = 8192,
 
@@ -338,8 +353,7 @@ module m1_copro_if #(
         S_IDLE: begin
           if (v60_ram) begin
             st <= S_V60_RAM;               // address presented this cycle
-          end else if (v60_acc && !(we && sel_fifo && a1 && fin_full)
-                                 && !(!we && sel_fifo && !a1 && fout_empty)) begin
+          end else if (v60_acc && !(we && sel_fifo && a1 && fin_full)) begin
             // Register or FIFO: no RAM, so complete now — EXCEPT the two ends of
             // the interlock, neither of which may be acknowledged.
             //
@@ -383,7 +397,7 @@ module m1_copro_if #(
                 dbg_fifo_pushes <= dbg_fifo_pushes + 16'd1;
             end
             if (!we && sel_fifo && !a1) begin
-              pop_r <= fout_head;
+              pop_r <= fout_empty ? 32'd0 : fout_head;
               if (!fout_empty) begin
                 fout_rd <= fout_rd + 1'd1;
                 if (dbg_fifo_pops != 16'hffff)
@@ -391,7 +405,8 @@ module m1_copro_if #(
               end
             end
             q <= sel_adr  ? adr
-               : sel_fifo ? (a1 ? pop_r[31:16] : fout_head[15:0])
+               : sel_fifo ? (a1 ? pop_r[31:16]
+                                : (fout_empty ? 16'd0 : fout_head[15:0]))
                :            16'hffff;
             ack    <= 1'b1;
             served <= 1'b1;

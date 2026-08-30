@@ -408,11 +408,41 @@ end
 // 20a8 at frames 300/600/900. Counting whether we reach those PCs at all
 // separates "the routine never runs" from "it runs and computes zero".
 longint pc_fe48d5 = 0, pc_fef3b5 = 0, pc_fe1469 = 0;
+// The reference's RESULT-READING block: an unrolled run of in.w at
+// ff850c-ff8538 that reads the coprocessor FIFO back to back, 202 times a frame
+// in a 300-frame window. It is what drains the outbound FIFO, and if our V60
+// never reaches it the FIFO fills whatever the speed.
+longint pc_ff850c = 0, pc_ff8510 = 0;
+// Up the call chain from the result reads, to find where we leave the path:
+//   FEFB40 jsr FF84A2  ->  FF84A2 cmp  ->  FF84AE bgt FF8582 (the skip)
+//                                      ->  FF84B1 ... FF850C (the reads)
+longint pc_fefb40 = 0, pc_ff84a2 = 0, pc_ff84ae = 0, pc_ff8582 = 0, pc_ff84b1 = 0;
+// Several levels at once. FEFA25 is the geometry submission routine - it writes
+// commands to [R24] and reads results with in.w [R23] - and it is called from a
+// list walk at FEF9C6 that compares each entry against R17 and skips the call
+// on a mismatch (FEF9CC bne FEF9D8).
+longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
+        pc_fefa93 = 0, pc_fefad1 = 0, pc_fefb00 = 0, pc_fef9d8 = 0;
 always @(posedge clk_cpu) begin
     if (core.main.rst_n) begin
         if (core.dbg_pc == 24'hfe48d5) pc_fe48d5 <= pc_fe48d5 + 1;
         if (core.dbg_pc == 24'hfef3b5) pc_fef3b5 <= pc_fef3b5 + 1;
         if (core.dbg_pc == 24'hfe1469) pc_fe1469 <= pc_fe1469 + 1;
+        if (core.dbg_pc == 24'hff850c) pc_ff850c <= pc_ff850c + 1;
+        if (core.dbg_pc == 24'hff8510) pc_ff8510 <= pc_ff8510 + 1;
+        if (core.dbg_pc == 24'hfefb40) pc_fefb40 <= pc_fefb40 + 1;
+        if (core.dbg_pc == 24'hff84a2) pc_ff84a2 <= pc_ff84a2 + 1;
+        if (core.dbg_pc == 24'hff84ae) pc_ff84ae <= pc_ff84ae + 1;
+        if (core.dbg_pc == 24'hff84b1) pc_ff84b1 <= pc_ff84b1 + 1;
+        if (core.dbg_pc == 24'hff8582) pc_ff8582 <= pc_ff8582 + 1;
+        if (core.dbg_pc == 24'hfef9c6) pc_fef9c6 <= pc_fef9c6 + 1;
+        if (core.dbg_pc == 24'hfef9cc) pc_fef9cc <= pc_fef9cc + 1;
+        if (core.dbg_pc == 24'hfef9d2) pc_fef9d2 <= pc_fef9d2 + 1;
+        if (core.dbg_pc == 24'hfef9d8) pc_fef9d8 <= pc_fef9d8 + 1;
+        if (core.dbg_pc == 24'hfefa25) pc_fefa25 <= pc_fefa25 + 1;
+        if (core.dbg_pc == 24'hfefa93) pc_fefa93 <= pc_fefa93 + 1;
+        if (core.dbg_pc == 24'hfefad1) pc_fefad1 <= pc_fefad1 + 1;
+        if (core.dbg_pc == 24'hfefb00) pc_fefb00 <= pc_fefb00 + 1;
     end
 end
 
@@ -1286,6 +1316,19 @@ initial begin
              rd_lo, rd_hi, rd_lo_empty, rd_lo_empty_acked);
     $display("FRAME: W1400 writes by pc: fe48d5=%0d  fef3b5=%0d  fe1469=%0d  other=%0d",
              w1400_48d5, w1400_f3b5, w1400_1469, w1400_other);
+    $display("FRAME: submit chain: fef9c6=%0d fef9cc=%0d -> fef9d2(call)=%0d fef9d8(skip)=%0d | fefa25=%0d fefa93=%0d fefad1=%0d fefb00=%0d",
+             pc_fef9c6, pc_fef9cc, pc_fef9d2, pc_fef9d8,
+             pc_fefa25, pc_fefa93, pc_fefad1, pc_fefb00);
+    $display("FRAME: call chain: fefb40=%0d ff84a2=%0d ff84ae=%0d -> ff84b1(reads)=%0d ff8582(skip)=%0d ff850c=%0d",
+             pc_fefb40, pc_ff84a2, pc_ff84ae, pc_ff84b1, pc_ff8582, pc_ff850c);
+    // THE GATE ON THAT BLOCK. FF84A2 compares 5011B0 against 5011A0 and FF84AE
+    // branches past every in.w if it goes the wrong way. The reference holds
+    // 5011b0 = 0x157c and keeps 5011a0 below it, so it falls through and drains
+    // the FIFO. V60 byte B maps to device.mem word 0xF80000 + (B-0x500000)/2,
+    // so 0x5011a0 is word 0xF808D0 and 0x5011b0 is 0xF808D8.
+    $display("FRAME: gate: 5011a0=%04h%04h  5011b0=%04h%04h  (reference: a0 < b0=0000157c)",
+             device.mem['hF808D1], device.mem['hF808D0],
+             device.mem['hF808D9], device.mem['hF808D8]);
     $display("FRAME: scroll-value routines reached: fe48d5=%0d  fef3b5=%0d  fe1469=%0d",
              pc_fe48d5, pc_fef3b5, pc_fe1469);
     $display("FRAME: scroll WRITES: hscr[5002]=%0d  vscr[5006]=%0d  all 5000-5007=%0d",

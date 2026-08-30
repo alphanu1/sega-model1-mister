@@ -5317,3 +5317,38 @@ particular justification does not.
 **Counting an event on a held request counts cycles.** Latch the completion edge, or count a
 signal that is asserted once per transaction. The same shape as the `pop_data` fault and the
 `m_addr[14:0]` fault: the instrument, not the design.
+
+### The V60 never enters the geometry submission path at all — 2026-08-30
+
+**This is the answer, and it is not speed.** Walking up the call chain from the coprocessor's
+result reads, none of it is reached in 525 frames:
+
+    FEF9C6 list walk      0     FEFA25 submit    0     FEFB40 jsr       0
+    FEF9CC cmp/bne        0     FEFA93           0     FF84A2 gate      0
+    FEF9D2 bsr FEFA25     0     FEFAD1           0     FF84AE bgt       0
+    FEF9D8 (the skip)     0     FEFB00 in.w      0     FF850C in.w      0
+
+The reference runs `FF850C` **202 times a frame**. We run it zero times, while running
+neighbouring routines - `fef3b5` 2,359 times, `fe48d5` 2,335 - thousands of times in the same
+window. So this is one large routine that is simply never entered, not a path taken less often.
+
+`FEF7xx-FEFBxx` is the geometry submission routine: it writes commands to `[R24]` and reads
+results back with `in.w [R23]`, and `FF84A2` is the block-read that drains the FIFO. **Not
+entering it explains every open symptom at once** — nobody drains the outbound FIFO, so it
+fills and the two processors deadlock; and the scroll inputs at `0x501a2c`/`0x501424` never
+receive coprocessor data, so the background does not scroll horizontally.
+
+**The gate is NOT the reason.** `FF84A2` compares `0x5011B0` against `0x5011A0` and `FF84AE`
+branches past the reads on the wrong result — but our values are `5011a0 = 0` and
+`5011b0 = 0x157c`, identical to the reference's, so the branch would fall through correctly if
+it were ever reached.
+
+**So the chain recorded earlier is wrong where it blamed speed.** "V60 1.63x too slow ->
+deadlock -> parked coprocessor -> static scroll" put a throughput number in a place that needs
+a control-flow answer: a 1.63x deficit cannot turn 202 executions a frame into zero, and the
+arithmetic said so all along — the reference reads that FIFO ~1,185 times a frame against our
+0.49, a factor of ~2,400.
+
+Finding what calls `FEF7xx` and why we do not is the next step, and `make v60_trace` over a
+window that reaches it is the instrument. The traced window currently ends around frame 115,
+before this routine runs, which is why every trace comparison so far has agreed.

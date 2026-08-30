@@ -324,25 +324,31 @@ int main(int argc, char** argv) {
     printf("  word 0 reads %04x_%04x at reset\n", hi, lo);
   }
 
-  printf("test: an EMPTY outbound FIFO stalls the V60 instead of returning stale data\n");
+  printf("test: an EMPTY outbound FIFO reads as ZERO and completes\n");
   {
-    // The other end of the same interlock, and the one that was missing.
-    // model1_m.cpp:37-44 wires copro_fifo_out symmetrically with copro_fifo_in:
-    // the V60 stalls and is HALTED when the FIFO it reads is empty, and is
-    // released when the TGP pushes.
+    // THIS TEST ASSERTED A STALL UNTIL 2026-08-30, AND THAT WAS WRONG.
     //
-    // Without this the read acknowledged and returned `fout_head`, which on an
-    // empty FIFO is stale. The V60 took that for a result, branched on it, and
-    // span at fed5a4 forever while the TGP sat at pc 0x0492 waiting for a
-    // command — confirmed on hardware 2026-08-18, overlay row 10 = 000492.
+    // There are three possible behaviours and only one is MAME's. Returning
+    // STALE data really did hang the CPU at fed5a4 — that part of the old
+    // comment stands. But the fix chosen was to stall, and MAME does neither:
+    // gen_fifo.h says "the pop itself will then return zero".
+    //
+    // The V60 POLLS this port. The reference reads 0xd80000 about 1,185 times a
+    // FRAME — 710,722 over 600 frames — spinning on in.w / test.b / bne, and
+    // every one of those reads completes. Stalling blocks the V60 on its FIRST
+    // poll: measured with the coprocessor enabled, ours made 259 reads in ~340
+    // frames against 1,185 per frame, a factor of ~1,500 that no speed
+    // difference explains. The outbound FIFO then fills and the two processors
+    // deadlock, which on the board is a frozen picture.
     Dut t;
 
-    // Offset 0 on an empty outbound FIFO must NOT be acknowledged.
+    // Offset 0 on an empty outbound FIFO returns zero AND completes.
     t.d->sel_fifo = 1; t.d->sel_adr = 0; t.d->sel_ram = 0;
     t.d->req = 1; t.d->we = 0; t.d->a1 = 0;
     bool acked = false;
     for (int i = 0; i < 12; i++) { t.tick(); if (t.d->ack) acked = true; }
-    check(!acked, "a read of an empty outbound FIFO was acknowledged");
+    check(acked, "a read of an empty outbound FIFO was not acknowledged");
+    check(t.d->q == 0, "an empty outbound FIFO must read as zero, not stale data");
     t.idle();
 
     // Push a result from the TGP side; the read must then complete.
