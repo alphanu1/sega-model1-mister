@@ -259,6 +259,75 @@ static void run_directed() {
     printf("  one request served once, the mid-flight requests dropped\n");
   }
 
+  printf("test: a LEVEL requester that changes address the cycle after the ack gets the NEW word\n");
+  {
+    // THE COPROCESSOR'S REQUESTER IS A LEVEL, NOT A PULSE. mb86233_core holds
+    // io_rd through m1_tgp -> m1_integrated -> this port's a_req until io_ack,
+    // sees the ack during the ack cycle with its OLD address still on the bus,
+    // and presents the next read the cycle after. Two back-to-back io reads
+    // (microcode 0370 `mov $0x22 (e)` then 0371 `mov $0x21 (e)`) are exactly
+    // that sequence.
+    //
+    // The port used to accept on `a_req && !a_busy`, and a_busy clears on the
+    // edge that raises a_ack - so on the ack+1 edge the held level was
+    // re-accepted WITH THE OLD ADDRESS, a duplicate transaction ran, the real
+    // next request was ignored as busy, and the duplicate's ack arrived with
+    // the old data as though it were the new read's. Measured 2026-08-30 as
+    // the sincos unit returning table entry 0x131 for a read whose index was
+    // 0x3ecf, 249 events into an otherwise identical stream, and from there
+    // every coprocessor answer that touched sincos.
+    //
+    // tick_a() drops a_req at the end of every tick, so the level is
+    // re-asserted before each one. tb_m1_cdc_port's other requesters are
+    // pulses; this is the only test that holds the line.
+    Bridge t; t.lat = 4; t.reset();
+    for (size_t i = 0; i < t.mem.size(); i++) t.mem[i] = (uint16_t)(i * 7 + 1);
+    long before = t.b_transactions;
+
+    // First read: address A, held as a level until the ack.
+    t.exp_addr = 0x0131; t.exp_we = false; t.exp_data = t.mem[0x0131];
+    t.outstanding = true;
+    long guard = 0;
+    while (t.outstanding && ++guard < 10000) {
+      t.d->a_req = 1; t.d->a_we = 0; t.d->a_addr = 0x0131; t.d->a_be = 3;
+      t.tick_a();
+      t.tick_b(); t.tick_b(); t.tick_b(); t.tick_b();
+    }
+    checks++;
+    if (t.outstanding) { fails++; printf("  FAIL the first read never completed\n"); }
+
+    // The ack was seen on that last tick. THE REAL CORE STILL PRESENTS A ON
+    // THE NEXT EDGE: it sees io_ack during the ack cycle, its state advances at
+    // the end of it, and the address follows the state - so address B is on
+    // the bus only from the edge after that. A bench that switches to B in
+    // zero time is faster than the hardware and does not reproduce the
+    // hazard; the first version of this test did exactly that and passed on
+    // the broken port. One tick with A held, then B.
+    t.d->a_req = 1; t.d->a_we = 0; t.d->a_addr = 0x0131; t.d->a_be = 3;
+    t.tick_a();
+    t.tick_b(); t.tick_b(); t.tick_b(); t.tick_b();
+
+    t.exp_addr = 0x3ecf; t.exp_data = t.mem[0x3ecf];
+    t.outstanding = true;
+    guard = 0;
+    while (t.outstanding && ++guard < 10000) {
+      t.d->a_req = 1; t.d->a_we = 0; t.d->a_addr = 0x3ecf; t.d->a_be = 3;
+      t.tick_a();                     // tick_a checks a_dout against exp_data
+      t.tick_b(); t.tick_b(); t.tick_b(); t.tick_b();
+    }
+    checks++;
+    if (t.outstanding) { fails++; printf("  FAIL the second read never completed\n"); }
+    checks++;
+    if (t.b_transactions != before + 2) {
+      fails++;
+      printf("  FAIL %ld memory transactions for two reads (expected 2: a duplicate ran)\n",
+             t.b_transactions - before);
+    }
+    t.d->a_req = 0;
+    for (int i = 0; i < 8; i++) { t.tick_a(); t.tick_b(); t.tick_b(); t.tick_b(); t.tick_b(); }
+    printf("  two back-to-back level reads, two transactions, the second returned its own word\n");
+  }
+
   printf("test: a spurious ack with nothing outstanding is ignored\n");
   {
     Bridge t; t.lat = 0; t.reset();

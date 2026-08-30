@@ -60,7 +60,7 @@ module m1_cdc_port #(
   // ---------------------------------------------------- requester, slow domain
   input  logic           a_clk,
   input  logic           a_rst_n,
-  input  logic           a_req,     // one-cycle pulse
+  input  logic           a_req,     // pulse OR level; a level is re-accepted only after a gap cycle
   input  logic           a_we,
   input  logic [AW-1:0]  a_addr,
   input  logic [DW-1:0]  a_din,
@@ -95,6 +95,7 @@ module m1_cdc_port #(
 
   // ------------------------------------------------------------- slow domain
   logic ack_s1, ack_s2, ack_s3;
+  logic a_req_d;
 
   always_ff @(posedge a_clk or negedge a_rst_n) begin
     if (!a_rst_n) begin
@@ -107,14 +108,38 @@ module m1_cdc_port #(
       x_be    <= '0;
       x_we    <= 1'b0;
       {ack_s3, ack_s2, ack_s1} <= 3'b000;
+      a_req_d <= 1'b0;
     end else begin
       {ack_s3, ack_s2, ack_s1} <= {ack_s2, ack_s1, ack_tog};
+      a_req_d <= a_req;
       a_ack <= 1'b0;
 
       // A request while one is outstanding is dropped rather than queued. The
       // V60 bus cannot produce one — it waits for its ack — and silently
       // accepting a second would corrupt the payload of the first.
-      if (a_req && !a_busy) begin
+      // NOT ON THE CYCLE AFTER AN ACK. a_busy clears on the same edge that
+      // raises the one-cycle a_ack, so on the next edge `a_req && !a_busy` was
+      // true again for a requester that holds a_req as a LEVEL - and its
+      // address on that cycle is still the OLD one, because it only learns of
+      // the ack during that cycle and moves on at its end. The port then ran a
+      // duplicate transaction at the old address, ignored the requester's real
+      // next request while busy, and delivered the duplicate's ack - with the
+      // old data - as if it were the new read's.
+      //
+      // Measured 2026-08-30 on the coprocessor's sincos unit, microcode
+      // 0370/0371 - two back-to-back io reads with no gap: the second returned
+      // the first's word (table entry 0x131 for a read whose index was 0x3ecf),
+      // 249 events into an otherwise identical stream. The V60's bus FSM drops
+      // its request on the ack cycle and idles before the next, which is why
+      // that path never showed it; the TGP core presents its next read at once.
+      // `a_ack` is registered and high for exactly that one cycle; the
+      // requester's new address is on the bus by the cycle after.
+      // ...but a fresh PULSE that lands on the ack cycle must still be taken,
+      // or it is lost and the requester hangs - tb_m1_cdc_port's requester does
+      // exactly that and completed 1 of 20,000 with a bare `!a_ack` guard. What
+      // distinguishes the stale level is that a_req was ALREADY high on the ack
+      // cycle: a_req_d carries that.
+      if (a_req && !a_busy && !(a_ack && a_req_d)) begin
         x_addr  <= a_addr;
         x_din   <= a_din;
         x_be    <= a_be;

@@ -5915,3 +5915,41 @@ answers barely moved; and with the outbound zero-read in place, the results the 
 came back for filled fout and deadlocked the pair. Each of those was measured as a separate
 symptom this weekend and attributed to something else - speed, the FIFO semantics, a
 microcode handler, a single object bit - before the store was traced.
+
+### THE SECOND BUG: the CDC port re-accepted a held request with its OLD address — 2026-08-30
+
+With the IN fix in, the command stream is identical over all 4,000 and the answers diverge
+at #767, from microcode `037c`, on identical inputs. That handler computes from a sincos
+lookup, so the sincos unit's traffic was logged on both sides (`tools/sincos_diff.py`,
+addresses normalised - our probe logs unit-relative 0-3, MAME's tap absolute 0x20-0x23):
+
+    249 events identical, then
+      MAME  SCW 20=00000131  SCR 22=bcef8326  SCR 21=3f7fe3fc
+      ours  SCW 20=00000131  SCR 22=bcef8326  SCR 21=3cef8326
+
+Same base, same first read, and the second read - `0371: mov $0x21 (e)` immediately after
+`0370: mov $0x22 (e)` - returned **the previous lookup's table word** (entry 0x131, unflipped)
+instead of the mirrored entry 0x3ecf. Not the table, not the unit: a back-to-back handshake.
+
+**The mechanism, in `m1_cdc_port`.** It accepted on `a_req && !a_busy`, and `a_busy` clears
+on the same edge that raises the one-cycle `a_ack`. The TGP core holds its request as a
+LEVEL: it sees `io_ack` during the ack cycle with its old address still on the bus, and
+presents the next read only from the following edge. So on the ack+1 edge the port saw
+`a_req && !a_busy` again and re-accepted **the old address**; ran a duplicate transaction;
+ignored the core's real next request as busy; and delivered the duplicate's ack - with the
+old data - as if it were the new read's. Every sincos-dependent answer from there was wrong.
+
+The V60's path never showed it because `m1_main` drops `sdr_req` on the ack cycle and idles
+through B_ACK before issuing again; the port's comment even documented `a_req` as a
+one-cycle pulse. Both real requesters drive a level.
+
+**The fix**: refuse acceptance on the ack cycle only when the request was ALREADY high on the
+ack cycle - `!(a_ack && a_req_d)`. A bare `!a_ack` guard drops a fresh pulse that lands on
+that cycle and hangs the requester: the port's fuzz bench completed 1 of 20,000 that way.
+
+**The test models the core's one-cycle lag, and had to.** A bench requester that switches to
+the new address in zero time after the ack is faster than the hardware and passed on the
+broken port; presenting the old address for one more edge, as the core does, makes the old
+port fail (`addr 3ecf read 0858, expected b7aa`) and the new one pass. Both were run.
+
+    m1_cdc_port: checks=254848 -> 254853 fails=0     make test 38/38
