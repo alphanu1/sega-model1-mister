@@ -1646,6 +1646,8 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
+reg mx_d = 1'b0;
+reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
     if (core.main.rst_n && strm_n < 20000) begin
@@ -1653,8 +1655,25 @@ always @(posedge clk_cpu) begin
             && core.main.copro.we && core.main.copro.sel_fifo && core.main.copro.a1
             && !core.main.copro.fin_full) begin
             strm_n = strm_n + 1;
-            $fwrite(strm_f, "CMD %04h%04h\n", core.main.copro.wdata, core.main.copro.lat_lo);
+            $fwrite(strm_f, "CMD %04h%04h f=%0d\n", core.main.copro.wdata, core.main.copro.lat_lo, frames);
         end
+        // WRITES TO THE OPERAND MATRIX at V60 0x400d72..0x400da1 (72[R20] with
+        // R20 = [0x40C900] = 0x400d00 in the reference), with the writing PC and
+        // the frame. m_addr is [23:1], so byte 0x400d72 is 0x2006B9.
+        if (core.main.m_we && core.main.m_ack
+            && core.main.m_addr[23:1] >= 23'h2006B9 && core.main.m_addr[23:1] <= 23'h2006D0
+            && !mx_d) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "MXW %06h pc=%06h data=%04h f=%0d\n",
+                    {core.main.m_addr[23:1], 1'b0}, core.dbg_pc, core.main.m_wdata, frames);
+        end
+        mx_d <= core.main.m_we && core.main.m_ack
+             && core.main.m_addr[23:1] >= 23'h2006B9 && core.main.m_addr[23:1] <= 23'h2006D0;
+        if (core.dbg_pc == 24'hfeda02 && core.dbg_pc != mxpc_d) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "ENTER feda02 f=%0d\n", frames);
+        end
+        mxpc_d <= core.dbg_pc;
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,

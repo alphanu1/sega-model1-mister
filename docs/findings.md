@@ -5843,3 +5843,35 @@ the outbound side by this. Both FIFOs now stall on empty, as they did before yes
 
 `m1_copro_if` and its test are reverted to the stall; the test's comment records why the
 zero-and-complete version stood for a day.
+
+### The revert fixes the deadlock; the zeros at command 673 are something else — 2026-08-30
+
+Same 700 M-cycle window, outbound stall restored:
+
+    before   fin=16/16 fout=16/16 v60_stall=1 from frame ~483   1,136 commands   438 answers
+    after    fin=0/16  fout=0/16  v60_stall=0 throughout       13,947 commands  5,995 answers
+
+**No deadlock, and twelve times the coprocessor traffic.** That part of the entry above
+stands. What does NOT stand is the explanation for the zeros: with the stall back, command
+673 STILL pushes `00000000 x4` where the reference pushes four floats, so the zero-read was
+not what zeroed the matrix. And the link that entry inferred - that `FF850C` fills the matrix
+- is wrong: `R5 = [0x5017F4] = 0x60xxxx`, the coprocessor RAM window, so `FF850C` stores
+results into copro RAM, not into `72[R20]`.
+
+**Who actually fills the matrix, measured on the reference** (`build/dasm/matrix.lua`):
+
+    FEDA41: mov.w #D000000, [R24]      command 0D000000
+    FEDA49: mov.w [R3+], [R24]         three ROM vectors from 0xFD3826
+    FEDA4D / FEDA51
+    FEDA55: in.w  [R23], [R4+]         three RESULTS into 72[R25], 76, 7A
+    FEDA59 / FEDA5D
+    ... four times over, 12 floats
+
+So the matrix is built from coprocessor ANSWERS to command 0D000000, and it is zero in the
+reference too until that routine first runs: `MXW 400d72 pc=feda55 f=272`, and command 673
+follows at `f=273`. One frame apart, same pass.
+
+    FEDA55 executions   ours 16 in ~281 frames    reference 8,518 in ~798 frames
+
+Two hundred times rarer here. Whether ours has run `FEDA02` by ITS command 673 is what the
+frame-stamped capture answers.
