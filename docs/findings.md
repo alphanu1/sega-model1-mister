@@ -5805,3 +5805,41 @@ The 61-for-61 identical push comparison stands; the doubled stream is withdrawn;
 **A text replace without a count is an edit to every match.** Count the anchor first, or
 insert at something unique. `tools/copro_stream_diff.py` now does the comparison from a single
 probe placed at `endmodule`.
+
+### THE DEADLOCK'S CAUSE: the outbound zero-on-empty change, measured and reverted — 2026-08-30
+
+With a single, verified probe (`tools/copro_stream_diff.py`), shipped configuration, 526
+frames:
+
+    commands  672 identical, then at 673:
+      MAME   18800000  c34e5382 41f15c2c 408ac7be c34c86b6
+      ours   18800000  00000000 00000000 00000000 00000000
+    answers   258 identical, then at 259 (704 commands in - AFTER the command divergence):
+      MAME   00000000     ours   ffffffff   from microcode pc=045d
+
+**The command stream diverges first**, so the coprocessor's wrong answers are downstream of
+being fed zeros. Where the zeros come from, read off the reference trace:
+
+    FF84B6: mov.w  5017F4, R5          destination pointer
+    FF850C: in.w   [R23], [R5+]        result reads, stored through R5   <- fills the matrix
+    ...
+    FEB58A: mov.w  40C900, R20         structure pointer
+    FEB5F7: mov.w  #18800000, [R24]
+    FEB5FF: mov.w  72[R20], [R24]      the matrix pushed back as operands
+    ...     9E[R20]
+
+So the operands ARE earlier results, read back at `FF850C` and stored. **The outbound
+zero-on-empty change made that read return zero instead of waiting.** Our TGP runs at 1:1 with
+the V60 where the board runs 2.5:1, so the V60 reaches `FF850C` before the results exist,
+consumes zeros, stores zeros, and pushes zeros at command 673. The real results then arrive
+in `fout` with nobody coming back for them: `fout` fills, the TGP halts, it stops consuming,
+`fin` fills, the V60 halts at `ff8504`. That is the whole deadlock, and it explains the
+measured order - `fout=16/16` with `fin` empty first, then both.
+
+**gen_fifo returns zero from the pop AND makes the reader retry.** The retry is what matters:
+the zero is never consumed. Quoting the first half without the second inverted the behaviour,
+in BOTH directions, one day apart. The inbound side was caught by the 17 spurious answers;
+the outbound side by this. Both FIFOs now stall on empty, as they did before yesterday.
+
+`m1_copro_if` and its test are reverted to the stall; the test's comment records why the
+zero-and-complete version stood for a day.

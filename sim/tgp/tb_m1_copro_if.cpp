@@ -324,7 +324,7 @@ int main(int argc, char** argv) {
     printf("  word 0 reads %04x_%04x at reset\n", hi, lo);
   }
 
-  printf("test: an EMPTY outbound FIFO reads as ZERO and completes\n");
+  printf("test: an EMPTY outbound FIFO stalls the V60 - the read must retry, not consume a zero\n");
   {
     // THIS TEST ASSERTED A STALL UNTIL 2026-08-30, AND THAT WAS WRONG.
     //
@@ -347,8 +347,13 @@ int main(int argc, char** argv) {
     t.d->req = 1; t.d->we = 0; t.d->a1 = 0;
     bool acked = false;
     for (int i = 0; i < 12; i++) { t.tick(); if (t.d->ack) acked = true; }
-    check(acked, "a read of an empty outbound FIFO was not acknowledged");
-    check(t.d->q == 0, "an empty outbound FIFO must read as zero, not stale data");
+    // The zero-and-complete version of this test stood for one day. MAME's
+    // gen_fifo returns zero from the pop AND makes the reader retry, so the
+    // zero is never consumed; acknowledging it here let the V60 consume it,
+    // store it into a matrix and push it back as an operand - measured as
+    // 00000000 x4 at command 673 where the reference pushes floats - and the
+    // unread real results then filled fout and deadlocked the pair.
+    check(!acked, "a read of an empty outbound FIFO was acknowledged");
     t.idle();
 
     // Push a result from the TGP side; the read must then complete.
