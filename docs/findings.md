@@ -6020,3 +6020,22 @@ Logging that exchange's (operand, answer) pairs per frame on both sides separate
 
 Frame offset: ours reaches the same program point ~55 frames later (f=328 against f=273),
 the 1.25x speed ratio, as expected.
+
+### Scroll: identical operands and answers, a third the update RATE — 2026-08-30
+
+The exchange the scroll value comes from (`FEF37A` pushes the operand, `FEF388` reads the
+answer), per frame, both sides:
+
+    reference   OPER ffffef9e f=273  ffffefc5 f=275  ffffefec f=277  fffff014 f=279
+    ours        OPER ffffef9e f=327  ffffefc5 f=334
+
+**The operands are identical and so are the answers** (`42c85e9d`, `42c69b41`) - the
+coprocessor path is exact. The reference runs the update every 2 frames; we run it every 7.
+So the horizon lands on the right values in the right order but steps in larger jumps, which
+on screen reads as flicking between positions rather than drifting. That is a RATE difference,
+consistent with the 1.25x speed deficit and whatever else throttles that path, not an
+arithmetic fault - and the earlier "alternates two states" reading was the same thing seen
+through the write stream.
+
+Nothing further is learnable about the 2D from here without the 3D running: the rasteriser is
+what makes the rest of the frame's work exist.

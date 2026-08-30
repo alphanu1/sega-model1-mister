@@ -1646,7 +1646,8 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
-reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0, scr_d = 1'b0;
+reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0, scr_d = 1'b0, sx_w_d = 1'b0, sx_r_d = 1'b0;
+reg [15:0] sx_lo = 16'd0, sx_rlo = 16'd0;
 reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
@@ -1725,6 +1726,28 @@ always @(posedge clk_cpu) begin
         end
         scr_d <= core.main.m_we && core.main.m_ack && core.main.sel_tileram
               && (core.main.m_addr[15:1] == 15'h5002 || core.main.m_addr[15:1] == 15'h5006);
+        // THE SCROLL EXCHANGE, per frame: the operand the V60 pushes at FEF37A
+        // (movs.hw E5[R25]) and the answers it reads at FEF388. Ours writes 2064
+        // and 2032 to 0x5006 on alternate frames where the reference advances;
+        // this says whether the QUESTION alternates or the ANSWER does.
+        if (core.main.m_we && core.main.m_ack && !sx_w_d
+            && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9
+            && core.dbg_pc == 24'hfef37a) begin
+            strm_n = strm_n + 1;
+            if (core.main.m_addr[1]) $fwrite(strm_f, "OPER %04h%04h f=%0d\n", core.main.m_wdata, sx_lo, frames);
+            else sx_lo = core.main.m_wdata;
+        end
+        sx_w_d <= core.main.m_we && core.main.m_ack
+               && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9;
+        if (core.main.m_req && !core.main.m_we && core.main.m_ack && !sx_r_d
+            && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9
+            && core.dbg_pc == 24'hfef388) begin
+            strm_n = strm_n + 1;
+            if (core.main.m_addr[1]) $fwrite(strm_f, "ANSW %04h%04h f=%0d\n", core.main.m_rdata, sx_rlo, frames);
+            else sx_rlo = core.main.m_rdata;
+        end
+        sx_r_d <= core.main.m_req && !core.main.m_we && core.main.m_ack
+               && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9;
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,
