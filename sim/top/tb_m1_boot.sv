@@ -1189,35 +1189,49 @@ end
 // AND HOW MUCH IS THE CROSSING ITSELF.
 //
 // The controller accounts for 8.7 of the ~116 cycles of this domain that the CPU
-// waits, so ~107 are the CDC and the bus FSM. The 3-flop toggle synchronisers
-// should cost about 3 A-domain cycles one way and 3 B-domain cycles the other -
-// roughly 4 CPU cycles of the 26 unaccounted for. This splits the A side three
-// ways rather than assuming which part is slow:
+// waits, so ~107 are the CDC and the bus FSM. This splits the path:
 //
-//   issue   a_req accepted (a_busy rises) to b_req seen by the controller
+//   issue   a_req rising to b_req reaching the controller
 //   serve   b_req to b_ack
-//   ret     b_ack to a_ack back in the CPU's domain
+//   ret     b_ack back to a_ack in the CPU's domain
 //
-// Counted in CPU-domain cycles, which is the unit the 27.9 is quoted in.
+// MEASURED ENTIRELY IN THE 80 MHz DOMAIN, and that is the point. The first
+// attempt ran these counters on clk_cpu and saw NOTHING - m_sdr_req/m_sdr_ack
+// are clk_sys signals at 4.17x this clock, so their one-cycle pulses fell
+// between slow edges and the accumulator never fired. Sampling a FAST signal
+// from a SLOW clock loses pulses; sampling a SLOW signal from a FAST clock only
+// costs a cycle of jitter. a_req is held until ack and a_ack is a full CPU cycle
+// wide, so both survive being watched from here.
 integer cdc_n = 0, cdc_issue = 0, cdc_serve = 0, cdc_ret = 0;
 integer cdc_t0, cdc_tb, cdc_te;
 reg     cdc_busy = 1'b0, cdc_saw_b = 1'b0, cdc_saw_e = 1'b0;
-reg     cdc_req_d = 1'b0;
-always @(posedge clk_cpu) begin
-    cdc_req_d <= data_cdc.a_req;
-    if (rst_n_cpu) begin
-        if (data_cdc.a_req && !cdc_req_d && !cdc_busy) begin
-            cdc_busy <= 1'b1; cdc_saw_b <= 1'b0; cdc_saw_e <= 1'b0; cdc_t0 = cycles;
+reg     cdc_areq_d = 1'b0, cdc_breq_d = 1'b0, cdc_aack_d = 1'b0;
+always @(posedge clk) begin
+    cdc_areq_d <= data_cdc.a_req;
+    cdc_breq_d <= m_sdr_req;
+    cdc_aack_d <= data_cdc.a_ack;
+    if (rst_n_sys) begin
+        if (data_cdc.a_req && !cdc_areq_d && !cdc_busy) begin
+            cdc_busy <= 1'b1; cdc_saw_b <= 1'b0; cdc_saw_e <= 1'b0;
+            cdc_t0 = sys_cycles;
         end
-        if (cdc_busy && !cdc_saw_b && m_sdr_req) begin cdc_saw_b <= 1'b1; cdc_tb = cycles; end
-        if (cdc_busy && cdc_saw_b && !cdc_saw_e && m_sdr_ack) begin cdc_saw_e <= 1'b1; cdc_te = cycles; end
-        if (cdc_busy && data_cdc.a_ack) begin
+        if (cdc_busy && !cdc_saw_b && m_sdr_req && !cdc_breq_d) begin
+            cdc_saw_b <= 1'b1; cdc_tb = sys_cycles;
+        end
+        // p_ack[0], NOT m_sdr_ack: the CDC's b_ack is wired to p_ack[0] and
+        // m_sdr_ack is a declared-but-UNDRIVEN wire, so it reads zero forever
+        // and this stage never fired. Two runs printed nothing at all, which is
+        // indistinguishable from code that is never reached.
+        if (cdc_busy && cdc_saw_b && !cdc_saw_e && p_ack[0]) begin
+            cdc_saw_e <= 1'b1; cdc_te = sys_cycles;
+        end
+        if (cdc_busy && data_cdc.a_ack && !cdc_aack_d) begin
             cdc_busy <= 1'b0;
             if (cdc_saw_b && cdc_saw_e) begin
                 cdc_n     = cdc_n + 1;
                 cdc_issue = cdc_issue + (cdc_tb - cdc_t0);
                 cdc_serve = cdc_serve + (cdc_te - cdc_tb);
-                cdc_ret   = cdc_ret   + (cycles - cdc_te);
+                cdc_ret   = cdc_ret   + (sys_cycles - cdc_te);
             end
         end
     end
@@ -1646,7 +1660,7 @@ initial begin
                  ph_b/ph_n, ((ph_b*10)/ph_n)%10,
                  ph_c/ph_n, ((ph_c*10)/ph_n)%10);
     if (cdc_n > 0)
-        $display("BOOT: data CDC over %0d accesses (CPU cycles): issue=%0d.%0d  serve=%0d.%0d  return=%0d.%0d",
+        $display("BOOT: data CDC over %0d accesses (80 MHz cycles): issue=%0d.%0d  serve=%0d.%0d  return=%0d.%0d",
                  cdc_n, cdc_issue/cdc_n, ((cdc_issue*10)/cdc_n)%10,
                  cdc_serve/cdc_n, ((cdc_serve*10)/cdc_n)%10,
                  cdc_ret/cdc_n, ((cdc_ret*10)/cdc_n)%10);

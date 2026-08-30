@@ -5113,3 +5113,36 @@ and now a fast-domain pulse sampled slowly.
 
 What stands without it: **8.7 of ~116 cycles are the controller**, so ~26 of the CPU's 36
 cycles are the crossing and the bus FSM, and that is where the 1.25x CPI lives.
+
+### CORRECTION: those bus figures were in 80 MHz cycles, not CPU cycles — 2026-08-30
+
+`tb_m1_boot`'s `cycles` counter increments on **`clk`**, which is `clk_sys` at 80 MHz, not
+`clk_cpu` at 19.2. Every latency figure quoted from the by-page table and the phase split
+above is therefore in 80 MHz cycles, and dividing by the 4.17 ratio changes the conclusion.
+
+    work RAM access   36 clk_sys = 8.6 CPU cycles     (NOT 36 CPU cycles)
+    on-chip access     8 clk_sys = 1.9 CPU cycles
+
+    dispatch  4.0   path 27.9   finish  4.0           all clk_sys
+      within the path:  issue 7.0  serve 8.5  return 11.4  = 26.9
+      controller:       1.1 arbitration + 7.4 service = 8.5
+
+**The three measurements agree with each other and with the CDC's structure**, which is what
+identifies the units as the error rather than the design: the 26.9 measured across the
+crossing matches the 27.9 measured at the bus, and the 8.5 measured inside the controller
+matches the crossing's own `serve`. A 3-flop toggle each way over a 4.17:1 ratio predicts
+about this.
+
+**What this overturns.** The claim that the SDRAM path was ~150 cycles of the 80 MHz domain
+for a read needing 9 — "a factor of thirteen is not the memory" — was the same number divided
+by the wrong clock. And with it, the claim that the speed deficit is in the bus rather than
+the CPU:
+
+    total CPI 14.9  =  ~10.7 execution  +  ~4.2 stall
+
+which is the split already recorded for this core. **Execution dominates.** Halving the CDC
+saves perhaps 2 cycles an instruction against the 3 that 1.25x needs, so it is worth doing but
+is not sufficient alone, and the V60's own execution CPI is back on the critical path.
+
+**Check the clock a testbench counter runs on before quoting it.** The by-page table has been
+in this bench for weeks and its unit was never stated.
