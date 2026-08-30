@@ -5520,3 +5520,26 @@ self-loops needed. `tools/v60_collapse.py` exists for exactly this and was not u
 **The Z80 I/O board is probably still the right thing** — the Model 2 core found HLE
 insufficient where the board COMPUTES rather than responds, and it is the same physical PCB —
 but the evidence offered for it above was not evidence.
+
+### The V60's FP group IS used, so the 2,984 ALM lever is closed — 2026-08-30
+
+`make m1_frame FRAME_CYCLES=700000000 FRAME_DEFS=+define+S32_V60_NO_FP`:
+
+    cycles=421763431  halted=1  fp_trap=1        the trap fires at about frame 326
+    layer px  tm0=0 tm1=0 tm2=0 tm3=0            the CPU is stopped, so nothing draws
+
+**Virtua Racing executes V60 floating-point instructions.** `docs/m1-m4-plan.md` recorded
+removing the FP group as worth **-2,984 ALM**, about 10% of the device, held open because
+"whether Model 1 game code executes V60 FP instructions is unverified". It is verified now and
+the answer is that the group must stay.
+
+**The question could not be answered before because the test was vacuous.** `dbg_fp_trap` is
+inert by construction in a build that HAS floating point — it only means anything under
+`S32_V60_NO_FP` — and `make m1_frame` had no way to pass a define. `FRAME_DEFS` did not exist,
+so `make m1_frame FRAME_DEFS=+define+S32_V60_NO_FP` silently built the ordinary core and
+reported `fp_trap=0`, which reads exactly like "no FP is used". Only `m1_boot` had `BOOT_DEFS`.
+The variable is added, mirroring `BOOT_DEFS`.
+
+**A define that does not reach the build is worse than no test**, because it produces the
+answer you were hoping for. Check that the switch moved something — here, `halted=1` and a
+blank screen are what the define actually doing its job looks like.

@@ -649,7 +649,7 @@ m1_frame:
 	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
-	  +define+SIMULATION --top-module tb_m1_frame \
+	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GTRACE_FRAMES=$(FRAME_TRACE) \
@@ -677,6 +677,10 @@ FRAME_TRACE ?= 0
 V60_PCTRACE ?= 0
 # Raise for a longer comparison window; 4 M stops at ~2.5 emulated seconds.
 V60_PCTRACE_MAX ?= 4000000
+# Extra defines for the FRAME bench, mirroring BOOT_DEFS. Without this,
+# `make m1_frame FRAME_DEFS=...` was silently ignored and the run reported a
+# clean result for a build that never had the define.
+FRAME_DEFS ?=
 V60_WRTRACE ?= 0
 
 # The ROM arrives over ioctl by default, because that is what hardware does and
