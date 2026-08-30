@@ -89,20 +89,20 @@ module m1_fp_pool #(
   // The winner is chosen with a plain priority chain over a ROTATED request
   // vector, walked from the last index down so the lowest rotated index wins.
   // No loop-with-break: yosys rejects it (docs/rtl-conventions.md).
-  function automatic [CW-1:0] rr_pick(input logic [NC-1:0] req, input logic [CW-1:0] start);
+  function automatic [CW-1:0] rr_pick(input logic [NC-1:0] req, input logic [CW-1:0] first);
     logic [CW-1:0] best;
     logic          found;
-    best  = start;
+    best  = first;
     found = 1'b0;
     for (int k = NC - 1; k >= 0; k--) begin
       int unsigned idx;
-      idx = (int'(start) + k) % NC;
+      idx = (int'(first) + k) % NC;
       if (req[idx]) begin
         best  = CW'(idx);
         found = 1'b1;
       end
     end
-    rr_pick = found ? best : start;
+    rr_pick = found ? best : first;
   endfunction
 
   wire [CW-1:0] mul_win = rr_pick(mul_req, mul_rr);

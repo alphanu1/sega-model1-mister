@@ -216,3 +216,38 @@ module m1_geo_color_top (
     .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
   );
 endmodule
+
+module m1_geo_norm_top (
+  input  logic        clk, rst_n,
+  input  logic        in_valid,
+  output logic        in_ready,
+  input  logic [31:0] in_x, in_y, in_z,
+  output logic        out_valid,
+  output logic [31:0] out_x, out_y, out_z
+);
+  logic [0:0] mr, mg, mrsp, ar, ag, arsp, dr, dg, drsp;
+  logic [31:0] ma [1], mb [1], aa [1], ab [1], da [1], db [1];
+  logic [0:0]  asub;
+  logic [31:0] mres, ares, dres;
+
+  m1_geo_norm u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(in_valid), .in_ready(in_ready),
+    .in_x(in_x), .in_y(in_y), .in_z(in_z),
+    .mul_req(mr[0]), .mul_a(ma[0]), .mul_b(mb[0]),
+    .mul_gnt(mg[0]), .mul_rsp(mrsp[0]), .mul_res(mres),
+    .add_req(ar[0]), .add_a(aa[0]), .add_b(ab[0]), .add_sub(asub[0]),
+    .add_gnt(ag[0]), .add_rsp(arsp[0]), .add_res(ares),
+    .out_valid(out_valid), .out_x(out_x), .out_y(out_y), .out_z(out_z)
+  );
+
+  assign dr = 1'b0; assign da[0] = '0; assign db[0] = '0;
+
+  m1_fp_pool #(.NC(1)) u_pool (
+    .clk(clk), .rst_n(rst_n),
+    .mul_req(mr), .mul_a(ma), .mul_b(mb), .mul_gnt(mg), .mul_rsp(mrsp), .mul_res(mres),
+    .add_req(ar), .add_a(aa), .add_b(ab), .add_sub(asub),
+    .add_gnt(ag), .add_rsp(arsp), .add_res(ares),
+    .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
+  );
+endmodule
