@@ -6101,3 +6101,21 @@ game, so this is not the fault here.
 
 Also note the routine above the gate does `FEEE30: in.w [R23], [R1+]` - the IN-to-memory form
 fixed today - so its behaviour changed with that fix and any pre-fix measurement of it is void.
+
+### listctl matches, so rendering is not what gates the scroll routine — 2026-08-30
+
+Checked before parking the scroll question, because if the game waited on the video hardware
+then the scroll rate would be a symptom of having no rasterizer rather than a bug:
+
+    read       ours (lc0_fixed | 0x0030)      MAME  m_listctl[0] | 0x30
+    toggle     bit 2 set and every 2nd frame  MAME  (m_listctl[0] & 4) && (frame & 1)
+    bit 2 clear  combinational mirror         MAME  recomputed in set_current_render_list
+
+`m1_listctl` reproduces all three. That register is the ONLY signal MAME models from the
+rendering side back to the game, so the absent rasterizer is not throttling `FEEE49`, and the
+40x scroll-rate deficit is a real and separate defect.
+
+**Parked deliberately anyway.** With only the sky and sea drawn there is nothing on screen to
+judge the scroll against, so the next measurement of it is worth more after the rasterizer
+than before. The chain is recorded above to the exact instruction (`FEEE49 test.b 40DC8C`,
+266 executions against 3) for whoever picks it up.
