@@ -30,8 +30,19 @@ module  pll_0002(
 	// lost time twice to pulse-versus-level faults across domains, and a
 	// synchronous ratio removes that class of bug instead of testing for it.
 	//
-	// 45.714 and not 80: the shared FP pool measures 53.25 MHz and the fill unit
+	// 47.059 and not 80: the shared FP pool measures 53.25 MHz and the fill unit
 	// 63.75, so 80 does not close. Measured, not assumed.
+	//
+	// EVERY OUTPUT IS AN INTEGER DIVISION OF THE SAME 800 MHz VCO, which is what
+	// makes the ratios exact rather than approximate:
+	//
+	//     800/10 = 80.000    clk_sys and the SDRAM pin
+	//     800/17 = 47.059    clk_3d
+	//     800/34 = 23.529    clk_cpu, an exact half of clk_3d
+	//
+	// This is why 23.000 was rejected earlier as "not a legal PLL output": with
+	// 80 MHz fixed, the VCO is 800 and 800/23 is not an integer. 800/34 is the
+	// smallest step at or above 23.
 	output wire outclk_3,
 
 	// interface 'locked'
@@ -46,13 +57,13 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("22.857143 MHz"),
+		.output_clock_frequency1("23.529412 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("45.714286 MHz"),
+		.output_clock_frequency3("47.058824 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),

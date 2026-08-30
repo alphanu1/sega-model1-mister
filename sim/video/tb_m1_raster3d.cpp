@@ -151,8 +151,8 @@ int main(int argc, char** argv) {
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);
-    printf("captured %d bands, simulated %ld cycles = %.1f ms at 45.714 MHz\n",
-           captured, cycles, cycles / 45714.0);
+    printf("captured %d bands, simulated %ld cycles = %.1f ms at 47.059 MHz\n",
+           captured, cycles, cycles / 47059.0);
     if (guard >= LIMIT) printf("WARNING: hit the cycle limit before finishing\n");
 
     long nz = 0, rows = 0;

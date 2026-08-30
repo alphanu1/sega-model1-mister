@@ -6663,3 +6663,37 @@ from six to twelve.
 **The caveat is that Model 2's sound is an SCSP and Model 1's is a YM3438 with TWO
 MultiPCMs.** 57 blocks is the closest measured analogue, not a guarantee, and the
 ~31 spare is thinner than it looks.
+
+---
+
+## clk_cpu to 23.529 MHz — and the CPI gap it does not close
+
+**2026-08-30.** `clk_cpu` was 22.857 MHz, chosen when 23 was rejected as "not a
+legal PLL output". The reason is now written down: with 80 MHz fixed on outclk0
+the VCO is **800 MHz**, and every output is an integer division of it. 800/23 is
+not an integer; **800/34 = 23.529** is the smallest step at or above 23.
+
+    800/10 = 80.000    clk_sys, and the SDRAM pin at 180 degrees
+    800/17 = 47.059    clk_3d
+    800/34 = 23.529    clk_cpu, an exact half of clk_3d
+
+Both halving relationships are exact, which is what keeps the 3D-to-CPU crossing a
+clock enable rather than a handshake — the same arrangement Model 2 uses, where
+`clk_i960` is an exact half of `clk_sys`.
+
+Everything derived from the clock moved with it: the I/O board's deadline is a
+**measured wall-clock time** (the reference answers the boot handshake in 38,577
+us) and is now 907,694 cycles rather than 881,760, in the RTL, its bench and its
+comment; `tb_m1_frame`'s clock period likewise.
+
+**IT BUYS 2.9%, AND THE GAP IS 3.2x.** The measurement that matters here is
+already in this file and it is worth restating next to the clock change, because
+raising the clock is the intuitive fix and it is the wrong one:
+
+    V60 core in isolation     6 CPI     the reference implies ~8 - ours is FASTER
+    whole system          30.49 CPI     65% of cycles are bus stalls
+
+The core is not the slow part. Two thirds of every cycle is spent waiting on
+memory, and that is where a 3.2x lives. Clocking from 22.857 to 23.529 is 2.9% of
+it. The clock change is still right — the CPU should not be below the target rate
+— but it should not be mistaken for progress on throughput.

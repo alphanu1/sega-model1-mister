@@ -246,14 +246,12 @@ module emu
   // 80 MHz and 19.2 MHz; see docs/m1-m4-plan.md for why those two numbers.
   wire clk_sys, clk_cpu, clk_sdram, pll_locked;
 
-  // The 3D layer's clock: 45.714 MHz, exactly twice clk_cpu.
+  // The 3D layer's clock: 47.059 MHz, exactly twice clk_cpu.
   //
-  // It is not the CPU clock doubled - the V60 stays at 22.857, where it is
-  // already 0.207 ns short. This is a separate domain for the geometry and
-  // rasterizer, chosen at 2x so the crossing to the CPU side is a clock enable
-  // rather than a handshake.
+  // A separate domain for the geometry and rasterizer, at exactly 2x clk_cpu so
+  // the crossing to the CPU side is a clock enable rather than a handshake.
   //
-  // 45.714 rather than clk_sys's 80 because the shared FP pool measures
+  // 47.059 rather than clk_sys's 80 because the shared FP pool measures
   // 53.25 MHz and the fill unit 63.75 - 80 does not close. See docs/findings.md.
   wire clk_3d;
 

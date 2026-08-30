@@ -345,8 +345,8 @@ int main(int argc, char** argv) {
 
     printf("filled %d quads (%d were wireframes), %ld pixels painted\n",
            filled, lines, painted - spans_before);
-    printf("simulated %ld cycles = %.1f ms of a 22.86 MHz clock\n",
-           t.cycles, t.cycles / 22857.143);
+    printf("simulated %ld cycles = %.1f ms of a 23.53 MHz clock\n",
+           t.cycles, t.cycles / 23529.412);
 
     // ---------------------------------------------------------- write it out
     system("mkdir -p build/render");

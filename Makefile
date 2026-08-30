@@ -469,7 +469,7 @@ test_ioboard:
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard --Mdir obj_ioboard
 	./obj_ioboard/tb_ioboard
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ioboard \
-	  -GPUBLISH_INPUTS=0 -GLATENCY=881760 -CFLAGS -DLATENCY_CFG=881760 \
+	  -GPUBLISH_INPUTS=0 -GLATENCY=907694 -CFLAGS -DLATENCY_CFG=907694 \
 	  $(SRCS_m1_ioboard) sim/io/tb_m1_ioboard.cpp -o tb_ioboard_slow \
 	  --Mdir obj_ioboard_slow
 	./obj_ioboard_slow/tb_ioboard_slow
