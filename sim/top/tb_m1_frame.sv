@@ -446,6 +446,12 @@ longint pc_fefb40 = 0, pc_ff84a2 = 0, pc_ff84ae = 0, pc_ff8582 = 0, pc_ff84b1 = 
 // on a mismatch (FEF9CC bne FEF9D8).
 // Upstream of the submit chain: FEEF14 cmp.b #0,501A35 / FEEF1C bne FEF047 is
 // the entry, and FEF04E/FEF059 divert to FEF325 when 501A28 is 3 or 4.
+// The DISPATCH that reaches the geometry routine:
+//   FE1C09 test1 #1F, 0[R25]   - the object's enable bit
+//   FE1C12 be    FE1C18        - skip when clear
+//   FE1C15 jsr   [A[R25]]      - indirect call through a pointer at R25+0xA
+//   FEEB10                     - the geometry routine itself
+longint pc_fe1c09 = 0, pc_fe1c12 = 0, pc_fe1c15 = 0, pc_fe1c18 = 0, pc_feeb10 = 0;
 longint pc_feef14 = 0, pc_feef1c = 0, pc_fef047 = 0, pc_fef04e = 0, pc_fef325 = 0;
 longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
         pc_fefa93 = 0, pc_fefad1 = 0, pc_fefb00 = 0, pc_fef9d8 = 0;
@@ -474,6 +480,11 @@ always @(posedge clk_cpu) begin
         if (core.dbg_pc == 24'hff84ae) pc_ff84ae <= pc_ff84ae + 1;
         if (core.dbg_pc == 24'hff84b1) pc_ff84b1 <= pc_ff84b1 + 1;
         if (core.dbg_pc == 24'hff8582) pc_ff8582 <= pc_ff8582 + 1;
+        if (core.dbg_pc == 24'hfe1c09) pc_fe1c09 <= pc_fe1c09 + 1;
+        if (core.dbg_pc == 24'hfe1c12) pc_fe1c12 <= pc_fe1c12 + 1;
+        if (core.dbg_pc == 24'hfe1c15) pc_fe1c15 <= pc_fe1c15 + 1;
+        if (core.dbg_pc == 24'hfe1c18) pc_fe1c18 <= pc_fe1c18 + 1;
+        if (core.dbg_pc == 24'hfeeb10) pc_feeb10 <= pc_feeb10 + 1;
         if (core.dbg_pc == 24'hfeef14) pc_feef14 <= pc_feef14 + 1;
         if (core.dbg_pc == 24'hfeef1c) pc_feef1c <= pc_feef1c + 1;
         if (core.dbg_pc == 24'hfef047) pc_fef047 <= pc_fef047 + 1;
@@ -1386,6 +1397,8 @@ initial begin
             pc_hist[best] = 0;
         end
     end
+    $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
+             pc_fe1c09, pc_fe1c12, pc_fe1c15, pc_fe1c18, pc_feeb10);
     $display("FRAME: upstream: feef14=%0d feef1c=%0d -> fef047=%0d fef04e=%0d fef325(divert)=%0d",
              pc_feef14, pc_feef1c, pc_fef047, pc_fef04e, pc_fef325);
     $display("FRAME: submit chain: fef9c6=%0d fef9cc=%0d -> fef9d2(call)=%0d fef9d8(skip)=%0d | fefa25=%0d fefa93=%0d fefad1=%0d fefb00=%0d",

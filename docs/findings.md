@@ -5452,3 +5452,40 @@ affected.
 frames** where the reference runs it every frame — `fefa25=1`, `fefb40=1`, `feef14=1`, and
 nothing upstream gates it: `fef325` (the divert) is 0 and `fef9d8` (the skip) is 0. The path
 is simply not being called, and finding its caller is the next step.
+
+### THE V60 SPINS ON DPRAM 0x40 AND OUR I/O BOARD ANSWERS 0x20 — 2026-08-30
+
+Found by normalising the two instruction streams instead of walking the call chain by hand.
+`v60_trace` parts at instruction 25,281 on interrupt timing; **filtering the interrupt handler
+out of both streams** (`fe02bc` to its `retis` at `fe0343`) **and collapsing self-loops in
+both** — which our tracer already does to ours and MAME's tracer does not — pushes agreement
+from 25,281 to **278,920** instructions, and the first divergence there is real:
+
+    MAME   fe022c fe0232 ... fe0234 fe108f ...     exits the loop
+    ours   fe022c fe0232 ... fe022c fe0232 ...     still spinning
+
+    FE03FD: mov.b  #1, C00040      set the flag
+    FE022C: test.b C00040          poll it
+    FE0232: bne    FE022C          spin until it reads ZERO
+
+`0xC00000-0xC00FFF` is the DPRAM shared with the I/O board (`model1.cpp:1013`, an `mb8421`), so
+this is an I/O-board handshake. Measured on the reference over 300 frames:
+
+    dpram 0x20   V60 writes 12      reads 12
+    dpram 0x21   V60 writes  0      reads  0        <- nothing ever reads this
+    dpram 0x40   V60 writes 295     reads 36,131    <- the byte it spins on
+
+**`m1_ioboard` answers `FLAG_ADDR = 0x020` and publishes `STAT_ADDR = 0x021`, and never touches
+`0x040`.** So the V60 sets the flag it actually waits on and nothing ever clears it. The
+38,577 us `LATENCY` the board models is right — the reference's first clear of 0x40 takes
+**38,389 us**, the same handshake — but it is being applied to the wrong byte.
+
+**And `0x021` is read ZERO times by the reference's V60.** Publishing byte 0x21 was recorded
+here as bringing tilemap 1 from 0 to 2,518 pixels, so something changed when it was added; but
+the reference never reads it, so whatever that was, it was not this.
+
+This is one wait loop, not a speed problem, and it is upstream of everything measured
+yesterday: the main loop stops here, so the per-frame object dispatch runs 0.44 times a frame
+against the reference's 5.6, the geometry submission runs once in 526 frames, the coprocessor
+is never fed or drained, and the scroll inputs never move. The interrupt handler keeps
+drawing, which is why the picture is there at all.
