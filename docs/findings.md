@@ -6367,3 +6367,43 @@ this measurement. Recorded, not yet taken.
 
 Data rate is not a concern either way: 5,831 records of 40 bytes is 233 KB a
 frame, 13.4 MB/s, sequential — nothing for the SDRAM controller.
+
+---
+
+## The geometry stage fits, and the reciprocal is 94% of it
+
+**2026-08-30.** Both stages built and measured against the 68-cycles-a-record budget:
+
+| stage | per record | share of a peak frame |
+|---|---|---|
+| `m1_geo_xform`, 3 transforms | 57.1 cycles | 84% |
+| `m1_geo_project`, 2 points   | 64.1 cycles | 94% |
+
+They run on separate units so the frame cost is the larger, not the sum: **94%**.
+It fits, and it fits with almost nothing spare — any stall the measurement does
+not model (polygon fetch from SDRAM, backpressure from the fill stage) pushes the
+peak frame over. `fp_div` is 29 cycles and does not pipeline, so 29 of those 32
+cycles a point are the reciprocal alone. **A second divider halves it to ~47% and
+is the obvious lever if integration needs one.** The mean frame is 3,204 records,
+so this is a peak-frame concern, not a typical one.
+
+**Both stages needed restructuring that only a THROUGHPUT test could have asked
+for, and in both cases the first version of that test measured the wrong thing.**
+Submitting one point and waiting for its result measures latency; it reported
+`m1_geo_xform` at 34 cycles when its streamed figure is 19, and
+`m1_geo_project` at 57 when its streamed figure is 32. A pipeline that exists to
+overlap two points cannot be measured one point at a time. Written down because
+the mistake was made twice in one evening, the second time knowing about the
+first.
+
+Streaming then found a real bug in `m1_geo_xform` that one-at-a-time never could:
+`in_ready` let a new point overwrite a product bank the adder had not yet
+collected, because `fill_bank` flips when the adder TAKES the products, not when
+the multiplier finishes them.
+
+**The projection's deviation from the reference is now bounded by its bench, not
+just by a comment.** 19,613 fuzzed points: one differed by a single pixel
+(0.005%), none by more. The bench asserts both halves — never more than one pixel
+out, and a difference rate near the measured 0.002% — because a systematically
+wrong reciprocal would pass a "within one pixel" check on every point while
+differing on far too many of them.
