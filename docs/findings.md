@@ -6039,3 +6039,34 @@ through the write stream.
 
 Nothing further is learnable about the 2D from here without the 3D running: the rasteriser is
 what makes the rest of the frame's work exist.
+
+### Rasterizer: objects per frame measured, quads per frame NOT measurable from outside — 2026-08-30
+
+`docs/m3-rasterizer-spec.md` says the quad count per frame decides the sorting structure and
+whether D3's premise survives, and must be measured. Attempted, and the honest result is
+partial.
+
+**Measurable.** The display lists are CPU-visible (`model1.cpp:994-995` map `0x600000` and
+`0x610000` with `.share()`), so the walker can be replicated in Lua from
+`model1_v.cpp:1464+`. Walked to its end marker, over 700 reference frames:
+
+    objects per list   mean 49.8   max 59      direct (type 2) records: 0
+    object size field  5500 on every one of 42,269 objects, never 0
+
+So the frame is **~50 objects**, and the attract sequence uses no `draw_direct` polys at all -
+which means the unsorted batch path is not exercised by anything measured so far.
+
+**NOT measurable this way, and the first attempt gave a nonsense number.** Summing the size
+field gave 273,827 "quads" per frame - 15 M/s on 1993 hardware, which is the tell.
+`push_object` treats `size` as an UPPER BOUND (`if (!size) size = 0xffffffff;` then
+`for (i = 0; i < size; i++)` breaking on an end marker inside the polygon data), and 5500 is
+that bound, identical for every object. The real count is where the loop breaks, in
+`m_poly_ram`/`m_poly_rom` - MAME-internal arrays, not in the CPU map, so no Lua tap or read
+can reach them.
+
+**Getting the real number needs one of:** a patched MAME that counts `m_quadpt` advances;
+walking the polygon ROM ourselves once its format is transcribed; or measuring it from our own
+list walker when one exists. None is a five-minute job, and the spec is right that the number
+comes before the design - **50 objects a frame does not tell you whether that is 500 quads or
+50,000**, and the difference decides between per-band insertion, a hardware merge sort, and a
+bucketed approximation.
