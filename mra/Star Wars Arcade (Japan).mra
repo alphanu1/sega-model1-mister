@@ -49,6 +49,27 @@
         <part repeat="1048576">FF</part>
         <!-- stream 0x580000: 524288 bytes unpopulated -->
         <part repeat="524288">FF</part>
+        <!-- stream 0x600000: the polygon model ROMs, 12 MB.
+             MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,
+             each pair 4 MB apart, exactly as the sincos tables above but
+             3 times over.
+
+             This region was ABSENT until 2026-08-30 and nothing noticed,
+             because nothing read it: with no rasterizer a missing 16 MB
+             looks identical to a working core. The coprocessor data ROM
+             went missing the same way and cost two sessions. -->
+        <interleave output="32">
+            <part name="mpr-16476.26" map="0021"/>
+            <part name="mpr-16477.27" map="2100"/>
+        </interleave>
+        <interleave output="32">
+            <part name="mpr-16478.28" map="0021"/>
+            <part name="mpr-16479.29" map="2100"/>
+        </interleave>
+        <interleave output="32">
+            <part name="mpr-16480.30" map="0021"/>
+            <part name="mpr-16481.31" map="2100"/>
+        </interleave>
     </rom>
 
     <!-- Coprocessor microcode, on its own download index.

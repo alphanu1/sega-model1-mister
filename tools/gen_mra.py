@@ -63,6 +63,34 @@ COPRO_DATA = {                       # ROM_LOAD32_BYTE x4, 2 MB
     'vr':       ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
     'vformula': ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
 }
+# The polygon model ROMs: the 3D geometry, and by a long way the largest region.
+# ROM_LOAD32_WORD in PAIRS - each pair is the low and high 16 bits of a 32-bit
+# word - with successive pairs 4 MB apart. Eight files for vr/vf/wingwar (16 MB),
+# six for swa and netmerc (12 MB), so the size follows the pair count.
+POLYGONS = {
+    'vr':         ['mpr-14890.26', 'mpr-14891.27', 'mpr-14892.28', 'mpr-14893.29',
+                   'mpr-14894.30', 'mpr-14895.31', 'mpr-14896.32', 'mpr-14897.33'],
+    'vformula':   ['mpr-14890.26', 'mpr-14891.27', 'mpr-14892.28', 'mpr-14893.29',
+                   'mpr-14894.30', 'mpr-14895.31', 'mpr-14896.32', 'mpr-14897.33'],
+    'vf':         ['mpr-16096.26', 'mpr-16097.27', 'mpr-16098.28', 'mpr-16099.29',
+                   'mpr-16100.30', 'mpr-16101.31', 'mpr-16102.32', 'mpr-16103.33'],
+    'wingwar':    ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwaru':   ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwarj':   ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwar360': ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'swa':        ['mpr-16476.26', 'mpr-16477.27', 'mpr-16478.28', 'mpr-16479.29',
+                   'mpr-16480.30', 'mpr-16481.31'],
+    'swaj':       ['mpr-16476.26', 'mpr-16477.27', 'mpr-16478.28', 'mpr-16479.29',
+                   'mpr-16480.30', 'mpr-16481.31'],
+    'netmerc':    ['mpr-18128.ic26', 'mpr-18129.ic27', 'mpr-18130.ic28',
+                   'mpr-18131.ic29', 'mpr-18132.ic30', 'mpr-18133.ic31'],
+}
+POLY_OFF = 0x840000          # immediately after copro_tables
+
 COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
     'vr':       ['opr14742.bin', 'opr14743.bin'],
     'vformula': ['opr14742.bin', 'opr14743.bin'],
@@ -213,6 +241,8 @@ def build_chunks(loads, setname=None):
             warnings.append(f"tables would land at 0x{total:x}, not 0x{COPRO_TBL_OFF:x}")
             return None, warnings
         chunks.append(('wpair', COPRO_TABLES[setname]))
+    if setname in POLYGONS:
+        chunks.append(('wquad', POLYGONS[setname]))
 
     return chunks, warnings
 
@@ -301,6 +331,24 @@ def emit(setname, chunks, cross_checked):
             out.append(f'            <part name="{c[1][1]}" map="2100"/>')
             out.append('        </interleave>')
             off += 0x40000
+        elif c[0] == 'wquad':
+            names = c[1]
+            out.append(f'        <!-- stream 0x{off:06x}: the polygon model ROMs, '
+                       f'{len(names)//2 * 4} MB.')
+            out.append("             MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,")
+            out.append('             each pair 4 MB apart, exactly as the sincos tables above but')
+            out.append(f'             {len(names)//2} times over.')
+            out.append('')
+            out.append('             This region was ABSENT until 2026-08-30 and nothing noticed,')
+            out.append('             because nothing read it: with no rasterizer a missing 16 MB')
+            out.append('             looks identical to a working core. The coprocessor data ROM')
+            out.append('             went missing the same way and cost two sessions. -->')
+            for i in range(0, len(names), 2):
+                out.append('        <interleave output="32">')
+                out.append(f'            <part name="{names[i]}" map="0021"/>')
+                out.append(f'            <part name="{names[i+1]}" map="2100"/>')
+                out.append('        </interleave>')
+                off += 0x400000
         else:
             _, lo, hi, sz = c
             out.append(f'        <!-- stream 0x{off:06x}, ROM_LOAD16_BYTE -->')
@@ -350,7 +398,8 @@ def check_zip(zip_path, chunks):
     problems = []
     for c in chunks:
         want = [(c[1], c[2])] if c[0] == 'rom' else \
-               ([(c[1], c[3]), (c[2], c[3])] if c[0] == 'pair' else [])
+               ([(c[1], c[3]), (c[2], c[3])] if c[0] == 'pair' else
+                [(n, 0x200000) for n in c[1]] if c[0] == 'wquad' else [])
         for name, size in want:
             got = sizes.get(name.lower())
             if got is None:

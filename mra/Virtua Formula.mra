@@ -91,6 +91,31 @@
             <part name="opr14742.bin" map="0021"/>
             <part name="opr14743.bin" map="2100"/>
         </interleave>
+        <!-- stream 0x840000: the polygon model ROMs, 16 MB.
+             MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,
+             each pair 4 MB apart, exactly as the sincos tables above but
+             4 times over.
+
+             This region was ABSENT until 2026-08-30 and nothing noticed,
+             because nothing read it: with no rasterizer a missing 16 MB
+             looks identical to a working core. The coprocessor data ROM
+             went missing the same way and cost two sessions. -->
+        <interleave output="32">
+            <part name="mpr-14890.26" map="0021"/>
+            <part name="mpr-14891.27" map="2100"/>
+        </interleave>
+        <interleave output="32">
+            <part name="mpr-14892.28" map="0021"/>
+            <part name="mpr-14893.29" map="2100"/>
+        </interleave>
+        <interleave output="32">
+            <part name="mpr-14894.30" map="0021"/>
+            <part name="mpr-14895.31" map="2100"/>
+        </interleave>
+        <interleave output="32">
+            <part name="mpr-14896.32" map="0021"/>
+            <part name="mpr-14897.33" map="2100"/>
+        </interleave>
     </rom>
 
     <!-- Coprocessor microcode, on its own download index.

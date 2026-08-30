@@ -6240,3 +6240,63 @@ index plus a ~5-bit lighting level plus the hit bit, and apply `scale_color` at 
 costs a second palette read port, which the current single-ported `m1_palette` does not have.
 Recorded rather than taken - it is the better answer if the port is affordable when the
 scanout is built.
+
+---
+
+## The polygon ROMs were never in the MRA — 16 MB of geometry the core could not have read
+
+**2026-08-30.** `vr`'s `polygons` region is eight 2 MB files loaded as four
+`ROM_LOAD32_WORD` pairs (`mpr-14890`..`14897`, at 0x000000/0x400000/0x800000/0xc00000),
+and **not one of them was in the MRA or in the packer.** The core has never had access to
+the 3D geometry at all.
+
+Nothing noticed, and nothing could have: with no rasterizer, a missing 16 MB region looks
+exactly like a working core. **This is the coprocessor data ROM's failure repeated** —
+that one was in the packer but not the MRA, so simulation worked and hardware stalled for
+two sessions. `make verify_mra` exists because of it and is what caught this pair being
+added consistently now:
+
+    MRA expands to   25,427,968 bytes
+    packer produces  25,427,968 bytes
+    OK  every byte matches
+
+Both tools grew the region independently — `POLYGONS`/`POLY_OFF = 0x840000` in each — so
+the layout keeps the two sources the check depends on.
+
+**The map strings are `0021` and `2100`**, derived from the existing `copro_tables` pair
+and confirmed against it: for `output="32"` the digits run byte 3 down to byte 0, so a
+part supplying bytes 0-1 of each word is `0021` and one supplying bytes 2-3 is `2100`.
+
+**And `vr.zip` does not contain `mpr-14897.33`.** It has seven of the eight. The eighth is
+in `~/roms/vr decapped/` at MAME's exact CRC (`74873195`), so the file is good and the set
+is short — checked against the loose directory first, because CLAUDE.md records
+`315-5573.bin` being declared missing on a zip-only audit when it was sitting in
+`~/roms/vr/`. `build/vr_full.zip` is the completed set used for verification; **a MiSTer
+will fail to load this MRA until that file is added to the user's `vr.zip`.**
+
+The stream is now 25.4 MB of a 32 MB SDRAM, leaving ~6.5 MB. The polygon base is
+0x840000 bytes = `24'h420000` in the `[24:1]` word addressing `m1_integrated.sv` uses for
+`COPRO_DAT_BASE`/`COPRO_TBL_BASE`.
+
+---
+
+## `OPTIMIZATION_MODE "Aggressive Area"` buys 469 ALM and costs most of the timing margin
+
+**2026-08-30**, full `make rbf`, Quartus 17.0, 0 errors, against the `ab4ae51c` baseline
+built from the same tree:
+
+|              | baseline   | Aggressive Area | delta |
+|---|---|---|---|
+| ALM          | 30,138     | **29,669**      | **-469 (-1.6%)** |
+| M10K         | 372        | **383**         | **+11** |
+| DSP          | 50         | 50              | 0 |
+| worst setup  | +0.375 ns  | **+0.103 ns**   | **-0.272 ns** |
+
+So it is real but small, and it is **not free**: it pushes logic into memory and spends
+nearly three quarters of the slack to do it. 469 ALM is 1.6% against an M4 sound section
+measured at 8,837 ALM in the Model 2 project — it does not change what fits.
+
+**Not adopted as the default.** `M1_QOPT="Aggressive Area"` remains opt-in in
+`tools/mister_project.sh`. Burning 0.272 ns of margin for 1.6% is the wrong trade while
+ALM is not the binding constraint; the setting is worth taking when sound and the
+rasterizer have actually made it binding, and the slack can be re-checked then.

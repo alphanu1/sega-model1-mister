@@ -55,6 +55,42 @@ COPRO_DATA = {
     'vr':       ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
     'vformula': ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
 }
+# THE POLYGON MODEL ROMS - the 3D geometry, and the largest region by far.
+#
+# ROM_LOAD32_WORD in PAIRS: each pair supplies the low and high 16 bits of a
+# 32-bit word, and successive pairs land 4 MB apart (0x000000, 0x400000,
+# 0x800000, 0xc00000). Sets differ - vr/vf/wingwar have eight files (16 MB),
+# swa and netmerc six (12 MB) - so the region is sized by the pair count rather
+# than assumed.
+#
+# NOT LOADED BEFORE 2026-08-30, and nothing noticed because nothing read them:
+# the rasterizer is unbuilt, so an absent 16 MB region looks exactly like a
+# working core. The coprocessor's data ROM was missing the same way and cost two
+# sessions; `make verify_mra` exists because of it.
+POLYGONS = {
+    'vr':         ['mpr-14890.26', 'mpr-14891.27', 'mpr-14892.28', 'mpr-14893.29',
+                   'mpr-14894.30', 'mpr-14895.31', 'mpr-14896.32', 'mpr-14897.33'],
+    'vformula':   ['mpr-14890.26', 'mpr-14891.27', 'mpr-14892.28', 'mpr-14893.29',
+                   'mpr-14894.30', 'mpr-14895.31', 'mpr-14896.32', 'mpr-14897.33'],
+    'vf':         ['mpr-16096.26', 'mpr-16097.27', 'mpr-16098.28', 'mpr-16099.29',
+                   'mpr-16100.30', 'mpr-16101.31', 'mpr-16102.32', 'mpr-16103.33'],
+    'wingwar':    ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwaru':   ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwarj':   ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'wingwar360': ['mpr-16743.26', 'mpr-16744.27', 'mpr-16745.28', 'mpr-16746.29',
+                   'mpr-16747.30', 'mpr-16748.31', 'mpr-16749.32', 'mpr-16750.33'],
+    'swa':        ['mpr-16476.26', 'mpr-16477.27', 'mpr-16478.28', 'mpr-16479.29',
+                   'mpr-16480.30', 'mpr-16481.31'],
+    'swaj':       ['mpr-16476.26', 'mpr-16477.27', 'mpr-16478.28', 'mpr-16479.29',
+                   'mpr-16480.30', 'mpr-16481.31'],
+    'netmerc':    ['mpr-18128.ic26', 'mpr-18129.ic27', 'mpr-18130.ic28',
+                   'mpr-18131.ic29', 'mpr-18132.ic30', 'mpr-18133.ic31'],
+}
+POLY_OFF = 0x840000          # immediately after copro_tables
+
 COPRO_TABLES = {
     'vr':       ['opr14742.bin', 'opr14743.bin'],
     'vformula': ['opr14742.bin', 'opr14743.bin'],
@@ -101,7 +137,11 @@ def pack_stream(zip_path, game):
     # 0x840000: 6 MB of V60 image, 2 MB of copro_data, 256 KB of copro_tables.
     # Sized explicitly — a short buffer would be silently RESIZED by the slice
     # assignments below, which works and hides the arithmetic.
-    stream = bytearray(b'\xff' * 0x840000)
+    # Sized to include the polygon region when the set has one. Explicit, because
+    # a short buffer is silently RESIZED by the slice assignments below - which
+    # works, and hides the arithmetic.
+    poly_pairs = len(POLYGONS.get(game, [])) // 2
+    stream = bytearray(b'\xff' * (POLY_OFF + poly_pairs * 0x400000))
     stream[0x000000:0x100000] = maincpu[0x200000:0x300000]   # ROMX
     stream[0x100000:0x180000] = maincpu[0xf80000:0x1000000]  # ROM0
     for bank in range(4):                                    # banked data
@@ -126,6 +166,17 @@ def pack_stream(zip_path, game):
         t[0::4] = lo[0::2]; t[1::4] = lo[1::2]
         t[2::4] = hi[0::2]; t[3::4] = hi[1::2]
         stream[0x800000:0x800000+len(t)] = t
+
+        # polygons: pairs of ROM_LOAD32_WORD halves, 4 MB apart. Same shape as
+        # copro_tables above, four times over.
+        for pair in range(poly_pairs):
+            lo = load(zf, POLYGONS[game][pair*2])
+            hi = load(zf, POLYGONS[game][pair*2 + 1])
+            q = bytearray(len(lo) * 2)
+            q[0::4] = lo[0::2]; q[1::4] = lo[1::2]
+            q[2::4] = hi[0::2]; q[3::4] = hi[1::2]
+            base = POLY_OFF + pair * 0x400000
+            stream[base:base+len(q)] = q
 
     return stream
 
