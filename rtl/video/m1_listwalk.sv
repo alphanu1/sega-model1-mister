@@ -97,6 +97,15 @@ module m1_listwalk #(
   output logic [15:0]   ev_idx,
   output logic [31:0]   ev_data,
 
+  // HEADER PARAMETER OR BODY ITEM. Commands 4, 5 and 6 have both, and both count
+  // their index from zero - so `ev_idx == 0` is the destination ADDRESS in the
+  // header and the first WORD OF DATA in the body, and nothing else distinguishes
+  // them. Harmless while no consumer reads the body; the colour-word writes into
+  // tgp_ram are the first that does, and without this they would take the
+  // address as data and the length as data and write two words of rubbish over
+  // the start of every upload.
+  output logic          ev_body,
+
   // Counted for the bench and the overlay. `cmds` distinguishes "the list is
   // empty" from "the walk never ran", which a silent module cannot.
   output logic [15:0]   dbg_cmds,
@@ -184,6 +193,7 @@ module m1_listwalk #(
       p_idx <= '0; p_n <= '0; p_base <= '0; p_w32 <= 1'b0; p2 <= 1'b0;
       body_len <= '0; stride <= '0; half <= 1'b0; lo <= '0;
       ev_valid <= 1'b0; ev_kind <= '0; ev_idx <= '0; ev_data <= '0;
+      ev_body <= 1'b0;
       dbg_cmds <= '0; dbg_objects <= '0; dbg_words <= '0; dbg_bad_type <= 1'b0; dbg_overrun <= 1'b0;
       done <= 1'b0;
     end else if (stall) begin
@@ -303,6 +313,7 @@ module m1_listwalk #(
               ev_valid <= 1'b1;
               ev_kind  <= cmd;
               ev_idx   <= p_idx;
+              ev_body  <= 1'b0;
               // The 16-bit form is readi16, which returns int16_t - sign
               // extended, because a viewport edge is legitimately negative.
               ev_data  <= p_w32 ? {mem_data, lo}
@@ -373,6 +384,7 @@ module m1_listwalk #(
               ev_valid <= 1'b1;
               ev_kind  <= cmd;
               ev_idx   <= p_idx;
+              ev_body  <= 1'b1;
               ev_data  <= p_w32 ? {mem_data, lo} : {16'd0, mem_data};
               if (p_idx + 16'd1 == body_len) begin
                 st <= S_NEXT;

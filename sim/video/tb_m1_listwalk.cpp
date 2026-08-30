@@ -43,9 +43,9 @@ static void check(bool ok, const char* what) {
     if (!ok) { fails++; if (printed++ < 20) printf("  FAIL %s\n", what); }
 }
 
-struct Ev { int kind, idx; uint32_t data; };
+struct Ev { int kind, idx; uint32_t data; int body; };
 static bool operator!=(const Ev& a, const Ev& b) {
-    return a.kind != b.kind || a.idx != b.idx || a.data != b.data;
+    return a.kind != b.kind || a.idx != b.idx || a.data != b.data || a.body != b.body;
 }
 
 // ---------------------------------------------------------------- the model
@@ -62,7 +62,7 @@ static std::vector<Ev> model(const std::vector<uint16_t>& m) {
         if (off >= 0x8000) break;          // the RTL's end-of-buffer terminator
         uint32_t type = readi(off);
         if (type == 1 || type == 0x41) {
-            for (int i = 0; i < 3; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i)});
+            for (int i = 0; i < 3; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i), 0});
             off += 8;
         } else if (type == 0) {
             off += 2;
@@ -76,29 +76,29 @@ static std::vector<Ev> model(const std::vector<uint16_t>& m) {
             }
             off += 4;
         } else if (type == 3) {
-            ev.push_back({3, 0, readi(off + 2)});
-            for (int i = 0; i < 6; i++) ev.push_back({3, i, readi16(off + 4 + 2 * i)});
+            ev.push_back({3, 0, readi(off + 2), 0});
+            for (int i = 0; i < 6; i++) ev.push_back({3, i, readi16(off + 4 + 2 * i), 0});
             off += 16;
         } else if (type == 4 || type == 5 || type == 6) {
-            ev.push_back({(int)type, 0, readi(off + 2)});
+            ev.push_back({(int)type, 0, readi(off + 2), 0});
             uint32_t len = readi(off + 4);
-            ev.push_back({(int)type, 1, len});
+            ev.push_back({(int)type, 1, len, 0});
             int n = (int)((type == 4) ? (uint16_t)(len + 1) : (uint16_t)len);
             for (int i = 0; i < n; i++)
                 ev.push_back({(int)type, i,
                               (type == 4) ? (uint32_t)m[(off + 6 + 2 * i) & 0x7fff]
-                                          : readi(off + 6 + 2 * i)});
+                                          : readi(off + 6 + 2 * i), 1});
             off += 6 + n * 2;
         } else if (type == 7 || type == 8) {
-            ev.push_back({(int)type, 0, readi(off + 2)}); off += 4;
+            ev.push_back({(int)type, 0, readi(off + 2), 0}); off += 4;
         } else if (type == 9 || type == 0xc) {
-            for (int i = 0; i < 2; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i)});
+            for (int i = 0; i < 2; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i), 0});
             off += 6;
         } else if (type == 0xa) {
-            for (int i = 0; i < 3; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i)});
+            for (int i = 0; i < 3; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i), 0});
             off += 8;
         } else if (type == 0xb) {
-            for (int i = 0; i < 12; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i)});
+            for (int i = 0; i < 12; i++) ev.push_back({(int)type, i, readi(off + 2 + 2 * i), 0});
             off += 26;
         } else {
             break;                      // 0x0f, and anything unrecognised
@@ -121,7 +121,7 @@ struct Dut {
         d->mem_valid = req;
         d->mem_data  = req ? mem[addr & 0x7fff] : 0;
         d->eval();
-        if (d->ev_valid) got.push_back({d->ev_kind, d->ev_idx, d->ev_data});
+        if (d->ev_valid) got.push_back({d->ev_kind, d->ev_idx, d->ev_data, d->ev_body});
     }
     void reset() {
         d->rst_n = 0; d->start = 0; d->stall = 0; d->mem_valid = 0; d->mem_data = 0;
@@ -166,9 +166,9 @@ static bool compare(const char* what, Dut& t, const std::vector<uint16_t>& list)
         if (exp[i] != t.got[i]) {
             fails++;
             if (printed++ < 20)
-                printf("  FAIL %s: event %zu got (k=%02x i=%d %08x) expected (k=%02x i=%d %08x)\n",
-                       what, i, t.got[i].kind, t.got[i].idx, t.got[i].data,
-                       exp[i].kind, exp[i].idx, exp[i].data);
+                printf("  FAIL %s: event %zu got (k=%02x i=%d %08x body=%d) expected (k=%02x i=%d %08x body=%d)\n",
+                       what, i, t.got[i].kind, t.got[i].idx, t.got[i].data, t.got[i].body,
+                       exp[i].kind, exp[i].idx, exp[i].data, exp[i].body);
             return false;
         }
     }
@@ -319,6 +319,30 @@ int main(int argc, char** argv) {
         check(t.d->dbg_overrun == 1, "and must report that it ran off the end");
         printf("  walked %u commands before the end of the buffer\n",
                (unsigned)t.d->dbg_cmds);
+    }
+
+    printf("test: ev_body actually DISCRIMINATES - kind 4 emits idx 0 twice\n");
+    {
+        // A colour write whose header says address 0x40000, length 2, followed by
+        // two data words. That emits (kind 4, idx 0) TWICE: once as the address
+        // and once as the first data word. If ev_body did not exist, or were
+        // stuck, a consumer could not tell them apart - so assert the collision
+        // really happens before relying on the flag to resolve it.
+        L l; l.w32(4); l.w32(0x40000); l.w32(1);
+        l.w16(0xaaaa); l.w16(0xbbbb);
+        l.w32(0x0f);
+        compare("colour write body flag", t, l.m);
+        int hdr0 = 0, body0 = 0;
+        for (const Ev& e : t.got)
+            if (e.kind == 4 && e.idx == 0) { if (e.body) body0++; else hdr0++; }
+        checks++;
+        if (hdr0 != 1 || body0 != 1) {
+            fails++;
+            printf("  FAIL idx 0 appeared as header %d times and body %d - expected 1 and 1\n",
+                   hdr0, body0);
+        } else {
+            printf("  idx 0 emitted twice, once as the address and once as data\n");
+        }
     }
 
     printf("test: STALLING pauses the walk without losing anything\n");

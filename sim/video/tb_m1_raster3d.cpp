@@ -121,12 +121,18 @@ int main(int argc, char** argv) {
 
     // Capture each band the moment it becomes displayable. In hardware the beam
     // does this; here we sweep the band's rows as soon as disp_band changes.
+    // Milestones, because "it is slow" is not a finding and "the geometry is
+    // 96% of it" is. dbg_frames rises when the sort completes, which separates
+    // the geometry from the band fills.
+    long t_sort = 0, t_band[16] = {0};
     int last_band = -1, captured = 0;
     long guard = 0;
-    const long LIMIT = 400000000L;
+    const long LIMIT = 3000000000L;
     while (++guard < LIMIT) {
         tick();
+        if (!t_sort && d->dbg_frames) t_sort = cycles;
         if (d->disp_valid && (int)d->disp_band != last_band) {
+            if (captured < 16) t_band[captured] = cycles;
             last_band = d->disp_band;
             int y0 = last_band * BAND_H;
             for (int r = 0; r < BAND_H; r++) {
@@ -153,6 +159,14 @@ int main(int argc, char** argv) {
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);
     printf("captured %d bands, simulated %ld cycles = %.1f ms at 47.059 MHz\n",
            captured, cycles, cycles / 47059.0);
+    printf("  geometry + sort: %ld cycles (%.0f%% of the run)\n",
+           t_sort, 100.0 * t_sort / (cycles ? cycles : 1));
+    for (int i = 0; i < captured && i < 6; i++)
+        printf("  band %d ready at %ld cycles (+%ld)\n",
+               i, t_band[i], t_band[i] - (i ? t_band[i-1] : t_sort));
+    if (t_sort)
+        printf("  that is %.0f cycles per quad through the geometry\n",
+               (double)t_sort / (d->dbg_quads ? d->dbg_quads : 1));
     if (guard >= LIMIT) printf("WARNING: hit the cycle limit before finishing\n");
 
     long nz = 0, rows = 0;
