@@ -1534,6 +1534,8 @@ initial begin
     $display("FRAME: object0 high-half writes=%0d, of which bit26 set=%0d", ob_wr, ob_wr_set);
     $display("FRAME: scroll chain: fe1c09=%0d fe1c15=%0d feeb10=%0d | feef14=%0d feef1c=%0d fef047=%0d fef2a3=%0d fef372=%0d",
              c_fe1c09, c_fe1c15, c_feeb10, c_feef14, c_feef1c, c_fef047, c_fef2a3, c_fef372);
+    $display("FRAME: catch-up branch: fe13fb=%0d -> caught-up fe1406=%0d, BEHIND fe13fe=%0d | scroll fef372=%0d",
+             t_cmp, t_ok, t_behind, t_scr);
     $display("FRAME: geometry loop: feb651=%0d feb65a=%0d -> body feb661=%0d feb673=%0d | skip feb688=%0d  (reference: body NEVER)",
              pc_feb651, pc_feb65a, pc_feb661, pc_feb673, pc_feb688);
     $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
@@ -1648,6 +1650,8 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
+reg [23:0] tick_d = 24'hffffff;
+longint t_cmp=0,t_ok=0,t_behind=0,t_scr=0;
 reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0, scr_d = 1'b0, sx_w_d = 1'b0, sx_r_d = 1'b0;
 reg [15:0] sx_lo = 16'd0, sx_rlo = 16'd0;
 reg [23:0] chain_d = 24'hffffff;
@@ -1769,6 +1773,18 @@ always @(posedge clk_cpu) begin
             if (core.dbg_pc == 24'hfef2a3) c_fef2a3 <= c_fef2a3 + 1;
         end
         chain_d <= core.dbg_pc;
+        // THE GAME'S CATCH-UP BRANCH. FE13F3 compares the frame tick against 3
+        // and FE13FB takes FE1406 when caught up; falling through to FE13FE is
+        // the behind path. If we take the behind path often, the frame's work -
+        // including the scroll update - is skipped, which turns a modest speed
+        // deficit into a large rate deficit. Edge-detected: dbg_pc is a level.
+        if (core.dbg_pc != tick_d) begin
+            if (core.dbg_pc == 24'hfe13fb) t_cmp   <= t_cmp   + 1;
+            if (core.dbg_pc == 24'hfe1406) t_ok    <= t_ok    + 1;
+            if (core.dbg_pc == 24'hfe13fe) t_behind<= t_behind+ 1;
+            if (core.dbg_pc == 24'hfef372) t_scr   <= t_scr   + 1;
+        end
+        tick_d <= core.dbg_pc;
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,

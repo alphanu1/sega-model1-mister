@@ -6187,3 +6187,18 @@ into. Freeing area is therefore a prerequisite for M3+M4 together, not a later t
 the debug overlay is only **207 ALM** (`m1_diag`; the 1,058 in `osd:*` is the framework's
 menu, not ours). The V60 is 17,643 - 59% of the design - and Model 2's i960 does a comparable
 job in 7,200.
+
+### Costed: dropping one MultiPCM saves ~3,000 ALM and 4 MB of ROM
+
+From the Model 2 core's fit report, a PCM channel is the chip AND its fetch unit:
+
+    m2_multipcm:u_pcm1  1,861   +  m2_pcm_fetch:u_p1fetch  1,151  =  3,012
+    m2_multipcm:u_pcm2  1,841   +  m2_pcm_fetch:u_p2fetch  1,122  =  2,963
+
+So one channel is ~3,000 ALM, taking the sound board from 8,837 to ~5,800, and 4 MB off the
+ROM budget with it.
+
+**It is not a polyphony trade.** `M1AUDIO_MPCM1_REGION` and `M1AUDIO_MPCM2_REGION` are two
+SEPARATE 4 MB sample regions in every Model 1 set, so dropping one loses whatever sounds live
+in that half rather than reducing the voice count on a shared bank. Acceptable to get sound in
+at all; it will be audibly missing something specific rather than thinner.
