@@ -88,10 +88,9 @@ module m1_raster3d #(
   output logic [14:0] xlat_addr,
   input  logic [15:0] xlat_data,
 
-  // ---- light parameter bank, written by display-list command 6
-  output logic [7:0]  lp_addr,
-  input  logic [31:0] lp_d, lp_a, lp_s,
-  input  logic [7:0]  lp_p,
+  // The light parameter banks are INTERNAL - they are written by display-list
+  // command 6, which this module already walks, so exporting them would mean
+  // exporting the write path too.
 
   input  logic        frame_odd,
 
@@ -195,6 +194,26 @@ module m1_raster3d #(
   logic [31:0] q_z;
   logic        q_moire;
   logic [15:0] g_rec, g_qds, g_cull, g_nolink;
+
+  // ---------------------------------------------------------------- light bank
+  logic [7:0]  lp_addr;
+  logic [31:0] lp_d, lp_a, lp_s;
+  logic [7:0]  lp_p;
+  logic        lb_we;
+  logic [7:0]  lb_waddr;
+  logic [31:0] lb_wdata;
+
+  m1_lightbank u_lightbank (
+    .clk(clk), .rst_n(rst_n),
+    .we(lb_we), .waddr(lb_waddr), .wdata(lb_wdata),
+    .raddr(lp_addr), .lp_d(lp_d), .lp_a(lp_a), .lp_s(lp_s), .lp_p(lp_p)
+  );
+
+  // Command 6's header gives a base address and a length; its BODY items are the
+  // packed parameter words. ev_body is what separates them - without it the
+  // address and the length would be written into the bank as two parameter
+  // entries, over the top of whatever the upload was aiming at.
+  logic [7:0] lp_base;
 
   // The borrowed normalize, used once a frame for the light vector.
   logic        nrm_valid, nrm_ready, nrm_out_valid;
@@ -400,6 +419,7 @@ module m1_raster3d #(
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
       vspec <= 1'b0;
       rlx <= '0; rly <= '0; rlz <= '0; light_pending <= 1'b0;
+      lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0;
@@ -411,6 +431,19 @@ module m1_raster3d #(
       // command changes state for every object that follows it.
       // The viewport centre, converted and latched. Driven from the event and
       // taken the same cycle, since fp_from_int is combinational.
+      // ---- light parameter uploads, command 6
+      lb_we <= 1'b0;
+      if (lw_ev_valid && lw_ev_kind == 8'h06) begin
+        if (!lw_ev_body) begin
+          if (lw_ev_idx == 16'd0) lp_base <= lw_ev_data[7:0];
+          // index 1 is the length, which the walker already honours
+        end else begin
+          lb_we    <= 1'b1;
+          lb_waddr <= lp_base + lw_ev_idx[7:0];
+          lb_wdata <= lw_ev_data;
+        end
+      end
+
       // The normalized light, when the borrowed unit returns it.
       if (nrm_out_valid && light_pending) begin
         vlx <= nrm_ox; vly <= nrm_oy; vlz <= nrm_oz;

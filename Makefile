@@ -222,7 +222,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -288,7 +288,7 @@ test_raster_band:
 render3d:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_raster3d \
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
-	  rtl/video/fp_from_int.sv \
+	  rtl/video/fp_from_int.sv rtl/video/m1_lightbank.sv \
 	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_store.sv \
 	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
 	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
@@ -299,6 +299,12 @@ render:
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) $(SRCS_m1_raster_fill) sim/video/render_top.sv \
 	  sim/video/tb_m1_render.cpp -o tb_render --Mdir obj_render
 	./obj_render/tb_render
+
+test_lightbank:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_lightbank \
+	  rtl/video/m1_lightbank.sv sim/video/tb_m1_lightbank.cpp \
+	  -o tb_lightbank --Mdir obj_lightbank
+	./obj_lightbank/tb_lightbank
 
 test_quad_store:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_quad_store \
@@ -656,7 +662,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

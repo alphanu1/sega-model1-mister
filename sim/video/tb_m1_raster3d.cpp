@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <vector>
+#include <cmath>
 
 static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
@@ -97,9 +98,9 @@ int main(int argc, char** argv) {
         d->tex_data  = tgpram[d->tex_addr & 0xfffff];
         d->pal_data  = palette[d->pal_addr & 0x1fff];
         d->xlat_data = xlat[d->xlat_addr & 0x7fff];
-        const LPB& lp = lpbank[d->lp_addr];
-        d->lp_d = f2u(lp.d); d->lp_a = f2u(lp.a);
-        d->lp_s = f2u(lp.s); d->lp_p = lp.p;
+        // The light banks are INTERNAL now, filled by the module's own walk of
+        // display-list command 6. Nothing to drive - and that is the point: the
+        // bench no longer supplies state the hardware would have to derive.
     };
     auto tick = [&]() {
         int dreq = d->dl_req, rreq = d->rom_req, treq = d->tex_req;
@@ -119,6 +120,44 @@ int main(int argc, char** argv) {
     d->rst_n = 1;
     for (int i = 0; i < 8; i++) tick();
 
+    // ---- prologue: upload the light banks through the module's own walk
+    //
+    // The light parameter banks are FRAME-PERSISTENT state. The reference
+    // uploads them with display-list command 6 at some earlier point and they
+    // survive; frame 900's list contains no command 6 at all, which is why the
+    // dump accumulates them across 900 frames. Feeding them in through the
+    // module's port would be supplying state the hardware has to derive, so
+    // instead a synthetic list is walked first that uploads them exactly as the
+    // game does - which also makes command 6 the only path they can arrive by,
+    // and therefore tested.
+    {
+        std::vector<uint16_t> pro(0x8000, 0);
+        size_t w = 0;
+        pro[w++] = 6; pro[w++] = 0;             // type 6, 32-bit
+        pro[w++] = 0; pro[w++] = 0;             // base address 0
+        pro[w++] = 256; pro[w++] = 0;           // 256 entries
+        for (int i = 0; i < 256; i++) {
+            const LPB& lp = lpbank[i];
+            uint32_t packed = (uint32_t)lroundf(lp.d * 255.0f)
+                            | ((uint32_t)lroundf(lp.a * 255.0f) << 8)
+                            | ((uint32_t)lroundf(lp.s * 255.0f) << 16)
+                            | ((uint32_t)lp.p << 24);
+            pro[w++] = packed & 0xffff; pro[w++] = packed >> 16;
+        }
+        pro[w++] = 0x0f; pro[w++] = 0;          // end
+        std::vector<uint16_t> real = dlist;
+        dlist = pro;
+        d->frame_start = 1; tick(); d->frame_start = 0;
+        long g = 0;
+        while (++g < 20000000 && !(d->dbg_frames)) tick();
+        // Let the band passes finish so the sequencer returns to idle.
+        g = 0;
+        while (++g < 20000000 && d->dbg_frames == 1 && !d->disp_valid) tick();
+        for (int k = 0; k < 200000; k++) tick();
+        printf("light banks uploaded through command 6 (%zu words)\n", w);
+        dlist = real;
+    }
+
     printf("\nrunning one frame through m1_raster3d...\n");
     d->frame_start = 1; tick(); d->frame_start = 0;
 
@@ -128,7 +167,14 @@ int main(int argc, char** argv) {
     // 96% of it" is. dbg_frames rises when the sort completes, which separates
     // the geometry from the band fills.
     long t_sort = 0, t_band[16] = {0};
-    int last_band = -1, captured = 0;
+    // START FROM WHATEVER IS ALREADY PRESENTED, not from -1. The prologue walk
+    // leaves disp_band at 11, so a capture loop that begins at -1 sees an
+    // immediate "change", records the prologue's empty band 11, and then takes
+    // bands 0..10 of the real frame - twelve captures, one of them stale, and
+    // the real band 11 never read. That is exactly one band of black at the
+    // bottom of the frame and a count that says twelve.
+    int last_band = d->disp_valid ? (int)d->disp_band : -1;
+    int captured = 0;
     long guard = 0;
     const long LIMIT = 3000000000L;
     while (++guard < LIMIT) {
