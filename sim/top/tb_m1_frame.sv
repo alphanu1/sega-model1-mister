@@ -473,6 +473,16 @@ longint pc_feb651 = 0, pc_feb65a = 0, pc_feb661 = 0, pc_feb673 = 0, pc_feb688 = 
 // 0x2007C0 (low half) and 0x2007C1 (high half), and bit 26 lives in the HIGH
 // half, bit 10.
 longint ob_wr = 0, ob_wr_set = 0;
+// WHAT OUR COPROCESSOR ANSWERS. The reference returns TWO words per 0x20800000
+// command and the V60 tests BIT 31 OF THE FIRST, which is always 00000000 -
+// "not visible". If ours has bit 31 set there, objects get marked, geometry
+// floods the FIFO and the pair deadlocks. Captured at the FIFO itself rather
+// than by PC, so it does not depend on the V60 reaching any particular
+// instruction.
+integer ans_n = 0, ans_f;
+reg armed = 1'b0;   // start capturing at the first 0x20800000 command
+initial ans_f = $fopen("build/frame_answers.txt", "w");
+integer cmd_n = 0;
 integer ob_p = 0;
 longint pc_feef14 = 0, pc_feef1c = 0, pc_fef047 = 0, pc_fef04e = 0, pc_fef325 = 0;
 longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
@@ -505,6 +515,25 @@ always @(posedge clk_cpu) begin
                   : device.mem['hF80280][15:8]] <=
             tick_hist[(device.mem['hF80280][15:8] > 8'd7) ? 7
                       : device.mem['hF80280][15:8]] + 1;
+    end
+    // Commands in, answers out, in order.
+    if (core.main.rst_n && core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+        && core.main.copro.we && core.main.copro.sel_fifo && core.main.copro.a1
+        && !core.main.copro.fin_full && cmd_n < 400) begin
+        // ARMED BY THE VISIBILITY COMMAND. The first 400 commands are the
+        // opening exchange and match the reference already; 0x20800000 is the
+        // per-object test whose answer decides the deadlock, and it comes later.
+        if ({core.main.copro.wdata, core.main.copro.lat_lo} == 32'h20800000)
+            armed <= 1'b1;
+        if (armed || {core.main.copro.wdata, core.main.copro.lat_lo} == 32'h20800000) begin
+            cmd_n = cmd_n + 1;
+            $fwrite(ans_f, "CMD %04h%04h\n", core.main.copro.wdata, core.main.copro.lat_lo);
+        end
+    end
+    if (core.main.rst_n && armed && core.main.copro.fifo_out_push && ans_n < 400) begin
+        ans_n = ans_n + 1;
+        $fwrite(ans_f, "ANS %08h  bit31=%0d\n", core.main.copro.fifo_out_data,
+                core.main.copro.fifo_out_data[31]);
     end
     if (core.main.rst_n && core.main.m_we && core.main.m_ack
         && core.main.m_addr[23:1] == 23'h2007C1) begin
@@ -598,6 +627,25 @@ always @(posedge clk_cpu) begin
     // repeatedly here. tw_all_tram counts every tile-RAM write and tw_all_acks
     // every acknowledged bus write, so if the scroll counts are zero while these
     // are not, the zero is about the game rather than the probe.
+    // Commands in, answers out, in order.
+    if (core.main.rst_n && core.main.copro.st == 2'd0 && core.main.copro.v60_acc
+        && core.main.copro.we && core.main.copro.sel_fifo && core.main.copro.a1
+        && !core.main.copro.fin_full && cmd_n < 400) begin
+        // ARMED BY THE VISIBILITY COMMAND. The first 400 commands are the
+        // opening exchange and match the reference already; 0x20800000 is the
+        // per-object test whose answer decides the deadlock, and it comes later.
+        if ({core.main.copro.wdata, core.main.copro.lat_lo} == 32'h20800000)
+            armed <= 1'b1;
+        if (armed || {core.main.copro.wdata, core.main.copro.lat_lo} == 32'h20800000) begin
+            cmd_n = cmd_n + 1;
+            $fwrite(ans_f, "CMD %04h%04h\n", core.main.copro.wdata, core.main.copro.lat_lo);
+        end
+    end
+    if (core.main.rst_n && armed && core.main.copro.fifo_out_push && ans_n < 400) begin
+        ans_n = ans_n + 1;
+        $fwrite(ans_f, "ANS %08h  bit31=%0d\n", core.main.copro.fifo_out_data,
+                core.main.copro.fifo_out_data[31]);
+    end
     if (core.main.rst_n && core.main.m_we && core.main.m_ack)
         tw_all_acks <= tw_all_acks + 1;
 end

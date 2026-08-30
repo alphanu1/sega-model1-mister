@@ -5674,3 +5674,38 @@ never generates it because its coprocessor says "no".
 returns.** That is a bounded question about one microcode routine and one result word, and it
 is the first point in this whole chain where the fault is ours to fix in RTL rather than a
 consequence two or three steps downstream.
+
+### The fix target: our coprocessor answers the visibility command with one word, not two — 2026-08-30
+
+Same command, same operands, captured at the FIFO on both sides:
+
+    cmd 20800000  operands c342028f  4128cccd
+      reference   ANS 00000000   then   ANS 41170ddd
+      ours        ANS 4356e2e1
+
+The reference returns **a zero flag word followed by a value**. `FEB5DE` tests bit 31 of the
+FIRST word, gets `00000000`, and skips — which is why it never marks an object and never
+submits the geometry that deadlocks us. Ours returns a **single computed word**, so whatever
+lands in that first read decides the branch, and sometimes it has bit 31 set.
+
+Further reference pairs, for a regression test:
+
+    c342028f 4128cccd -> 00000000 41170ddd
+    c34211ec 41953333 -> 00000000 41734eb0
+    c34d8a3d 41de3d71 -> 00000000 41a5ec1b
+    c34d947b 4222b852 -> 00000000 42068fb4
+    c3426148 4262eb85 -> 00000000 424b366b
+
+**Where the fix is.** `get_exp(0x20800000)` is `(0x20800000 >> 23) & 0xff = 0x41`, and the
+dispatch at `0052 brul alw d` jumps to `d = get_exp(b) + 0x53`, so this is **microcode handler
+0x94**. Our TGP executes that handler differently — it produces one result where the reference
+produces two — and `make tgp_trace` around pc 0x94 is the instrument.
+
+**Note on the capture**: each line appears twice in `build/frame_answers.txt` because
+`v60_acc` is asserted on both cycles of a held access. That is the probe, not duplicated
+traffic — the same trap as the result-FIFO read count earlier today, where a held request read
+as repeated reads.
+
+**And the opening exchange already agrees.** Our first 400 commands match the reference's
+stream and our answers include its dominant `42520000`, so this is not a broken coprocessor —
+it is one handler.
