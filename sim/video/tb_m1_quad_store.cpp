@@ -131,7 +131,7 @@ static Q mk(int id, float z, bool moire = false) {
     Q q;
     q.x0 = (int16_t)id; q.y0 = 1; q.x1 = (int16_t)(id + 1);
     q.y1 = 2; q.x2 = (int16_t)(id + 3); q.y2 = 3;
-    q.x3 = (int16_t)(id + 5); q.y3 = (int16_t)(id % 60);
+    q.x3 = (int16_t)(id + 5); q.y3 = (int16_t)(id % 30);
     q.col = (uint32_t)(id * 0x010203) & 0xffffff;
     q.z = f2u(z); q.moire = moire; q.seq = id;
     return q;
@@ -205,37 +205,50 @@ int main(int argc, char** argv) {
 
     printf("test: the BAND FILTER replays only quads whose rows touch the band\n");
     {
-        // One quad per band, plus one spanning bands 1..3, plus two entirely off
-        // screen above and below - which must appear in no band at all.
+        // TWELVE bands of 32 rows, not six of 64 - the height was halved to free
+        // M10K for the sound section, and this test is the one that notices when
+        // the mask, the select and the row-to-band divide are not all updated
+        // together. They were not: the frame stopped dead after band 3.
+        const int NB = 12, BH = 32;
         std::vector<Q> q;
         auto band_quad = [&](int id, int y0, int y1) {
-            Q a = mk(id, (float)(100 - id));
+            Q a = mk(id, (float)(1000 - id));
             a.y0 = (int16_t)y0; a.y1 = (int16_t)y0;
             a.y2 = (int16_t)y1; a.y3 = (int16_t)y1;
             return a;
         };
-        for (int b = 0; b < 6; b++) q.push_back(band_quad(b, b * 64 + 5, b * 64 + 20));
-        q.push_back(band_quad(6, 70, 200));       // bands 1..3
-        q.push_back(band_quad(7, -500, -400));    // above the screen
-        q.push_back(band_quad(8, 900, 1000));     // below it
+        for (int b = 0; b < NB; b++)
+            q.push_back(band_quad(b, b * BH + 4, b * BH + 20));
+        q.push_back(band_quad(NB,     70, 200));   // bands 2..6
+        q.push_back(band_quad(NB + 1, -500, -400));// above the screen
+        q.push_back(band_quad(NB + 2, 900, 1000)); // below it
         t.load(q); t.sort();
+
         int seen_total = 0;
-        for (int b = 0; b < 6; b++) {
+        for (int b = 0; b < NB; b++) {
             t.d->replay_band = b;
             std::vector<Q> got = t.replay();
-            // Expected: the quad for this band, plus the spanning one on 1..3.
-            int want = 1 + ((b >= 1 && b <= 3) ? 1 : 0);
+            int want = 1 + ((b >= 2 && b <= 6) ? 1 : 0);
             checks++;
             if ((int)got.size() != want) {
                 fails++;
-                printf("  FAIL band %d replayed %zu quads, expected %d\n", b, got.size(), want);
+                printf("  FAIL band %d replayed %zu quads, expected %d\n",
+                       b, got.size(), want);
             }
             seen_total += (int)got.size();
         }
-        printf("  9 quads stored, %d quad-replays across 6 bands (24 without binning)\n",
-               seen_total);
+        // 12 single-band quads + one spanning 5 bands = 17 replays; without the
+        // filter it would be 15 quads x 12 bands = 180.
+        printf("  15 quads stored, %d quad-replays across %d bands (%d without binning)\n",
+               seen_total, NB, 15 * NB);
         checks++;
-        if (seen_total != 9) { fails++; printf("  FAIL total replays %d, expected 9\n", seen_total); }
+        if (seen_total != NB + 5) {
+            fails++;
+            printf("  FAIL total replays %d, expected %d\n", seen_total, NB + 5);
+        }
+        checks++;
+        // The two off-screen quads must be in NO band at all.
+        if (seen_total > NB + 5) { fails++; printf("  FAIL off-screen quads were replayed\n"); }
         t.d->replay_band = 0;
     }
 

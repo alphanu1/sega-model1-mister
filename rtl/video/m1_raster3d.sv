@@ -115,6 +115,7 @@ module m1_raster3d #(
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
+  localparam int unsigned BW     = (NBANDS > 1) ? $clog2(NBANDS) : 1;
 
   // ---------------------------------------------------------------- view state
   // Everything the display list sets that the geometry needs. Latched as the
@@ -132,6 +133,7 @@ module m1_raster3d #(
   logic [7:0]  lw_ev_kind;
   logic [15:0] lw_ev_idx;
   logic [31:0] lw_ev_data;
+  logic        lw_ev_body;
   logic [15:0] lw_cmds, lw_objs, lw_words;
   logic        lw_bad, lw_over;
 
@@ -156,7 +158,7 @@ module m1_raster3d #(
     .mem_addr(lw_addr), .mem_req(lw_req),
     .mem_valid(dl_valid), .mem_data(dl_data),
     .ev_valid(lw_ev_valid), .ev_kind(lw_ev_kind),
-    .ev_idx(lw_ev_idx), .ev_data(lw_ev_data),
+    .ev_idx(lw_ev_idx), .ev_data(lw_ev_data), .ev_body(lw_ev_body),
     .dbg_cmds(lw_cmds), .dbg_objects(lw_objs), .dbg_words(lw_words),
     .dbg_bad_type(lw_bad), .dbg_overrun(lw_over)
   );
@@ -201,7 +203,7 @@ module m1_raster3d #(
   // ---------------------------------------------------------------- quad store
   logic        qs_clear, qs_sort_start, qs_sort_busy;
   logic        qs_replay_start, qs_replay_busy, qs_out_valid, qs_out_ready;
-  logic [2:0]  qs_band;
+  logic [BW-1:0] qs_band;
   logic signed [15:0] qo_x0, qo_y0, qo_x1, qo_y1, qo_x2, qo_y2, qo_x3, qo_y3;
   logic [23:0] qo_col;
   logic        qo_moire;
@@ -211,7 +213,9 @@ module m1_raster3d #(
   // as MAME's spoint_t does, and they are truncated here - which matches the
   // reference's own overflow: fill_quad shifts s.x left by 16 into an int32, so
   // anything past +/-32768 has already wrapped by the time it is drawn.
-  m1_quad_store u_store (
+  m1_quad_store #(
+    .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H)
+  ) u_store (
     .clk(clk), .rst_n(rst_n),
     .clear(qs_clear),
     .in_valid(q_valid),
@@ -236,7 +240,7 @@ module m1_raster3d #(
   logic signed [31:0] fl_span_y, fl_span_x0, fl_span_x1;
   logic [23:0] fl_span_col;
   logic        fl_span_moire;
-  logic [2:0]  fill_band;
+  logic [BW-1:0] fill_band;
 
   // The viewport handed to the fill unit is the BAND, not the screen: clipping
   // to the band is what keeps a quad that spans several bands from writing
@@ -323,7 +327,7 @@ module m1_raster3d #(
   } state_t;
   state_t st;
 
-  logic [2:0] cur_band;
+  logic [BW-1:0] cur_band;
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
@@ -359,7 +363,11 @@ module m1_raster3d #(
 
       // ---- display-list events. Latched wherever the walk is, because a
       // command changes state for every object that follows it.
-      if (lw_ev_valid) begin
+      // Header parameters only. Commands 9, 0x0a, 0x0b and 0x0c have no body, so
+      // this is belt and braces for them - but taking a body item as a matrix
+      // element is exactly the class of mistake ev_body exists to prevent, and
+      // the guard costs one gate.
+      if (lw_ev_valid && !lw_ev_body) begin
         case (lw_ev_kind)
           8'h03: begin
             // Viewport. MAME's own transformation of the words: the centre's y
@@ -447,11 +455,11 @@ module m1_raster3d #(
           // Hand this band to the scanout and start the next one in the other
           // buffer. The display side reads whichever buffer is not `wr_buf`.
           wr_buf     <= ~wr_buf;
-          disp_band  <= {1'b0, cur_band};
+          disp_band  <= 4'(cur_band);
           disp_valid <= 1'b1;
-          if (cur_band == 3'(NBANDS - 1)) st <= T_IDLE;
+          if (cur_band == BW'(NBANDS - 1)) st <= T_IDLE;
           else begin
-            cur_band <= cur_band + 3'd1;
+            cur_band <= cur_band + BW'(1);
             st       <= T_BAND_CLR;
           end
         end

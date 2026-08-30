@@ -43,8 +43,20 @@
 `timescale 1ns/1ps
 
 module m1_quad_store #(
-  parameter int unsigned NQ = 2048,          // quads held
-  parameter int unsigned IW = 11             // ceil(log2(NQ))
+  parameter int unsigned NQ     = 2048,      // quads held
+  parameter int unsigned IW     = 11,        // ceil(log2(NQ))
+  // THE BAND GEOMETRY IS A PARAMETER, not three hardcoded constants.
+  //
+  // It was written for six 64-row bands: a 6-bit mask, a 3-bit band select, and
+  // a row-to-band index of `y[8:6]`. Halving the band height to 32 for the sound
+  // M10K budget left all three untouched, so bands 6..11 had no mask bit, the
+  // select could not address them, and a 3-bit counter compared against
+  // 3'(12-1) = 3 stopped the frame dead after band 3. The picture was correct as
+  // far as it went and simply ended a quarter of the way down.
+  parameter int unsigned BAND_H = 32,
+  parameter int unsigned NBANDS = 12,
+  parameter int unsigned BW     = 4,         // ceil(log2(NBANDS))
+  parameter int unsigned SCR_H  = 384
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -71,7 +83,7 @@ module m1_quad_store #(
   // vertices. Without it the six passes cost ~20 cycles of setup per quad per
   // band, which is 276,000 cycles of a 397,515-cycle frame spent on quads that
   // draw nothing.
-  input  logic [2:0]  replay_band,
+  input  logic [BW-1:0] replay_band,
   input  logic        replay_start,
   output logic        replay_busy,
   input  logic        out_ready,
@@ -92,7 +104,8 @@ module m1_quad_store #(
   // and a separate narrow array for colour+moire, and one for the sort key, so
   // the sort never reads the wide one.
   (* ramstyle = "M10K" *) logic [31:0] vtx [NQ*4];
-  (* ramstyle = "M10K" *) logic [30:0] att [NQ];      // {band_mask, moire, col}
+  localparam int unsigned AT_W = NBANDS + 25;   // {band_mask, moire, col}
+  (* ramstyle = "M10K" *) logic [AT_W-1:0] att [NQ];
   (* ramstyle = "M10K" *) logic [31:0] key [NQ];
 
   // Two index arrays, ping-ponged by the radix passes.
@@ -109,21 +122,23 @@ module m1_quad_store #(
   // Which of the six 64-row bands this quad's rows touch. Computed from the
   // vertex extremes, clamped: a quad above the screen or below it lands in no
   // band and is never replayed.
-  function automatic [5:0] band_mask(input logic signed [15:0] a, b, c, d);
+  function automatic [NBANDS-1:0] band_mask(input logic signed [15:0] a, b, c, d);
     logic signed [15:0] lo, hi2;
-    logic [2:0] b0, b1;
+    int b0, b1;
     begin
       lo  = a;  if (b < lo)  lo  = b;  if (c < lo)  lo  = c;  if (d < lo)  lo  = d;
       hi2 = a;  if (b > hi2) hi2 = b;  if (c > hi2) hi2 = c;  if (d > hi2) hi2 = d;
-      if (hi2 < 0 || lo > 16'sd383) band_mask = 6'd0;
+      if (hi2 < 0 || lo > $signed(16'(SCR_H - 1))) band_mask = '0;
       else begin
-        if (lo  < 0)         lo  = 16'sd0;
-        if (hi2 > 16'sd383)  hi2 = 16'sd383;
-        b0 = 3'(lo[8:6]);
-        b1 = 3'(hi2[8:6]);
-        band_mask = 6'd0;
-        for (int k = 0; k < 6; k++)
-          if (k >= int'(b0) && k <= int'(b1)) band_mask[k] = 1'b1;
+        if (lo  < 0)                        lo  = 16'sd0;
+        if (hi2 > $signed(16'(SCR_H - 1)))  hi2 = $signed(16'(SCR_H - 1));
+        // Divide rather than a fixed bit slice: y[8:6] is a division by 64 and
+        // says nothing about it, so it survives a change of band height silently.
+        b0 = int'(lo)  / int'(BAND_H);
+        b1 = int'(hi2) / int'(BAND_H);
+        band_mask = '0;
+        for (int k = 0; k < int'(NBANDS); k++)
+          if (k >= b0 && k <= b1) band_mask[k] = 1'b1;
       end
     end
   endfunction
@@ -307,7 +322,7 @@ module m1_quad_store #(
         end
         P_ADDR: begin q <= ord_idx; p_st <= P_RD1; end
         P_RD1:  p_st <= P_RD2;
-        P_RD2: if (!att[q][30:25][replay_band]) begin
+        P_RD2: if (!att[q][AT_W-1:25][replay_band]) begin
           // Not in this band: step straight to the next quad without emitting.
           if (pi + 1 >= count) p_st <= P_IDLE;
           else begin pi <= pi + 1'b1; p_st <= P_ADDR; end
