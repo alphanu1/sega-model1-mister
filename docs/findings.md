@@ -6070,3 +6070,34 @@ list walker when one exists. None is a five-minute job, and the spec is right th
 comes before the design - **50 objects a frame does not tell you whether that is 500 quads or
 50,000**, and the difference decides between per-band insertion, a hardware merge sort, and a
 bucketed approximation.
+
+### Scroll: values exact, rate ~40x low, and the cause is NOT the I/O flag — 2026-08-30
+
+Corrected from "diagnosed": the arithmetic is diagnosed, the rate is not.
+
+    scroll exchange (FEF372/FEF388)   reference 114 in ~227 frames, every 2
+                                      ours        3 in 526 frames
+
+Operands and answers are identical where they occur, so the coprocessor path is exact. A
+1.25x speed deficit cannot produce 40x, so the earlier attribution to speed was wrong.
+
+**Walked up the call chain, edge-detected** (`dbg_pc` is a level; comparing it directly counts
+cycles, which has caught me twice):
+
+    ours       fe1c09=753  fe1c15=419  feeb10=1  | feef14=3   fef047=3   fef372=3
+    reference  FE1C09=47294 FE1C15=35388 FEEB10=1 | FEEF14=266 FEF047=266 FEF372=266
+
+The dispatch loop and its indirect calls run (753/419 against 47,294/35,388 over a longer
+window), and `FEEB10` is 1 on BOTH sides - an init, not the caller. The chain stops at
+`FEEE49 test.b 40DC8C / FEEE4F be FEEF06`, which runs 266 times there and ~3 here, so the
+routine containing it is what is not being entered.
+
+**The I/O board command-code hypothesis is dead, measured.** Model 2's `docs/io-board.md`
+establishes that the flag is a command code - 1 acknowledges, 2 copies the window, 3 clears
+and restarts - and that a responder clearing on any non-zero write is "silently wrong for 2
+and 3". `m1_ioboard` is exactly that responder. But Virtua Racing writes **`01` and nothing
+else**, 495 times over 500 frames, all from `fe03fd`. The distinction does not arise in this
+game, so this is not the fault here.
+
+Also note the routine above the gate does `FEEE30: in.w [R23], [R1+]` - the IN-to-memory form
+fixed today - so its behaviour changed with that fix and any pre-fix measurement of it is void.

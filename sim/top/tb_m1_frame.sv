@@ -1532,6 +1532,8 @@ initial begin
         $write("   (reference: 80000000 / 00000000, bit26 clear)\n");
     end
     $display("FRAME: object0 high-half writes=%0d, of which bit26 set=%0d", ob_wr, ob_wr_set);
+    $display("FRAME: scroll chain: fe1c09=%0d fe1c15=%0d feeb10=%0d | feef14=%0d feef1c=%0d fef047=%0d fef2a3=%0d fef372=%0d",
+             c_fe1c09, c_fe1c15, c_feeb10, c_feef14, c_feef1c, c_fef047, c_fef2a3, c_fef372);
     $display("FRAME: geometry loop: feb651=%0d feb65a=%0d -> body feb661=%0d feb673=%0d | skip feb688=%0d  (reference: body NEVER)",
              pc_feb651, pc_feb65a, pc_feb661, pc_feb673, pc_feb688);
     $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
@@ -1648,6 +1650,8 @@ end
 integer strm_n = 0, strm_f;
 reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0, scr_d = 1'b0, sx_w_d = 1'b0, sx_r_d = 1'b0;
 reg [15:0] sx_lo = 16'd0, sx_rlo = 16'd0;
+reg [23:0] chain_d = 24'hffffff;
+longint c_fe1c09=0,c_fe1c15=0,c_feeb10=0,c_feef14=0,c_feef1c=0,c_fef047=0,c_fef372=0,c_fef2a3=0;
 reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
@@ -1748,6 +1752,23 @@ always @(posedge clk_cpu) begin
         end
         sx_r_d <= core.main.m_req && !core.main.m_we && core.main.m_ack
                && core.main.m_addr[23:16] >= 8'hd8 && core.main.m_addr[23:16] <= 8'hd9;
+        // THE CALL CHAIN ABOVE THE SCROLL UPDATE, edge-detected (dbg_pc is a
+        // level; comparing it directly counts CYCLES, which has caught me twice).
+        //   FE1C09 object dispatch loop -> FE1C15 indirect call
+        //   FEEB10 the object's handler -> FEEF14 gate -> FEF047 -> FEF372 scroll
+        // The reference runs the scroll exchange every 2 frames; we manage 3 in
+        // a whole run, and 1.25x slower does not explain 40x.
+        if (core.dbg_pc != chain_d) begin
+            if (core.dbg_pc == 24'hfe1c09) c_fe1c09 <= c_fe1c09 + 1;
+            if (core.dbg_pc == 24'hfe1c15) c_fe1c15 <= c_fe1c15 + 1;
+            if (core.dbg_pc == 24'hfeeb10) c_feeb10 <= c_feeb10 + 1;
+            if (core.dbg_pc == 24'hfeef14) c_feef14 <= c_feef14 + 1;
+            if (core.dbg_pc == 24'hfeef1c) c_feef1c <= c_feef1c + 1;
+            if (core.dbg_pc == 24'hfef047) c_fef047 <= c_fef047 + 1;
+            if (core.dbg_pc == 24'hfef372) c_fef372 <= c_fef372 + 1;
+            if (core.dbg_pc == 24'hfef2a3) c_fef2a3 <= c_fef2a3 + 1;
+        end
+        chain_d <= core.dbg_pc;
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,
