@@ -177,7 +177,12 @@ static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t siz
                 default: qz = 0.0f; break;
             }
             q.z = f2u(qz);
-            q.col = shade(nx, ny, nz, lpbank[lightmode], tgpram[tex_adr & 0xfffff]);
+            // m_tgp_ram[tex_adr - 0x40000]. This model had the raw address and
+            // so agreed with the RTL's identical mistake - which is exactly how a
+            // transcribed reference stops being independent. Rendering a real
+            // frame is what exposed it; both sides are corrected here.
+            q.col = shade(nx, ny, nz, lpbank[lightmode],
+                          tgpram[(tex_adr - 0x40000) & 0xfffff]);
             q.moire = (flags & 0x00002000) != 0;
             q.record = (int)i;
             out.push_back(q);
