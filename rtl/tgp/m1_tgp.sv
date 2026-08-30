@@ -64,7 +64,7 @@ module m1_tgp #(
   // V60's 1.63x speed deficit, which keeps it off the code that reads results.
   // FLIP THIS TO 1 WHEN THAT IS FIXED - it is the correct behaviour, and the
   // deadlock cannot arm once the V60 keeps up.
-  parameter bit EMPTY_FIFO_READS_ZERO = 1'b1
+  parameter bit EMPTY_FIFO_READS_ZERO = 1'b0
 ) (
   input  logic        clk,
   input  logic        rst_n,

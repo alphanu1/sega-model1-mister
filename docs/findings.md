@@ -5709,3 +5709,42 @@ as repeated reads.
 **And the opening exchange already agrees.** Our first 400 commands match the reference's
 stream and our answers include its dominant `42520000`, so this is not a broken coprocessor —
 it is one handler.
+
+### WITHDRAWN: "an empty command FIFO must read as ZERO" — 2026-08-30
+
+**Handler 0x53 is a real command handler, not an idle dispatch, and that was the whole basis
+of the change.** The microcode at 0x9b, which 0x53 jumps to:
+
+    009B: mov (x1), d       pop a word
+    009C: mov (x1), a       pop another
+    009D: fadd : mov $0xd, x1
+    009E: mov d, (bx1)      PUSH THE SUM AS AN ANSWER
+    009F: brif alw #0x4c
+
+So a command whose exponent field is 0 means "add the next two words and return the sum".
+Reading an EMPTY fifo as zero therefore dispatches into that handler, pops two more zeros,
+adds them and pushes `00000000` as an answer the V60 never asked for. Measured, with the
+parameter on and off, over the same window:
+
+    EMPTY_FIFO_READS_ZERO=1   17 answers of 00000000 from pc=009e, THEN 42520000 from 00a8
+    EMPTY_FIFO_READS_ZERO=0   42520000 from 00a8 immediately - identical to the reference
+
+**MAME returns zero from the pop AND stalls, so the zero is never consumed.** `gen_fifo.h`:
+the pop returns zero, `on_fifo_empty_pre_sync` asks the destination to try again, and
+`on_fifo_empty_post_sync` HALTS it if the fifo is still empty. The retry is the point. Quoting
+only the "returns zero" half — which is what was done — inverts the behaviour.
+
+**So stalling was right all along, and parking at 004C on an empty FIFO is correct**: MAME
+halts its coprocessor in exactly the same situation. `EMPTY_FIFO_READS_ZERO` stays 0 and the
+parameter should probably be deleted rather than left as a trap.
+
+**And the deadlock traced all day was caused by this change.** With the parameter off there is
+no deadlock: the frame bench runs to 526 frames with `fin=0/16 fout=0/16`. The chain built on
+top of it — "bit 26 of object 0", "the coprocessor answers the visibility command wrongly",
+"the V60 is too slow to drain results" — was all downstream of a self-inflicted fault. Every
+capture taken while the parameter was on has to be discarded, including the command-stream
+comparison that put the first divergence at command 77.
+
+**The lesson, and it is the same one as the deadlocked-window census:** an experimental switch
+left on turns every subsequent measurement into a measurement of the switch. Check the
+configuration is the shipped one before believing anything downstream of it.
