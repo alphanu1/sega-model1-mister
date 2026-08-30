@@ -206,7 +206,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -544,7 +544,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -734,6 +734,18 @@ rbf:
 
 # V60 cycles-per-instruction against memory latency. Not part of `make test`:
 # it builds the CPU a dozen times and takes minutes.
+# IN.W WITH A MEMORY DESTINATION. The V60 read the port and dropped the store
+# (S_IN_RD overrode wb_op2's S_WB_MEM with a guard that read the old st). No
+# suite test covered the form; this one FAILS on the pre-fix v60.sv and passes
+# on the fix - checked both ways before it was added. Sources and flags follow
+# tools/v60_cpi_sweep.sh, whose bench it clones with a write path added.
+test_v60_in_mem:
+	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-PINMISSING +define+SIMULATION \
+	  -GFAST=1 -GCEDIV=1 -GLAT=4 --top-module tb_v60_in_mem --Mdir obj_v60_in_mem -o run \
+	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv sim/cpu/tb_v60_in_mem.sv
+	./obj_v60_in_mem/run | grep -E '^v60_in_mem:|FAIL'
+
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh
 

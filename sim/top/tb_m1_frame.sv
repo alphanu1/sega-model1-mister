@@ -1646,7 +1646,7 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
-reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0;
+reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0;
 reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
@@ -1695,6 +1695,24 @@ always @(posedge clk_cpu) begin
             $fwrite(strm_f, "ENTER feda02 f=%0d\n", frames);
         end
         mxpc_d <= core.dbg_pc;
+        // THE SINCOS UNIT'S TRAFFIC, io 0x20-0x23, values in and out. Answer 767
+        // (microcode 037c) differs from the reference on identical commands and
+        // is computed from a sincos lookup at 036F-0371. The unit matches MAME's
+        // code on paper, so the values are compared instead; the reference side
+        // is build/dasm/mame_sincos.txt from the same io addresses.
+        if (core.main.tgp.io_wr && core.main.tgp.sel_math && core.main.tgp.io_addr[4:0] <= 5'h03
+            && !sc_w_d) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "SCW %02h %08h\n", {3'd0, core.main.tgp.io_addr[4:0]}, core.main.tgp.io_wdata);
+        end
+        sc_w_d <= core.main.tgp.io_wr && core.main.tgp.sel_math && core.main.tgp.io_addr[4:0] <= 5'h03;
+        if (core.main.tgp.io_rd && core.main.tgp.sel_math && core.main.tgp.io_addr[4:0] <= 5'h03
+            && core.main.tgp.io_ack && !sc_r_d) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "SCR %02h %08h\n", {3'd0, core.main.tgp.io_addr[4:0]}, core.main.tgp.io_rdata);
+        end
+        sc_r_d <= core.main.tgp.io_rd && core.main.tgp.sel_math && core.main.tgp.io_addr[4:0] <= 5'h03
+               && core.main.tgp.io_ack;
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,
