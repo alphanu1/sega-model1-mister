@@ -87,6 +87,12 @@ SRCS_m1_listctl := rtl/video/m1_listctl.sv
 SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv rtl/video/m1_palette.sv rtl/video/m1_video.sv
 SRCS_m1_raster_div := rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
+SRCS_m1_geo_xform   := rtl/video/m1_geo_xform.sv
+SRCS_m1_geo_project := rtl/video/fp_to_int.sv rtl/video/m1_geo_project.sv
+SRCS_m1_geo_det     := rtl/video/m1_geo_det.sv
+SRCS_m1_fp_pool     := $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
+                       rtl/video/m1_fp_pool.sv
+SRCS_m1_listwalk    := rtl/video/m1_listwalk.sv
 SRCS_m1_loader_harness := $(SRCS_m1_rom_loader) $(SRCS_m1_sdram) $(SRCS_sdram_model) sim/io/m1_loader_harness.sv
 # Top module is s32_v60; the Quartus target keys off MOD, so the .qsf needs the
 # module name to match. Built standalone for area only, not integrated yet.
@@ -206,7 +212,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -269,10 +275,18 @@ test_raster_band:
 	  rtl/video/m1_raster_band.sv sim/video/tb_m1_raster_band.cpp -o tb_raster_band --Mdir obj_raster_band
 	./obj_raster_band/tb_raster_band
 
+test_geo_det:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_det_top \
+	  -Irtl/tgp -Irtl/video rtl/video/m1_geo_det.sv rtl/video/m1_fp_pool.sv \
+	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv sim/video/geo_wrappers.sv \
+	  sim/video/tb_m1_geo_det.cpp -o tb_geo_det --Mdir obj_geo_det
+	./obj_geo_det/tb_geo_det
+
 test_geo_project:
-	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_project \
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_project_top \
 	  -Irtl/tgp -Irtl/video rtl/video/m1_geo_project.sv rtl/video/fp_to_int.sv \
-	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv \
+	  rtl/video/m1_fp_pool.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv \
+	  sim/video/geo_wrappers.sv \
 	  sim/video/tb_m1_geo_project.cpp -o tb_geo_project --Mdir obj_geo_project
 	./obj_geo_project/tb_geo_project
 
@@ -282,8 +296,9 @@ test_fp_to_int:
 	./obj_fp_to_int/tb_fp_to_int
 
 test_geo_xform:
-	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_xform \
-	  -Irtl/tgp rtl/video/m1_geo_xform.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv \
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_xform_top \
+	  -Irtl/tgp rtl/video/m1_geo_xform.sv rtl/video/m1_fp_pool.sv \
+	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv sim/video/geo_wrappers.sv \
 	  sim/video/tb_m1_geo_xform.cpp -o tb_geo_xform --Mdir obj_geo_xform
 	./obj_geo_xform/tb_geo_xform
 
@@ -575,7 +590,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

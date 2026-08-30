@@ -6444,3 +6444,84 @@ The comparator is exact and must stay exact — descending z with ties resolved 
 submission order. `qsort` is not stable, so MAME makes the order total by falling
 back on the address; an approximate bucket sort by z would reorder coincident
 quads and is not a shortcut available here.
+
+---
+
+## One multiplier and one adder serve the whole geometry stage — measured, 446 ALM a copy
+
+**2026-08-30.** The stages were first built with private arithmetic: a multiplier
+and an adder each in `m1_geo_xform` and `m1_geo_det`, both plus a divider in
+`m1_geo_project`. Three of each. Counting what a polygon record needs:
+
+    transform    3 points     27 mul   24 add
+    determinant               9 mul   11 add
+    projection   2 points      8 mul    8 add   2 div
+                             ---------------------------
+                              44 mul   43 add   2 div
+
+against 68 cycles a record. `fp_mul` and `fp_add` retire one result per cycle, so
+**one of each runs at 65% and 63%.** Three of each was convenience, not necessity.
+
+Measured on the same module, Quartus 17.0, before and after moving its units to a
+shared pool:
+
+    m1_geo_xform   private mul+add   1,444 ALM
+    m1_geo_xform   pooled              998 ALM      -446
+    m1_fp_pool     mul + add + div + arbitration  1,264 ALM
+
+So a private multiplier-and-adder pair is ~446 ALM, and the whole pool — including
+the divider that could never be shared away because there was only ever one — costs
+less than three of those pairs. Round robin rather than fixed priority: at 65%
+utilisation priority is *almost* always fine, and "almost always" is how a stage
+starved on the busiest frames gets shipped.
+
+The refactor is behaviour-preserving: all three benches report identical numbers
+and identical throughput afterwards.
+
+**The one thing sharing forces on every client**: an issue must advance only on a
+GRANT. With a private unit each issue was accepted, so a schedule counter could
+run free; shared, a cycle lost to arbitration silently drops an operand and leaves
+a result short forever.
+
+---
+
+## Virtua Racing needs the whole lighting path, and it does not fit one divider
+
+**2026-08-30**, `tools/mame_light_census.lua`, 100 samples over 1,200 frames.
+
+Measured before building the colour unit, on the theory that the cheapest unit is
+the one that is not built. Nothing could be dropped:
+
+    command 7   spec_enable=1 on 294 of 294 mode words   specular is ALWAYS on
+    command 6   banks with s=255 p=7, and banks with s=0 p=0
+    command 4   mode 0 155,876   mode 1 (blinking) 5,832
+                mode 2   6,336   mode 3 (unlit)  40,852
+
+So the specular term, the alternate-frame channel rotation and the unlit flag are
+all live for this game. 22% of colour words set the unlit bit and 2.8% blink.
+
+**And that creates a budget problem.** `glm::normalize` on the polygon normal is a
+reciprocal square root, once per record, on top of the two reciprocals projection
+already needs. Three expensive operations a record, and `fp_div` is 29 cycles
+unpipelined: **87 cycles against a budget of 68.** The geometry stage as MAME
+writes it does not fit behind one divider.
+
+Three ways out, in the order they should be considered:
+
+1. **The precision requirement is low and worth measuring.** The normalize feeds
+   `dif`, which feeds `lumval = 255*min(1,ln)` and is then shifted right by two —
+   a **6-bit** output. A relative error of ~1.6% is invisible in it. Specular
+   squares its argument up to three times, so that path needs ~8x better, but even
+   then a ten-bit reciprocal square root suffices. This wants the same treatment
+   the projection reciprocal got: measure the pixel-level difference, then decide.
+2. **A second `fp_div`**, which brings 87 cycles to ~44. Exact, and the pool
+   already has the arbitration for it.
+3. **The hardware's own tables.** `other_data` — `opr-14744`/`14745` are a 1/x
+   table and `opr-14746`/`14747` a 1/sqrt(x) table, 256 KB each, 64K entries of 32
+   bits. They are in the ROM set and **deliberately absent from our MRA** because
+   `fp_div` computes what the coprocessor needed. This is the second time that
+   decision has come up against a stage that would rather have the table; the
+   reversal condition is a measurement showing the table's precision is enough.
+
+Not yet decided. Recorded so the decision is made on the measurement rather than
+on whichever is easiest to write.

@@ -60,6 +60,26 @@ module m1_geo_project (
   output logic        in_ready,
   input  logic [31:0] in_x, in_y, in_z,
 
+  // Shared arithmetic - see rtl/video/m1_fp_pool.sv.
+  output logic        mul_req,
+  output logic [31:0] mul_a, mul_b,
+  input  logic        mul_gnt,
+  input  logic        mul_rsp,
+  input  logic [31:0] mul_res,
+
+  output logic        add_req,
+  output logic [31:0] add_a, add_b,
+  output logic        add_sub,
+  input  logic        add_gnt,
+  input  logic        add_rsp,
+  input  logic [31:0] add_res,
+
+  output logic        div_req,
+  output logic [31:0] div_a, div_b,
+  input  logic        div_gnt,
+  input  logic        div_rsp,
+  input  logic [31:0] div_res,
+
   output logic        out_valid,
   output logic signed [31:0] out_sx, out_sy,   // pixels
   output logic [31:0] out_z,                   // passed through, for the sort
@@ -73,19 +93,12 @@ module m1_geo_project (
   logic [31:0] rx, ry, rz, recip;
   logic        r_behind;
 
-  logic        div_in_valid, div_busy, div_out_valid;
-  logic [31:0] div_result;
-  logic        div_ovf, div_unf, div_dz, div_inv;
-
   localparam logic [31:0] ONE = 32'h3f800000;
 
-  fp_div u_div (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(div_in_valid), .a(ONE), .b(rz),
-    .busy(div_busy), .out_valid(div_out_valid), .result(div_result),
-    .overflow(div_ovf), .underflow(div_unf),
-    .div_by_zero(div_dz), .invalid(div_inv)
-  );
+  assign div_a = ONE;
+  assign div_b = rz;
+  wire        div_out_valid = div_rsp;
+  wire [31:0] div_result    = div_res;
 
   // z > 0 means positive, nonzero and not a NaN. A NaN compares false against
   // everything in C, so `z > 0` is false for it and MAME takes the behind path -
@@ -95,7 +108,9 @@ module m1_geo_project (
   wire z_pos     = !in_z[31] && !z_is_zero && !z_is_nan;
 
   logic div_started;
-  assign div_in_valid = (rst_st == R_BUSY) && !div_busy && !div_started && !r_behind;
+  // No !busy term any more: the pool owns the divider's occupancy and simply
+  // withholds the grant, so the client asks and waits.
+  assign div_req = (rst_st == R_BUSY) && !div_started && !r_behind;
 
   // ------------------------------------------------------------ scale stage
   typedef enum logic [2:0] { S_IDLE, S_M0, S_M1, S_A0, S_A1, S_OUT } sstate_t;
@@ -107,27 +122,10 @@ module m1_geo_project (
   logic [2:0]  step;
   logic [1:0]  n_got;
 
-  logic        mul_in_valid, mul_out_valid;
-  logic [31:0] mul_a, mul_b, mul_result;
-  logic        mul_ovf, mul_unf, mul_inv;
-
-  fp_mul u_mul (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(mul_in_valid), .a(mul_a), .b(mul_b),
-    .out_valid(mul_out_valid), .result(mul_result),
-    .overflow(mul_ovf), .underflow(mul_unf), .invalid(mul_inv)
-  );
-
-  logic        add_in_valid, add_out_valid, add_sub;
-  logic [31:0] add_a, add_b, add_result;
-  logic        add_ovf, add_unf, add_inv;
-
-  fp_add u_add (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(add_in_valid), .a(add_a), .b(add_b), .sub(add_sub),
-    .out_valid(add_out_valid), .result(add_result),
-    .overflow(add_ovf), .underflow(add_unf), .invalid(add_inv)
-  );
+  wire        mul_out_valid = mul_rsp;
+  wire [31:0] mul_result    = mul_res;
+  wire        add_out_valid = add_rsp;
+  wire [31:0] add_result    = add_res;
 
   // Two converters, not one muxed between the coordinates: the conversion is a
   // shift and a negate, so a second instance is cheaper than the state it would
@@ -137,9 +135,6 @@ module m1_geo_project (
   fp_to_int u_f2i_x (.f(sx_f), .i(sx_i));
   fp_to_int u_f2i_y (.f(sy_f), .i(sy_i));
 
-  wire unused_flags = &{1'b0, mul_ovf, mul_unf, mul_inv, add_ovf, add_unf,
-                        add_inv, div_ovf, div_unf, div_dz, div_inv};
-
   assign in_ready = (rst_st == R_IDLE);
 
   // Two multiplies then two multiplies, then two adds then two adds. Each pair
@@ -147,26 +142,26 @@ module m1_geo_project (
   // latency three times over - 19 cycles - and is still well inside the 29 the
   // reciprocal takes, so tightening it would buy nothing.
   always_comb begin
-    mul_in_valid = 1'b0; mul_a = '0; mul_b = '0;
-    add_in_valid = 1'b0; add_a = '0; add_b = '0; add_sub = 1'b0;
+    mul_req = 1'b0; mul_a = '0; mul_b = '0;
+    add_req = 1'b0; add_a = '0; add_b = '0; add_sub = 1'b0;
     case (sst)
       S_M0: begin                       // xx = x*r, yy = y*r
-        mul_in_valid = (step < 3'd2);
+        mul_req = (step < 3'd2);
         mul_a = (step == 3'd0) ? sx_in : sy_in;
         mul_b = sr;
       end
       S_M1: begin                       // ax = xx*zoomx, ay = yy*zoomy
-        mul_in_valid = (step < 3'd2);
+        mul_req = (step < 3'd2);
         mul_a = (step == 3'd0) ? sxx : syy;
         mul_b = (step == 3'd0) ? zoomx : zoomy;
       end
       S_A0: begin                       // bx = ax+viewx, by = ay+viewy
-        add_in_valid = (step < 3'd2);
+        add_req = (step < 3'd2);
         add_a = (step == 3'd0) ? sxx : syy;
         add_b = (step == 3'd0) ? viewx : viewy;
       end
       S_A1: begin                       // sx = xc+bx, sy = yc-by
-        add_in_valid = (step < 3'd2);
+        add_req = (step < 3'd2);
         add_a = (step == 3'd0) ? xc : yc;
         add_b = (step == 3'd0) ? sxx : syy;
         add_sub = (step == 3'd1);       // yc MINUS, the screen y axis is flipped
@@ -199,7 +194,7 @@ module m1_geo_project (
           end
         end
         R_BUSY: begin
-          if (div_in_valid) div_started <= 1'b1;
+          if (div_gnt) div_started <= 1'b1;
           if (r_behind) begin
             // No divide at all for a point behind the eye: MAME does not call
             // project_point, it assigns zero. Spending 29 cycles to compute a
@@ -230,7 +225,9 @@ module m1_geo_project (
         end
 
         S_M0, S_M1: begin
-          if (step < 3'd2) step <= step + 3'd1;
+          // Advance only on a grant: a shared multiplier can refuse a cycle, and
+          // stepping through the refusal drops an operand silently.
+          if (step < 3'd2 && mul_gnt) step <= step + 3'd1;
           if (mul_out_valid) begin
             if (n_got == 2'd0) sxx <= mul_result;
             else               syy <= mul_result;
@@ -244,7 +241,7 @@ module m1_geo_project (
         end
 
         S_A0, S_A1: begin
-          if (step < 3'd2) step <= step + 3'd1;
+          if (step < 3'd2 && add_gnt) step <= step + 3'd1;
           if (add_out_valid) begin
             if (n_got == 2'd0) begin
               if (sst == S_A0) sxx <= add_result; else sx_f <= add_result;

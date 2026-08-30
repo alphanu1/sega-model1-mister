@@ -87,6 +87,22 @@ module m1_geo_xform (
   input  logic [31:0] in_x, in_y, in_z,
   input  logic        in_translate,   // 1 = transform_point, 0 = transform_vector
 
+  // Shared arithmetic. See rtl/video/m1_fp_pool.sv: one multiplier and one adder
+  // serve every geometry stage, because a record needs 44 multiplies and 43 adds
+  // against a 68-cycle budget and the pipelines retire one a cycle.
+  output logic        mul_req,
+  output logic [31:0] mul_a, mul_b,
+  input  logic        mul_gnt,
+  input  logic        mul_rsp,
+  input  logic [31:0] mul_res,
+
+  output logic        add_req,
+  output logic [31:0] add_a, add_b,
+  output logic        add_sub,
+  input  logic        add_gnt,
+  input  logic        add_rsp,
+  input  logic [31:0] add_res,
+
   // Point out, in issue order.
   output logic        out_valid,
   output logic [31:0] out_x, out_y, out_z
@@ -117,20 +133,11 @@ module m1_geo_xform (
   wire [1:0]  comp  = 2'(issue / 4'd3);       // which output component
   wire [3:0]  m_sel = 4'({2'd0, term} * 4'd3 + {2'd0, comp});
 
-  wire [31:0] mul_a = mat[m_sel];
-  wire [31:0] mul_b = (term == 2'd0) ? px : (term == 2'd1) ? py : pz;
+  assign mul_a = mat[m_sel];
+  assign mul_b = (term == 2'd0) ? px : (term == 2'd1) ? py : pz;
 
-  logic        mul_in_valid;
-  logic        mul_out_valid;
-  logic [31:0] mul_result;
-  logic        mul_ovf, mul_unf, mul_inv;
-
-  fp_mul u_mul (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(mul_in_valid), .a(mul_a), .b(mul_b),
-    .out_valid(mul_out_valid), .result(mul_result),
-    .overflow(mul_ovf), .underflow(mul_unf), .invalid(mul_inv)
-  );
+  wire mul_out_valid = mul_rsp;
+  wire [31:0] mul_result = mul_res;
 
   // ------------------------------------------------------------ add stage
   typedef enum logic [1:0] { A_IDLE, A_RUN, A_OUT } astate_t;
@@ -148,29 +155,21 @@ module m1_geo_xform (
   wire       a_slot  = (a_comp <= 3'd2);
 
   wire [3:0]  ra    = 4'({1'd0, a_comp} * 4'd3);
-  wire [31:0] add_a = (a_round == 2'd0) ? r[sum_bank][ra] : t[a_comp[1:0]];
-  wire [31:0] add_b = (a_round == 2'd0) ? r[sum_bank][ra + 4'd1] :
-                      (a_round == 2'd1) ? r[sum_bank][ra + 4'd2]
-                                        : mat[4'd9 + {2'd0, a_comp[1:0]}];
+  assign add_a = (a_round == 2'd0) ? r[sum_bank][ra] : t[a_comp[1:0]];
+  assign add_b = (a_round == 2'd0) ? r[sum_bank][ra + 4'd1] :
+                 (a_round == 2'd1) ? r[sum_bank][ra + 4'd2]
+                                   : mat[4'd9 + {2'd0, a_comp[1:0]}];
+  assign add_sub = 1'b0;
 
-  logic        add_in_valid;
-  logic        add_out_valid;
-  logic [31:0] add_result;
-  logic        add_ovf, add_unf, add_inv;
-
-  fp_add u_add (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(add_in_valid), .a(add_a), .b(add_b), .sub(1'b0),
-    .out_valid(add_out_valid), .result(add_result),
-    .overflow(add_ovf), .underflow(add_unf), .invalid(add_inv)
-  );
+  wire        add_out_valid = add_rsp;
+  wire [31:0] add_result    = add_res;
 
   // The last round is skipped for a vector: a direction has no origin.
   wire [3:0] ac_last  = atrans ? 4'd12 : 4'd7;
   wire [3:0] want_res = atrans ? 4'd9  : 4'd6;
 
-  assign mul_in_valid = (mst == M_ISSUE);
-  assign add_in_valid = (ast == A_RUN) && a_slot;
+  assign mul_req = (mst == M_ISSUE);
+  assign add_req = (ast == A_RUN) && a_slot;
 
   // A new point is taken when the multiplier is free AND the bank it would fill
   // holds nothing the adder has yet to collect.
@@ -184,12 +183,6 @@ module m1_geo_xform (
   // could, because the bank was always collected before the next point arrived.
   assign in_ready = (mst == M_IDLE) && !bank_full;
 
-  // The FP units' exception flags are not used here: an overflow or a NaN in the
-  // geometry is data, and MAME propagates it into the projection and out to a
-  // coordinate that fill_quad then clips. Naming them keeps the lint honest
-  // about what is deliberately dropped.
-  wire unused_flags = &{1'b0, mul_ovf, mul_unf, mul_inv,
-                        add_ovf, add_unf, add_inv};
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -226,8 +219,14 @@ module m1_geo_xform (
           end
         end
         M_ISSUE: begin
-          if (issue == 4'd8) mst <= M_WAIT;   // stop at 8: m_sel must stay in range
-          else               issue <= issue + 4'd1;
+          // ONLY ON A GRANT. With a private multiplier every issue was accepted,
+          // so the counter could run free; sharing means a cycle where another
+          // stage won the arbitration, and advancing through it would skip a
+          // product and leave r[] one short forever.
+          if (mul_gnt) begin
+            if (issue == 4'd8) mst <= M_WAIT;  // stop at 8: m_sel must stay in range
+            else               issue <= issue + 4'd1;
+          end
         end
         M_WAIT: begin
           if (got == 4'd9) begin
@@ -254,8 +253,14 @@ module m1_geo_xform (
           end
         end
         A_RUN: begin
-          if (ac == ac_last) ast <= A_OUT;
-          else               ac  <= ac + 4'd1;
+          // The schedule advances on a gap (no request) or on a granted add. A
+          // stall only STRETCHES the spacing between rounds, which is the safe
+          // direction: the gaps exist so a round reads a t[] the previous round
+          // has already written.
+          if (!a_slot || add_gnt) begin
+            if (ac == ac_last) ast <= A_OUT;
+            else               ac  <= ac + 4'd1;
+          end
         end
         A_OUT: begin
           if (a_total == want_res) begin

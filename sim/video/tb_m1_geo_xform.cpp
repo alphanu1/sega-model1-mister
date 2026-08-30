@@ -26,7 +26,7 @@
 // (README.md, docs/m0-mb86233-spike.md). Widening that here would be answering it
 // by accident.
 
-#include "Vm1_geo_xform.h"
+#include "Vm1_geo_xform_top.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
@@ -46,7 +46,7 @@ static bool bad(uint32_t u) {
 }
 
 struct Dut {
-    Vm1_geo_xform* d = new Vm1_geo_xform;
+    Vm1_geo_xform_top* d = new Vm1_geo_xform_top;
     uint32_t m[12];
     long cycles = 0;
 

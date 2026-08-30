@@ -27,7 +27,7 @@
 // checked against the reference exactly, because none of them involve the
 // reciprocal at all.
 
-#include "Vm1_geo_project.h"
+#include "Vm1_geo_project_top.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
@@ -43,7 +43,7 @@ static float    u2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 struct View { float xc, yc, zoomx, zoomy, viewx, viewy; };
 
 struct Dut {
-    Vm1_geo_project* d = new Vm1_geo_project;
+    Vm1_geo_project_top* d = new Vm1_geo_project_top;
     long cycles = 0;
     void tick() { cycles++; d->clk = 0; d->eval(); d->clk = 1; d->eval(); }
     void reset() {
