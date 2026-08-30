@@ -206,7 +206,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -268,6 +268,12 @@ test_raster_band:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_raster_band \
 	  rtl/video/m1_raster_band.sv sim/video/tb_m1_raster_band.cpp -o tb_raster_band --Mdir obj_raster_band
 	./obj_raster_band/tb_raster_band
+
+test_geo_xform:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_xform \
+	  -Irtl/tgp rtl/video/m1_geo_xform.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv \
+	  sim/video/tb_m1_geo_xform.cpp -o tb_geo_xform --Mdir obj_geo_xform
+	./obj_geo_xform/tb_geo_xform
 
 test_listwalk:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_listwalk \
@@ -557,7 +563,7 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
