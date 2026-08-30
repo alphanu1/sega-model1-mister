@@ -130,3 +130,89 @@ module m1_geo_det_top (
     .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
   );
 endmodule
+
+module m1_geo_rsqrt_top (
+  input  logic        clk, rst_n,
+  input  logic        in_valid,
+  output logic        in_ready,
+  input  logic [31:0] in_x,
+  output logic        out_valid,
+  output logic [31:0] out_y
+);
+  logic [0:0] mr, mg, mrsp, ar, ag, arsp, dr, dg, drsp;
+  logic [31:0] ma [1], mb [1], aa [1], ab [1], da [1], db [1];
+  logic [0:0]  asub;
+  logic [31:0] mres, ares, dres;
+
+  m1_geo_rsqrt u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(in_valid), .in_ready(in_ready), .in_x(in_x),
+    .mul_req(mr[0]), .mul_a(ma[0]), .mul_b(mb[0]),
+    .mul_gnt(mg[0]), .mul_rsp(mrsp[0]), .mul_res(mres),
+    .add_req(ar[0]), .add_a(aa[0]), .add_b(ab[0]), .add_sub(asub[0]),
+    .add_gnt(ag[0]), .add_rsp(arsp[0]), .add_res(ares),
+    .out_valid(out_valid), .out_y(out_y)
+  );
+
+  assign dr = 1'b0; assign da[0] = '0; assign db[0] = '0;
+
+  m1_fp_pool #(.NC(1)) u_pool (
+    .clk(clk), .rst_n(rst_n),
+    .mul_req(mr), .mul_a(ma), .mul_b(mb), .mul_gnt(mg), .mul_rsp(mrsp), .mul_res(mres),
+    .add_req(ar), .add_a(aa), .add_b(ab), .add_sub(asub),
+    .add_gnt(ag), .add_rsp(arsp), .add_res(ares),
+    .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
+  );
+endmodule
+
+module m1_geo_color_top (
+  input  logic        clk, rst_n,
+  input  logic [31:0] light_x, light_y, light_z,
+  input  logic        spec_enable,
+  input  logic        in_valid,
+  output logic        in_ready,
+  input  logic [31:0] in_nx, in_ny, in_nz,
+  input  logic [15:0] in_tex,
+  input  logic [31:0] in_lp_d, in_lp_a, in_lp_s,
+  input  logic [7:0]  in_lp_p,
+  input  logic        in_frame_odd,
+  output logic [12:0] pal_addr,
+  input  logic [15:0] pal_data,
+  output logic [14:0] xlat_addr,
+  input  logic [15:0] xlat_data,
+  output logic        out_valid,
+  output logic [23:0] out_rgb,
+  output logic [5:0]  out_lum
+);
+  logic [0:0] mr, mg, mrsp, ar, ag, arsp, dr, dg, drsp;
+  logic [31:0] ma [1], mb [1], aa [1], ab [1], da [1], db [1];
+  logic [0:0]  asub;
+  logic [31:0] mres, ares, dres;
+
+  m1_geo_color u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .light_x(light_x), .light_y(light_y), .light_z(light_z),
+    .spec_enable(spec_enable),
+    .in_valid(in_valid), .in_ready(in_ready),
+    .in_nx(in_nx), .in_ny(in_ny), .in_nz(in_nz), .in_tex(in_tex),
+    .in_lp_d(in_lp_d), .in_lp_a(in_lp_a), .in_lp_s(in_lp_s), .in_lp_p(in_lp_p),
+    .in_frame_odd(in_frame_odd),
+    .pal_addr(pal_addr), .pal_data(pal_data),
+    .xlat_addr(xlat_addr), .xlat_data(xlat_data),
+    .mul_req(mr[0]), .mul_a(ma[0]), .mul_b(mb[0]),
+    .mul_gnt(mg[0]), .mul_rsp(mrsp[0]), .mul_res(mres),
+    .add_req(ar[0]), .add_a(aa[0]), .add_b(ab[0]), .add_sub(asub[0]),
+    .add_gnt(ag[0]), .add_rsp(arsp[0]), .add_res(ares),
+    .out_valid(out_valid), .out_rgb(out_rgb), .out_lum(out_lum)
+  );
+
+  assign dr = 1'b0; assign da[0] = '0; assign db[0] = '0;
+
+  m1_fp_pool #(.NC(1)) u_pool (
+    .clk(clk), .rst_n(rst_n),
+    .mul_req(mr), .mul_a(ma), .mul_b(mb), .mul_gnt(mg), .mul_rsp(mrsp), .mul_res(mres),
+    .add_req(ar), .add_a(aa), .add_b(ab), .add_sub(asub),
+    .add_gnt(ag), .add_rsp(arsp), .add_res(ares),
+    .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
+  );
+endmodule

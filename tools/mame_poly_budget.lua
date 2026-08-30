@@ -22,26 +22,32 @@ local PROM_FLOATS = prom.size // 4
 
 -- One object's polygon count. Bounded twice - by `size` and by a hard cap -
 -- because a bad address walks random data and would otherwise never stop.
+-- Also counts how many records can emit a quad at all: `link` zero means
+-- push_object jumps straight to `next` without building one, so the colour,
+-- clipping, sort and fill stages never see it. That changes their budget, which
+-- is not the transform's budget.
 local function count_polys(poly_adr, size)
     if (poly_adr & 0x800000) ~= 0 then return 0, "polyram" end  -- not in ROM
     poly_adr = poly_adr & 0x7fffff
     if size == 0 or size > 0x100000 then size = 0x100000 end
     local a = poly_adr + 6
-    local n = 0
+    local n, linked, nocull = 0, 0, 0
     while n < size and n < 4000 do
-        if a + 9 >= PROM_FLOATS then return n, "overrun" end
+        if a + 9 >= PROM_FLOATS then return n, "overrun", linked, nocull end
         local flags = prom:read_u32(a * 4)
         if (flags & 3) == 0 then break end
         n = n + 1
+        if ((flags >> 8) & 3) ~= 0 then linked = linked + 1 end
+        if (flags & 0x4000) ~= 0 then nocull = nocull + 1 end
         a = a + 10
     end
-    return n, "ok"
+    return n, "ok", linked, nocull
 end
 
 local function walk_list(base)
     local function rd(x) return sp:read_u16(base + 2*(x & 0x7fff)) end
     local function ri(x) return rd(x) | (rd(x+1) << 16) end
-    local polys, objs, oob = 0, 0, 0
+    local polys, objs, oob, linked, nocull = 0, 0, 0, 0, 0
     local off, guard = 0, 0
     while guard < 40000 do
         guard = guard + 1
@@ -49,8 +55,10 @@ local function walk_list(base)
         local t = ri(off)
         if t == 0 then off = off + 2
         elseif t == 1 or t == 0x41 then
-            local n, how = count_polys(ri(off+4), ri(off+6))
-            polys = polys + n
+            local n, how, lk, nc = count_polys(ri(off+4), ri(off+6))
+            polys  = polys + n
+            linked = linked + (lk or 0)
+            nocull = nocull + (nc or 0)
             objs  = objs + 1
             if how ~= "ok" then oob = oob + 1 end
             off = off + 8
@@ -71,7 +79,7 @@ local function walk_list(base)
         elseif t == 0xb then off = off + 26
         else break end
     end
-    return polys, objs, oob
+    return polys, objs, oob, linked, nocull
 end
 
 frames, sampled = 0, 0
@@ -83,11 +91,14 @@ notif = emu.add_machine_frame_notifier(function()
 
     -- The busier of the two buffers: one is being displayed while the other is
     -- filled, and which is which is not reliable from outside.
-    local best_p, best_o, oob = 0, 0, 0
+    local best_p, best_o, oob, best_lk, best_nc = 0, 0, 0, 0, 0
     for _, base in ipairs({0x600000, 0x610000}) do
-        local p, o, b = walk_list(base)
-        if p > best_p then best_p, best_o, oob = p, o, b end
+        local p, o, b, lk, nc = walk_list(base)
+        if p > best_p then best_p, best_o, oob, best_lk, best_nc = p, o, b, lk, nc end
     end
+    sum_linked = (sum_linked or 0) + best_lk
+    sum_nocull = (sum_nocull or 0) + best_nc
+    if best_lk > (peak_linked or 0) then peak_linked = best_lk end
     sampled   = sampled + 1
     sum_polys = sum_polys + best_p
     sum_objs  = sum_objs + best_o
@@ -105,6 +116,12 @@ notif = emu.add_machine_frame_notifier(function()
         print(string.format("  peak points/frame  %d  (2 per polygon)", peak_polys * 2))
         print(string.format("  cycles per point available at 22.86 MHz, 57.5 Hz: %.1f",
               (22857143 / 57.5) / math.max(1, peak_polys * 2)))
+        print(string.format("  records that can emit a quad (link != 0): peak %d, mean %.0f",
+              peak_linked or 0, (sum_linked or 0) / sampled))
+        print(string.format("  of those, %.1f%% skip the backface test (flag 0x4000)",
+              100.0 * (sum_nocull or 0) / math.max(1, sum_linked or 1)))
+        print(string.format("  budget per EMITTED quad: %.0f cycles",
+              (22857143 / 57.5) / math.max(1, peak_linked or 1)))
         manager.machine:exit()
     end
 end)

@@ -6525,3 +6525,67 @@ Three ways out, in the order they should be considered:
 
 Not yet decided. Recorded so the decision is made on the measurement rather than
 on whichever is easiest to write.
+
+---
+
+## The normalize needs 16 bits, not a divider — and the budget is per QUAD, not per record
+
+**2026-08-30.** Two measurements that between them removed the geometry stage's
+budget problem entirely.
+
+**How accurate does the reciprocal square root have to be?** It feeds a dot
+product, a specular term, and then `lumval = (255*min(1,ln)) >> 2` — **six bits**.
+Over 400,000 random normals against the light parameter banks measured from the
+real display list, truncating the rsqrt mantissa changes that six-bit luminance:
+
+    10 bits   0.776% of polygons, by up to 2 levels
+    12 bits   0.190%, by at most 1
+    16 bits   0.013%, by at most 1
+    23 bits   never
+
+Specular squares its argument up to three times and so amplifies error eightfold;
+it is that path, not the diffuse one, that sets the requirement. An 8-bit seed
+table plus **one** Newton-Raphson step reaches ~16 bits, and `m1_geo_rsqrt`
+measures a worst relative error of **5.7e-06** across the full exponent range —
+in 23 cycles using four operations on the shared pool, against 29 blocking cycles
+for a divide that does not exist anyway. **No second `fp_div`, and no reason to
+load the 1/sqrt ROM tables.**
+
+**And the per-record budget was the wrong budget for half the stage.**
+`tools/mame_poly_budget.lua`, extended: of 5,831 records in a peak frame, only
+**4,798 can emit a quad at all** — `push_object` jumps straight to `next` when the
+record's link field is zero — and the backface test discards more of those still
+(14.9% of them skip the test entirely via flag 0x4000). So the colour, clipping,
+sort and fill stages run at most 4,798 times, which is **83 cycles each**, not 68.
+`m1_geo_color` measures 77. Held to the transform's 68 it would have been
+"25% over" and optimised against a budget it does not have.
+
+---
+
+## Five bugs in the colour unit, every one of which would have looked like a working picture
+
+**2026-08-30.** `m1_geo_color` reproduces push_object's colour block. Its bench
+found five faults before it passed, and the reason to write them down is that not
+one of them would have produced an obviously broken screen:
+
+1. **The light parameters were never divided by 255.** MAME stores them as
+   `float(v)/255.0f` on upload; taking the raw byte makes `ln` ~255x too large, so
+   every luminance saturates at 0x3f and the whole scene renders at full
+   brightness. Fixed by dividing once at upload — where MAME does it — rather than
+   per polygon, which would have put a divide inside the per-quad budget.
+2. **`lumval >>= 2` came after the clamp instead of before.** Clamping the
+   unshifted 0..255 value to 0x3f turns everything above 63 into full brightness,
+   which is most of the range. Same symptom as (1), different cause.
+3. **The palette base was 0x400, not 0x1000.** `pal_addr` is 13 bits so 0x1000 is
+   the top bit: `{3'b100, ...}`, not `{3'b001, ...}`. The wrong bank is still full
+   of colours.
+4. **The colour-translation index was 13 bits in a 15-bit field.** MAME indexes
+   `(c << 8) | lumval | bank`, so **bits 7:6 are zero** — packing `{bank, c, lum}`
+   without that gap reads a completely different entry of a table that is
+   plausible everywhere.
+5. **The three lookups assumed combinational memory.** Reading `xlat_data` in the
+   cycle the address is driven returns the previous lookup's word, so every
+   channel got its neighbour's translation.
+
+Each is a one-line fix and each produces a picture. That is the argument for
+comparing against a transcribed reference rather than looking at output.
