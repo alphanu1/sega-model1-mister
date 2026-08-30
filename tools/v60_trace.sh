@@ -77,7 +77,13 @@ fi
 # repeating period instead, keeps one instance, and WRITES THE ITERATION COUNTS
 # OUT so a real difference is reported rather than silently dropped.
 awk -F: '/^[0-9A-F]{6}:/{print tolower($1)}' "$out/mame.tr" > "$out/mame_pc_raw.txt"
-python3 "$root/tools/v60_collapse.py" "$out/mame_pc_raw.txt" "$out/mame_pc.txt" \
+# THE INTERRUPT COMES OUT BEFORE THE LOOPS ARE COLLAPSED. It arrives on
+# wall-clock time, so it lands at a different INSTRUCTION count on a machine with
+# a different CPI, and the diff reports that as a divergence - which is what
+# instruction 25,281 was. With it removed the same two traces agreed to the end
+# of the shorter one. See tools/v60_strip_isr.py.
+python3 "$root/tools/v60_strip_isr.py" "$out/mame_pc_raw.txt" "$out/mame_noisr.txt"
+python3 "$root/tools/v60_collapse.py" "$out/mame_noisr.txt" "$out/mame_pc.txt" \
   --counts "$out/mame_loops.txt"
 echo "  $(wc -l < "$out/mame_pc.txt") instructions"
 
@@ -89,7 +95,8 @@ grep '^PCT ' "$out/ours.log" | awk '{print $2}' > "$out/our_pc_raw.txt"
 # Align on the first ROM instruction; our trace starts at the reset vector.
 first=$(head -1 "$out/mame_pc.txt")
 awk -v f="$first" '$0==f{s=1} s' "$out/our_pc_raw.txt" > "$out/our_pc_aligned.txt"
-python3 "$root/tools/v60_collapse.py" "$out/our_pc_aligned.txt" "$out/our_pc.txt" \
+python3 "$root/tools/v60_strip_isr.py" "$out/our_pc_aligned.txt" "$out/our_noisr.txt"
+python3 "$root/tools/v60_collapse.py" "$out/our_noisr.txt" "$out/our_pc.txt" \
   --counts "$out/our_loops.txt"
 echo "  $(wc -l < "$out/our_pc.txt") instructions (aligned on $first)"
 
