@@ -1646,7 +1646,7 @@ end
 // which fires once per access because `served` drops v60_acc the next cycle;
 // fifo_out_push is a one-cycle pulse by construction (the `pushed` latch).
 integer strm_n = 0, strm_f;
-reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0;
+reg mx_d = 1'b0, mx_d2 = 1'b0, mx_d3 = 1'b0, sc_w_d = 1'b0, sc_r_d = 1'b0, scr_d = 1'b0;
 reg [23:0] mxpc_d = 24'hffffff;
 initial strm_f = $fopen("build/frame_streams.txt", "w");
 always @(posedge clk_cpu) begin
@@ -1713,6 +1713,18 @@ always @(posedge clk_cpu) begin
         end
         sc_r_d <= core.main.tgp.io_rd && core.main.tgp.sel_math && core.main.tgp.io_addr[4:0] <= 5'h03
                && core.main.tgp.io_ack;
+        // THE SCROLL REGISTER WRITE STREAM: every value the V60 writes to tile
+        // RAM words 0x5002 (tilemap 2 hscr) and 0x5006 (pair 2/3 ctrl and vscr),
+        // in order. "Is scrolling fixed" is answered by whether this sequence
+        // matches the reference's, not by how often the register changes.
+        // m_addr is [23:1]; tile RAM is 0x700000, so word W is m_addr 0x380000+W.
+        if (core.main.m_we && core.main.m_ack && core.main.sel_tileram && !scr_d
+            && (core.main.m_addr[15:1] == 15'h5002 || core.main.m_addr[15:1] == 15'h5006)) begin
+            strm_n = strm_n + 1;
+            $fwrite(strm_f, "SCROLL %04h %04h f=%0d\n", core.main.m_addr[15:1], core.main.m_wdata, frames);
+        end
+        scr_d <= core.main.m_we && core.main.m_ack && core.main.sel_tileram
+              && (core.main.m_addr[15:1] == 15'h5002 || core.main.m_addr[15:1] == 15'h5006);
         if (core.main.copro.fifo_out_push) begin
             strm_n = strm_n + 1;
             $fwrite(strm_f, "ANS %08h pc=%04h\n", core.main.copro.fifo_out_data,

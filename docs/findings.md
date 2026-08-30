@@ -5995,3 +5995,28 @@ is the held-access cycle counter, not reads. Both were documented as unreliable 
 
 Both have directed tests that fail on the old RTL and pass on the new; both suites and the
 38-suite baseline are clean.
+
+### Scrolling: the VALUES are now the reference's, the SEQUENCE alternates — 2026-08-30
+
+`tools/scroll_diff.py` diffs the sequence of values the V60 writes to tile words 0x5002 and
+0x5006 against the reference's, both raw and as distinct values in order:
+
+    5006  MAME  0000  2032@f273  2064@f274  2063@f275  2062@f277    advances a step a frame
+          ours  0000  2064@f328  2032@f329  2064@f330  2032@f331    alternates two states
+    5002  MAME  0000  0001@f276  0013@f277  0025@f278  0024@f293
+          ours  0000  0001@f334  0000@f335  0001@f336  0013@f337  0025@f338
+
+**Every value ours writes is one the reference writes** - 2032, 2064, 0001, 0013, 0025 -
+which was never true before the two fixes; the coprocessor-derived arithmetic is right. What
+differs is the ORDER: the reference progresses through its states once, ours flips between
+two of them frame by frame. On the board that should show as the background in the right
+place but jittering between two positions rather than drifting.
+
+The value at 0x5006 is `0x2000 | (answer & 0xfff)` where the answer is the coprocessor's
+reply at `FEF388` to the operand pushed at `FEF37A` (`movs.hw E5[R25]`). So the alternation is
+either the V60 asking a different question on alternate frames (R25 pointing at a different
+object, or E5[R25] itself alternating) or the TGP answering the same question differently.
+Logging that exchange's (operand, answer) pairs per frame on both sides separates the two.
+
+Frame offset: ours reaches the same program point ~55 frames later (f=328 against f=273),
+the 1.25x speed ratio, as expected.
