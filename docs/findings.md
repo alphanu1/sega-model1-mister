@@ -5639,3 +5639,38 @@ background cannot scroll horizontally. That part of the chain stands.
 **The earlier evidence for this did not.** It was a read tap over the 368-byte range
 `fef250-fef3c0` that found 256 reads of `d80000` among 9,216, which would have supported the
 claim whether or not it was true.
+
+### The root cause: bit 31 of the coprocessor's answer to command 0x20800000 — 2026-08-30
+
+Tracing the one bit back one more level:
+
+    FEB5C0: clr1  #1A, 0[R22]       clear bit 26 on this object
+    FEB5C9: mov.w #20800000, [R24]  ask the coprocessor about it
+    FEB5D1: mov.w 1E[R22], [R24]    two operands from the object
+    FEB5D6: mov.w 26[R22], [R24]
+    FEB5DB: in.w  [R23], R0         read the answer
+    FEB5DE: test1 #1F, R0           test BIT 31 OF THE ANSWER
+    FEB5E5: be    FEB5F0            clear -> skip
+    FEB5E7:                         set   -> SET bit 26, marking the object
+    FEB5F3: dbr   R28, FEB5C0       next object
+
+A per-object visibility or culling test. **Bit 31 of the coprocessor's reply decides whether
+an object is marked for geometry submission**, and the marked objects are what `FEB651` later
+feeds into the FIFO.
+
+    FEB5C0 (the clear)   reference 3,990 executions      ours 15
+    FEB5E7 (the set)     reference     0 executions      ours  4
+
+The reference's answer always has bit 31 clear, so it marks nothing and `FEB661-FEB687` never
+runs. Ours comes back with bit 31 set, objects get marked, geometry floods the outbound FIFO,
+the coprocessor halts, it stops consuming commands, the inbound FIFO fills and the V60 halts.
+
+**So the deadlock is the coprocessor's arithmetic, not the V60's control flow.** The V60 is
+doing exactly what it is told by a wrong answer. That also displaces the speed explanation a
+second time: the reference does not drain this traffic because it never generates it, and it
+never generates it because its coprocessor says "no".
+
+**Next: what the reference's coprocessor returns for command 0x20800000, and what ours
+returns.** That is a bounded question about one microcode routine and one result word, and it
+is the first point in this whole chain where the fault is ours to fix in RTL rather than a
+consequence two or three steps downstream.

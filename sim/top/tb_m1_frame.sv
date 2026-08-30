@@ -466,6 +466,14 @@ longint pc_fe1c09 = 0, pc_fe1c12 = 0, pc_fe1c15 = 0, pc_fe1c18 = 0, pc_feeb10 = 
 //   FEB673                     - where our V60 pins when the FIFO fills
 // FEB673 does not appear once in 14 emulated seconds of reference trace.
 longint pc_feb651 = 0, pc_feb65a = 0, pc_feb661 = 0, pc_feb673 = 0, pc_feb688 = 0;
+// WHO SETS BIT 26 OF OBJECT 0. Word 0 of the object at V60 0x400f80 reads
+// 84000000 here and 80000000 in the reference, and FEB651 tests exactly that
+// bit before falling into the geometry submission that deadlocks the pair.
+// V60 byte 0x400f80 is word address 0x2007C0; the 32-bit word is the pair
+// 0x2007C0 (low half) and 0x2007C1 (high half), and bit 26 lives in the HIGH
+// half, bit 10.
+longint ob_wr = 0, ob_wr_set = 0;
+integer ob_p = 0;
 longint pc_feef14 = 0, pc_feef1c = 0, pc_fef047 = 0, pc_fef04e = 0, pc_fef325 = 0;
 longint pc_fef9c6 = 0, pc_fef9cc = 0, pc_fef9d2 = 0, pc_fefa25 = 0,
         pc_fefa93 = 0, pc_fefad1 = 0, pc_fefb00 = 0, pc_fef9d8 = 0;
@@ -497,6 +505,17 @@ always @(posedge clk_cpu) begin
                   : device.mem['hF80280][15:8]] <=
             tick_hist[(device.mem['hF80280][15:8] > 8'd7) ? 7
                       : device.mem['hF80280][15:8]] + 1;
+    end
+    if (core.main.rst_n && core.main.m_we && core.main.m_ack
+        && core.main.m_addr[23:1] == 23'h2007C1) begin
+        ob_wr <= ob_wr + 1;
+        if (core.main.m_wdata[10]) begin
+            ob_wr_set <= ob_wr_set + 1;
+            if (ob_p < 8) begin
+                ob_p = ob_p + 1;
+                $display("OBJBIT26 set by pc=%06h data=%04h", core.dbg_pc, core.main.m_wdata);
+            end
+        end
     end
     if (core.main.rst_n && core.dbg_pc != dbg_pc_d) begin
         pc_hist[core.dbg_pc[15:8]] <= pc_hist[core.dbg_pc[15:8]] + 1;
@@ -1449,6 +1468,7 @@ initial begin
                                 device.mem['hFA07C0 + oi*128]);
         $write("   (reference: 80000000 / 00000000, bit26 clear)\n");
     end
+    $display("FRAME: object0 high-half writes=%0d, of which bit26 set=%0d", ob_wr, ob_wr_set);
     $display("FRAME: geometry loop: feb651=%0d feb65a=%0d -> body feb661=%0d feb673=%0d | skip feb688=%0d  (reference: body NEVER)",
              pc_feb651, pc_feb65a, pc_feb661, pc_feb673, pc_feb688);
     $display("FRAME: dispatch: fe1c09=%0d fe1c12=%0d -> fe1c15(call)=%0d fe1c18(skip)=%0d -> feeb10=%0d",
