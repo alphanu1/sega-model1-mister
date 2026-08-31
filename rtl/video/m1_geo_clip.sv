@@ -49,22 +49,35 @@
 //     pt.{x,y,z} = p1*t + p2*(1 - t)
 //     project_point(pt)
 //
-// FAN-OUT AND THE POINT POOL
+// FAN-OUT, AND WHY THERE IS NO POINT POOL
 //
 // This is not general Sutherland-Hodgman. MAME rotates the quad so vertex 0 is
 // outside and vertex 3 is inside, then takes one of four fixed cases, emitting
 // one or two child quads and creating two or four points. Four levels, so one
 // quad can become sixteen.
 //
-// Depth-first, a quad at level L only ever references points created at levels
-// below it, and a level's points are dead once its whole subtree has retired. So
-// the pool is FOUR POINTS PER LEVEL plus the four that came in - twenty - rather
-// than one entry per point ever created. It is registers, not memory: M10K is at
-// 553 of 553 and an inferred RAM here would fail the fit outright.
+// THE FIRST VERSION KEPT A TWENTY-POINT POOL - four in, four per level - with
+// the quad holding indices into it. Correct, verified, and it did not fit: 5,347
+// ALM standalone against 4,358 free, and the design needed 4,392 LABs of 4,191.
+// The storage was not the problem. The pool had five read ports - the two edge
+// endpoints, the destination, the vertex under test and the four being emitted -
+// and every one of them is a 20-to-1 mux on 32 bits. A dozen of those plus eight
+// more on 16 dwarfed the registers they were reading.
+//
+// So there is no pool. The quad being worked on lives in plain registers, so
+// every read of it is a 4-to-1 mux; the points a level creates go into four
+// temporaries; and a child is formed by naming, per vertex, whether it comes
+// from the current quad or from a temporary. The stack holds whole points rather
+// than indices - and it is a SHIFT REGISTER, so a push or a pop is 2-to-1 muxes
+// and there is no addressed read at all.
+//
+// FIVE ENTRIES IS ENOUGH. Depth-first, each level can leave at most one sibling
+// pending, so four levels leave four - and the quad being processed is in
+// registers, not on the stack.
 //
 // SCREEN COORDINATES ARE STORED AT SIXTEEN BITS. After clipping every vertex is
 // inside the viewport by construction, so the width the quad store keeps is the
-// width that is needed - and storing 32 would double the pool for nothing.
+// width that is needed - and storing 32 would double every point for nothing.
 
 `timescale 1ns/1ps
 
@@ -136,39 +149,39 @@ module m1_geo_clip (
   output logic [15:0] dbg_in, dbg_out, dbg_dropped
 );
 
-  localparam int unsigned NPOOL = 20;      // 4 in + 4 per level x 4 levels
-  localparam int unsigned PW    = 5;       // pool index width
-  localparam int unsigned NSTK  = 8;
-
+  localparam int unsigned NSTK = 5;
   localparam logic [31:0] F_ONE = 32'h3f800000;
 
-  // ---------------------------------------------------------------- the pool
-  logic [31:0]        px [NPOOL], py [NPOOL], pz [NPOOL];
-  logic signed [15:0] psx [NPOOL], psy [NPOOL];
+  // ------------------------------------------------------- the current quad
+  // Four points in registers. Every read of these is a 4-to-1 mux, which is the
+  // whole point of not having a pool.
+  logic [31:0]        qx [4], qy [4], qz [4];
+  logic signed [15:0] qsx [4], qsy [4];
+  logic [2:0]         lvl;
+  logic [3:0]         is_out;
 
-  // ---------------------------------------------------------------- the stack
-  logic [2:0]     st_lvl [NSTK];
-  logic [PW-1:0]  st_p0 [NSTK], st_p1 [NSTK], st_p2 [NSTK], st_p3 [NSTK];
-  logic [3:0]     sp;                       // entries in use
+  // The points this level creates. At most four, in the "0,2 out" case.
+  logic [31:0]        tx [4], ty [4], tz [4];
+  logic signed [15:0] tsx [4], tsy [4];
 
-  // ---------------------------------------------------------- current quad
-  logic [2:0]    lvl;
-  logic [PW-1:0] q0, q1, q2, q3;
-  logic [3:0]    is_out /* verilator public_flat_rd */;
+  // ------------------------------------------------------------- the stack
+  // A shift register: the top is always entry 0, so a push shifts down and a
+  // pop shifts up, and neither needs an addressed read.
+  logic [2:0]         sk_lvl [NSTK];
+  logic [31:0]        sk_x [NSTK][4], sk_y [NSTK][4], sk_z [NSTK][4];
+  logic signed [15:0] sk_sx [NSTK][4], sk_sy [NSTK][4];
+  logic [2:0]         sp;
 
-  // The plane this level tests, and whether it compares x or y. Level order is
-  // MAME's: bottom, top, left, right.
+  // ------------------------------------------------------------ the plane
   wire [31:0] plane_a = (lvl == 3'd0) ? a_bottom :
                         (lvl == 3'd1) ? a_top    :
                         (lvl == 3'd2) ? a_left   : a_right;
-  wire        plane_x = (lvl >= 3'd2);      // left/right test x, bottom/top y
-  // bottom and right are `>`, top and left are `<`.
+  wire        plane_x = (lvl >= 3'd2);        // left/right test x, bottom/top y
   wire        plane_gt = (lvl == 3'd0) || (lvl == 3'd3);
 
   // ---------------------------------------------------------- float compare
   // IEEE floats compare as sign-magnitude, so an integer compare is wrong across
-  // zero. The standard monotonic key: negatives inverted, positives with the
-  // sign bit set.
+  // zero. Negatives inverted, positives with the sign bit set.
   function automatic [31:0] fkey(input logic [31:0] f);
     fkey = f[31] ? ~f : (f | 32'h80000000);
   endfunction
@@ -176,70 +189,106 @@ module m1_geo_clip (
     fgt = fkey(a) > fkey(b);
   endfunction
 
-  // ---------------------------------------------------------------- sequencer
-  typedef enum logic [4:0] {
-    K_IDLE, K_LOAD, K_POP, K_TEST, K_TESTW, K_DECIDE, K_ROT, K_SET,
-    K_CLIP, K_CLIPW, K_PROJ, K_PROJW, K_CHILD, K_EMIT, K_DRAIN
+  // ---------------------------------------------------------------- states
+  typedef enum logic [3:0] {
+    K_IDLE, K_POP, K_TEST, K_TESTW, K_ROT, K_SET,
+    K_CLIP, K_CLIPW, K_PROJ, K_PROJW, K_CHILD, K_EMIT
   } kstate_t;
   kstate_t kst;
 
-  logic [1:0]  ti;                          // vertex under test
-  logic [31:0] t_zprod;                     // p.z * a for that vertex
+  logic [1:0] ti;                            // vertex under test
+  logic [1:0] rot;                           // rotation offset
+  logic [1:0] ccase;
+  logic [1:0] cn, cn_last;                   // clips done, and the last index
+  logic [1:0] cp_a, cp_b;                    // edge endpoints, quad indices
+  logic [1:0] cp_dst;                        // which temporary
+  logic       second_child;
+  logic [3:0] cs;
+  logic [1:0] c_axis;
+  logic [31:0] c_num, c_den, c_t, c_u, c_m1, c_m2;
+  logic [23:0] a_col;
+  logic [31:0] a_z;
+  logic        a_moire;
 
-  // Rotation: pt[j] = q[(i + j) & 3], chosen so pt[0] is out and pt[3] is in.
-  logic [1:0]  rot;
-  logic [PW-1:0] r0, r1, r2, r3;
-  logic [3:0]  ro;                          // is_out, rotated
+  // Rotated index: pt[j] is quad vertex (rot + j) mod 4.
+  function automatic [1:0] rt(input logic [1:0] j);
+    rt = rot + j;
+  endfunction
+  wire [1:0] r0 = rt(2'd0), r1 = rt(2'd1), r2 = rt(2'd2), r3 = rt(2'd3);
 
-  // Which pair each created point comes from, and where it lands.
-  logic [1:0]  cn;                          // clips done for this quad
-  logic [1:0]  cn_want;                     // clips this case needs
-  logic [PW-1:0] cp_a, cp_b;                // the edge's two endpoints
-  logic [PW-1:0] cp_dst;                    // pool slot for the result
-  logic [PW-1:0] mk0, mk1, mk2, mk3;        // the points this case created
-
-  // Microcoded clip arithmetic. One sequence, all four planes.
-  logic [3:0]  cs;
-  logic [31:0] c_num /* verilator public_flat_rd */;
-  logic [31:0] c_den /* verilator public_flat_rd */;
-  logic [31:0] c_t /* verilator public_flat_rd */;
-  logic [31:0] c_u, c_m1, c_m2;
-  logic [1:0]  c_axis;                      // 0 = x, 1 = y, 2 = z lerp
-
-  // Base slot for this level's four points.
-  wire [PW-1:0] lvl_base = PW'(4 + {2'd0, lvl} * 4);
-
-  assign in_ready = (kst == K_IDLE);
-  assign dbg_in   = dbg_in_r;
-  logic [15:0] dbg_in_r;
-
-  // ------------------------------------------------------------- pool reads
-  wire [31:0] ax = px[cp_a], ay = py[cp_a], az = pz[cp_a];
-  wire [31:0] bx = px[cp_b], by = py[cp_b], bz = pz[cp_b];
-  wire [31:0] a_v = plane_x ? ax : ay;      // the tested coordinate, p1
-  wire [31:0] b_v = plane_x ? bx : by;      // and p2
-
-  wire [31:0] test_v = plane_x ? px[tq] : py[tq];
-  logic [PW-1:0] tq;
-  always_comb begin
-    case (ti)
-      2'd0:    tq = q0;
-      2'd1:    tq = q1;
-      2'd2:    tq = q2;
-      default: tq = q3;
+  // The edge each clip cuts, per case and clip index - fclip_push_quad's four
+  // branches, as quad indices rather than pool slots.
+  function automatic [1:0] edge_a(input logic [1:0] c, input logic [1:0] n);
+    case (c)
+      2'd0:    edge_a = (n == 2'd0) ? r2 : r3;
+      2'd1:    edge_a = (n == 2'd0) ? r1 : r3;
+      2'd2:    edge_a = (n == 2'd0) ? r0 : (n == 2'd1) ? r1 : (n == 2'd2) ? r2 : r3;
+      default: edge_a = (n == 2'd0) ? r0 : r3;
     endcase
-  end
+  endfunction
+  function automatic [1:0] edge_b(input logic [1:0] c, input logic [1:0] n);
+    case (c)
+      2'd0:    edge_b = (n == 2'd0) ? r3 : r0;
+      2'd1:    edge_b = (n == 2'd0) ? r2 : r0;
+      2'd2:    edge_b = (n == 2'd0) ? r1 : (n == 2'd1) ? r2 : (n == 2'd2) ? r3 : r0;
+      default: edge_b = (n == 2'd0) ? r1 : r0;
+    endcase
+  endfunction
 
-  // ------------------------------------------------------------- pool writes
-  // Every arithmetic request is issued from a state and taken on a grant, so a
-  // cycle where another client won the pool simply repeats - the same shape the
-  // other geometry stages use.
+  // ------------------------------------------------------------ operands
+  wire [31:0] ax = qx[cp_a], ay = qy[cp_a], az = qz[cp_a];
+  wire [31:0] bx = qx[cp_b], by = qy[cp_b], bz = qz[cp_b];
+  wire [31:0] a_v = plane_x ? ax : ay;
+  wire [31:0] b_v = plane_x ? bx : by;
+  wire [31:0] test_v = plane_x ? qx[ti] : qy[ti];
+
+  // A child vertex is named rather than copied: bit 2 says "from a temporary",
+  // bits 1:0 index the quad or the temporaries.
+  function automatic [2:0] kid(input logic [1:0] c, input logic sc,
+                               input logic [1:0] v);
+    case (c)
+      2'd0: case (v)                                  // 0,1,2 out: a triangle
+              2'd0:    kid = {1'b1, 2'd0};
+              2'd1:    kid = {1'b0, r3};
+              default: kid = {1'b1, 2'd1};
+            endcase
+      2'd1: case (v)                                  // 0,1 out: a quad
+              2'd0:    kid = {1'b1, 2'd0};
+              2'd1:    kid = {1'b0, r2};
+              2'd2:    kid = {1'b0, r3};
+              default: kid = {1'b1, 2'd1};
+            endcase
+      2'd2: if (!sc) case (v)                         // 0,2 out: two triangles
+              2'd0:    kid = {1'b1, 2'd2};
+              2'd1:    kid = {1'b0, r3};
+              default: kid = {1'b1, 2'd3};
+            endcase
+            else case (v)
+              2'd0:    kid = {1'b1, 2'd0};
+              2'd1:    kid = {1'b0, r1};
+              default: kid = {1'b1, 2'd1};
+            endcase
+      default: if (!sc) case (v)                      // 0 out: a quad and a tri
+              2'd0:    kid = {1'b0, r3};
+              2'd1:    kid = {1'b1, 2'd1};
+              default: kid = {1'b1, 2'd0};
+            endcase
+            else case (v)
+              2'd0:    kid = {1'b1, 2'd0};
+              2'd1:    kid = {1'b0, r1};
+              2'd2:    kid = {1'b0, r2};
+              default: kid = {1'b0, r3};
+            endcase
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------- pool requests
   always_comb begin
     mul_req = 1'b0; mul_a = '0; mul_b = '0;
     add_req = 1'b0; add_a = '0; add_b = '0; add_sub = 1'b0;
     div_req = 1'b0; div_a = '0; div_b = '0;
     case (kst)
-      K_TEST: begin mul_req = 1'b1; mul_a = pz[tq]; mul_b = plane_a; end
+      K_TEST: begin mul_req = 1'b1; mul_a = qz[ti]; mul_b = plane_a; end
       K_CLIP: case (cs)
         4'd0: begin mul_req = 1'b1; mul_a = bz;    mul_b = plane_a; end
         4'd1: begin add_req = 1'b1; add_a = c_num; add_b = b_v;  add_sub = 1'b1; end
@@ -249,251 +298,199 @@ module m1_geo_clip (
         4'd5: begin add_req = 1'b1; add_a = c_den; add_b = c_m1;  add_sub = 1'b1; end
         4'd6: begin div_req = 1'b1; div_a = c_num; div_b = c_den; end
         4'd7: begin add_req = 1'b1; add_a = F_ONE; add_b = c_t;   add_sub = 1'b1; end
-        // the three lerps, two multiplies and an add each
-        4'd8:  begin mul_req = 1'b1;
-                     mul_a = (c_axis == 2'd0) ? ax : (c_axis == 2'd1) ? ay : az;
-                     mul_b = c_t; end
-        4'd9:  begin mul_req = 1'b1;
-                     mul_a = (c_axis == 2'd0) ? bx : (c_axis == 2'd1) ? by : bz;
-                     mul_b = c_u; end
-        4'd10: begin add_req = 1'b1; add_a = c_m1; add_b = c_m2; end
-        default: ;
+        4'd8: begin mul_req = 1'b1;
+                    mul_a = (c_axis == 2'd0) ? ax : (c_axis == 2'd1) ? ay : az;
+                    mul_b = c_t; end
+        4'd9: begin mul_req = 1'b1;
+                    mul_a = (c_axis == 2'd0) ? bx : (c_axis == 2'd1) ? by : bz;
+                    mul_b = c_u; end
+        default: begin add_req = 1'b1; add_a = c_m1; add_b = c_m2; end
       endcase
       default: ;
     endcase
   end
 
-  assign pj_valid = (kst == K_PROJ);
-  assign pj_x = px[cp_dst]; assign pj_y = py[cp_dst]; assign pj_z = pz[cp_dst];
-
-  assign out_sx0 = psx[q0]; assign out_sy0 = psy[q0];
-  assign out_sx1 = psx[q1]; assign out_sy1 = psy[q1];
-  assign out_sx2 = psx[q2]; assign out_sy2 = psy[q2];
-  assign out_sx3 = psx[q3]; assign out_sy3 = psy[q3];
+  assign in_ready  = (kst == K_IDLE);
+  assign pj_valid  = (kst == K_PROJ);
+  assign pj_x = tx[cp_dst]; assign pj_y = ty[cp_dst]; assign pj_z = tz[cp_dst];
   assign out_valid = (kst == K_EMIT);
-  assign out_col   = a_col;
-  assign out_z     = a_z;
-  assign out_moire = a_moire;
+  assign out_sx0 = qsx[0]; assign out_sy0 = qsy[0];
+  assign out_sx1 = qsx[1]; assign out_sy1 = qsy[1];
+  assign out_sx2 = qsx[2]; assign out_sy2 = qsy[2];
+  assign out_sx3 = qsx[3]; assign out_sy3 = qsy[3];
+  assign out_col = a_col; assign out_z = a_z; assign out_moire = a_moire;
 
   // ---------------------------------------------------------------- sequencer
-  //
-  // Depth first over the four planes. A quad is popped, tested against this
-  // level's plane, and either passed to the next level whole, dropped, or cut
-  // into one or two children whose new vertices are created here.
-  //
-  // MAME's case analysis, after rotating so pt[0] is outside and pt[3] is in:
-  //
-  //   out 0,1,2   clip(2,3) clip(3,0)            -> one triangle
-  //   out 0,1     clip(1,2) clip(3,0)            -> one quad
-  //   out 0,2     clip(0,1) clip(1,2)            -> two triangles
-  //               clip(2,3) clip(3,0)               ("shouldn't happen")
-  //   out 0       clip(0,1) clip(3,0)            -> a quad and a triangle
-  //
-  // A triangle is a quad with its last vertex repeated, which is what
-  // fclip_push_quad_next does and what the fill unit already expects.
-  logic [1:0] ccase;
-  logic       second_child;
-  logic [23:0] a_col;
-  logic [31:0] a_z;
-  logic        a_moire;
-
+  integer si, sv;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      kst <= K_IDLE; sp <= '0; ti <= '0; cs <= '0; cn <= '0; cn_want <= '0;
-      lvl <= '0; q0 <= '0; q1 <= '0; q2 <= '0; q3 <= '0; is_out <= '0;
-      rot <= '0; r0 <= '0; r1 <= '0; r2 <= '0; r3 <= '0; ro <= '0;
-      cp_a <= '0; cp_b <= '0; cp_dst <= '0;
-      mk0 <= '0; mk1 <= '0; mk2 <= '0; mk3 <= '0;
-      c_num <= '0; c_den <= '0; c_t <= '0; c_u <= '0;
-      c_m1 <= '0; c_m2 <= '0; c_axis <= '0; t_zprod <= '0;
-      ccase <= '0; second_child <= 1'b0;
+      kst <= K_IDLE; sp <= '0; lvl <= '0; is_out <= '0; ti <= '0;
+      rot <= '0; ccase <= '0; cn <= '0; cn_last <= '0;
+      cp_a <= '0; cp_b <= '0; cp_dst <= '0; second_child <= 1'b0;
+      cs <= '0; c_axis <= '0;
+      c_num <= '0; c_den <= '0; c_t <= '0; c_u <= '0; c_m1 <= '0; c_m2 <= '0;
       a_col <= '0; a_z <= '0; a_moire <= 1'b0;
-      dbg_in_r <= '0; dbg_out <= '0; dbg_dropped <= '0;
-      for (int i = 0; i < NPOOL; i++) begin
-        px[i] <= '0; py[i] <= '0; pz[i] <= '0; psx[i] <= '0; psy[i] <= '0;
+      dbg_in <= '0; dbg_out <= '0; dbg_dropped <= '0;
+      for (si = 0; si < 4; si = si + 1) begin
+        qx[si] <= '0; qy[si] <= '0; qz[si] <= '0; qsx[si] <= '0; qsy[si] <= '0;
+        tx[si] <= '0; ty[si] <= '0; tz[si] <= '0; tsx[si] <= '0; tsy[si] <= '0;
       end
-      for (int i = 0; i < NSTK; i++) begin
-        st_lvl[i] <= '0; st_p0[i] <= '0; st_p1[i] <= '0;
-        st_p2[i] <= '0; st_p3[i] <= '0;
+      for (si = 0; si < NSTK; si = si + 1) begin
+        sk_lvl[si] <= '0;
+        for (sv = 0; sv < 4; sv = sv + 1) begin
+          sk_x[si][sv] <= '0; sk_y[si][sv] <= '0; sk_z[si][sv] <= '0;
+          sk_sx[si][sv] <= '0; sk_sy[si][sv] <= '0;
+        end
       end
     end else begin
       case (kst)
         K_IDLE: if (in_valid) begin
-          px[0] <= in_x0; py[0] <= in_y0; pz[0] <= in_z0;
-          px[1] <= in_x1; py[1] <= in_y1; pz[1] <= in_z1;
-          px[2] <= in_x2; py[2] <= in_y2; pz[2] <= in_z2;
-          px[3] <= in_x3; py[3] <= in_y3; pz[3] <= in_z3;
-          psx[0] <= in_sx0; psy[0] <= in_sy0;
-          psx[1] <= in_sx1; psy[1] <= in_sy1;
-          psx[2] <= in_sx2; psy[2] <= in_sy2;
-          psx[3] <= in_sx3; psy[3] <= in_sy3;
+          qx[0] <= in_x0; qy[0] <= in_y0; qz[0] <= in_z0;
+          qx[1] <= in_x1; qy[1] <= in_y1; qz[1] <= in_z1;
+          qx[2] <= in_x2; qy[2] <= in_y2; qz[2] <= in_z2;
+          qx[3] <= in_x3; qy[3] <= in_y3; qz[3] <= in_z3;
+          qsx[0] <= in_sx0; qsy[0] <= in_sy0;
+          qsx[1] <= in_sx1; qsy[1] <= in_sy1;
+          qsx[2] <= in_sx2; qsy[2] <= in_sy2;
+          qsx[3] <= in_sx3; qsy[3] <= in_sy3;
           a_col <= in_col; a_z <= in_z; a_moire <= in_moire;
-          st_lvl[0] <= 3'd0;
-          st_p0[0] <= PW'(0); st_p1[0] <= PW'(1);
-          st_p2[0] <= PW'(2); st_p3[0] <= PW'(3);
-          sp   <= 4'd1;
-          if (dbg_in_r != 16'hffff) dbg_in_r <= dbg_in_r + 16'd1;
-          kst  <= K_POP;
+          lvl <= 3'd0; sp <= '0; ti <= '0;
+          if (dbg_in != 16'hffff) dbg_in <= dbg_in + 16'd1;
+          kst <= K_TEST;
         end
 
-        K_POP: if (sp == 4'd0) kst <= K_IDLE;
+        // Pop: the top of the stack is entry 0, so this is a shift up.
+        K_POP: if (sp == 3'd0) kst <= K_IDLE;
         else begin
-          lvl <= st_lvl[sp - 4'd1];
-          q0  <= st_p0[sp - 4'd1]; q1 <= st_p1[sp - 4'd1];
-          q2  <= st_p2[sp - 4'd1]; q3 <= st_p3[sp - 4'd1];
-          sp  <= sp - 4'd1;
+          lvl <= sk_lvl[0];
+          for (sv = 0; sv < 4; sv = sv + 1) begin
+            qx[sv] <= sk_x[0][sv]; qy[sv] <= sk_y[0][sv]; qz[sv] <= sk_z[0][sv];
+            qsx[sv] <= sk_sx[0][sv]; qsy[sv] <= sk_sy[0][sv];
+          end
+          for (si = 0; si < NSTK-1; si = si + 1) begin
+            sk_lvl[si] <= sk_lvl[si+1];
+            for (sv = 0; sv < 4; sv = sv + 1) begin
+              sk_x[si][sv] <= sk_x[si+1][sv]; sk_y[si][sv] <= sk_y[si+1][sv];
+              sk_z[si][sv] <= sk_z[si+1][sv];
+              sk_sx[si][sv] <= sk_sx[si+1][sv]; sk_sy[si][sv] <= sk_sy[si+1][sv];
+            end
+          end
+          sp  <= sp - 3'd1;
           ti  <= '0;
-          kst <= (st_lvl[sp - 4'd1] == 3'd4) ? K_EMIT : K_TEST;
+          kst <= (sk_lvl[0] == 3'd4) ? K_EMIT : K_TEST;
         end
 
-        // One multiply and a float compare per vertex. The compare is
-        // sign-magnitude, so an integer compare would be wrong across zero.
         K_TEST:  if (mul_gnt) kst <= K_TESTW;
         K_TESTW: if (mul_rsp) begin
           is_out[ti] <= plane_gt ? fgt(test_v, mul_res) : fgt(mul_res, test_v);
-          if (ti == 2'd3) kst <= K_DECIDE;
-          else begin ti <= ti + 2'd1; kst <= K_TEST; end
+          if (ti == 2'd3) begin
+            // Decided on the last vertex, so the whole flag word is ready one
+            // cycle later - which is why the decision lives in K_ROT.
+            ti  <= '0;
+            kst <= K_ROT;
+          end else begin ti <= ti + 2'd1; kst <= K_TEST; end
         end
 
-        K_DECIDE: begin
+        K_ROT: begin
           if (is_out == 4'b0000) begin
-            // Wholly inside: straight to the next plane, nothing created.
-            st_lvl[sp] <= lvl + 3'd1;
-            st_p0[sp] <= q0; st_p1[sp] <= q1; st_p2[sp] <= q2; st_p3[sp] <= q3;
-            sp  <= sp + 4'd1;
-            kst <= K_POP;
+            // Wholly inside: on to the next plane, nothing created.
+            lvl <= lvl + 3'd1;
+            kst <= (lvl + 3'd1 == 3'd4) ? K_EMIT : K_TEST;
           end else if (is_out == 4'b1111) begin
-            // Wholly outside. This is the branch that stops off-screen quads
-            // reaching the store at all.
             if (dbg_dropped != 16'hffff) dbg_dropped <= dbg_dropped + 16'd1;
             kst <= K_POP;
-          end else kst <= K_ROT;
+          end else begin
+            automatic logic [1:0] i;
+            i = 2'd0;
+            for (int k = 3; k >= 0; k--)
+              if (is_out[k] && !is_out[(k + 3) & 3]) i = 2'(k);
+            rot <= i;
+            ccase <= is_out[(i + 2'd1) & 2'd3]
+                       ? (is_out[(i + 2'd2) & 2'd3] ? 2'd0 : 2'd1)
+                       : (is_out[(i + 2'd2) & 2'd3] ? 2'd2 : 2'd3);
+            cn_last <= is_out[(i + 2'd1) & 2'd3] ? 2'd1
+                     : (is_out[(i + 2'd2) & 2'd3] ? 2'd3 : 2'd1);
+            cn <= '0; second_child <= 1'b0;
+            kst <= K_SET;
+          end
         end
 
-        // Find n so that point n is clipped and n-1 is not, and rotate.
-        K_ROT: begin
-          automatic logic [1:0] i;
-          i = 2'd0;
-          for (int k = 3; k >= 0; k--)
-            if (is_out[k] && !is_out[(k + 3) & 3]) i = 2'(k);
-          rot <= i;
-          r0 <= sel4(i + 2'd0); r1 <= sel4(i + 2'd1);
-          r2 <= sel4(i + 2'd2); r3 <= sel4(i + 2'd3);
-          ro <= {is_out[(i + 2'd3) & 2'd3], is_out[(i + 2'd2) & 2'd3],
-                 is_out[(i + 2'd1) & 2'd3], is_out[i]};
-          cn <= '0; second_child <= 1'b0;
-          // The case, from the rotated out-flags. ro[0] is always 1 and ro[3]
-          // always 0 by construction, so only the middle two choose.
-          ccase <= is_out[(i + 2'd1) & 2'd3]
-                     ? (is_out[(i + 2'd2) & 2'd3] ? 2'd0 : 2'd1)
-                     : (is_out[(i + 2'd2) & 2'd3] ? 2'd2 : 2'd3);
-          cn_want <= is_out[(i + 2'd1) & 2'd3] ? 2'd2
-                   : (is_out[(i + 2'd2) & 2'd3] ? 2'd0 : 2'd2);   // 0 means four
-          kst <= K_SET;
-        end
-
-        // The edge this clip cuts, and where the new vertex lands. One slot per
-        // clip within this level's four.
         K_SET: begin
           cp_a   <= edge_a(ccase, cn);
           cp_b   <= edge_b(ccase, cn);
-          cp_dst <= lvl_base + PW'({3'd0, cn});
+          cp_dst <= cn;
           cs     <= '0;
           c_axis <= '0;
           kst    <= K_CLIP;
         end
 
-        // One created vertex. The same eleven steps for all four planes, with
-        // the tested coordinate muxed between x and y - see the datapath above.
-        K_CLIP: begin
-          case (cs)
-            4'd0:  if (mul_gnt) kst <= K_CLIPW;
-            4'd3:  if (mul_gnt) kst <= K_CLIPW;
-            4'd6:  if (div_gnt) kst <= K_CLIPW;
-            4'd8:  if (mul_gnt) kst <= K_CLIPW;
-            4'd9:  if (mul_gnt) kst <= K_CLIPW;
-            default: if (add_gnt) kst <= K_CLIPW;
-          endcase
-        end
+        K_CLIP: case (cs)
+          4'd0, 4'd3, 4'd8, 4'd9: if (mul_gnt) kst <= K_CLIPW;
+          4'd6:                   if (div_gnt) kst <= K_CLIPW;
+          default:                if (add_gnt) kst <= K_CLIPW;
+        endcase
 
-        K_CLIPW: begin
-          case (cs)
-            4'd0:  if (mul_rsp) begin c_num <= mul_res; cs <= 4'd1; kst <= K_CLIP; end
-            4'd1:  if (add_rsp) begin c_num <= add_res; cs <= 4'd2; kst <= K_CLIP; end
-            4'd2:  if (add_rsp) begin c_den <= add_res; cs <= 4'd3; kst <= K_CLIP; end
-            4'd3:  if (mul_rsp) begin c_den <= mul_res; cs <= 4'd4; kst <= K_CLIP; end
-            4'd4:  if (add_rsp) begin c_m1  <= add_res; cs <= 4'd5; kst <= K_CLIP; end
-            4'd5:  if (add_rsp) begin c_den <= add_res; cs <= 4'd6; kst <= K_CLIP; end
-            4'd6:  if (div_rsp) begin c_t   <= div_res; cs <= 4'd7; kst <= K_CLIP; end
-            4'd7:  if (add_rsp) begin c_u   <= add_res; cs <= 4'd8; kst <= K_CLIP; end
-            4'd8:  if (mul_rsp) begin c_m1  <= mul_res; cs <= 4'd9; kst <= K_CLIP; end
-            4'd9:  if (mul_rsp) begin c_m2  <= mul_res; cs <= 4'd10; kst <= K_CLIP; end
-            default: if (add_rsp) begin
-              case (c_axis)
-                2'd0:    px[cp_dst] <= add_res;
-                2'd1:    py[cp_dst] <= add_res;
-                default: pz[cp_dst] <= add_res;
-              endcase
-              if (c_axis == 2'd2) kst <= K_PROJ;
-              else begin c_axis <= c_axis + 2'd1; cs <= 4'd8; kst <= K_CLIP; end
-            end
-          endcase
-        end
+        K_CLIPW: case (cs)
+          4'd0: if (mul_rsp) begin c_num <= mul_res; cs <= 4'd1; kst <= K_CLIP; end
+          4'd1: if (add_rsp) begin c_num <= add_res; cs <= 4'd2; kst <= K_CLIP; end
+          4'd2: if (add_rsp) begin c_den <= add_res; cs <= 4'd3; kst <= K_CLIP; end
+          4'd3: if (mul_rsp) begin c_den <= mul_res; cs <= 4'd4; kst <= K_CLIP; end
+          4'd4: if (add_rsp) begin c_m1  <= add_res; cs <= 4'd5; kst <= K_CLIP; end
+          4'd5: if (add_rsp) begin c_den <= add_res; cs <= 4'd6; kst <= K_CLIP; end
+          4'd6: if (div_rsp) begin c_t   <= div_res; cs <= 4'd7; kst <= K_CLIP; end
+          4'd7: if (add_rsp) begin c_u   <= add_res; cs <= 4'd8; kst <= K_CLIP; end
+          4'd8: if (mul_rsp) begin c_m1  <= mul_res; cs <= 4'd9; kst <= K_CLIP; end
+          4'd9: if (mul_rsp) begin c_m2  <= mul_res; cs <= 4'd10; kst <= K_CLIP; end
+          default: if (add_rsp) begin
+            case (c_axis)
+              2'd0:    tx[cp_dst] <= add_res;
+              2'd1:    ty[cp_dst] <= add_res;
+              default: tz[cp_dst] <= add_res;
+            endcase
+            if (c_axis == 2'd2) kst <= K_PROJ;
+            else begin c_axis <= c_axis + 2'd1; cs <= 4'd8; kst <= K_CLIP; end
+          end
+        endcase
 
-        // MAME projects a created vertex immediately, inside the clip function.
         K_PROJ:  if (pj_ready) kst <= K_PROJW;
         K_PROJW: if (pj_out_valid) begin
-          // Sixteen bits is enough: a clipped vertex is inside the viewport by
-          // construction, which is the whole reason the store can keep 16.
-          psx[cp_dst] <= pj_out_sx[15:0];
-          psy[cp_dst] <= pj_out_sy[15:0];
-          case (cn)
-            2'd0:    mk0 <= cp_dst;
-            2'd1:    mk1 <= cp_dst;
-            2'd2:    mk2 <= cp_dst;
-            default: mk3 <= cp_dst;
-          endcase
-          if ((cn_want == 2'd0 && cn == 2'd3) ||
-              (cn_want == 2'd2 && cn == 2'd1)) kst <= K_CHILD;
+          // Sixteen bits: a clipped vertex is inside the viewport by
+          // construction, which is why the quad store can keep 16.
+          tsx[cp_dst] <= pj_out_sx[15:0];
+          tsy[cp_dst] <= pj_out_sy[15:0];
+          if (cn == cn_last) kst <= K_CHILD;
           else begin cn <= cn + 2'd1; kst <= K_SET; end
         end
 
-        // Push the case's children, at the next level. A triangle is a quad
-        // with its last vertex repeated, exactly as fclip_push_quad_next does.
-        //
-        // THE SECOND CHILD IS PUSHED FIRST. MAME recurses - it calls
-        // fclip_push_quad_next on the first child and that whole subtree
-        // retires before the second is touched. A stack is LIFO, so pushing
-        // them in call order would pop the second one first and emit the quads
-        // in the wrong order. The picture would be identical, since the
-        // rasterizer sorts by z, but the reference comparison is order
-        // sensitive and it is the only check there is.
+        // Push a child, naming each vertex as coming from the current quad or
+        // from a temporary. The SECOND child is pushed first, so it sits deeper
+        // and is popped last - which is MAME's recursion order.
         K_CHILD: begin
-          st_lvl[sp] <= lvl + 3'd1;
-          case (ccase)
-            2'd0: begin st_p0[sp] <= mk0; st_p1[sp] <= r3;
-                        st_p2[sp] <= mk1; st_p3[sp] <= mk1; end
-            2'd1: begin st_p0[sp] <= mk0; st_p1[sp] <= r2;
-                        st_p2[sp] <= r3;  st_p3[sp] <= mk1; end
-            // second_child is pushed on the FIRST pass, so it sits deeper in
-            // the stack and is popped last - which is MAME's call order.
-            2'd2: if (!second_child) begin
-                        st_p0[sp] <= mk2; st_p1[sp] <= r3;
-                        st_p2[sp] <= mk3; st_p3[sp] <= mk3; end
-                  else begin
-                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
-                        st_p2[sp] <= mk1; st_p3[sp] <= mk1; end
-            default: if (!second_child) begin
-                        st_p0[sp] <= r3;  st_p1[sp] <= mk1;
-                        st_p2[sp] <= mk0; st_p3[sp] <= mk0; end
-                  else begin
-                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
-                        st_p2[sp] <= r2;  st_p3[sp] <= r3; end
-          endcase
-          sp <= sp + 4'd1;
-          if ((ccase == 2'd2 || ccase == 2'd3) && !second_child) begin
+          for (si = NSTK-1; si > 0; si = si - 1) begin
+            sk_lvl[si] <= sk_lvl[si-1];
+            for (sv = 0; sv < 4; sv = sv + 1) begin
+              sk_x[si][sv] <= sk_x[si-1][sv]; sk_y[si][sv] <= sk_y[si-1][sv];
+              sk_z[si][sv] <= sk_z[si-1][sv];
+              sk_sx[si][sv] <= sk_sx[si-1][sv]; sk_sy[si][sv] <= sk_sy[si-1][sv];
+            end
+          end
+          sk_lvl[0] <= lvl + 3'd1;
+          for (sv = 0; sv < 4; sv = sv + 1) begin
+            automatic logic [2:0] k;
+            // second_child, NOT its inverse: on the first pass this selects
+            // MAME's SECOND child, so it sits deeper in the stack and is popped
+            // last - which is the order MAME's recursion emits in.
+            k = kid(ccase, second_child, 2'(sv));
+            sk_x[0][sv]  <= k[2] ? tx[k[1:0]]  : qx[k[1:0]];
+            sk_y[0][sv]  <= k[2] ? ty[k[1:0]]  : qy[k[1:0]];
+            sk_z[0][sv]  <= k[2] ? tz[k[1:0]]  : qz[k[1:0]];
+            sk_sx[0][sv] <= k[2] ? tsx[k[1:0]] : qsx[k[1:0]];
+            sk_sy[0][sv] <= k[2] ? tsy[k[1:0]] : qsy[k[1:0]];
+          end
+          sp <= sp + 3'd1;
+          if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
             second_child <= 1'b1;
-          end else kst <= K_POP;
+          else kst <= K_POP;
         end
 
         K_EMIT: if (out_ready) begin
@@ -505,34 +502,5 @@ module m1_geo_clip (
       endcase
     end
   end
-
-  // The two endpoints of the edge each clip cuts, per case and per clip index.
-  // Straight from fclip_push_quad's four branches.
-  function automatic [PW-1:0] edge_a(input logic [1:0] c, input logic [1:0] n);
-    case (c)
-      2'd0:    edge_a = (n == 2'd0) ? r2 : r3;
-      2'd1:    edge_a = (n == 2'd0) ? r1 : r3;
-      2'd2:    edge_a = (n == 2'd0) ? r0 : (n == 2'd1) ? r1 : (n == 2'd2) ? r2 : r3;
-      default: edge_a = (n == 2'd0) ? r0 : r3;
-    endcase
-  endfunction
-  function automatic [PW-1:0] edge_b(input logic [1:0] c, input logic [1:0] n);
-    case (c)
-      2'd0:    edge_b = (n == 2'd0) ? r3 : r0;
-      2'd1:    edge_b = (n == 2'd0) ? r2 : r0;
-      2'd2:    edge_b = (n == 2'd0) ? r1 : (n == 2'd1) ? r2 : (n == 2'd2) ? r3 : r0;
-      default: edge_b = (n == 2'd0) ? r1 : r0;
-    endcase
-  endfunction
-
-  // Rotation helper: the quad's vertices by index, modulo four.
-  function automatic [PW-1:0] sel4(input logic [1:0] k);
-    case (k)
-      2'd0:    sel4 = q0;
-      2'd1:    sel4 = q1;
-      2'd2:    sel4 = q2;
-      default: sel4 = q3;
-    endcase
-  endfunction
 
 endmodule
