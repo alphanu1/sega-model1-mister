@@ -6745,3 +6745,60 @@ The normalize is **borrowed rather than duplicated**: `m1_geometry` lends its
 `m1_geo_norm` out while the stage is idle, which is exactly when the caller is
 between objects. A second one would have cost ~450 ALM of multiplier and adder to
 normalize one vector per frame.
+
+---
+
+## The 3D layer fits, and one unsynchronised register was 1,327 ns of negative slack
+
+**2026-08-31.** The first build that fitted:
+
+    ALM    36,582 / 41,910   87%
+    M10K      518 / 553      94%
+    DSP        53 / 112      47%
+    worst setup slack  -5.934 ns, TNS -1,327 ns
+
+**Five builds failed before it, each on a distinct defect that 53 passing test
+suites and a pixel-exact frame render could not see:**
+
+1. Quartus rejects a bit-select of a part-select. `att[q][AT_W-1:25][replay_band]`
+   is legal to Verilator; 17.0 answers "range must be the final index in the
+   indexed name". A synthesis error, not a simulation one.
+2. **A four-ported array.** `vtx[NQ*4]` was written four vertices at a time and
+   read four at a time. No RAM has four ports, so Quartus built all 8,192 x 32
+   bits from flip-flops **and said nothing**: 166,497 combinational nodes against
+   a device holding 83,820.
+3. **Asynchronous reads.** `wire x = mem[addr];` is a read no block RAM can do, so
+   `key`, `idx_a`/`idx_b` and `att` all stayed in flip-flops - 63,630 registers in
+   one module. Registered reads cost a cycle each and changed the sort's schedule
+   from three cycles an element to five.
+4. **A histogram too wide.** Read-modify-written at a dynamic address, so it can
+   only be registers plus a mux per entry. At 8 bits that missed fitting by 15
+   LABs of 4,191 - 0.36%. At 4 bits the arrays are a sixteenth the size, at the
+   cost of eight passes instead of four (21% of a frame to 41%).
+5. **A reset loop still clearing 256 buckets** after the arrays became 16.
+   Verilator clamps silently; Quartus refuses to elaborate.
+
+**Ben's benchmark is what turned (2) and (3) from "3D is expensive" into "this
+number is wrong".** VDP1 and the N64's RDP are 4,000-8,000 ALM, and the RDP is far
+more capable. `m1_geometry` - transform, projection, cull, normalize, lighting -
+measured 6,238 nodes and 5,778 registers, squarely in that range. It was the
+STORE that was anomalous, and storage should cost almost no logic at all.
+
+**Then the timing, which was one register.** Every one of the 40 worst paths began
+at `m1_raster3d|wr_buf`:
+
+    wr_buf -> ... -> m1_tdp_ram:u_pram|...|portb_address_reg   -5.934
+
+`wr_buf` selects which band buffer the scanout reads. Unsynchronised, it fed
+combinationally from a clk_3d register through `scan_hit` into the mixer's
+`poly_won`, out to `pal_addr`, and onto the palette RAM's address register in the
+clk_sys domain. `disp_band` and `disp_valid` were synchronised and this was not -
+and it is the one that carries the data.
+
+It changes in the same cycle as `disp_band`, so all three now cross together and
+the buffer selected always matches the band advertised.
+
+**M10K at 94% is the next problem.** 35 blocks free against the ~57 the sound
+section measures on Model 2. The band-height change bought 52 and something has
+since eaten them - `cxlat` rounding up to 32,768 words and the four vertex
+memories are the candidates. It needs revisiting before M4.

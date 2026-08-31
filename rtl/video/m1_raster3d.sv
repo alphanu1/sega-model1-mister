@@ -390,8 +390,8 @@ module m1_raster3d #(
 
   // Scanout reads the buffer that is NOT being filled, and only for the rows
   // that buffer actually covers.
-  wire [15:0] rd_col_sel = wr_buf ? bd_rd_col[0] : bd_rd_col[1];
-  wire        rd_hit_sel = wr_buf ? bd_rd_hit[0] : bd_rd_hit[1];
+  wire [15:0] rd_col_sel = wr_buf_s2 ? bd_rd_col[0] : bd_rd_col[1];
+  wire        rd_hit_sel = wr_buf_s2 ? bd_rd_hit[0] : bd_rd_hit[1];
 
   // disp_band and disp_valid are written on `clk` and read on `scan_clk`. Two
   // flops each, and the BAND INDEX IS GRAY-SAFE BY CONSTRUCTION rather than by
@@ -401,11 +401,23 @@ module m1_raster3d #(
   // without care would normally be a real hazard; here the consequence is bounded
   // and the alternative is a Gray code on a value the fill side also compares
   // arithmetically.
+  // wr_buf IS SYNCHRONISED TOO, and leaving it out was a real fault rather than
+  // an oversight in style. It selects which band buffer the scanout reads, so
+  // unsynchronised it feeds combinationally from a clk_3d register through
+  // scan_hit into the mixer's poly_won, out to pal_addr, and onto the PALETTE
+  // RAM's address register in the clk_sys domain. The timing report named the
+  // path exactly - wr_buf to u_pram's portb_address_reg, -5.934 ns - and it is
+  // the largest violation in the design.
+  //
+  // It changes in the same cycle as disp_band, so all three cross together and
+  // stay consistent: the buffer selected always matches the band advertised.
   logic [3:0] disp_band_s1, disp_band_s2;
   logic       disp_valid_s1, disp_valid_s2;
+  logic       wr_buf_s1, wr_buf_s2;
   always_ff @(posedge scan_clk) begin
     disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
     disp_valid_s1 <= disp_valid; disp_valid_s2 <= disp_valid_s1;
+    wr_buf_s1     <= wr_buf;     wr_buf_s2     <= wr_buf_s1;
   end
 
   wire in_disp_band = disp_valid_s2
