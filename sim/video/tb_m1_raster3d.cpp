@@ -149,11 +149,15 @@ int main(int argc, char** argv) {
     // does not say whether it is the span painting, the per-quad setup or the
     // replay of quads that turn out not to be in the band. Those are three
     // different fixes.
-    static const char* TNAME[] = {
-        "IDLE", "WALK", "OBJ", "OBJW", "SORT", "SORTW",
-        "BAND_CLR", "BAND_CLRW", "REPLAY", "FILL", "FILLW", "BAND_WAIT"
+    // Two sequencers now: the producer builds geometry into one store while
+    // the consumer sweeps bands out of the other, so they are counted apart.
+    static const char* PNAME[] = {
+        "P_IDLE", "P_WALK", "P_OBJ", "P_OBJW", "P_SORT", "P_SORTW", "P_READY"
     };
-    static long thist[16];
+    static const char* CNAME[] = {
+        "C_IDLE", "C_CLR", "C_CLRW", "C_REPLAY", "C_FILL", "C_FILLW", "C_WAIT"
+    };
+    static long thist[16], chist[16];
     // WHERE THE FILL'S CYCLES GO. Ben's reading of the board is that the 3D is
     // not keeping up - a band whose fill overruns its slot is skipped, shows
     // the 2D through, and the ones that make it are the bars. So the question
@@ -237,7 +241,8 @@ int main(int argc, char** argv) {
                 bool first = true;
                 while (acc >= PIXCLK_HZ) {
                     acc -= PIXCLK_HZ; tick(first); first = false;
-                    thist[d->rootp->m1_raster3d__DOT__st & 15]++;
+                    thist[d->rootp->m1_raster3d__DOT__pst & 7]++;
+                    chist[d->rootp->m1_raster3d__DOT__cst & 7]++;
                     fhist[d->rootp->m1_raster3d__DOT__u_fill__DOT__state & 31]++;
                 }
                 if (x < SW && y < SH && d->scan_hit) {
@@ -264,12 +269,17 @@ int main(int argc, char** argv) {
 
     {
         long tot = 0;
-        for (int i = 0; i < 12; i++) tot += thist[i];
-        printf("the 3D sequencer, by state:\n");
-        for (int i = 0; i < 12; i++)
+        for (int i = 0; i < 7; i++) tot += thist[i];
+        printf("the producer, by state:\n");
+        for (int i = 0; i < 7; i++)
             if (thist[i] > tot / 200)
-                printf("  %-10s %9ld  %5.1f%%\n", TNAME[i], thist[i],
+                printf("  %-10s %9ld  %5.1f%%\n", PNAME[i], thist[i],
                        100.0 * thist[i] / tot);
+        printf("the consumer, by state:\n");
+        for (int i = 0; i < 7; i++)
+            if (chist[i] > tot / 200)
+                printf("  %-10s %9ld  %5.1f%%\n", CNAME[i], chist[i],
+                       100.0 * chist[i] / tot);
     }
     {
         long tot = 0;

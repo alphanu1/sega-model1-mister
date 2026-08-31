@@ -194,14 +194,14 @@ module m1_raster3d #(
   // since drawing one object takes thousands of cycles and the walk would
   // otherwise run to the end of the list during the first one.
   //
-  // T_IDLE IS EXCLUDED, because `start` is asserted there. A stalled walker
-  // ignores everything including its own start, so stalling in T_IDLE means the
+  // P_IDLE IS EXCLUDED, because `start` is asserted there. A stalled walker
+  // ignores everything including its own start, so stalling in P_IDLE means the
   // walk never begins - which reads as an empty display list rather than as a
   // handshake fault: zero objects, zero quads, no error.
   // Held while a colour write is still outstanding as well: the walk emits one
   // body item per cycle and an SDRAM write takes far longer, so without this the
   // second item would overwrite the first before it left.
-  wire lw_stall = ((st != T_WALK) && (st != T_IDLE)) || w_tex_req;
+  wire lw_stall = ((pst != P_WALK) && (pst != P_IDLE)) || w_tex_req;
 
   m1_listwalk u_walk (
     .clk(clk), .rst_n(rst_n),
@@ -316,38 +316,91 @@ module m1_raster3d #(
   );
 
   // ---------------------------------------------------------------- quad store
-  logic        qs_clear, qs_sort_start, qs_sort_busy;
-  logic        qs_replay_start, qs_replay_busy, qs_out_valid, qs_out_ready;
+  logic        qs_clear, qs_sort_start;
+  wire         qs_sort_busy;
+  logic        qs_replay_start, qs_out_ready;
+  wire         qs_replay_busy, qs_out_valid;
   logic [BW-1:0] qs_band;
-  logic signed [15:0] qo_x0, qo_y0, qo_x1, qo_y1, qo_x2, qo_y2, qo_x3, qo_y3;
-  logic [23:0] qo_col;
-  logic        qo_moire;
-  logic [15:0] qs_count, qs_dropped;
+  wire signed [15:0] qo_x0, qo_y0, qo_x1, qo_y1, qo_x2, qo_y2, qo_x3, qo_y3;
+  wire [23:0] qo_col;
+  wire        qo_moire;
+  wire [15:0] qs_count, qs_dropped;
 
   // The store keeps 16-bit screen coordinates. The geometry emits 32-bit ones,
   // as MAME's spoint_t does, and they are truncated here - which matches the
   // reference's own overflow: fill_quad shifts s.x left by 16 into an int32, so
   // anything past +/-32768 has already wrapped by the time it is drawn.
-  m1_quad_store #(
-    .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H)
-  ) u_store (
-    .clk(clk), .rst_n(rst_n),
-    .clear(qs_clear),
-    .in_valid(q_valid),
-    .in_x0(q_x0[15:0]), .in_y0(q_y0[15:0]),
-    .in_x1(q_x1[15:0]), .in_y1(q_y1[15:0]),
-    .in_x2(q_x2[15:0]), .in_y2(q_y2[15:0]),
-    .in_x3(q_x3[15:0]), .in_y3(q_y3[15:0]),
-    .in_col(q_col), .in_z(q_z), .in_moire(q_moire),
-    .sort_start(qs_sort_start), .sort_busy(qs_sort_busy),
-    .replay_band(qs_band), .replay_start(qs_replay_start),
-    .replay_busy(qs_replay_busy),
-    .out_ready(qs_out_ready), .out_valid(qs_out_valid),
-    .out_x0(qo_x0), .out_y0(qo_y0), .out_x1(qo_x1), .out_y1(qo_y1),
-    .out_x2(qo_x2), .out_y2(qo_y2), .out_x3(qo_x3), .out_y3(qo_y3),
-    .out_col(qo_col), .out_moire(qo_moire),
-    .dbg_count(qs_count), .dbg_dropped(qs_dropped)
-  );
+  // TWO STORES, AND THE REASON IS THAT THE PICTURE HAS TO BE THERE EVERY FRAME.
+  //
+  // With one store the geometry and the band sweep cannot overlap: the geometry
+  // rewrites the store the sweep is reading. So on the frame where the geometry
+  // runs, NO band can be presented and the whole 3D layer vanishes - full
+  // picture one frame, nothing the next, which a screen shows as a uniformly
+  // half-transparent image whatever is on it. That is what the board was doing,
+  // and it is not a rendering fault at all; it is a scheduling one.
+  //
+  // The producer builds into one store while the consumer sweeps the other, and
+  // they swap at a frame boundary when the producer has a complete frame ready.
+  // The sweep then runs EVERY frame - repeating the last complete geometry if a
+  // new one is not ready yet, which is exactly what the reference does at its
+  // 28.8 Hz list rate.
+  //
+  // It costs a second store, 53 M10K and about 1,000 ALM, and it only became
+  // affordable when the vertex arrays stopped being duplicated - see the note
+  // in m1_quad_store on the double read.
+  logic        bank;                  // the store the PRODUCER is writing
+  logic [1:0]  qs_sort_busy_v, qs_replay_busy_v, qs_out_valid_v;
+  logic [15:0] qs_count_v [2], qs_dropped_v [2];
+  logic signed [15:0] qo_x0_v [2], qo_y0_v [2], qo_x1_v [2], qo_y1_v [2];
+  logic signed [15:0] qo_x2_v [2], qo_y2_v [2], qo_x3_v [2], qo_y3_v [2];
+  logic [23:0] qo_col_v [2];
+  logic [1:0]  qo_moire_v;
+
+  genvar k;
+  generate
+    for (k = 0; k < 2; k++) begin : g_store
+      // Each store takes the producer's writes only when it IS the producer's
+      // bank, and the consumer's replay only when it is not. Nothing else can
+      // reach it, so the two roles cannot collide by construction.
+      wire mine_p = (bank == 1'(k));
+      m1_quad_store #(
+        .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H)
+      ) u_store (
+        .clk(clk), .rst_n(rst_n),
+        .clear(qs_clear && mine_p),
+        .in_valid(q_valid && mine_p),
+        .in_x0(q_x0[15:0]), .in_y0(q_y0[15:0]),
+        .in_x1(q_x1[15:0]), .in_y1(q_y1[15:0]),
+        .in_x2(q_x2[15:0]), .in_y2(q_y2[15:0]),
+        .in_x3(q_x3[15:0]), .in_y3(q_y3[15:0]),
+        .in_col(q_col), .in_z(q_z), .in_moire(q_moire),
+        .sort_start(qs_sort_start && mine_p), .sort_busy(qs_sort_busy_v[k]),
+        .replay_band(qs_band),
+        .replay_start(qs_replay_start && !mine_p),
+        .replay_busy(qs_replay_busy_v[k]),
+        .out_ready(qs_out_ready && !mine_p), .out_valid(qs_out_valid_v[k]),
+        .out_x0(qo_x0_v[k]), .out_y0(qo_y0_v[k]),
+        .out_x1(qo_x1_v[k]), .out_y1(qo_y1_v[k]),
+        .out_x2(qo_x2_v[k]), .out_y2(qo_y2_v[k]),
+        .out_x3(qo_x3_v[k]), .out_y3(qo_y3_v[k]),
+        .out_col(qo_col_v[k]), .out_moire(qo_moire_v[k]),
+        .dbg_count(qs_count_v[k]), .dbg_dropped(qs_dropped_v[k])
+      );
+    end
+  endgenerate
+
+  // The producer's view is its own bank; the consumer's is the other one.
+  assign qs_sort_busy   = qs_sort_busy_v[bank];
+  assign qs_replay_busy = qs_replay_busy_v[~bank];
+  assign qs_out_valid   = qs_out_valid_v[~bank];
+  assign qo_x0 = qo_x0_v[~bank];  assign qo_y0 = qo_y0_v[~bank];
+  assign qo_x1 = qo_x1_v[~bank];  assign qo_y1 = qo_y1_v[~bank];
+  assign qo_x2 = qo_x2_v[~bank];  assign qo_y2 = qo_y2_v[~bank];
+  assign qo_x3 = qo_x3_v[~bank];  assign qo_y3 = qo_y3_v[~bank];
+  assign qo_col   = qo_col_v[~bank];
+  assign qo_moire = qo_moire_v[~bank];
+  assign qs_count   = qs_count_v[bank];
+  assign qs_dropped = qs_dropped_v[bank];
 
   // ---------------------------------------------------------------- fill
   logic        fl_in_valid, fl_in_ready;
@@ -593,12 +646,26 @@ module m1_raster3d #(
   assign scan_hit = rd_hit_sel && in_disp_band;
 
   // ---------------------------------------------------------------- sequencer
-  typedef enum logic [3:0] {
-    T_IDLE, T_WALK, T_OBJ, T_OBJW, T_SORT, T_SORTW,
-    T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW,
-    T_BAND_WAIT
-  } state_t;
-  state_t st /* verilator public_flat_rd */;
+  // TWO SEQUENCERS, NOT ONE.
+  //
+  // The producer walks the list, runs the geometry and sorts, into its own
+  // store. The consumer sweeps the 24 bands out of the other store, every
+  // frame, whether or not new geometry has arrived. They swap banks at a frame
+  // boundary once the producer has a complete frame ready.
+  //
+  // As one FSM the geometry and the sweep were in series, so the frame that
+  // built geometry showed no 3D at all - the layer was on screen half the time
+  // and read as uniformly transparent. Splitting them is the fix; the second
+  // store is what makes the split possible.
+  typedef enum logic [2:0] {
+    P_IDLE, P_WALK, P_OBJ, P_OBJW, P_SORT, P_SORTW, P_READY
+  } pstate_t;
+  pstate_t pst /* verilator public_flat_rd */;
+
+  typedef enum logic [2:0] {
+    C_IDLE, C_CLR, C_CLRW, C_REPLAY, C_FILL, C_FILLW, C_WAIT
+  } cstate_t;
+  cstate_t cst /* verilator public_flat_rd */;
 
   logic [BW-1:0] cur_band;
   logic [31:0]   band_timer;
@@ -617,25 +684,37 @@ module m1_raster3d #(
     end else begin
       dl_sel_s1 <= dl_sel;
       dl_sel_s2 <= dl_sel_s1;
-      if ((st == T_IDLE) && frame_start) dl_sel_q <= dl_sel_s2;
+      if (prod_go) dl_sel_q <= dl_sel_s2;
     end
   end
 
-  wire in_bands = (st == T_BAND_CLR) || (st == T_BAND_CLRW) || (st == T_REPLAY)
-               || (st == T_FILL)     || (st == T_FILLW)     || (st == T_BAND_WAIT);
+  wire in_bands = (cst != C_IDLE);
 
   wire ev_present = present_now;
-  wire ev_handoff = (st == T_BAND_WAIT) && (!ready_valid || ev_present);
+
+  // THE SWAP, at a frame boundary and only when a whole new frame is ready.
+  //
+  // The consumer must be between sweeps, so the picture it is showing is never
+  // torn by a bank change halfway down the screen; and the producer must have a
+  // complete, sorted frame. If it has not finished, the consumer simply sweeps
+  // the same store again - which is right, and is what the reference does
+  // between its 28.8 Hz list updates.
+  wire swap_now = (pst == P_READY) && (cst == C_IDLE)
+               && beam_blank && !beam_blank_d;
+  wire ev_handoff = (cst == C_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
-  assign lw_start        = (st == T_IDLE) && frame_start;
-  assign geo_start       = (st == T_OBJ);
-  assign qs_clear        = (st == T_IDLE) && frame_start;
-  assign qs_sort_start   = (st == T_SORT);
-  assign qs_replay_start = (st == T_REPLAY);
-  assign qs_out_ready    = (st == T_FILL) && fl_in_ready;
-  assign fl_in_valid     = (st == T_FILL) && qs_out_valid;
+  // The producer starts a pass whenever its bank is free - it does not wait for
+  // a frame, because the consumer no longer waits for it.
+  wire prod_go = (pst == P_IDLE);
+  assign lw_start        = prod_go;
+  assign geo_start       = (pst == P_OBJ);
+  assign qs_clear        = prod_go;
+  assign qs_sort_start   = (pst == P_SORT);
+  assign qs_replay_start = (cst == C_REPLAY);
+  assign qs_out_ready    = (cst == C_FILL) && fl_in_ready;
+  assign fl_in_valid     = (cst == C_FILL) && qs_out_valid;
   always_comb begin
     bd_clear_req = '0;
     // Every band clears in full, and it costs 1,984 cycles because the band
@@ -643,13 +722,13 @@ module m1_raster3d #(
     // background clear this replaces wrote a buffer while the beam was reading
     // it - see rtl/video/m1_raster_band.sv.
     // HELD UNTIL THE CLEAR IS SEEN TO START, not pulsed for one cycle.
-    // clear_busy is registered, so the first cycle of T_BAND_CLRW reads it LOW
+    // clear_busy is registered, so the first cycle of C_CLRW reads it LOW
     // whether or not the clear has begun - and the sequencer then went to the
     // replay while the clear ran on underneath, erasing spans behind the fill.
     // At 496 cycles that cost a few pixels of band 0 of the first frame; a
     // full-band clear the same way wiped the picture entirely, 95.9% of pixels
     // to zero, which is how it was found.
-    if ((st == T_BAND_CLR) || ((st == T_BAND_CLRW) && !clr_seen))
+    if ((cst == C_CLR) || ((cst == C_CLRW) && !clr_seen))
       bd_clear_req[fill_buf] = 1'b1;
   end
   assign fill_band       = cur_band;
@@ -670,7 +749,8 @@ module m1_raster3d #(
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0;
+      cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
       ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
@@ -686,15 +766,13 @@ module m1_raster3d #(
       lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
-      mat_we <= 1'b0;
-      if (st == T_BAND_CLR || st == T_BAND_CLRW || st == T_REPLAY ||
-          st == T_FILL || st == T_FILLW) band_timer <= band_timer + 32'd1; mat_idx <= '0; mat_data <= '0;
-      bd_y0[0] <= '0; bd_y0[1] <= '0;
+      mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
+      band_timer <= '0;
+      bd_y0[0] <= '0; bd_y0[1] <= '0; bd_y0[2] <= '0;
       dbg_frames <= '0;
     end else begin
       mat_we <= 1'b0;
-      if (st == T_BAND_CLR || st == T_BAND_CLRW || st == T_REPLAY ||
-          st == T_FILL || st == T_FILLW) band_timer <= band_timer + 32'd1;
+      if (cst != C_IDLE && cst != C_WAIT) band_timer <= band_timer + 32'd1;
 
       // ---- display-list events. Latched wherever the walk is, because a
       // command changes state for every object that follows it.
@@ -806,6 +884,7 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
+      if (swap_now) bank <= ~bank;
       // The toggle trails the data by a cycle, so the receiver's two
       // synchroniser flops always land on settled data.
       disp_upd <= 1'b0;
@@ -841,15 +920,16 @@ module m1_raster3d #(
       end
       if (ev_present && dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 16'd1;
 
-      case (st)
-        T_IDLE: if (frame_start) begin
+      // ---- PRODUCER: list walk, geometry, sort, into store `bank`
+      case (pst)
+        P_IDLE: begin
           old_z <= '0;
-          st    <= T_WALK;
+          pst   <= P_WALK;
         end
 
         // The walk runs until it emits an object, then stops to draw it. The
         // walker holds its own position, so this is a pause and not a restart.
-        T_WALK: begin
+        P_WALK: begin
           if (lw_ev_valid && (lw_ev_kind == 8'h01 || lw_ev_kind == 8'h41)) begin
             obj_hud <= (lw_ev_kind == 8'h41);
             case (lw_ev_idx)
@@ -857,77 +937,76 @@ module m1_raster3d #(
               16'd1: obj_poly <= lw_ev_data;
               default: begin
                 obj_size <= lw_ev_data;
-                st       <= T_OBJ;
+                pst      <= P_OBJ;
               end
             endcase
           end else if (lw_done) begin
-            st <= T_SORT;
+            pst <= P_SORT;
           end
         end
 
-        T_OBJ:  st <= T_OBJW;
-        T_OBJW: if (geo_done) begin
+        P_OBJ:  pst <= P_OBJW;
+        P_OBJW: if (geo_done) begin
           old_z <= geo_oldz_out;
-          st    <= T_WALK;
+          pst   <= P_WALK;
         end
 
-        T_SORT:  st <= T_SORTW;
-        T_SORTW: if (!qs_sort_busy) begin
-          cur_band   <= '0;
+        P_SORT:  pst <= P_SORTW;
+        P_SORTW: if (!qs_sort_busy) begin
           dbg_frames <= dbg_frames + 16'd1;
-          st         <= T_BAND_CLR;
+          pst        <= P_READY;
         end
 
-        // ---- one band at a time into the write buffer
-        //
-        // ONLY BAND 0 CLEARS. Every other buffer was cleared behind the beam
-        // while it was displaying, so the fill path does not pay for it: 15,872
-        // cycles of a band-time of 68,000, against a fill measured at 60,777 to
-        // 77,618. Band 0 still clears because at the very first frame neither
-        // buffer has displayed anything yet.
-        T_BAND_CLR: begin
+        // A complete frame of quads, waiting for the consumer to reach a frame
+        // boundary so the banks can swap.
+        P_READY: if (swap_now) pst <= P_IDLE;
+
+        default: pst <= P_IDLE;
+      endcase
+
+      // ---- CONSUMER: 24 bands out of store `~bank`, every frame
+      case (cst)
+        // Locked to the raster: a sweep starts at the top of a frame and runs
+        // to the bottom, so band k is presented as the beam reaches it.
+        C_IDLE: if (beam_blank && !beam_blank_d) begin
+          cur_band <= '0;
+          cst      <= C_CLR;
+        end
+
+        C_CLR: begin
           band_timer <= '0;
           bd_y0[fill_buf] <= 16'(cur_band) * 16'(BAND_H);
           clr_seen <= 1'b0;
-          st <= T_BAND_CLRW;
+          cst <= C_CLRW;
         end
-        T_BAND_CLRW: begin
+        C_CLRW: begin
           if (bd_clear_busy[fill_buf])      clr_seen <= 1'b1;
-          else if (clr_seen)                st <= T_REPLAY;
+          else if (clr_seen)                cst <= C_REPLAY;
         end
 
-        T_REPLAY: st <= T_FILL;
+        C_REPLAY: cst <= C_FILL;
 
-        T_FILL: begin
-          if (!qs_replay_busy && !qs_out_valid) st <= T_BAND_WAIT;
-          else if (qs_out_valid && fl_in_ready) st <= T_FILLW;
+        C_FILL: begin
+          if (!qs_replay_busy && !qs_out_valid) cst <= C_WAIT;
+          else if (qs_out_valid && fl_in_ready) cst <= C_FILLW;
         end
-        T_FILLW: if (fl_quad_done) st <= T_FILL;
+        C_FILLW: if (fl_quad_done) cst <= C_FILL;
 
-        // FILLED, NOW WAIT FOR THE BEAM. The band is not presented until the
-        // raster actually reaches it, which is what keeps the two in step. If
-        // the fill was slower than the beam this simply presents late and the
-        // band is missed rather than shown in the wrong place.
-        // FILLED - HAND IT TO THE READY SLOT, do not wait for the beam.
-        //
-        // With two buffers this state waited for the raster, because the only
-        // other buffer was on screen. With three it waits only for the ready
-        // slot to be free, so the fill of band N+1 starts while band N is still
-        // waiting to be shown - which is what lets a slow band borrow time from
-        // a fast one instead of missing outright.
-        T_BAND_WAIT: begin
-          dbg_band_cycles <= band_timer;   // the fill alone, before the wait
+        // Filled - hand it to the ready slot. With three band buffers this
+        // waits only for that slot to be free, so the fill of band N+1 starts
+        // while band N is still waiting to be shown.
+        C_WAIT: begin
+          dbg_band_cycles <= band_timer;
           if (ev_handoff) begin
-            if (cur_band == BW'(NBANDS - 1)) begin
-              st <= T_IDLE;
-            end else begin
+            if (cur_band == BW'(NBANDS - 1)) cst <= C_IDLE;
+            else begin
               cur_band <= cur_band + BW'(1);
-              st       <= T_BAND_CLR;
+              cst      <= C_CLR;
             end
           end
         end
 
-        default: st <= T_IDLE;
+        default: cst <= C_IDLE;
       endcase
     end
   end
