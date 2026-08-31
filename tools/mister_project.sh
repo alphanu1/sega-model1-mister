@@ -362,11 +362,33 @@ if [ -n "${M1_SEED:-}" ]; then
     echo "  SEED = $M1_SEED"
 fi
 
-if [ -n "${M1_QOPT:-}" ]; then
+# AREA IS THE BINDING CONSTRAINT NOW, so the area settings are the DEFAULT and
+# the speed ones are the opt-out. That is a reversal of the earlier judgement and
+# it is deliberate: when Aggressive Area was measured it cost 0.272 ns of slack to
+# save 469 ALM, which was a bad trade while ALM was not binding. The design has
+# since failed to fit - 166,497 combinational nodes against 83,820 - so it is.
+#
+# The template ships three settings that actively TRADE AREA FOR SPEED, and they
+# were left on through every build until now:
+#
+#   PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION      duplicates registers to shorten
+#                                                fanout paths
+#   ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION inserts LCELLs and duplicates
+#                                                logic to help routing
+#   OPTIMIZATION_TECHNIQUE SPEED                 the whole synthesis bias
+#
+# M1_QSPEED=1 puts all of it back, for when timing is the problem again.
+M1_QOPT="${M1_QOPT:-Aggressive Area}"
+if [ -n "${M1_QSPEED:-}" ]; then
+    echo "  M1_QSPEED set: keeping the template's speed-biased settings"
+else
     sed -i -e "s/^set_global_assignment -name OPTIMIZATION_MODE .*/set_global_assignment -name OPTIMIZATION_MODE \"$M1_QOPT\"/" \
            -e 's/^set_global_assignment -name OPTIMIZATION_TECHNIQUE .*/set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA/' \
+           -e 's/^set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION .*/set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF/' \
+           -e 's/^set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION .*/set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION OFF/' \
            "$stage/Model1.qsf"
     echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = AREA"
+    echo "  register duplication OFF, router logic duplication OFF"
 fi
 
 cat > "$stage/Model1.qpf" <<'EOF'
