@@ -142,7 +142,7 @@ module m1_geo_clip (
   // ---------------------------------------------------------- current quad
   logic [2:0]    lvl;
   logic [PW-1:0] q0, q1, q2, q3;
-  logic [3:0]    is_out;                    // per vertex, this level's plane
+  logic [3:0]    is_out /* verilator public_flat_rd */;
 
   // The plane this level tests, and whether it compares x or y. Level order is
   // MAME's: bottom, top, left, right.
@@ -188,7 +188,10 @@ module m1_geo_clip (
 
   // Microcoded clip arithmetic. One sequence, all four planes.
   logic [3:0]  cs;
-  logic [31:0] c_num, c_den, c_t, c_u, c_m1, c_m2;
+  logic [31:0] c_num /* verilator public_flat_rd */;
+  logic [31:0] c_den /* verilator public_flat_rd */;
+  logic [31:0] c_t /* verilator public_flat_rd */;
+  logic [31:0] c_u, c_m1, c_m2;
   logic [1:0]  c_axis;                      // 0 = x, 1 = y, 2 = z lerp
 
   // Base slot for this level's four points.
