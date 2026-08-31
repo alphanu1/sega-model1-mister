@@ -284,10 +284,25 @@ if {[llength $sdram_clk_src] == 0 || [llength $sdram_clk_prt] == 0} {
 
 set sys_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
 set cpu_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[1].*|divclk}]
+# general[3] is clk_3d, the 3D layer's 47.059 MHz domain.
+set r3d_clk [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[3].*|divclk}]
 
-if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
+if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0 && [llength $r3d_clk] > 0} {
+    # THREE GROUPS, NOT TWO. clk_3d was added to the design and not to this cut,
+    # and the analyser then timed every crossing into and out of it as though it
+    # were synchronous. What that reports is not a real failure - it is
+    # m1_cdc_port's own x_addr -> b_addr transfer, which a toggle synchroniser
+    # guards, and m1_raster3d's disp_band -> disp_band_s1 two-flop synchroniser.
+    # Both are asynchronous crossings by construction and the tool cannot know it.
+    #
+    # Measured before the cut: -2.277 ns and -142 ns of total negative slack,
+    # entirely from those two structures.
+    set_clock_groups -asynchronous -group $sys_clk -group $cpu_clk -group $r3d_clk
+    post_message "Model1: clk_sys, clk_cpu and clk_3d cut from each other"
+} elseif {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
     set_clock_groups -asynchronous -group $sys_clk -group $cpu_clk
-    post_message "Model1: clk_sys and clk_cpu cut from each other"
+    post_message -type warning \
+        "Model1: clk_3d not found - cut only clk_sys from clk_cpu"
 } else {
     post_message -type error \
         "Model1: core PLL clocks not found - check the pll/pll_inst/altera_pll_i names"
@@ -319,7 +334,7 @@ if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
 # behind MODEL1_SDRAM_MCP and were NOT set on the build that crashed. Three
 # earlier crashes were attributed to them and the constraints were disabled in
 # response; the trace says the collections are what matters.
-unset -nocomplain sdram_clk_src sdram_clk_prt sdram_out sys_clk cpu_clk sdc_exe
+unset -nocomplain sdram_clk_src sdram_clk_prt sdram_out sys_clk cpu_clk r3d_clk sdc_exe
 EOF
 
 # Project settings: the template's, with the entity and the file list swapped.
