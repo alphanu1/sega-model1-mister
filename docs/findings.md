@@ -7062,3 +7062,68 @@ throughput came from scheduling, and scheduling is cheap.
 84 as measured and about 20 once the 68000's work RAM moves to SDRAM, so it fits
 - and a double-buffered quad store, the thing that would take the 3D layer to
 57 Hz, wants 49 more and does not.
+
+---
+
+## THE SDRAM TAIL IS NOT ARBITRATION — a bounded CPU boost bought 0.01 cycles — 2026-08-31
+
+The V60's data bus, measured on the current design with every master live
+(`tb_m1_frame`, 400 M cycles):
+
+    10,634,698 data accesses, mean 12.05 samples of the 80 MHz clock
+    histogram   2:58%   8:9%   28:1%   31:7%   32:10%   35:4%   38:2%
+    CPU         data stall 32.83%   fetch stall 0.61%   17.49 CPI
+
+**The 9-cycle fixed handshake is gone.** `docs/findings.md`'s 2026-08-20 entry
+had every page costing the same 36 fast cycles whether BRAM or SDRAM, which was
+handshake overhead. That predates the V60 moving to its own clock domain, and it
+no longer holds: **58% of accesses complete in two samples** — under a CPU cycle,
+free.
+
+**And fetch stall is 0.61%.** The instruction cache is doing its entire job.
+There is nothing left to win on the fetch side.
+
+What remains is bimodal: a quarter of accesses take 28-39 samples, about 9.2 CPU
+cycles, and that is 33% of every cycle the CPU spends.
+
+**The obvious explanation was queueing** — p0 waits behind six other masters and
+the 3D layer added two of them the same day. So p0 was given a bounded
+pre-emption: it may jump the rotation but not if it won the previous grant, which
+caps its share at half and cannot starve the character fetch's hard deadline.
+
+    before   mean 12.05, data stall 32.83%, 17.49 CPI
+    after    mean 12.04, data stall 32.82%, 17.49 CPI
+
+**Nothing. One hundredth of a cycle.** The tail is the SDRAM round trip itself -
+the CDC out, the service, the CDC back - not the wait for a grant. Reverted
+rather than kept: unproven logic on a design at 90% of its ALM is a cost with no
+benefit.
+
+**So the lever is not to serve the access sooner but to not make it.** A data
+cache for the V60's work RAM turns that quarter into two-cycle hits, and 4-8 KB
+of it needs about 5 M10K on a device with none free — which is what makes
+right-sizing the display-list buffers (32,768 words each where the game's list
+ends at word 0x2006, +64 blocks) a prerequisite rather than housekeeping.
+
+---
+
+## THE REFERENCE V60 RETIRES 2,015,165 INSTRUCTIONS A SECOND — measured — 2026-08-31
+
+Assumed at "about 8 CPI at 16 MHz, so 2 M/s" for the whole speed budget and
+never measured. Measured now, because the budget rests on it: a full MAME
+instruction trace of `vr`, one emulated second, `noloop`, counting retired
+instructions.
+
+    2,015,165 instructions in 1 emulated second
+
+The assumption was right to within 1%. Ours, from the same bench that gives the
+CPI: 7,233,673 retires in 126,571,439 cycles at 23.529 MHz = 5.379 s, so
+**1,345,000 a second — 67% of the reference, a gap of 1.50x.**
+
+**THAT DOES NOT MATCH WHAT THE BOARD LOOKS LIKE.** Ben times the MiSTer against
+real running time and reads about a third. Instruction throughput cannot explain
+a factor of three, so something beyond it is costing us and counting
+instructions will not find it. The end-to-end metric is the display-list swap
+rate - one swap per completed game-logic frame - and the reference's is measured
+at exactly 2 video frames (`tools/mame_listctl_rate.lua`, 993 of 996). Ours
+against that number is the game-speed ratio with no modelling in it at all.

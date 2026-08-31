@@ -1387,6 +1387,35 @@ always @(posedge clk) begin
     end
 end
 
+// --------------------------------------------- GAME SPEED, END TO END
+//
+// Instruction rate is not what Ben is timing off the screen. The honest
+// end-to-end metric is how often the game completes a LOGIC frame, and the
+// display-list buffer swap is exactly that - one swap per finished list.
+//
+// The reference is measured: tools/mame_listctl_rate.lua, 2,000 frames, 996
+// flips of which 993 are exactly 2 video frames apart. So every 2 frames is
+// 100% of hardware speed, every 6 frames is 33%, and the ratio needs no
+// modelling at all.
+integer swap_gap [0:63];
+integer swap_i, swap_n = 0, swap_since = 0;
+longint swap_sum = 0;
+reg     sel_d = 0;
+initial for (swap_i = 0; swap_i < 64; swap_i = swap_i + 1) swap_gap[swap_i] = 0;
+always @(posedge clk) begin
+    if (rst_n_sys && core.video.vblank_start) begin
+        swap_since = swap_since + 1;
+        if (core.listctl_sel != sel_d) begin
+            sel_d = core.listctl_sel;
+            swap_gap[(swap_since > 63) ? 63 : swap_since] =
+                swap_gap[(swap_since > 63) ? 63 : swap_since] + 1;
+            swap_sum = swap_sum + swap_since;
+            swap_n   = swap_n + 1;
+            swap_since = 0;
+        end
+    end
+end
+
 // ------------------------------------- HOW LONG ONE DATA ACCESS ACTUALLY TAKES
 //
 // 2026-08-20 decomposed it exactly: every page cost the same 36 fast cycles -
@@ -1626,6 +1655,18 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    if (swap_n > 0) begin
+        $display("FRAME: %0d display-list swaps, mean %0d.%02d frames apart"
+                 " (the board is 2.00 = 100%% speed, so this is %0d%%)",
+                 swap_n, swap_sum/swap_n, ((swap_sum*100)/swap_n) % 100,
+                 (200*swap_n)/(swap_sum ? swap_sum : 1));
+        $write("FRAME: frames between swaps:");
+        for (swap_i = 1; swap_i < 64; swap_i = swap_i + 1)
+            if (swap_gap[swap_i] * 50 > swap_n)
+                $write(" %0d:%0d%%", swap_i, (100*swap_gap[swap_i])/swap_n);
+        $write("\n");
+    end else
+        $display("FRAME: NO display-list swaps at all - the game never finished a list");
     if (blat_n > 0) begin
         $display("FRAME: %0d data accesses, mean %0d.%02d clk_sys cycles req->ack",
                  blat_n, blat_sum/blat_n, ((blat_sum*100)/blat_n) % 100);

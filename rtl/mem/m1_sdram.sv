@@ -314,35 +314,10 @@ module m1_sdram #(
   logic [$clog2(NP)-1:0] rr_grant;
   logic                  rr_valid;
 
-  // PORT 0 MAY PRE-EMPT, BUT NEVER TWICE RUNNING.
-  //
-  // p0 is the V60's data bus and it is what the game's speed is made of.
-  // Measured with every master live: 10,634,698 data accesses at a mean of
-  // 12.05 clk_sys cycles, and the histogram is bimodal - 58% complete in TWO
-  // cycles, and a quarter take 28 to 39. Two cycles is the on-chip path and it
-  // is already free; the tail is SDRAM plus the wait behind six other masters,
-  // about 9.4 CPU cycles, and it is 33% of all CPU cycles. The 3D layer added
-  // two of those masters today.
-  //
-  // Straight priority is not available: the header above says why, and it is
-  // still true - a V60 cache-miss storm must not be able to hold the bus, and
-  // the character fetch has a hard per-scanline deadline that shows up as
-  // repeated scanlines rather than as an error. So the boost is bounded. p0
-  // jumps the rotation, but only if it did not win the previous grant, which
-  // caps its share at half and leaves every other port its place in the
-  // rotation untouched.
-  logic p0_last;
-  wire  p0_boost = pend[0] && !inflight[0] && !p0_last;
-
   int unsigned j, cand;
   always_comb begin
     rr_valid = 1'b0;
     rr_grant = rr_next;
-    cand     = 0;              // assigned on every path: the boost skips the loop
-    if (p0_boost) begin
-      rr_valid = 1'b1;
-      rr_grant = '0;
-    end else
     // Walk the rotation from rr_next and take the first pending port. A loop
     // rather than a case ladder per rotation position: the ladder form is NP
     // copies of the same priority chain and every copy is a chance to mistype
@@ -536,7 +511,7 @@ module m1_sdram #(
       ack_cnt <= '0; wack_cnt <= '0; inflight <= '0; wr_inflight <= 1'b0;
       for (int b = 0; b < 4; b++) rd_bank_cnt[b] <= '0;
       p_ack <= '0; wr_ack <= 1'b0; p_dout <= '0;
-      grant <= '0; grant_is_wr <= 1'b0; rr_next <= '0; p0_last <= 1'b0;
+      grant <= '0; grant_is_wr <= 1'b0; rr_next <= '0;
       rd_total <= 4'd1; rd_issued <= '0; rd_captured <= '0;
       is_write <= 1'b0; xfer_addr <= '0; din_r <= '0; be_r <= '0;
       wait_cnt <= '0; dq_r <= '0;
@@ -660,11 +635,7 @@ module m1_sdram #(
                 // Writes take it too: a port writing is equally in flight and
                 // equally must not be re-selected before it completes.
                 inflight[rr_grant] <= 1'b1;
-                p0_last     <= (rr_grant == '0);
-                // A boosted p0 does NOT advance the rotation: the port the
-                // rotation was pointing at keeps its place and is served next.
-                if (!p0_boost)
-                  rr_next   <= (rr_grant == ($clog2(NP))'(NP-1))
+                rr_next     <= (rr_grant == ($clog2(NP))'(NP-1))
                                  ? '0 : rr_grant + 1'b1;
               end
               xfer_addr   <= sel;
