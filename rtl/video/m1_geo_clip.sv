@@ -75,9 +75,17 @@
 // pending, so four levels leave four - and the quad being processed is in
 // registers, not on the stack.
 //
-// SCREEN COORDINATES ARE STORED AT SIXTEEN BITS. After clipping every vertex is
-// inside the viewport by construction, so the width the quad store keeps is the
-// width that is needed - and storing 32 would double every point for nothing.
+// SCREEN COORDINATES ARE NOT CARRIED ON THE STACK AT ALL. They are 16 bits
+// each, which is nothing until it is five entries by four vertices by two
+// coordinates - 640 flops, and in a shift register every flop brings a mux with
+// it. Dropping them was the last 580 ALM needed to fit, at the cost of
+// projecting a quad's four vertices when it is emitted rather than when they
+// were created: four reciprocals, about 116 cycles, on roughly 630 quads a
+// frame against a geometry stage of 367,000.
+//
+// It is also closer to MAME than the alternative. project_point is called on a
+// created vertex there, but every vertex is projected before it is drawn, and
+// projecting at the end is the same answer from the same inputs.
 
 `timescale 1ns/1ps
 
@@ -156,20 +164,18 @@ module m1_geo_clip (
   // Four points in registers. Every read of these is a 4-to-1 mux, which is the
   // whole point of not having a pool.
   logic [31:0]        qx [4], qy [4], qz [4];
-  logic signed [15:0] qsx [4], qsy [4];
+  logic signed [15:0] qsx [4], qsy [4];   // filled at emit, not carried
   logic [2:0]         lvl;
   logic [3:0]         is_out;
 
   // The points this level creates. At most four, in the "0,2 out" case.
   logic [31:0]        tx [4], ty [4], tz [4];
-  logic signed [15:0] tsx [4], tsy [4];
 
   // ------------------------------------------------------------- the stack
   // A shift register: the top is always entry 0, so a push shifts down and a
   // pop shifts up, and neither needs an addressed read.
   logic [2:0]         sk_lvl [NSTK];
   logic [31:0]        sk_x [NSTK][4], sk_y [NSTK][4], sk_z [NSTK][4];
-  logic signed [15:0] sk_sx [NSTK][4], sk_sy [NSTK][4];
   logic [2:0]         sp;
 
   // ------------------------------------------------------------ the plane
@@ -192,7 +198,7 @@ module m1_geo_clip (
   // ---------------------------------------------------------------- states
   typedef enum logic [3:0] {
     K_IDLE, K_POP, K_TEST, K_TESTW, K_ROT, K_SET,
-    K_CLIP, K_CLIPW, K_PROJ, K_PROJW, K_CHILD, K_EMIT
+    K_CLIP, K_CLIPW, K_CHILD, K_EPROJ, K_EPROJW, K_EMIT
   } kstate_t;
   kstate_t kst;
 
@@ -311,8 +317,9 @@ module m1_geo_clip (
   end
 
   assign in_ready  = (kst == K_IDLE);
-  assign pj_valid  = (kst == K_PROJ);
-  assign pj_x = tx[cp_dst]; assign pj_y = ty[cp_dst]; assign pj_z = tz[cp_dst];
+  // The projection unit is used only at emit now, one vertex at a time.
+  assign pj_valid  = (kst == K_EPROJ);
+  assign pj_x = qx[ti]; assign pj_y = qy[ti]; assign pj_z = qz[ti];
   assign out_valid = (kst == K_EMIT);
   assign out_sx0 = qsx[0]; assign out_sy0 = qsy[0];
   assign out_sx1 = qsx[1]; assign out_sy1 = qsy[1];
@@ -333,13 +340,12 @@ module m1_geo_clip (
       dbg_in <= '0; dbg_out <= '0; dbg_dropped <= '0;
       for (si = 0; si < 4; si = si + 1) begin
         qx[si] <= '0; qy[si] <= '0; qz[si] <= '0; qsx[si] <= '0; qsy[si] <= '0;
-        tx[si] <= '0; ty[si] <= '0; tz[si] <= '0; tsx[si] <= '0; tsy[si] <= '0;
+        tx[si] <= '0; ty[si] <= '0; tz[si] <= '0;
       end
       for (si = 0; si < NSTK; si = si + 1) begin
         sk_lvl[si] <= '0;
         for (sv = 0; sv < 4; sv = sv + 1) begin
           sk_x[si][sv] <= '0; sk_y[si][sv] <= '0; sk_z[si][sv] <= '0;
-          sk_sx[si][sv] <= '0; sk_sy[si][sv] <= '0;
         end
       end
     end else begin
@@ -349,10 +355,6 @@ module m1_geo_clip (
           qx[1] <= in_x1; qy[1] <= in_y1; qz[1] <= in_z1;
           qx[2] <= in_x2; qy[2] <= in_y2; qz[2] <= in_z2;
           qx[3] <= in_x3; qy[3] <= in_y3; qz[3] <= in_z3;
-          qsx[0] <= in_sx0; qsy[0] <= in_sy0;
-          qsx[1] <= in_sx1; qsy[1] <= in_sy1;
-          qsx[2] <= in_sx2; qsy[2] <= in_sy2;
-          qsx[3] <= in_sx3; qsy[3] <= in_sy3;
           a_col <= in_col; a_z <= in_z; a_moire <= in_moire;
           lvl <= 3'd0; sp <= '0; ti <= '0;
           if (dbg_in != 16'hffff) dbg_in <= dbg_in + 16'd1;
@@ -365,19 +367,17 @@ module m1_geo_clip (
           lvl <= sk_lvl[0];
           for (sv = 0; sv < 4; sv = sv + 1) begin
             qx[sv] <= sk_x[0][sv]; qy[sv] <= sk_y[0][sv]; qz[sv] <= sk_z[0][sv];
-            qsx[sv] <= sk_sx[0][sv]; qsy[sv] <= sk_sy[0][sv];
           end
           for (si = 0; si < NSTK-1; si = si + 1) begin
             sk_lvl[si] <= sk_lvl[si+1];
             for (sv = 0; sv < 4; sv = sv + 1) begin
               sk_x[si][sv] <= sk_x[si+1][sv]; sk_y[si][sv] <= sk_y[si+1][sv];
               sk_z[si][sv] <= sk_z[si+1][sv];
-              sk_sx[si][sv] <= sk_sx[si+1][sv]; sk_sy[si][sv] <= sk_sy[si+1][sv];
             end
           end
           sp  <= sp - 3'd1;
           ti  <= '0;
-          kst <= (sk_lvl[0] == 3'd4) ? K_EMIT : K_TEST;
+          kst <= (sk_lvl[0] == 3'd4) ? K_EPROJ : K_TEST;
         end
 
         K_TEST:  if (mul_gnt) kst <= K_TESTW;
@@ -395,7 +395,8 @@ module m1_geo_clip (
           if (is_out == 4'b0000) begin
             // Wholly inside: on to the next plane, nothing created.
             lvl <= lvl + 3'd1;
-            kst <= (lvl + 3'd1 == 3'd4) ? K_EMIT : K_TEST;
+            ti  <= '0;
+            kst <= (lvl + 3'd1 == 3'd4) ? K_EPROJ : K_TEST;
           end else if (is_out == 4'b1111) begin
             if (dbg_dropped != 16'hffff) dbg_dropped <= dbg_dropped + 16'd1;
             kst <= K_POP;
@@ -447,19 +448,24 @@ module m1_geo_clip (
               2'd1:    ty[cp_dst] <= add_res;
               default: tz[cp_dst] <= add_res;
             endcase
-            if (c_axis == 2'd2) kst <= K_PROJ;
-            else begin c_axis <= c_axis + 2'd1; cs <= 4'd8; kst <= K_CLIP; end
+            if (c_axis == 2'd2) begin
+              // No projection here any more: a created vertex carries only its
+              // camera coordinates and is projected when its quad is emitted.
+              if (cn == cn_last) kst <= K_CHILD;
+              else begin cn <= cn + 2'd1; kst <= K_SET; end
+            end else begin c_axis <= c_axis + 2'd1; cs <= 4'd8; kst <= K_CLIP; end
           end
         endcase
 
-        K_PROJ:  if (pj_ready) kst <= K_PROJW;
-        K_PROJW: if (pj_out_valid) begin
+        // Four vertices, one reciprocal each, at the point of emission.
+        K_EPROJ:  if (pj_ready) kst <= K_EPROJW;
+        K_EPROJW: if (pj_out_valid) begin
           // Sixteen bits: a clipped vertex is inside the viewport by
           // construction, which is why the quad store can keep 16.
-          tsx[cp_dst] <= pj_out_sx[15:0];
-          tsy[cp_dst] <= pj_out_sy[15:0];
-          if (cn == cn_last) kst <= K_CHILD;
-          else begin cn <= cn + 2'd1; kst <= K_SET; end
+          qsx[ti] <= pj_out_sx[15:0];
+          qsy[ti] <= pj_out_sy[15:0];
+          if (ti == 2'd3) kst <= K_EMIT;
+          else begin ti <= ti + 2'd1; kst <= K_EPROJ; end
         end
 
         // Push a child, naming each vertex as coming from the current quad or
@@ -471,7 +477,6 @@ module m1_geo_clip (
             for (sv = 0; sv < 4; sv = sv + 1) begin
               sk_x[si][sv] <= sk_x[si-1][sv]; sk_y[si][sv] <= sk_y[si-1][sv];
               sk_z[si][sv] <= sk_z[si-1][sv];
-              sk_sx[si][sv] <= sk_sx[si-1][sv]; sk_sy[si][sv] <= sk_sy[si-1][sv];
             end
           end
           sk_lvl[0] <= lvl + 3'd1;
@@ -484,8 +489,6 @@ module m1_geo_clip (
             sk_x[0][sv]  <= k[2] ? tx[k[1:0]]  : qx[k[1:0]];
             sk_y[0][sv]  <= k[2] ? ty[k[1:0]]  : qy[k[1:0]];
             sk_z[0][sv]  <= k[2] ? tz[k[1:0]]  : qz[k[1:0]];
-            sk_sx[0][sv] <= k[2] ? tsx[k[1:0]] : qsx[k[1:0]];
-            sk_sy[0][sv] <= k[2] ? tsy[k[1:0]] : qsy[k[1:0]];
           end
           sp <= sp + 3'd1;
           if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
