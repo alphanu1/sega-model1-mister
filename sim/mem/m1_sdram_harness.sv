@@ -37,6 +37,8 @@ module m1_sdram_harness (
   // p0 V60 (read/write), p1 tile char, p2 polygon/TGP, p3 sound 68000,
   // p4 MultiPCM. See docs/00-decisions.md D8.
   input  logic        p0_req, p1_req, p2_req, p3_req, p4_req, p5_req, p6_req,
+  input  logic        p6_we,
+  input  logic [15:0] p6_din,
   input  logic        p0_we,
   input  logic [24:1] p0_addr, p1_addr, p2_addr, p3_addr, p4_addr, p5_addr, p6_addr,
   input  logic [15:0] p0_din,
@@ -83,10 +85,13 @@ module m1_sdram_harness (
   logic [NP-1:0]       dbg_req, dbg_grant;
 
   assign p_req  = {p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
-  assign p_we   = {6'b000000, p0_we};
+  // p6 WRITES TOO. It carries tgp_ram, which display-list command 4 uploads, and
+  // it was the only write path in the design that no test ever exercised - the
+  // controller supports a write on any port and only p0's was ever driven here.
+  assign p_we   = {p6_we, 5'b00000, p0_we};
   assign p_addr = {p6_addr, p5_addr, p4_addr, p3_addr, p2_addr, p1_addr, p0_addr};
-  assign p_din  = {96'd0, p0_din};
-  assign p_be   = {12'd0, p0_be};
+  assign p_din  = {p6_din, 80'd0, p0_din};
+  assign p_be   = {2'b11, 10'd0, p0_be};
 
   assign {p6_ack, p5_ack, p4_ack, p3_ack, p2_ack, p1_ack, p0_ack} = p_ack;
   assign p0_dout = p_dout[0];

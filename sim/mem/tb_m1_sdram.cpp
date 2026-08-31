@@ -78,6 +78,7 @@ struct Harness {
     d->wr_req = 0; d->wr_addr = 0; d->wr_din = 0; d->wr_be = 3;
     d->p0_req = d->p1_req = d->p2_req = d->p3_req = d->p4_req = 0;
     d->p5_req = d->p6_req = 0;
+    d->p6_we = 0; d->p6_din = 0;
     d->p0_we = 0; d->p0_din = 0; d->p0_be = 3;
     d->p0_addr = d->p1_addr = d->p2_addr = d->p3_addr = d->p4_addr = 0;
     d->p5_addr = d->p6_addr = 0;
@@ -184,7 +185,12 @@ struct Harness {
     port[p].write = write; port[p].wdata = data; port[p].be = be;
     port[p].issued_at = cyc;
     setAddr(p, addr);
+    // WRITES ARE NOT p0-ONLY. The controller takes a write on any port, and
+    // driving we/din for p0 alone made every other port's write path untestable -
+    // p6 carries tgp_ram, filled by display-list command 4, and a broken write
+    // there gives every polygon a colour from whatever SDRAM powered up with.
     if (p == 0) { d->p0_we = write; d->p0_din = data; d->p0_be = be; }
+    if (p == 6) { d->p6_we = write; d->p6_din = data; }
     setReq(p, 1);
     port[p].req_held = true;
     if (write) {
@@ -447,6 +453,30 @@ int main(int argc, char** argv) {
     printf("  FAIL device model reported %u protocol violations, flags=%04x\n",
            h.d->violations, h.d->v_flags);
     h.fails++;
+  }
+
+  // ---- a WRITE ON A PORT OTHER THAN p0
+  //
+  // p6 carries tgp_ram, which display-list command 4 uploads. Only p0's write
+  // path had ever been driven, so this one was entirely unverified.
+  printf("test: writes on PORT 6, which nothing had ever exercised\n");
+  {
+    h.drain();
+    static const unsigned aa[] = {0xC20000u, 0xC20001u, 0xC2FFFFu, 0xC30000u};
+    static const unsigned vv[] = {0x1234u,   0xBEEFu,   0xC0DEu,   0xFACEu};
+    long before = h.fails;
+    for (int i = 0; i < 4; i++) {
+      h.issue(6, aa[i], true, (uint16_t)vv[i], 3);
+      int g = 0; while (h.port[6].busy && ++g < 20000) h.step();
+    }
+    h.drain();
+    for (int i = 0; i < 4; i++) {
+      h.issue(6, aa[i], false, 0, 3);
+      int g = 0; while (h.port[6].busy && ++g < 20000) h.step();
+    }
+    h.drain();
+    printf("  four words written and read back on p6, %ld new failures\n",
+           h.fails - before);
   }
 
   printf("m1_sdram: checks=%ld fails=%ld violations=%u reads=%u writes=%u\n",
