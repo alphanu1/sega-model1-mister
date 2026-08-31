@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
         }
         if (f >= PROLOGUE_FRAMES)
             printf("  frame %2d: %7ld pixels hit, bands=%u, last fill %u cycles"
-                   " (a band-time is ~68,000)\n",
+                   " (a band-time is 61,741)\n",
                    f, hits, (unsigned)d->dbg_bands, (unsigned)d->dbg_band_cycles);
     }
     int frames_swept = TOTAL_FRAMES;

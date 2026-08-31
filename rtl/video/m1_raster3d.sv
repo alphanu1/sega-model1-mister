@@ -376,6 +376,10 @@ module m1_raster3d #(
         .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
         .band_y0(bd_y0[b]),
         .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
+        // Cleared while it is the one being displayed, which is when its write
+        // port is free.
+        .bg_clear_en(bg_active && (wr_buf != 1'(b))),
+        .bg_clear_row(bg_row),
         .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
         .span_y(fl_span_y[15:0]),
         .span_x0(fl_span_x0[15:0]), .span_x1(fl_span_x1[15:0]),
@@ -430,10 +434,20 @@ module m1_raster3d #(
   // is mostly no 3D with stripes of it flashing through as the phase slips.
   // Measured on hardware before it was understood.
   logic [BW-1:0] beam_band_s1, beam_band_s2;
+  logic [$clog2(BAND_H)-1:0] beam_row_s1, beam_row_s2;
   always_ff @(posedge clk) begin
     beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));
     beam_band_s2 <= beam_band_s1;
+    beam_row_s1  <= scan_y[$clog2(BAND_H)-1:0];
+    beam_row_s2  <= beam_row_s1;
   end
+
+  // The row BEHIND the beam, on the buffer that is displaying. A row is only
+  // cleared once the beam has read it, so the clear can never erase a pixel that
+  // is still to be shown. The beam spends about 2,100 cycles on a row and a row
+  // is 496 words, so it stays comfortably behind.
+  wire                          bg_active = disp_valid && (beam_row_s2 != '0);
+  wire [$clog2(BAND_H)-1:0]     bg_row    = beam_row_s2 - 1'b1;
 
   always_ff @(posedge scan_clk) begin
     disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
@@ -475,8 +489,8 @@ module m1_raster3d #(
   assign qs_replay_start = (st == T_REPLAY);
   assign qs_out_ready    = (st == T_FILL) && fl_in_ready;
   assign fl_in_valid     = (st == T_FILL) && qs_out_valid;
-  assign bd_clear_req[0] = (st == T_BAND_CLR) && (wr_buf == 1'b0);
-  assign bd_clear_req[1] = (st == T_BAND_CLR) && (wr_buf == 1'b1);
+  assign bd_clear_req[0] = (st == T_BAND_CLR) && (cur_band == '0) && (wr_buf == 1'b0);
+  assign bd_clear_req[1] = (st == T_BAND_CLR) && (cur_band == '0) && (wr_buf == 1'b1);
   assign fill_band       = cur_band;
 
   // Issued only while the geometry is idle, which the service also enforces.
@@ -664,10 +678,16 @@ module m1_raster3d #(
         end
 
         // ---- one band at a time into the write buffer
+        //
+        // ONLY BAND 0 CLEARS. Every other buffer was cleared behind the beam
+        // while it was displaying, so the fill path does not pay for it: 15,872
+        // cycles of a band-time of 68,000, against a fill measured at 60,777 to
+        // 77,618. Band 0 still clears because at the very first frame neither
+        // buffer has displayed anything yet.
         T_BAND_CLR: begin
           band_timer <= '0;
           bd_y0[wr_buf] <= 16'(cur_band) * 16'(BAND_H);
-          st <= T_BAND_CLRW;
+          st <= (cur_band == '0) ? T_BAND_CLRW : T_REPLAY;
         end
         T_BAND_CLRW: if (!bd_clear_busy[wr_buf]) st <= T_REPLAY;
 

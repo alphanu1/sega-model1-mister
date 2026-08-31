@@ -59,6 +59,7 @@ struct Dut {
     }
     void reset() {
         d->rst_n = 0; d->span_valid = 0; d->clear_req = 0; d->band_y0 = 0;
+        d->bg_clear_en = 0; d->bg_clear_row = 0;
         d->rd_x = 0; d->rd_row = 0;
         for (int i = 0; i < 4; i++) tick();
         d->rst_n = 1;

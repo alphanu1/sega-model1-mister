@@ -68,6 +68,24 @@ module m1_raster_band #(
   input  logic                   clear_req,
   output logic                   clear_busy,
 
+  // BACKGROUND CLEAR, BEHIND THE BEAM.
+  //
+  // Clearing this buffer in the fill path costs 15,872 cycles - 23% of a
+  // band-time of about 68,000, against a fill measured at 60,777 to 77,618. That
+  // is the difference between holding a band-time and missing it, and a missed
+  // band waits a whole frame for the beam to come round.
+  //
+  // While a buffer is DISPLAYING, its write port is idle: the fill is writing the
+  // other one. So the caller clears it a row at a time behind the beam, and by
+  // the time the beam leaves the band the buffer is clean and ready to be filled
+  // with no clear at all.
+  //
+  // Behind the beam and not ahead of it: a row is only cleared once the beam has
+  // read it. The caller owns that ordering; this module just clears the row it
+  // is given.
+  input  logic                   bg_clear_en,
+  input  logic [$clog2(HEIGHT)-1:0] bg_clear_row,
+
   // Span input, in SCREEN coordinates, x0..x1 INCLUSIVE - the fill unit's
   // contract (docs/m3-rasterizer-spec.md: "span emit [x1>>16, x2>>16]
   // inclusive"). A span outside the band, or entirely off-screen, is accepted
@@ -156,11 +174,20 @@ module m1_raster_band #(
   assign span_ready = (st == S_IDLE) && !clear_req;
   assign clear_busy = (st == S_CLEAR);
 
+  // The background clear walks one row; it uses the write port, which is free
+  // whenever this buffer is the one being displayed.
+  logic [XW-1:0] bg_x;
+  logic          bg_run;
+
   always_comb begin
     wr_en   = 1'b0;
     wr_addr = '0;
     wr_data = '0;
-    if (st == S_CLEAR) begin
+    if (bg_run) begin
+      wr_en   = 1'b1;
+      wr_addr = AW'({{(AW-YW){1'b0}}, bg_clear_row} * AW'(WIDTH) + AW'(bg_x));
+      wr_data = 17'd0;
+    end else if (st == S_CLEAR) begin
       wr_en   = 1'b1;
       wr_addr = clr_addr;
       wr_data = 17'd0;                      // hit = 0: show the 2D
@@ -176,11 +203,23 @@ module m1_raster_band #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st          <= S_IDLE;
+      bg_x        <= '0; bg_run <= 1'b0;
       cur_x       <= '0; cur_x1 <= '0; cur_y <= '0;
       cur_col     <= '0; cur_moire <= 1'b0; cur_row <= '0;
       clr_addr    <= '0;
       dbg_spans   <= '0; dbg_dropped <= '0; dbg_pixels <= '0;
     end else begin
+      // The background clear runs whenever it is enabled and the fill is not
+      // using the port. It cannot collide: the caller only enables it on the
+      // buffer that is displaying, and the fill only writes the other one.
+      if (bg_clear_en && (st == S_IDLE)) begin
+        bg_run <= 1'b1;
+        bg_x   <= (bg_x == XW'(WIDTH-1)) ? '0 : bg_x + XW'(1);
+      end else begin
+        bg_run <= 1'b0;
+        bg_x   <= '0;
+      end
+
       case (st)
         S_IDLE: begin
           if (clear_req) begin
