@@ -52,7 +52,19 @@ static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static float    u2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 
 // ---------------------------------------------------------------- the world
-static std::vector<uint32_t> prom(1 << 16, 0);
+// THE POLYGON ROM, BIG ENOUGH FOR REAL MODELS.
+//
+// It was 65,536 words with every access masked to 16 bits, which is fine for
+// the synthetic models this bench builds and useless for the real ones: Virtua
+// Racing's objects sit at 0x1031c7, 0x12a822 and upwards. Every quad this
+// bench has ever checked was a model it wrote itself, so a record shape that
+// only occurs in the real data - a link pattern, a type-2 record, a flag
+// combination - has never been compared against push_object at all. Ben's board
+// draws most models correctly and some, mainly the road, wrong, which is the
+// exact shape of that gap.
+static const uint32_t PROM_WORDS = 4u << 20;      // 16 MB of 32-bit model words
+static std::vector<uint32_t> prom(PROM_WORDS, 0);
+static inline uint32_t PA(uint32_t a) { return a & (PROM_WORDS - 1); }
 static uint16_t tgpram[1 << 20];
 static uint16_t palette[8192];
 static uint16_t xlat[32768];
@@ -130,7 +142,7 @@ static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t siz
     std::vector<Quad> out;
     if (tex_adr == 0xffffffff || size >= 0x1000000) return out;
     if (!size) size = 0xffffffff;
-    auto rdf = [&](uint32_t a) { return u2f(prom[a & 0xffff]); };
+    auto rdf = [&](uint32_t a) { return u2f(prom[PA(a)]); };
 
     Pt o0{rdf(poly_adr+0), rdf(poly_adr+1), rdf(poly_adr+2), 0, 0};
     Pt o1{rdf(poly_adr+3), rdf(poly_adr+4), rdf(poly_adr+5), 0, 0};
@@ -139,7 +151,7 @@ static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t siz
     poly_adr += 6;
 
     for (uint32_t i = 0; i < size; i++) {
-        uint32_t flags = prom[poly_adr & 0xffff];
+        uint32_t flags = prom[PA(poly_adr)];
         int type = flags & 3;
         if (!type) break;
         if (flags & 0x1000) tex_adr++;
@@ -279,7 +291,7 @@ struct Dut {
                 if (n == 1) for (int i = 0; i < 6; i++) if (o[i]) wonly[i]++;
             }
         }
-        d->rom_valid = rom_ans; d->rom_data = rom_ans ? prom[addr & 0xffff] : 0;
+        d->rom_valid = rom_ans; d->rom_data = rom_ans ? prom[PA(addr)] : 0;
         d->tex_valid = tex_ans; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->eval();
@@ -347,7 +359,7 @@ int main(int argc, char** argv) {
     long total_quads = 0, col_ok = 0, col_bad = 0, px_off = 0;
 
     auto build_model = [&](uint32_t base, int nrec, std::mt19937& r) {
-        auto put = [&](uint32_t a, float v) { prom[a & 0xffff] = f2u(v); };
+        auto put = [&](uint32_t a, float v) { prom[PA(a)] = f2u(v); };
         auto rndc = [&]() { return ((float)(r() % 8001) - 4000.0f) / 100.0f; };
         put(base+0, rndc()); put(base+1, rndc()); put(base+2, 40.0f + (float)(r()%100));
         put(base+3, rndc()); put(base+4, rndc()); put(base+5, 40.0f + (float)(r()%100));
@@ -361,13 +373,13 @@ int main(int argc, char** argv) {
             if (r() & 3) fl |= 0x4000;                   // skip the cull, sometimes
             if (!(r() & 7)) fl |= 0x1000;                // advance the texture
             fl |= (uint32_t)((r() % 5) << 17);           // lightmode
-            prom[a & 0xffff] = fl;
+            prom[PA(a)] = fl;
             put(a+1, rndc()); put(a+2, rndc()); put(a+3, rndc());
             put(a+4, rndc()); put(a+5, rndc()); put(a+6, 40.0f + (float)(r()%100));
             put(a+7, rndc()); put(a+8, rndc()); put(a+9, 40.0f + (float)(r()%100));
             a += 10;
         }
-        prom[a & 0xffff] = 0;                            // terminator: type 0
+        prom[PA(a)] = 0;                            // terminator: type 0
     };
 
     printf("test: objects of many shapes, quad by quad against push_object\n");
@@ -533,6 +545,88 @@ int main(int argc, char** argv) {
         // Not asserted as a pass/fail: the walker drives the stages one at a
         // time, so this is the UNPIPELINED figure and the number to improve
         // against. Recorded so the improvement is measurable rather than assumed.
+    }
+
+    // ------------------------------------------------------------------
+    // REAL MODELS OUT OF THE POLYGON ROM.
+    //
+    // Everything above walks models this bench built. Ben's board draws most
+    // objects right and some - mainly the road - wrong, which no synthetic
+    // corpus can reproduce: a link pattern, a type-2 record or a flag
+    // combination that only occurs in Sega's data has never been compared
+    // against push_object here.
+    //
+    // build/real_objects.txt is the distinct (tex, poly, size) triples our own
+    // V60 put in its display list, and build/rom/vr_stream.bin is the packed
+    // ROM image with the models at byte 0x840000. Both are build artefacts and
+    // neither is in the repository - hard rule 2.
+    printf("test: REAL models from the polygon ROM, against push_object\n");
+    {
+        FILE* rf = fopen("build/rom/vr_stream.bin", "rb");
+        FILE* of = fopen("build/real_objects.txt", "r");
+        if (!rf || !of) {
+            printf("  skipped: need build/rom/vr_stream.bin (build_rom_image.py --bin)\n");
+            printf("           and build/real_objects.txt (see tools/dlist_objects.py)\n");
+        } else {
+            fseek(rf, 0x840000, SEEK_SET);
+            size_t got = fread(prom.data(), 4, PROM_WORDS, rf);
+            printf("  polygon ROM: %zu model words from byte 0x840000\n", got);
+
+            unsigned cmd, tex, poly, size;
+            int nobj = 0, bad_obj = 0;
+            long rq = 0, rpx = 0, rcol_ok = 0, rcol_bad = 0;
+            float oz_m = 0.0f, oz_d = 0.0f;
+            while (fscanf(of, "%x %x %x %x", &cmd, &tex, &poly, &size) == 4) {
+                nobj++;
+                // old_z carries ACROSS objects, as push_object requires, so both
+                // sides keep their own running value exactly as the walk does.
+                std::vector<Quad> exp = model(tex, poly, size, oz_m);
+                checks++;
+                if (!t.run(tex, poly, size, oz_d)) {
+                    fails++; bad_obj++;
+                    if (printed++ < 20)
+                        printf("  FAIL object %d (poly %06x): never finished\n", nobj, poly);
+                    continue;
+                }
+                checks++;
+                if (t.got.size() != exp.size()) {
+                    fails++; bad_obj++;
+                    if (printed++ < 20)
+                        printf("  FAIL object %d (poly %06x): %zu quads, expected %zu\n",
+                               nobj, poly, t.got.size(), exp.size());
+                    continue;
+                }
+                for (size_t k = 0; k < exp.size(); k++) {
+                    const Quad& e = exp[k]; const Quad& g = t.got[k];
+                    rq++;
+                    checks++;
+                    for (int v = 0; v < 4; v++) {
+                        if (g.x[v] != e.x[v] || g.y[v] != e.y[v]) rpx++;
+                        if (labs((long)g.x[v] - e.x[v]) > 1 ||
+                            labs((long)g.y[v] - e.y[v]) > 1) {
+                            fails++;
+                            if (printed++ < 20)
+                                printf("  FAIL object %d (poly %06x) quad %zu vertex %d:"
+                                       " (%d,%d) expected (%d,%d)\n",
+                                       nobj, poly, k, v, g.x[v], g.y[v], e.x[v], e.y[v]);
+                            break;
+                        }
+                    }
+                    checks++;
+                    if (g.z != e.z) {
+                        fails++;
+                        if (printed++ < 20)
+                            printf("  FAIL object %d (poly %06x) quad %zu: z %08x expected %08x\n",
+                                   nobj, poly, k, g.z, e.z);
+                    }
+                    if (g.col == e.col) rcol_ok++; else rcol_bad++;
+                }
+            }
+            fclose(rf); fclose(of);
+            printf("  %d real objects, %d that did not match at all\n", nobj, bad_obj);
+            printf("  %ld quads, %ld vertex coordinates differing, colour exact on %ld of %ld\n",
+                   rq, rpx, rcol_ok, rcol_ok + rcol_bad);
+        }
     }
 
     printf("test: push_object's own guards reject bad objects\n");

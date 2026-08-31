@@ -195,7 +195,7 @@ module m1_mainram (
   //
   // Every other memory here already slices the address the natural way; this
   // was the only one that did not.
-  m1_tdp_ram #(.AW(15)) u_cxlat (
+  m1_tdp_ram #(.AW(15), .WORDS(24576)) u_cxlat (
     .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
     .a_we(cxlat_we), .a_q(cxlat_q),
     .b_clk(r3d_clk), .b_addr(r3d_xlat_addr), .b_q(r3d_xlat_data)

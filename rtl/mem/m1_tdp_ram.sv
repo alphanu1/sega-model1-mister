@@ -60,7 +60,13 @@
 `timescale 1ns/1ps
 
 module m1_tdp_ram #(
-  parameter int unsigned AW = 15          // 2**AW words of 16 bits
+  parameter int unsigned AW = 15,         // address width
+  // WORDS IS NOT ALWAYS 2**AW, and on a device at 100% of its M10K that is the
+  // difference between fitting and not. The colour translation table is
+  // 24,576 words - MAME maps exactly 0x910000-0x91bfff - and a 15-bit address
+  // rounded up to 32,768 wastes 8,192 words of block RAM, about 13 blocks, on
+  // addresses the hardware never presents.
+  parameter int unsigned WORDS = 1 << AW
 ) (
   // Port A: the CPU's, read and write, byte-enabled.
   input  logic          a_clk,
@@ -80,8 +86,8 @@ module m1_tdp_ram #(
   // NOT `synthesis translate_off`: Verilator honours that pragma too and would
   // skip the model entirely, which is the opposite of the intent and has cost a
   // session on this project before.
-  (* ramstyle = "M10K" *) logic [7:0] mem_lo [1 << AW];
-  (* ramstyle = "M10K" *) logic [7:0] mem_hi [1 << AW];
+  (* ramstyle = "M10K" *) logic [7:0] mem_lo [WORDS];
+  (* ramstyle = "M10K" *) logic [7:0] mem_hi [WORDS];
   always_ff @(posedge a_clk) begin
     if (a_we && a_be[0]) mem_lo[a_addr] <= a_din[7:0];
     if (a_we && a_be[1]) mem_hi[a_addr] <= a_din[15:8];
@@ -95,8 +101,10 @@ module m1_tdp_ram #(
   // though this arm is Verilator-only, so the shape stays copyable.
   integer zc, zi;
   initial
-    for (zc = 0; zc < (1 << AW) / 4096; zc = zc + 1)
-      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
+    for (zc = 0; zc < (WORDS + 4095) / 4096; zc = zc + 1)
+      // Bounded by WORDS as well as by the chunk: a depth that is not a
+      // multiple of 4096 would otherwise run off the end of the array.
+      for (zi = zc*4096; zi < (zc+1)*4096 && zi < int'(WORDS); zi = zi + 1) begin
         mem_lo[zi] = 8'd0; mem_hi[zi] = 8'd0;
       end
 `else
@@ -105,10 +113,10 @@ module m1_tdp_ram #(
     .ram_block_type                     ("M10K"),
     .width_a                            (16),
     .widthad_a                          (AW),
-    .numwords_a                         (1 << AW),
+    .numwords_a                         (WORDS),
     .width_b                            (16),
     .widthad_b                          (AW),
-    .numwords_b                         (1 << AW),
+    .numwords_b                         (WORDS),
     .width_byteena_a                    (2),
     .width_byteena_b                    (1),
     .byte_size                          (8),

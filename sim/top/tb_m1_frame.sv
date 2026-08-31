@@ -1387,6 +1387,37 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------------- HOW LONG ONE DATA ACCESS ACTUALLY TAKES
+//
+// 2026-08-20 decomposed it exactly: every page cost the same 36 fast cycles -
+// 9 CPU cycles - whether it was BRAM or SDRAM, because it is fixed handshake
+// overhead and not memory latency. That figure predates the V60 moving to its
+// own clock domain, so there is now a synchroniser round trip on top of it and
+// the old number cannot be assumed. Measure it here, on the current design,
+// with every master live - m_req rising to m_ack, in clk_sys cycles, split by
+// whether the access went to SDRAM or stayed on chip.
+integer blat_hist [0:127];
+integer blat_i, blat_run = 0, blat_n = 0;
+longint blat_sum = 0;
+reg     blat_busy = 0;
+initial for (blat_i = 0; blat_i < 128; blat_i = blat_i + 1) blat_hist[blat_i] = 0;
+always @(posedge clk) begin
+    if (rst_n_sys) begin
+        if (core.main.m_req && !blat_busy) begin
+            blat_busy = 1; blat_run = 1;
+        end else if (blat_busy) begin
+            blat_run = blat_run + 1;
+            if (core.main.m_ack) begin
+                blat_hist[(blat_run > 127) ? 127 : blat_run] =
+                    blat_hist[(blat_run > 127) ? 127 : blat_run] + 1;
+                blat_sum = blat_sum + blat_run;
+                blat_n   = blat_n + 1;
+                blat_busy = 0;
+            end
+        end
+    end
+end
+
 // ---------------------------------------------- WHERE THE CPU'S CYCLES GO
 //
 // tb_m1_boot carries these buckets already, and it instantiates m1_main - no 3D
@@ -1595,6 +1626,15 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    if (blat_n > 0) begin
+        $display("FRAME: %0d data accesses, mean %0d.%02d clk_sys cycles req->ack",
+                 blat_n, blat_sum/blat_n, ((blat_sum*100)/blat_n) % 100);
+        $write("FRAME: latency histogram:");
+        for (blat_i = 1; blat_i < 128; blat_i = blat_i + 1)
+            if (blat_hist[blat_i] * 200 > blat_n)
+                $write(" %0d:%0d%%", blat_i, (100*blat_hist[blat_i])/blat_n);
+        $write("\n");
+    end
     $write("FRAME: bands presented per video frame, over %0d frames:", bpf_frames);
     for (bpf_i = 0; bpf_i < 32; bpf_i = bpf_i + 1)
         if (bpf_hist[bpf_i] * 100 > bpf_frames)
