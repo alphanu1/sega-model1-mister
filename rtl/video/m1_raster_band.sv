@@ -145,6 +145,34 @@ module m1_raster_band #(
   // Quartus 17.0 rejects a bit-select of a part-select for the same reason.
   wire [XW-1:0] cur_xu = XW'(cur_x);
 
+  // FOUR PIXELS A CYCLE, which is what the banking is really for.
+  //
+  // The span walk was 66.5% of the fill unit's cycles - measured, and by a wide
+  // margin the largest single cost in the whole 3D layer, larger than the
+  // divides at 21%. One write port at one pixel a cycle is a hard floor for a
+  // flat array, and a span cannot go faster than the pixels it covers.
+  //
+  // Four banks split on the low two bits of x means four CONSECUTIVE pixels
+  // share one bank offset, so a span writes them in a single cycle with a
+  // four-bit enable. Only the first and last groups of a span are partial.
+  //
+  // The moire stipple survives it: `!((x ^ y) & 1)` is per pixel, so it just
+  // removes two of the four enables rather than forcing the walk back to one
+  // at a time. It is still tested against SCREEN x and y - a stipple keyed to
+  // the span would walk with the polygon instead of standing still.
+  wire [XW-1:0] grp_x0 = {cur_xu[XW-1:BW_], {BW_{1'b0}}};
+  logic [NBANK-1:0] grp_en;
+  always_comb begin
+    for (int b = 0; b < NBANK; b++) begin
+      automatic logic signed [15:0] px = 16'(grp_x0) + 16'(b);
+      grp_en[b] = (px >= cur_x) && (px <= cur_x1)
+               && (!cur_moire || !((px[0] ^ cur_y[0])));
+    end
+  end
+
+  // popcount, for the pixel census
+  wire [2:0] grp_n = 3'(grp_en[0]) + 3'(grp_en[1]) + 3'(grp_en[2]) + 3'(grp_en[3]);
+
   logic [BAW-1:0]    wr_addr;      // offset WITHIN a bank
   logic [NBANK-1:0]  wr_en;        // one bit per bank; the clear raises all four
   logic [16:0]       wr_data;
@@ -222,10 +250,7 @@ module m1_raster_band #(
       wr_addr = clr_addr;
       wr_data = 17'd0;                      // hit = 0: show the 2D
     end else if (st == S_PAINT) begin
-      // The stipple is tested against SCREEN x and y, per fill_quad's
-      // draw_hline_moired: `if(!((x1 ^ y) & 1))`.
-      if (!cur_moire || !((cur_x[0] ^ cur_y[0])))
-        wr_en[cur_xu[BW_-1:0]] = 1'b1;
+      wr_en   = grp_en;
       wr_addr = BAW'(cur_row) * BAW'(BCOLS) + BAW'(cur_xu >> BW_);
       wr_data = {1'b1, cur_col};
     end
@@ -263,9 +288,10 @@ module m1_raster_band #(
         end
 
         S_PAINT: begin
-          if (|wr_en) dbg_pixels <= dbg_pixels + 32'd1;
-          if (cur_x >= cur_x1) st <= S_IDLE;
-          else                 cur_x <= cur_x + 16'sd1;
+          dbg_pixels <= dbg_pixels + 32'(grp_n);
+          // Advance to the next group boundary, not the next pixel.
+          if (16'(grp_x0) + 16'(NBANK - 1) >= cur_x1) st <= S_IDLE;
+          else cur_x <= 16'(grp_x0) + 16'(NBANK);
         end
 
         S_CLEAR: begin

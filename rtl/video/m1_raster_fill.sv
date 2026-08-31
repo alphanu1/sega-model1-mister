@@ -110,7 +110,7 @@ module m1_raster_fill (
   localparam logic [1:0] EM_RAW  = 2'd1;   // xa, xb in chain order (fill_line tail)
   localparam logic [1:0] EM_FLAT = 2'd2;   // the flat-quad min/max pair
 
-  logic [4:0] state;
+  logic [4:0] state /* verilator public_flat_rd */;
 
   // Latched quad. sx/sy are the raw screen coordinates: the wireframe test
   // compares them whole, so the pre-shift value has to survive.

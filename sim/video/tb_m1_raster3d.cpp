@@ -154,6 +154,18 @@ int main(int argc, char** argv) {
         "BAND_CLR", "BAND_CLRW", "REPLAY", "FILL", "FILLW", "BAND_WAIT"
     };
     static long thist[16];
+    // WHERE THE FILL'S CYCLES GO. Ben's reading of the board is that the 3D is
+    // not keeping up - a band whose fill overruns its slot is skipped, shows
+    // the 2D through, and the ones that make it are the bars. So the question
+    // is which part of the fill is expensive, and the divider is the obvious
+    // suspect at up to eight 16-cycle divides a quad-band.
+    static const char* FNAME[] = {
+        "IDLE", "CLASSIFY", "FLAT", "START1", "START2", "LOADX",
+        "DIVA", "DIVAW", "DIVB", "DIVBW", "DECIDE",
+        "FS_ENTER", "FS_MULA", "FS_MULB", "FS_SWAP", "FS_WALK", "FS_END",
+        "FINAL", "DONE"
+    };
+    static long fhist[32];
 
     const int H_TOTAL = 656, V_TOTAL = 424;
     // Derived, never written down: a band-time quoted as a constant has gone
@@ -226,6 +238,7 @@ int main(int argc, char** argv) {
                 while (acc >= PIXCLK_HZ) {
                     acc -= PIXCLK_HZ; tick(first); first = false;
                     thist[d->rootp->m1_raster3d__DOT__st & 15]++;
+                    fhist[d->rootp->m1_raster3d__DOT__u_fill__DOT__state & 31]++;
                 }
                 if (x < SW && y < SH && d->scan_hit) {
                     fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
@@ -257,6 +270,15 @@ int main(int argc, char** argv) {
             if (thist[i] > tot / 200)
                 printf("  %-10s %9ld  %5.1f%%\n", TNAME[i], thist[i],
                        100.0 * thist[i] / tot);
+    }
+    {
+        long tot = 0;
+        for (int i = 1; i < 19; i++) tot += fhist[i];
+        printf("the fill unit, by state (%ld busy cycles):\n", tot);
+        for (int i = 1; i < 19; i++)
+            if (fhist[i] * 200 > tot)
+                printf("  %-9s %9ld  %5.1f%%\n", FNAME[i], fhist[i],
+                       100.0 * fhist[i] / tot);
     }
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
