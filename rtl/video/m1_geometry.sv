@@ -74,8 +74,10 @@ module m1_geometry (
   input  logic [15:0] xlat_data,
 
   // ---- quads out
-  // The four frustum plane ratios, from the viewport. See m1_geo_clip.
-  input  logic [31:0] a_left, a_right, a_bottom, a_top,
+  // The viewport rectangle, which command 3 carries and which until the clipper
+  // arrived nothing consumed. The four plane ratios are derived from it here.
+  input  logic [31:0] vp_x1, vp_x2, vp_y1, vp_y2,
+  input  logic        vp_dirty,
 
   output logic        q_valid,
   output logic signed [31:0] q_x0, q_y0, q_x1, q_y1,
@@ -104,9 +106,10 @@ module m1_geometry (
   output logic [31:0] ext_nrm_out_x, ext_nrm_out_y, ext_nrm_out_z
 );
 
-  // Six clients: the clipper is one. Its arithmetic is bursty - nothing for a
-  // quad that crosses no plane, about twenty operations per vertex it creates.
-  localparam int unsigned NC = 6;
+  // Seven clients. The clipper is one; the plane derivation is another, and it
+  // runs at most once a frame - it gets its own rather than sharing, because a
+  // mux for something a thousand times rarer is the wrong trade.
+  localparam int unsigned NC = 7;
 
   // ---------------------------------------------------------------- the pool
   logic [NC-1:0] mul_req, mul_gnt, mul_rsp;
@@ -282,6 +285,25 @@ module m1_geometry (
     else if (done_pend && w_q_ready) done_pend <= 1'b0;
   end
   assign done = done_pend && w_q_ready;
+
+  logic [31:0] a_left /* verilator public_flat_rd */, a_right /* verilator public_flat_rd */;
+  logic [31:0] a_bottom /* verilator public_flat_rd */, a_top /* verilator public_flat_rd */;
+  logic        planes_valid /* verilator public_flat_rd */;
+
+  m1_geo_planes u_planes (
+    .clk(clk), .rst_n(rst_n),
+    .xc(xc), .yc(yc), .zoomx(zoomx), .zoomy(zoomy),
+    .viewx(viewx), .viewy(viewy),
+    .x1(vp_x1), .x2(vp_x2), .y1(vp_y1), .y2(vp_y2),
+    .recompute(vp_dirty),
+    .add_req(add_req[6]), .add_a(add_a[6]), .add_b(add_b[6]),
+    .add_sub(add_sub[6]),
+    .add_gnt(add_gnt[6]), .add_rsp(add_rsp[6]), .add_res(add_res),
+    .div_req(div_req[6]), .div_a(div_a[6]), .div_b(div_b[6]),
+    .div_gnt(div_gnt[6]), .div_rsp(div_rsp[6]), .div_res(div_res),
+    .a_left(a_left), .a_right(a_right),
+    .a_bottom(a_bottom), .a_top(a_top), .valid(planes_valid)
+  );
 
   m1_geo_clip u_clip (
     .clk(clk), .rst_n(rst_n),

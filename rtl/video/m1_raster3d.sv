@@ -218,9 +218,19 @@ module m1_raster3d #(
   // floats, so it is converted here - once per viewport command, not per pixel.
   logic [31:0] vp_flt;
   logic        vp_lat;
+  // The viewport RECTANGLE, which command 3 carries. Until the frustum clipper
+  // arrived nothing consumed it - the fill clips to the band, so the screen
+  // extents never reached anything.
+  logic [31:0] vx1, vx2, vy1, vy2;
+  logic        vp_dirty;
 
-  // xc is the word as-is; yc is 383 - (word - 39), which is 422 - word.
-  wire signed [15:0] vp_int = (lw_ev_idx == 16'd2)
+  // Indices 1..6 are xc, yc, x1, y2, x2, y1 - model1_v.cpp:1502-1507. The x
+  // words are taken as they are; every y word is 383 - (word - 39), which is
+  // 422 - word, because the display list gives a top-down coordinate and the
+  // projection wants a bottom-up one.
+  wire vp_is_y = (lw_ev_idx == 16'd2) || (lw_ev_idx == 16'd4)
+              || (lw_ev_idx == 16'd6);
+  wire signed [15:0] vp_int = vp_is_y
                             ? (16'sd422 - $signed(lw_ev_data[15:0]))
                             : $signed(lw_ev_data[15:0]);
   fp_from_int u_vp (.i(vp_int), .f(vp_flt));
@@ -290,6 +300,7 @@ module m1_raster3d #(
     .clk(clk), .rst_n(rst_n),
     .mat_we(mat_we), .mat_idx(mat_idx), .mat_data(mat_data),
     .xc(vxc), .yc(vyc), .zoomx(vzoomx), .zoomy(vzoomy),
+    .vp_x1(vx1), .vp_x2(vx2), .vp_y1(vy1), .vp_y2(vy2), .vp_dirty(vp_dirty),
     .viewx(vviewx), .viewy(vviewy),
     .light_x(vlx), .light_y(vly), .light_z(vlz),
     .spec_enable(vspec), .frame_odd(frame_odd),
@@ -768,6 +779,7 @@ module m1_raster3d #(
       disp_band <= '0; disp_valid <= 1'b0;
       disp_tog <= 1'b0; disp_upd <= 1'b0;
       vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
+      vx1 <= '0; vx2 <= '0; vy1 <= '0; vy2 <= '0; vp_dirty <= 1'b0;
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
       vspec <= 1'b0;
       rlx <= '0; rly <= '0; rlz <= '0; light_pending <= 1'b0;
@@ -821,10 +833,24 @@ module m1_raster3d #(
         light_pending <= 1'b0;
       end
 
-      vp_lat <= 1'b0;
+      vp_lat    <= 1'b0;
+      // THE FRUSTUM FOLLOWS THREE COMMANDS, NOT ONE. MAME recomputes it in
+      // set_viewport, set_zoom AND set_view_translation - the ratios are
+      // (edge - centre - view) / zoom, so every term has its own command.
+      // Recomputing only on the viewport left the planes derived from a stale
+      // zoom: a_left came out exactly right and the other three did not, which
+      // is the signature of a shared divisor that changed after the fact.
+      vp_dirty  <= 1'b0;
+      if (lw_ev_valid && !lw_ev_body &&
+          (lw_ev_kind == 8'h03 || lw_ev_kind == 8'h09 || lw_ev_kind == 8'h0c))
+        vp_dirty <= 1'b1;
       if (lw_ev_valid && !lw_ev_body && lw_ev_kind == 8'h03) begin
         if (lw_ev_idx == 16'd1) vxc <= vp_flt;
         if (lw_ev_idx == 16'd2) vyc <= vp_flt;
+        if (lw_ev_idx == 16'd3) vx1 <= vp_flt;
+        if (lw_ev_idx == 16'd4) vy2 <= vp_flt;
+        if (lw_ev_idx == 16'd5) vx2 <= vp_flt;
+        if (lw_ev_idx == 16'd6) vy1 <= vp_flt;
       end
 
       // Header parameters only. Commands 9, 0x0a, 0x0b and 0x0c have no body, so
@@ -849,8 +875,12 @@ module m1_raster3d #(
             // unit is clipped to the BAND rather than to the viewport, so the
             // screen extents do not reach it. They are still numbered so a later
             // consumer can take them without renumbering anything.
-            if (lw_ev_idx == 16'd1) vp_lat <= 1'b1;        // xc next cycle
-            else if (lw_ev_idx == 16'd2) vp_lat <= 1'b1;   // yc next cycle
+            // ALL SIX ARE TAKEN NOW. The four edge words used to be read and
+            // discarded, because the fill clips to the BAND and nothing needed
+            // the screen extents. The frustum clipper does: MAME reduces the
+            // rectangle to four ratios in set_viewport (:629) and tests every
+            // vertex against them.
+            if (lw_ev_idx >= 16'd1 && lw_ev_idx <= 16'd6) vp_lat <= 1'b1;
           end
           8'h09: begin
             // TIMES FOUR. MAME: `set_zoom(readf(+2) * 4, readf(+4) * 4)`. Taking

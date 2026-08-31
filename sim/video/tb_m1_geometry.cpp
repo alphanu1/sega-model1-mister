@@ -433,12 +433,15 @@ struct Dut {
         d->viewx = f2u(VIEWX); d->viewy = f2u(VIEWY);
         d->light_x = f2u(LX); d->light_y = f2u(LY); d->light_z = f2u(LZ);
         d->spec_enable = SPEC_EN; d->frame_odd = FRAME_ODD;
-        // The same four plane ratios the model derives, from the same
-        // viewport, so the two clippers are given identical planes.
+        // The viewport RECTANGLE now, not the ratios: m1_geo_planes derives
+        // those the way set_viewport does, so the DUT does the arithmetic the
+        // model does rather than being handed the answer.
         set_planes();
-        d->a_left = f2u(A_LEFT);     d->a_right = f2u(A_RIGHT);
-        d->a_bottom = f2u(A_BOTTOM); d->a_top = f2u(A_TOP);
-        tick();
+        d->vp_x1 = f2u(VX1); d->vp_x2 = f2u(VX2);
+        d->vp_y1 = f2u(VY1); d->vp_y2 = f2u(VY2);
+        d->vp_dirty = 1; tick(); d->vp_dirty = 0;
+        // The derivation is four divides; give it room before the first quad.
+        for (int i = 0; i < 400; i++) tick();
     }
     bool run(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float& old_z) {
         got.clear();

@@ -84,6 +84,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_rsqrt.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_norm.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_color.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_walk.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_planes.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_clip.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geometry.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listwalk.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_store.sv

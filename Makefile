@@ -66,7 +66,7 @@ SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
 #
 # WITHOUT fp_mul/fp_add/fp_div: SRCS_mb86233_core already carries them, and
 # Verilator rejects the duplicate module rather than ignoring it.
-SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv \
+SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv \
   rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv \
   rtl/video/m1_geo_det.sv rtl/video/m1_geo_norm.sv \
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_color.sv \
@@ -98,7 +98,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_
   rtl/video/fp_to_int.sv rtl/video/fp_from_int.sv rtl/video/m1_fp_pool.sv \
   rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv rtl/video/m1_geo_det.sv \
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_norm.sv rtl/video/m1_geo_color.sv \
-  rtl/video/m1_geo_walk.sv rtl/video/m1_geometry.sv rtl/video/m1_lightbank.sv \
+  rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv rtl/video/m1_geometry.sv rtl/video/m1_lightbank.sv \
   rtl/video/m1_listwalk.sv rtl/video/m1_quad_store.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv rtl/video/m1_raster3d.sv \
   $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
@@ -117,7 +117,7 @@ SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/vide
 SRCS_m1_quad_store := rtl/video/m1_quad_store.sv
 SRCS_m1_raster_div := rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
-GEO_SRCS := rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv \
+GEO_SRCS := rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv \
             rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv \
             rtl/video/m1_geo_det.sv rtl/video/m1_geo_norm.sv \
             rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_color.sv \

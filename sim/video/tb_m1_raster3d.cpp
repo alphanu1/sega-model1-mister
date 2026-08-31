@@ -46,6 +46,7 @@ static LPB lpbank[256];
 static uint8_t fb[SH][SW][3];
 static bool    got_row[SH];
 
+static float u2f(uint32_t u){ float f; memcpy(&f,&u,4); return f; }
 static bool load(const char* path, std::vector<uint16_t>& v, size_t words) {
     FILE* f = fopen(path, "rb");
     if (!f) { printf("cannot open %s\n", path); return false; }
