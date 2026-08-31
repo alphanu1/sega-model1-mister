@@ -137,24 +137,66 @@ module m1_geo_walk (
 );
 
   // ---------------------------------------------------------------- state
-  typedef enum logic [4:0] {
+  //
+  // THE STAGES STREAM; THIS USED TO ISSUE THEM ONE AT A TIME.
+  //
+  // m1_geo_xform carries a ping-pong product bank so the adds of point N-1 run
+  // while the multiplies of point N are issued, and m1_geo_project keeps the
+  // reciprocal and the scale chain as separate stages for the same reason. Both
+  // were built that way deliberately, and the walker then waited for out_valid
+  // before issuing the next point, which used neither.
+  //
+  // Measured (sim/video/tb_m1_geometry.cpp, 20 objects):
+  //
+  //     transform   32.7% of 444 cycles a quad   three points, fully serial
+  //     project     38.4%                        two points, fully serial
+  //     normalize   11.7%   colour 10.8%
+  //     polygon ROM  3.4% at a one-cycle memory, 40% at a twelve-cycle one
+  //
+  // against 44 multiplies and 43 adds a record through pipelines that retire one
+  // a cycle - a floor of about 68 cycles. The stages were not the problem.
+  //
+  // So the record path is now a DATAFLOW SCHEDULE rather than a chain: each
+  // stage is issued the moment its operands exist and the stage will take it,
+  // and the record retires when everything it needs has come back. Counters
+  // track issue and collection separately because results arrive in issue order
+  // but not on any fixed cycle.
+  //
+  //     xform    P0, VN, P1 back to back as xf_ready allows
+  //     project  P0 once n0 is collected, P1 once n1 is
+  //     det      once n0 is collected - concurrent with both projections
+  //     normal   once vn is collected, SPECULATIVELY
+  //     colour   once the normal and the colour word are both back
+  //
+  // THE POINT COMES FIRST AND THE NORMAL SECOND, which is not the order the
+  // record stores them in. p0 is what the first projection and the determinant
+  // both wait on, and the projection is a 29-cycle reciprocal that cannot be
+  // pipelined - so transforming the normal ahead of it put the longest pole in
+  // the stage 18 cycles further out for nothing.
+  //
+  // AND THE NORMALIZE IS ISSUED WITHOUT WAITING FOR THE CULL. Gating it on the
+  // determinant made the tail of the record det -> normalize -> colour, three
+  // stages in series, when only the last two have a data dependency. It costs a
+  // reciprocal square root on every culled record and takes 40 cycles off the
+  // critical path of every record that is not.
+  //
+  // THE POLYGON ROM IS PREFETCHED. The walker asked for ten words one at a time
+  // and waited for each, which at a real SDRAM latency is ten round trips and
+  // 40% of the stage. The next record is read while the current one is in the
+  // pipeline, so the latency is hidden entirely as long as a record takes longer
+  // than ten reads - which it does by a wide margin.
+  typedef enum logic [3:0] {
     W_IDLE,
-    W_HDR_RD, W_HDR_XF, W_HDR_XFW, W_HDR_PJ, W_HDR_PJW,
-    W_REC_RD, W_REC_DEC,
-    W_XF_VN, W_XF_VNW, W_XF_P0, W_XF_P0W, W_XF_P1, W_XF_P1W,
-    W_PJ_P0, W_PJ_P0W, W_PJ_P1, W_PJ_P1W,
-    W_DET, W_DETW,
-    W_NORM, W_NORMW,
-    W_TEX, W_COL, W_COLW,
+    W_HDR_W, W_HDR_XF, W_HDR_XFW, W_HDR_PJ, W_HDR_PJW,
+    W_REC_W, W_REC_DEC, W_REC,
     W_EMIT, W_NEXT, W_DONE
   } state_t;
-  state_t st;
+  state_t st /* verilator public_flat_rd */;
 
-  logic [22:0] padr;              // polygon ROM word address
+  logic [22:0] padr;              // polygon ROM word address, owned by the prefetch
   logic [31:0] tadr;              // texture address, incremented by flag 0x1000
   logic [31:0] nleft;             // records remaining, from `size`
   logic [31:0] rec [10];          // the record being decoded
-  logic [3:0]  wi;                // words read into rec
   logic [2:0]  hdr_i;             // header point index
   logic [31:0] flags;
   logic [1:0]  link;
@@ -163,6 +205,40 @@ module m1_geo_walk (
   logic        nocull;
   logic [31:0] oldz;
 
+  // ---------------------------------------------------------------- prefetch
+  // One reader for the whole module. It fills `nrec` with `pf_n` words and the
+  // sequencer takes them in one cycle, then it starts on the next record
+  // immediately - so the ROM is read during the arithmetic rather than between
+  // records. Reading one record past the terminator is harmless and is the
+  // price of not knowing where the model ends until it is decoded.
+  logic [31:0] nrec [10];
+  logic [3:0]  pf_wi;
+  logic [3:0]  pf_n;
+  logic        pf_en;
+  wire         pf_ready = pf_en && (pf_wi == pf_n);
+
+  assign rom_addr  = padr;
+  assign rom_req   = pf_en && (pf_wi < pf_n);
+
+  // ---------------------------------------------------------------- in flight
+  // Issued and collected are separate counts: a stage takes an operand set on a
+  // grant and answers some cycles later, and with three transforms in flight the
+  // two are never equal.
+  logic [1:0] xf_iss /* verilator public_flat_rd */;   // 0..3
+  logic [1:0] xf_col /* verilator public_flat_rd */;
+  logic [1:0] pj_iss /* verilator public_flat_rd */;   // 0..2
+  logic [1:0] pj_col /* verilator public_flat_rd */;
+  logic       dt_iss /* verilator public_flat_rd */;
+  logic       dt_col /* verilator public_flat_rd */;
+  logic       nm_iss /* verilator public_flat_rd */;
+  logic       nm_col /* verilator public_flat_rd */;
+  logic       cl_iss /* verilator public_flat_rd */;
+  logic       cl_col /* verilator public_flat_rd */;
+  logic       tx_iss;
+  logic       tx_col /* verilator public_flat_rd */;
+  logic       cull_known, culled;
+  logic       z_done /* verilator public_flat_rd */;
+
   // Camera-space and screen-space points. o0/o1 are old_p0/old_p1.
   logic [31:0] o0x, o0y, o0z, o1x, o1y, o1z;
   logic signed [31:0] o0sx, o0sy, o1sx, o1sy;
@@ -170,13 +246,10 @@ module m1_geo_walk (
   logic signed [31:0] n0sx, n0sy, n1sx, n1sy;
   logic [31:0] vnx, vny, vnz;
   logic [31:0] nvx, nvy, nvz;      // normalized
-  logic [1:0]  xf_which;           // 0 = vn, 1 = p0, 2 = p1
   logic [31:0] qz;
   logic [15:0] tex_hold;      // latched, since tex_data is only valid on the ack
 
   assign busy      = (st != W_IDLE);
-  assign rom_addr  = padr;
-  assign rom_req   = (st == W_HDR_RD) || (st == W_REC_RD);
   // MAME indexes `m_tgp_ram[tex_adr - 0x40000]`, so the BASE IS SUBTRACTED here.
   // Without it every colour word is read from 0x40000 words too high, which on a
   // real dump returns 0xffff - a valid-looking colour word with the unlit bit
@@ -184,7 +257,6 @@ module m1_geo_walk (
   // Found by rendering a real frame, not by any unit test: the per-stage benches
   // supply tex_data directly and cannot see the address arithmetic.
   assign tex_addr  = tadr[19:0] - 20'h40000;
-  assign tex_req   = (st == W_TEX);
   assign old_z_out = oldz;
 
   // lightmode: bits 20:17 of the flags, with bit 22 selecting the second bank.
@@ -219,74 +291,99 @@ module m1_geo_walk (
   wire [31:0] z_min4 = fmin(fmin(o1z, o0z), fmin(n0z, n1z));
   wire [31:0] z_max4 = fmax(fmax(o1z, o0z), fmax(n0z, n1z));
 
+  // A record with no link draws nothing, so nothing but the two projections is
+  // needed from it - and 1,033 of 5,831 records in a peak frame are link 0
+  // (tools/mame_poly_budget.lua). Issuing the determinant, the normalize and the
+  // colour for them anyway would spend a fifth of the stage's arithmetic on
+  // results that are discarded.
+  wire draws = (link != 2'd0);
+
+  // Everything issued has come back. Not "everything needed", which is the
+  // weaker condition and the one that let a speculative result leak forward.
+  wire rec_quiet = (xf_col == 2'd3) && (pj_col == 2'd2)
+                && (dt_iss == dt_col) && (nm_iss == nm_col) && (cl_iss == cl_col);
+
   // ---------------------------------------------------------------- transform mux
   always_comb begin
     xf_x = '0; xf_y = '0; xf_z = '0; xf_translate = 1'b1;
-    case (st)
-      W_HDR_XF: begin
-        // The header's two points, straight out of the ROM.
-        xf_x = rec[{1'b0, hdr_i} * 4'd3];
-        xf_y = rec[{1'b0, hdr_i} * 4'd3 + 4'd1];
-        xf_z = rec[{1'b0, hdr_i} * 4'd3 + 4'd2];
-        xf_translate = 1'b1;
-      end
-      W_XF_VN: begin
+    if (st == W_HDR_XF) begin
+      // The header's two points, straight out of the ROM.
+      xf_x = rec[{1'b0, hdr_i} * 4'd3];
+      xf_y = rec[{1'b0, hdr_i} * 4'd3 + 4'd1];
+      xf_z = rec[{1'b0, hdr_i} * 4'd3 + 4'd2];
+      xf_translate = 1'b1;
+    end else begin
+      case (xf_iss)
+        2'd0: begin xf_x = rec[4]; xf_y = rec[5]; xf_z = rec[6]; end
         // A NORMAL IS A DIRECTION: transform_vector, no translation column.
-        xf_x = rec[1]; xf_y = rec[2]; xf_z = rec[3];
-        xf_translate = 1'b0;
-      end
-      W_XF_P0: begin xf_x = rec[4]; xf_y = rec[5]; xf_z = rec[6]; end
-      // A type-2 record has only ONE new point: p1 is a copy of p0, so the same
-      // model coordinates go through the transform twice rather than reading
-      // words 7..9, which for that record are not a point at all.
-      W_XF_P1: begin
-        if (flags[1:0] == 2'd2) begin
-          xf_x = rec[4]; xf_y = rec[5]; xf_z = rec[6];
-        end else begin
-          xf_x = rec[7]; xf_y = rec[8]; xf_z = rec[9];
+        2'd1: begin xf_x = rec[1]; xf_y = rec[2]; xf_z = rec[3];
+                    xf_translate = 1'b0; end
+        // A type-2 record has only ONE new point: p1 is a copy of p0, so the
+        // same model coordinates go through the transform twice rather than
+        // reading words 7..9, which for that record are not a point at all.
+        default: begin
+          if (flags[1:0] == 2'd2) begin
+            xf_x = rec[4]; xf_y = rec[5]; xf_z = rec[6];
+          end else begin
+            xf_x = rec[7]; xf_y = rec[8]; xf_z = rec[9];
+          end
         end
-      end
-      default: ;
-    endcase
+      endcase
+    end
   end
 
-  assign xf_valid = (st == W_HDR_XF) || (st == W_XF_VN)
-                 || (st == W_XF_P0)  || (st == W_XF_P1);
+  assign xf_valid = (st == W_HDR_XF) || ((st == W_REC) && (xf_iss < 2'd3));
 
   // ---------------------------------------------------------------- projection mux
   always_comb begin
     pj_x = '0; pj_y = '0; pj_z = '0;
-    case (st)
-      W_HDR_PJ: begin
-        pj_x = (hdr_i == 3'd1) ? o0x : o1x;
-        pj_y = (hdr_i == 3'd1) ? o0y : o1y;
-        pj_z = (hdr_i == 3'd1) ? o0z : o1z;
-      end
-      W_PJ_P0: begin pj_x = n0x; pj_y = n0y; pj_z = n0z; end
-      W_PJ_P1: begin pj_x = n1x; pj_y = n1y; pj_z = n1z; end
-      default: ;
-    endcase
+    if (st == W_HDR_PJ) begin
+      pj_x = (hdr_i == 3'd1) ? o0x : o1x;
+      pj_y = (hdr_i == 3'd1) ? o0y : o1y;
+      pj_z = (hdr_i == 3'd1) ? o0z : o1z;
+    end else if (pj_iss == 2'd0) begin
+      pj_x = n0x; pj_y = n0y; pj_z = n0z;
+    end else begin
+      pj_x = n1x; pj_y = n1y; pj_z = n1z;
+    end
   end
-  assign pj_valid = (st == W_HDR_PJ) || (st == W_PJ_P0) || (st == W_PJ_P1);
 
-  assign dt_valid = (st == W_DET);
-  assign nm_valid = (st == W_NORM);
-  assign cl_valid = (st == W_COL);
+  // A projection is issued once its point has been COLLECTED, not once the
+  // transform has taken it: xf_col counts n0, then vn, then n1.
+  assign pj_valid = (st == W_HDR_PJ)
+                 || ((st == W_REC) && (pj_iss < 2'd2)
+                     && (pj_iss == 2'd0 ? (xf_col >= 2'd1) : (xf_col >= 2'd3)));
+
+  // The determinant needs only n0, so it runs alongside both projections. The
+  // cull it decides then gates the normalize, which is the one stage worth NOT
+  // issuing speculatively: it is a reciprocal square root.
+  assign dt_valid = (st == W_REC) && draws && !nocull && !dt_iss && (xf_col >= 2'd1);
+  assign nm_valid = (st == W_REC) && draws && !nm_iss && (xf_col >= 2'd2);
+  assign cl_valid = (st == W_REC) && draws && !cl_iss && nm_col && tx_col;
+
+  // The colour word is fetched as soon as the record is decoded, because on the
+  // real design it comes from SDRAM and is the second-longest wait in the stage.
+  assign tex_req  = (st == W_REC) && draws && !tx_col;
 
   // ---------------------------------------------------------------- sequencer
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= W_IDLE;
-      padr <= '0; tadr <= '0; nleft <= '0; wi <= '0; hdr_i <= '0;
+      padr <= '0; tadr <= '0; nleft <= '0; hdr_i <= '0;
+      pf_wi <= '0; pf_n <= 4'd10; pf_en <= 1'b0;
       flags <= '0; link <= '0; zmode <= '0; moire <= 1'b0; nocull <= 1'b0;
       tex_hold <= '0;
-      oldz <= '0; qz <= '0; xf_which <= '0;
+      oldz <= '0; qz <= '0;
+      xf_iss <= '0; xf_col <= '0; pj_iss <= '0; pj_col <= '0;
+      dt_iss <= 1'b0; dt_col <= 1'b0; nm_iss <= 1'b0; nm_col <= 1'b0;
+      cl_iss <= 1'b0; cl_col <= 1'b0; tx_iss <= 1'b0; tx_col <= 1'b0;
+      cull_known <= 1'b0; culled <= 1'b0; z_done <= 1'b0;
       o0x <= '0; o0y <= '0; o0z <= '0; o1x <= '0; o1y <= '0; o1z <= '0;
       o0sx <= '0; o0sy <= '0; o1sx <= '0; o1sy <= '0;
       n0x <= '0; n0y <= '0; n0z <= '0; n1x <= '0; n1y <= '0; n1z <= '0;
       n0sx <= '0; n0sy <= '0; n1sx <= '0; n1sy <= '0;
       vnx <= '0; vny <= '0; vnz <= '0; nvx <= '0; nvy <= '0; nvz <= '0;
-      for (int i = 0; i < 10; i++) rec[i] <= '0;
+      for (int i = 0; i < 10; i++) begin rec[i] <= '0; nrec[i] <= '0; end
       q_valid <= 1'b0; q_col <= '0; q_z <= '0; q_moire <= 1'b0;
       q_x0 <= '0; q_y0 <= '0; q_x1 <= '0; q_y1 <= '0;
       q_x2 <= '0; q_y2 <= '0; q_x3 <= '0; q_y3 <= '0;
@@ -295,6 +392,76 @@ module m1_geo_walk (
     end else begin
       q_valid <= 1'b0;
       done    <= 1'b0;
+
+      // ---- the prefetch, running under everything else
+      if (rom_req && rom_valid) begin
+        nrec[pf_wi] <= rom_data;
+        padr        <= padr + 23'd1;
+        pf_wi       <= pf_wi + 4'd1;
+      end
+
+      // ---- collection, which happens whatever state the sequencer is in
+      if (st == W_REC) begin
+        if (xf_valid && xf_ready) xf_iss <= xf_iss + 2'd1;
+        if (pj_valid && pj_ready) pj_iss <= pj_iss + 2'd1;
+        if (dt_valid && dt_ready) dt_iss <= 1'b1;
+        if (nm_valid && nm_ready) nm_iss <= 1'b1;
+        if (cl_valid && cl_ready) cl_iss <= 1'b1;
+
+        // COLLECT ONLY WHAT WAS ISSUED. `!collected` alone is the weaker test:
+        // it accepts any pulse the stage happens to make, including one left
+        // over from the previous record, and a record that issues nothing then
+        // ends up with a collected flag it can never match. That deadlocked at
+        // record 19 of iteration 19 with cl 0/1 - a colour collected for a
+        // link-0 record that never asked for one.
+        if (xf_out_valid && (xf_col < xf_iss)) begin
+          case (xf_col)
+            2'd0: begin n0x <= xf_out_x; n0y <= xf_out_y; n0z <= xf_out_z; end
+            2'd1: begin vnx <= xf_out_x; vny <= xf_out_y; vnz <= xf_out_z; end
+            default: begin n1x <= xf_out_x; n1y <= xf_out_y; n1z <= xf_out_z; end
+          endcase
+          xf_col <= xf_col + 2'd1;
+        end
+        if (pj_out_valid && (pj_col < pj_iss)) begin
+          if (pj_col == 2'd0) begin n0sx <= pj_out_sx; n0sy <= pj_out_sy; end
+          else                begin n1sx <= pj_out_sx; n1sy <= pj_out_sy; end
+          pj_col <= pj_col + 2'd1;
+        end
+        if (dt_out_valid && dt_iss && !dt_col) begin
+          dt_col     <= 1'b1;
+          cull_known <= 1'b1;
+          culled     <= dt_out_positive;   // `view_determinant(...) > 0` culls
+          if (dt_out_positive && dbg_culled != 16'hffff)
+            dbg_culled <= dbg_culled + 16'd1;
+        end
+        if (nm_out_valid && nm_iss && !nm_col) begin
+          nvx <= nm_out_x; nvy <= nm_out_y; nvz <= nm_out_z;
+          nm_col <= 1'b1;
+        end
+        if (cl_out_valid && cl_iss && !cl_col) begin
+          q_col  <= cl_out_rgb;
+          cl_col <= 1'b1;
+        end
+        if (tex_req && tex_valid && !tx_col) begin
+          tex_hold <= tex_data;
+          tx_col   <= 1'b1;
+        end
+
+        // The sort z, chosen by flags bits 11:10. Mode 0 REUSES the previous
+        // quad's z, which is why old_z is carried across objects. It needs all
+        // four points and is only taken for a record that survives the cull -
+        // MAME reaches this code after `if (view_determinant(...) > 0) goto
+        // next`, so a culled record must not disturb oldz.
+        if (!z_done && draws && cull_known && !culled && (xf_col == 2'd3)) begin
+          z_done <= 1'b1;
+          case (zmode)
+            2'd0: qz <= oldz;
+            2'd1: begin qz <= z_min4; oldz <= z_min4; end
+            2'd2: begin qz <= z_max4; oldz <= z_max4; end
+            default: qz <= 32'd0;
+          endcase
+        end
+      end
 
       case (st)
         W_IDLE: if (start) begin
@@ -308,19 +475,20 @@ module m1_geo_walk (
             // `if (!size) size = 0xffffffff` - zero means "until the terminator".
             nleft <= (in_size == 32'd0) ? 32'hffffffff : in_size;
             oldz  <= old_z_in;
-            wi    <= '0; hdr_i <= '0;
+            hdr_i <= '0;
+            pf_wi <= '0; pf_n <= 4'd6; pf_en <= 1'b1;
             dbg_records <= '0; dbg_quads <= '0;
             dbg_culled  <= '0; dbg_nolink <= '0;
-            st    <= W_HDR_RD;
+            st    <= W_HDR_W;
           end
         end
 
         // ---- six-float header: two points
-        W_HDR_RD: if (rom_valid) begin
-          rec[wi] <= rom_data;
-          padr    <= padr + 23'd1;
-          if (wi == 4'd5) begin wi <= '0; hdr_i <= '0; st <= W_HDR_XF; end
-          else            wi <= wi + 4'd1;
+        W_HDR_W: if (pf_ready) begin
+          for (int i = 0; i < 6; i++) rec[i] <= nrec[i];
+          pf_wi <= '0; pf_n <= 4'd10;      // the first record, during the header
+          hdr_i <= '0;
+          st    <= W_HDR_XF;
         end
         W_HDR_XF:  if (xf_ready) st <= W_HDR_XFW;
         W_HDR_XFW: if (xf_out_valid) begin
@@ -336,16 +504,15 @@ module m1_geo_walk (
             hdr_i <= 3'd2; st <= W_HDR_PJ;
           end else begin
             o1sx <= pj_out_sx; o1sy <= pj_out_sy;
-            wi <= '0; st <= W_REC_RD;
+            st <= W_REC_W;
           end
         end
 
-        // ---- ten-float record
-        W_REC_RD: if (rom_valid) begin
-          rec[wi] <= rom_data;
-          padr    <= padr + 23'd1;
-          if (wi == 4'd9) begin wi <= '0; st <= W_REC_DEC; end
-          else            wi <= wi + 4'd1;
+        // ---- ten-float record, already in the prefetch buffer
+        W_REC_W: if (pf_ready) begin
+          for (int i = 0; i < 10; i++) rec[i] <= nrec[i];
+          pf_wi <= '0;                     // the NEXT record starts now
+          st    <= W_REC_DEC;
         end
 
         W_REC_DEC: begin
@@ -357,85 +524,42 @@ module m1_geo_walk (
           if (rec[0][12]) tadr <= tadr + 32'd1;     // flag 0x1000
           if (dbg_records != 16'hffff) dbg_records <= dbg_records + 16'd1;
           // `type = flags & 3; if (!type) break;` - and the size limit.
-          if (rec[0][1:0] == 2'd0 || nleft == 32'd0) st <= W_DONE;
-          else begin
+          if (rec[0][1:0] == 2'd0 || nleft == 32'd0) begin
+            pf_en <= 1'b0;
+            st    <= W_DONE;
+          end else begin
             nleft <= nleft - 32'd1;
-            st    <= W_XF_VN;
+            xf_iss <= '0; xf_col <= '0; pj_iss <= '0; pj_col <= '0;
+            dt_iss <= 1'b0; dt_col <= 1'b0; nm_iss <= 1'b0; nm_col <= 1'b0;
+            cl_iss <= 1'b0; cl_col <= 1'b0; tx_iss <= 1'b0; tx_col <= 1'b0;
+            // flag 0x4000 skips the test, so the cull answer is known already.
+            cull_known <= rec[0][14];
+            culled     <= 1'b0;
+            z_done     <= 1'b0;
+            st         <= W_REC;
           end
         end
 
-        W_XF_VN:  if (xf_ready) st <= W_XF_VNW;
-        W_XF_VNW: if (xf_out_valid) begin
-          vnx <= xf_out_x; vny <= xf_out_y; vnz <= xf_out_z;
-          st  <= W_XF_P0;
-        end
-        W_XF_P0:  if (xf_ready) st <= W_XF_P0W;
-        W_XF_P0W: if (xf_out_valid) begin
-          n0x <= xf_out_x; n0y <= xf_out_y; n0z <= xf_out_z;
-          st  <= W_XF_P1;
-        end
-        W_XF_P1:  if (xf_ready) st <= W_XF_P1W;
-        W_XF_P1W: if (xf_out_valid) begin
-          n1x <= xf_out_x; n1y <= xf_out_y; n1z <= xf_out_z;
-          st  <= W_PJ_P0;
-        end
-
-        W_PJ_P0:  if (pj_ready) st <= W_PJ_P0W;
-        W_PJ_P0W: if (pj_out_valid) begin
-          n0sx <= pj_out_sx; n0sy <= pj_out_sy;
-          st   <= W_PJ_P1;
-        end
-        W_PJ_P1:  if (pj_ready) st <= W_PJ_P1W;
-        W_PJ_P1W: if (pj_out_valid) begin
-          n1sx <= pj_out_sx; n1sy <= pj_out_sy;
-          // `if (!link) goto next;` - nothing is drawn, but the strip still
-          // advances, so this is not the same as skipping the record.
-          if (link == 2'd0) begin
-            if (dbg_nolink != 16'hffff) dbg_nolink <= dbg_nolink + 16'd1;
-            st <= W_NEXT;
-          end else if (nocull) begin
-            st <= W_NORM;                      // flag 0x4000 skips the test
-          end else begin
-            st <= W_DET;
+        // Everything above happens here; this only decides when the record is
+        // finished. Both projections are always needed - the strip advance uses
+        // their screen coordinates even for a record that draws nothing.
+        // A SPECULATIVE ISSUE HAS TO BE DRAINED, not abandoned. The normalize
+        // and the colour are started before the cull is known, so a culled
+        // record can reach this point with one of them still in the pipeline -
+        // and leaving then lets its result arrive during the NEXT record and
+        // overwrite that record's normal or colour. Measured as 345 of 3,357
+        // colours wrong, 10.3%, with the geometry itself exact.
+        W_REC: begin
+          if (rec_quiet) begin
+            if (!draws) begin
+              if (dbg_nolink != 16'hffff) dbg_nolink <= dbg_nolink + 16'd1;
+              st <= W_NEXT;
+            end else if (cull_known && culled) begin
+              st <= W_NEXT;
+            end else if (cull_known && !culled && cl_col && z_done) begin
+              st <= W_EMIT;
+            end
           end
-        end
-
-        W_DET:  if (dt_ready) st <= W_DETW;
-        W_DETW: if (dt_out_valid) begin
-          if (dt_out_positive) begin
-            // `view_determinant(...) > 0` culls.
-            if (dbg_culled != 16'hffff) dbg_culled <= dbg_culled + 16'd1;
-            st <= W_NEXT;
-          end else begin
-            st <= W_NORM;
-          end
-        end
-
-        W_NORM:  if (nm_ready) st <= W_NORMW;
-        W_NORMW: if (nm_out_valid) begin
-          nvx <= nm_out_x; nvy <= nm_out_y; nvz <= nm_out_z;
-          // The sort z, chosen by flags bits 11:10. Mode 0 REUSES the previous
-          // quad's z, which is why old_z is carried across objects.
-          case (zmode)
-            2'd0: qz <= oldz;
-            2'd1: begin qz <= z_min4; oldz <= z_min4; end
-            2'd2: begin qz <= z_max4; oldz <= z_max4; end
-            default: qz <= 32'd0;
-          endcase
-          st <= W_TEX;
-        end
-
-        // Wait for the colour word. The light bank is a small block RAM and
-        // answers well inside this, so one handshake covers both.
-        W_TEX: if (tex_valid) begin
-          tex_hold <= tex_data;
-          st       <= W_COL;
-        end
-
-        W_COL:  if (cl_ready) st <= W_COLW;
-        W_COLW: if (cl_out_valid) begin
-          q_col <= cl_out_rgb;
-          st    <= W_EMIT;
         end
 
         W_EMIT: begin
@@ -467,8 +591,7 @@ module m1_geo_walk (
               o0x <= n1x; o0y <= n1y; o0z <= n1z; o0sx <= n1sx; o0sy <= n1sy;
             end
           endcase
-          wi <= '0;
-          st <= W_REC_RD;
+          st <= W_REC_W;
         end
 
         W_DONE: begin

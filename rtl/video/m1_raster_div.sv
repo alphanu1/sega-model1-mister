@@ -26,11 +26,27 @@
 // caught by a frame diff a long way downstream. Magnitude-divide then negate
 // gives truncation for free, which is why it is done that way here.
 //
-// Restoring division, one bit per cycle, 32 cycles. That is affordable because
-// setup runs at most four times per quad (once per vertex event) and never per
-// pixel. If a frame's quad count turns out to make 32 cycles hurt, the lever is
-// radix-4 or a reciprocal table, and that is a measurement to take rather than
-// a guess to build.
+// RADIX-4 RESTORING DIVISION, two quotient bits per cycle, 16 cycles.
+//
+// It was radix-2 at 32 cycles, on the note that setup runs at most four times
+// per quad and never per pixel, and that the lever if it ever hurt was radix-4
+// or a reciprocal table - "a measurement to take rather than a guess to build".
+//
+// The measurement was taken. sim/video/tb_m1_raster3d.cpp, the reference's own
+// frame 900 swept against a real raster:
+//
+//     FILLW  3,487,790 cycles over 8 passes = 436,000 a frame, of 818,133
+//
+// and the quad count says 275 cycles of fill per quad against at most eight
+// divides of 32. The divider IS the fill.
+//
+// Radix-4 needs three multiples of the divisor - d, 2d, 3d - compared against
+// the shifted remainder, and 3d is the only one that is not a shift. The
+// quotient is exact integer division either way, so the result is bit-identical
+// to the radix-2 version and tb_m1_raster_fill's 152,025 checks are unchanged.
+//
+// Radix-8 would want seven multiples for another 5 cycles; that is where this
+// stops being worth it.
 module m1_raster_div (
   input  logic               clk,
   input  logic               rst_n,
@@ -53,14 +69,26 @@ module m1_raster_div (
   logic [1:0]  state;
   logic [31:0] n_mag;    // dividend magnitude, shifted out MSB first
   logic [31:0] d_mag;    // divisor magnitude
-  logic [31:0] rem;
+  logic [31:0] rem;      // always < d_mag, so 32 bits is enough
   logic [31:0] q;
   logic        neg;      // quotient sign: operands differed
-  logic [5:0]  cnt;
+  logic [4:0]  cnt;      // 16 steps, not 32
 
-  // One restoring step: bring down the next dividend bit, subtract if it fits.
-  logic [32:0] shifted;
-  always_comb shifted = {rem, n_mag[31]};
+  // One restoring step: bring down the next TWO dividend bits and subtract the
+  // largest of d, 2d, 3d that fits. 34 bits because rem*4 + 3 can exceed 32.
+  wire [33:0] shifted = {rem, n_mag[31:30]};
+  wire [33:0] d1 = {2'b00, d_mag};
+  wire [33:0] d2 = {1'b0,  d_mag, 1'b0};
+  wire [33:0] d3 = d1 + d2;
+
+  logic [1:0]  qdig;
+  logic [33:0] rnext;
+  always_comb begin
+    if      (shifted >= d3) begin qdig = 2'd3; rnext = shifted - d3; end
+    else if (shifted >= d2) begin qdig = 2'd2; rnext = shifted - d2; end
+    else if (shifted >= d1) begin qdig = 2'd1; rnext = shifted - d1; end
+    else                    begin qdig = 2'd0; rnext = shifted;      end
+  end
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -88,7 +116,7 @@ module m1_raster_div (
             neg   <= num[31] ^ den[31];
             rem   <= 32'd0;
             q     <= 32'd0;
-            cnt   <= 6'd0;
+            cnt   <= 5'd0;
             // Cannot happen from fill_quad: the startup loops skip every vertex
             // sharing the current y, so the next vertex is strictly lower and
             // the denominator is strictly nonzero. Guarded anyway, because the
@@ -98,16 +126,11 @@ module m1_raster_div (
         end
 
         S_RUN: begin
-          n_mag <= {n_mag[30:0], 1'b0};
-          if (shifted >= {1'b0, d_mag}) begin
-            rem <= shifted[31:0] - d_mag;
-            q   <= {q[30:0], 1'b1};
-          end else begin
-            rem <= shifted[31:0];
-            q   <= {q[30:0], 1'b0};
-          end
-          cnt <= cnt + 6'd1;
-          if (cnt == 6'd31) state <= S_FIN;
+          n_mag <= {n_mag[29:0], 2'b00};
+          rem   <= rnext[31:0];        // a restored remainder is always < d_mag
+          q     <= {q[29:0], qdig};
+          cnt   <= cnt + 5'd1;
+          if (cnt == 5'd15) state <= S_FIN;
         end
 
         S_FIN: begin

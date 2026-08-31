@@ -272,6 +272,12 @@ struct Dut {
     // whenever a stall lands on it — which then reappears at the head of the
     // next quad and reads as two unrelated failures. Backpressure is applied
     // only while the quad is still running.
+    // THE STALL MODEL SHARES THE RNG WITH QUAD GENERATION, so anything that
+    // changes how many cycles a quad takes reshuffles every later quad in the
+    // corpus - and `spans`, `lines` and `empty` all move while `checks` and
+    // `fails` stay put. Making the divider radix-4 did exactly that: 31,637,915
+    // spans became 31,658,020 with nothing wrong. A moved total here is not a
+    // regression on its own; a nonzero `fails` is.
     long guard = 0;
     bool accepted = false, retired = false;
     for (;;) {

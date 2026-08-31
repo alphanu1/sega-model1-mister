@@ -262,12 +262,12 @@ int main(int argc, char** argv) {
 
         double per = (double)(t.cycles - c0) / N;
         printf("  %.1f cycles per point streamed, %.1f per record (2 points)\n", per, per * 2);
-        printf("  peak frame needs %.0f cycles of the 397,515 available (%.0f%%)\n",
-               per * 2 * 5831, 100.0 * per * 2 * 5831 / 397515.0);
+        printf("  peak frame needs %.0f cycles of the 818,133 available (%.0f%%)\n",
+               per * 2 * 5831, 100.0 * per * 2 * 5831 / 818133.0);
         checks++;
-        if (per * 2 * 5831 > 397515.0) {
+        if (per * 2 * 5831 > 818133.0) {
             fails++;
-            printf("  FAIL OVER BUDGET by %.2fx\n", per * 2 * 5831 / 397515.0);
+            printf("  FAIL OVER BUDGET by %.2fx\n", per * 2 * 5831 / 818133.0);
         }
     }
 

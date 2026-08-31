@@ -46,7 +46,7 @@
 //
 // A polygon record needs THREE transforms - two points and the normal - and the
 // budget is 68 cycles a record (docs/findings.md: 5,831 records in a peak frame,
-// 397,515 cycles).
+// 818,133 cycles - see the note on the budget in rtl/video/m1_raster3d.sv).
 //
 // The obvious structure - issue nine multiplies, wait for all nine, then three
 // rounds of adds each drained before the next - was built first and MEASURED at

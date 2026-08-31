@@ -38,6 +38,7 @@
 // bench requires at least 99% exact matches and reports the rate.
 
 #include "Vm1_geometry.h"
+#include "Vm1_geometry___024root.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
@@ -198,6 +199,37 @@ static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t siz
     return out;
 }
 
+// ------------------------------------------------------ where the cycles go
+//
+// WHY A HISTOGRAM AND NOT A TOTAL. The stage is 566 cycles a quad against 68 of
+// arithmetic, and "the geometry is slow" is not something to act on: the fix for
+// waiting on the polygon ROM (prefetch the next record) and the fix for
+// serialising three transforms that could overlap (issue them back to back) are
+// different pieces of work, and one of them is wasted if the other dominates.
+//
+// So the walker's state is sampled every cycle and bucketed. The names below are
+// m1_geo_walk's own enum, in order.
+static const char* WNAME[] = {
+    "IDLE",
+    "HDR_W", "HDR_XF", "HDR_XFW", "HDR_PJ", "HDR_PJW",
+    "REC_W", "REC_DEC", "REC",
+    "EMIT", "NEXT", "DONE"
+};
+static const int NW = sizeof(WNAME) / sizeof(WNAME[0]);
+static long whist[32];
+// Inside the record state everything overlaps, so "which stage is slow" is not
+// the question - the question is which one is STILL OUTSTANDING when nothing
+// else is. Those are the cycles that would disappear if that stage were free.
+static long wout[6], wonly[6];
+static const char* ONAME[6] = { "xform", "project", "determinant",
+                                "normalize", "colour", "tgp_ram" };
+
+// The polygon ROM and tgp_ram are both in SDRAM on the real design. One cycle
+// is the bench's default because the handshake must be correct at any latency;
+// GEO_ROM_LAT models a realistic one, and the difference between the two runs
+// is exactly what a prefetch would recover.
+static int ROM_LAT = 1, TEX_LAT = 1;
+
 // ---------------------------------------------------------------- the DUT
 struct Dut {
     Vm1_geometry* d = new Vm1_geometry;
@@ -212,17 +244,43 @@ struct Dut {
         const LPB& lp = lpbank[d->lp_addr];
         d->lp_d = f2u(lp.d); d->lp_a = f2u(lp.a); d->lp_s = f2u(lp.s); d->lp_p = lp.p;
     }
+    int rom_wait = 0, tex_wait = 0;
     void tick() {
-        // The polygon ROM and tgp_ram both answer one cycle after the request.
-        // tgp_ram is in SDRAM in the real design and takes far longer; one cycle
-        // is the fastest a correct consumer must tolerate, and the handshake is
-        // what makes any latency safe.
+        // A held request answered after ROM_LAT cycles. The counter restarts
+        // whenever the request drops, so a new request pays the latency again -
+        // which is what makes ten separate word reads cost ten round trips.
         int req = d->rom_req; uint32_t addr = d->rom_addr;
         int treq = d->tex_req; uint32_t taddr = d->tex_addr;
+        rom_wait = req ? (rom_wait + 1) : 0;
+        tex_wait = treq ? (tex_wait + 1) : 0;
+        int rom_ans = req && (rom_wait >= ROM_LAT);
+        int tex_ans = treq && (tex_wait >= TEX_LAT);
+        if (rom_ans) rom_wait = 0;
+        if (tex_ans) tex_wait = 0;
         memories();
         cycles++; d->clk = 0; d->eval();
-        d->rom_valid = req; d->rom_data = req ? prom[addr & 0xffff] : 0;
-        d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
+        {
+            auto* r = d->rootp;
+            int cur = r->m1_geometry__DOT__u_walk__DOT__st & 31;
+            whist[cur]++;
+            if (cur == 8) {                     // W_REC
+                bool o[6];
+                o[0] = r->m1_geometry__DOT__u_walk__DOT__xf_col < 3;
+                o[1] = r->m1_geometry__DOT__u_walk__DOT__pj_col < 2;
+                o[2] = r->m1_geometry__DOT__u_walk__DOT__dt_iss
+                    && !r->m1_geometry__DOT__u_walk__DOT__dt_col;
+                o[3] = r->m1_geometry__DOT__u_walk__DOT__nm_iss
+                    && !r->m1_geometry__DOT__u_walk__DOT__nm_col;
+                o[4] = r->m1_geometry__DOT__u_walk__DOT__cl_iss
+                    && !r->m1_geometry__DOT__u_walk__DOT__cl_col;
+                o[5] = !r->m1_geometry__DOT__u_walk__DOT__tx_col;
+                int n = 0;
+                for (int i = 0; i < 6; i++) if (o[i]) { wout[i]++; n++; }
+                if (n == 1) for (int i = 0; i < 6; i++) if (o[i]) wonly[i]++;
+            }
+        }
+        d->rom_valid = rom_ans; d->rom_data = rom_ans ? prom[addr & 0xffff] : 0;
+        d->tex_valid = tex_ans; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->eval();
         if (d->q_valid) {
@@ -333,7 +391,25 @@ int main(int argc, char** argv) {
         std::vector<Quad> exp = model(0x40000, 0x100, 0, oz_m);
         checks++;
         if (!t.run(0x40000, 0x100, 0, oz_d)) {
-            fails++; printf("  FAIL iter %d: never finished\n", iter); break;
+            fails++; printf("  FAIL iter %d: never finished\n", iter);
+            {
+                auto* r = t.d->rootp;
+                printf("    st=%u xf %u/%u  pj %u/%u  dt %u/%u  nm %u/%u"
+                       "  cl %u/%u  tx=%u z_done=%u\n",
+                       r->m1_geometry__DOT__u_walk__DOT__st,
+                       r->m1_geometry__DOT__u_walk__DOT__xf_iss,
+                       r->m1_geometry__DOT__u_walk__DOT__xf_col,
+                       r->m1_geometry__DOT__u_walk__DOT__pj_iss,
+                       r->m1_geometry__DOT__u_walk__DOT__pj_col,
+                       r->m1_geometry__DOT__u_walk__DOT__dt_iss,
+                       r->m1_geometry__DOT__u_walk__DOT__dt_col,
+                       r->m1_geometry__DOT__u_walk__DOT__nm_iss,
+                       r->m1_geometry__DOT__u_walk__DOT__nm_col,
+                       r->m1_geometry__DOT__u_walk__DOT__cl_iss,
+                       r->m1_geometry__DOT__u_walk__DOT__cl_col,
+                       r->m1_geometry__DOT__u_walk__DOT__tx_col,
+                       r->m1_geometry__DOT__u_walk__DOT__z_done);
+            } break;
         }
         checks++;
         if (t.got.size() != exp.size()) {
@@ -415,12 +491,45 @@ int main(int argc, char** argv) {
         float oz = 1.0f;
         long c0 = t.cycles;
         int reps = 20, quads = 0;
+        memset(whist, 0, sizeof whist);
+        memset(wout, 0, sizeof wout); memset(wonly, 0, sizeof wonly);
         for (int i = 0; i < reps; i++) { t.run(0x40000, 0x100, 0, oz); quads += (int)t.got.size(); }
-        double per_quad = quads ? (double)(t.cycles - c0) / quads : 0.0;
+        long busy = t.cycles - c0;
+        double per_quad = quads ? (double)busy / quads : 0.0;
         printf("  %d quads in %ld cycles: %.1f cycles per quad\n",
-               quads, t.cycles - c0, per_quad);
-        printf("  a peak frame of 4,798 quads would need %.0f cycles of 397,515 (%.0f%%)\n",
-               per_quad * 4798, 100.0 * per_quad * 4798 / 397515.0);
+               quads, busy, per_quad);
+        printf("  a peak frame of 4,798 quads would need %.0f cycles of 818,133 (%.0f%%)\n",
+               per_quad * 4798, 100.0 * per_quad * 4798 / 818133.0);
+
+        // WHERE THE CYCLES GO. Grouped the way the fixes are: waiting on memory,
+        // waiting on an arithmetic stage that could have been issued alongside
+        // the previous one, and the walker's own bookkeeping.
+        // The record path is a single state now: everything overlaps inside it,
+        // so a per-stage split is no longer meaningful and what matters is how
+        // much of the walk is spent WAITING for the polygon ROM instead.
+        for (int i = 1; i < NW; i++)
+            if (whist[i] > busy / 100)
+                printf("  %-8s %6ld cycles  %5.1f%%\n",
+                       WNAME[i], whist[i], 100.0 * whist[i] / busy);
+        printf("  inside the record, outstanding / sole cause:\n");
+        for (int i = 0; i < 6; i++)
+            printf("    %-12s %6ld  %5.1f%%   alone %6ld  %5.1f%%\n",
+                   ONAME[i], wout[i], 100.0 * wout[i] / busy,
+                   wonly[i], 100.0 * wonly[i] / busy);
+
+        // THE SAME WALK WITH A REAL MEMORY BEHIND IT. Both the polygon ROM and
+        // tgp_ram are in SDRAM; the read crosses into clk_sys, arbitrates
+        // against six other ports and crosses back. One cycle is what the rest
+        // of this bench uses, because the handshake has to be right at any
+        // latency - but it is not what the hardware pays, and the walker asks
+        // for TEN SEPARATE WORDS per record.
+        ROM_LAT = 12; TEX_LAT = 12;
+        long c1 = t.cycles; int quads2 = 0;
+        for (int i = 0; i < reps; i++) { t.run(0x40000, 0x100, 0, oz); quads2 += (int)t.got.size(); }
+        double pq2 = quads2 ? (double)(t.cycles - c1) / quads2 : 0.0;
+        printf("  at a 12-cycle memory: %.1f cycles per quad (%.1fx), %.0f%% of a frame\n",
+               pq2, pq2 / per_quad, 100.0 * pq2 * 4798 / 818133.0);
+        ROM_LAT = 1; TEX_LAT = 1;
         // Not asserted as a pass/fail: the walker drives the stages one at a
         // time, so this is the UNPIPELINED figure and the number to improve
         // against. Recorded so the improvement is measurable rather than assumed.

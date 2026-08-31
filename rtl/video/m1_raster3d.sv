@@ -40,6 +40,14 @@
 //     pipelined. The band fill and the display keep running at full rate off
 //     whatever the store last held, so the picture is steady, not flickering.
 
+// THE FRAME BUDGET IS 818,133 CYCLES, NOT 397,515.
+//
+// The figure quoted throughout this project came from a 22.9 MHz plan for the
+// 3D clock. It runs at 47.059 MHz - a PLL output of its own, 800/17 - so a frame
+// at 57.52 Hz is 818,133 cycles and every per-stage budget derived from the old
+// number was half of the real one. Corrected 2026-08-31, in the same change that
+// measured where the geometry actually spends its cycles.
+
 `timescale 1ns/1ps
 
 module m1_raster3d #(
@@ -515,8 +523,27 @@ module m1_raster3d #(
   // following pass cannot jump in over the middle of this frame.
   logic frame_armed, beam_blank_d;
 
+  // BAND 0 GOES UP AT THE TOP OF A FRAME, whichever frame that turns out to be.
+  //
+  // The pass is geometry, then sort, then twenty-four beam-locked band fills.
+  // The geometry alone measures 367,000 cycles and the sort 21,000, so band 0 is
+  // ready around 48% of the way down the screen - and presenting it there put
+  // rows 0..191 of the picture out during rows 192..383 of the raster, where
+  // in_disp_band correctly refuses to draw them. Sixteen of twenty-four bands
+  // presented and 257 of 384 rows painted, with every band technically on time.
+  //
+  // So band 0 waits for a vblank: either the one the beam is in right now, which
+  // is the case when the geometry finished inside it, or the next one. The
+  // picture is then always complete, and a pass that overruns costs a whole
+  // frame of REFRESH rather than half a frame of PICTURE. At the measured
+  // 796,000 cycles of work against 818,133 in a frame that is a complete 3D
+  // layer at 28.8 Hz over a 57.5 Hz 2D one.
+  //
+  // Going faster than this is not a throughput problem any more: the geometry
+  // cannot overlap the fill, because both use the quad store, and double
+  // buffering it is 49 more M10K.
   wire present_now = ready_valid
-                  && ((want_ext == '0) ? frame_armed
+                  && ((want_ext == '0) ? (beam_blank || frame_armed)
                                        : (!beam_blank && beam_ext >= want_ext));
 
   wire                          bg_active = disp_valid && (beam_row_s2 != '0);
@@ -548,7 +575,7 @@ module m1_raster3d #(
     T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW,
     T_BAND_WAIT
   } state_t;
-  state_t st;
+  state_t st /* verilator public_flat_rd */;
 
   logic [BW-1:0] cur_band;
   logic [31:0]   band_timer;
@@ -556,6 +583,10 @@ module m1_raster3d #(
   // The two things that move a buffer round the ring. They are independent -
   // that independence IS the third buffer - and when they coincide the three
   // slots rotate in one step.
+  // The band phase, as opposed to the walk and the sort that precede it.
+  wire in_bands = (st == T_BAND_CLR) || (st == T_BAND_CLRW) || (st == T_REPLAY)
+               || (st == T_FILL)     || (st == T_FILLW)     || (st == T_BAND_WAIT);
+
   wire ev_present = present_now;
   wire ev_handoff = (st == T_BAND_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
@@ -730,10 +761,14 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
-      // The clear wins a tie: arming again in the same cycle a band 0 presents
-      // would let the NEXT pass's band 0 land in the middle of this frame.
-      if (ev_present && (ready_band == '0))    frame_armed <= 1'b0;
-      else if (beam_blank && !beam_blank_d)    frame_armed <= 1'b1;
+      // Armed only by a vblank the BAND PHASE sees. The pass starts inside a
+      // vblank of its own and the blank flag rises two synchroniser stages after
+      // frame_start, so clearing on frame_start alone re-armed three cycles
+      // later and changed nothing at all - measured, twice the same numbers.
+      // Cleared when band 0 goes up, so the next pass's band 0 cannot land in
+      // the middle of this frame.
+      if (ev_present && (ready_band == '0))         frame_armed <= 1'b0;
+      else if (beam_blank && !beam_blank_d && in_bands) frame_armed <= 1'b1;
 
       // ---- the three-slot ring
       //

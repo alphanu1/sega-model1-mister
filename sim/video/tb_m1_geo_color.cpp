@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
         // once per polygon record: push_object jumps straight to `next` when the
         // link field is zero, and the backface test discards more still. Measured
         // (tools/mame_poly_budget.lua): of 5,831 records in a peak frame, 4,798
-        // can emit a quad, which is 397,515 / 4,798 = 83 cycles each. Holding
+        // can emit a quad, which is 818,133 / 4,798 = 83 cycles each. Holding
         // this unit to the transform's 68 would be optimising against a budget it
         // does not have.
         checks++;

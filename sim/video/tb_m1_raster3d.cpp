@@ -25,6 +25,7 @@
 // framebuffer is RGB888, so each channel loses its low bits.
 
 #include "Vm1_raster3d.h"
+#include "Vm1_raster3d___024root.h"
 #include "verilated.h"
 #include <cstdio>
 #include <cstdint>
@@ -143,6 +144,17 @@ int main(int argc, char** argv) {
     // The first frames walk a synthetic list that uploads the light banks and
     // some colour words, because both are FRAME-PERSISTENT state that frame
     // 900's list does not set. Then the real list is swapped in.
+    // WHERE THE BAND TIME GOES. The fill is the larger half of the frame - 24
+    // bands at 28,000 cycles against a frame of 818,133 - and "the fill is slow"
+    // does not say whether it is the span painting, the per-quad setup or the
+    // replay of quads that turn out not to be in the band. Those are three
+    // different fixes.
+    static const char* TNAME[] = {
+        "IDLE", "WALK", "OBJ", "OBJW", "SORT", "SORTW",
+        "BAND_CLR", "BAND_CLRW", "REPLAY", "FILL", "FILLW", "BAND_WAIT"
+    };
+    static long thist[16];
+
     const int H_TOTAL = 656, V_TOTAL = 424;
     // Derived, never written down: a band-time quoted as a constant has gone
     // stale three times on this design, once by a factor of the band height and
@@ -211,7 +223,10 @@ int main(int argc, char** argv) {
                 // is the real one rather than a rounded 3.
                 acc += CLK3D_HZ;
                 bool first = true;
-                while (acc >= PIXCLK_HZ) { acc -= PIXCLK_HZ; tick(first); first = false; }
+                while (acc >= PIXCLK_HZ) {
+                    acc -= PIXCLK_HZ; tick(first); first = false;
+                    thist[d->rootp->m1_raster3d__DOT__st & 15]++;
+                }
                 if (x < SW && y < SH && d->scan_hit) {
                     fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
                     fb[y][x][1] = (d->scan_rgb >> 8) & 0xff;
@@ -234,6 +249,15 @@ int main(int argc, char** argv) {
     }
     int frames_swept = TOTAL_FRAMES;
 
+    {
+        long tot = 0;
+        for (int i = 0; i < 12; i++) tot += thist[i];
+        printf("the 3D sequencer, by state:\n");
+        for (int i = 0; i < 12; i++)
+            if (thist[i] > tot / 200)
+                printf("  %-10s %9ld  %5.1f%%\n", TNAME[i], thist[i],
+                       100.0 * thist[i] / tot);
+    }
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);

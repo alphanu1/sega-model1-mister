@@ -280,10 +280,10 @@ int main(int argc, char** argv) {
         long c0 = t.cycles;
         t.sort();
         long sc = t.cycles - c0;
-        printf("  sorting 2000 quads took %ld cycles (%.1f%% of a 397,515-cycle frame)\n",
-               sc, 100.0 * sc / 397515.0);
+        printf("  sorting 2000 quads took %ld cycles (%.1f%% of a 818,133-cycle frame)\n",
+               sc, 100.0 * sc / 818133.0);
         checks++;
-        if (sc > 397515) { fails++; printf("  FAIL the sort does not fit in a frame\n"); }
+        if (sc > 818133) { fails++; printf("  FAIL the sort does not fit in a frame\n"); }
     }
 
     printf("m1_quad_store: checks=%ld fails=%ld\n", checks, fails);

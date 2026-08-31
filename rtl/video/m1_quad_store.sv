@@ -92,7 +92,7 @@ module m1_quad_store #(
   // cost anything to skip. Its row range is computed once on the way IN and
   // stored as a six-bit mask, so a replay pass tests one bit instead of four
   // vertices. Without it the six passes cost ~20 cycles of setup per quad per
-  // band, which is 276,000 cycles of a 397,515-cycle frame spent on quads that
+  // band, which is 276,000 cycles of a 818,133-cycle frame spent on quads that
   // draw nothing.
   input  logic [BW-1:0] replay_band,
   input  logic        replay_start,
@@ -211,9 +211,7 @@ module m1_quad_store #(
   // ---------------------------------------------------------------- radix sort
   typedef enum logic [3:0] {
     R_IDLE, R_INIT, R_CNT,
-    R_CNT_A, R_CNT_B, R_CNT_C, R_CNT_D, R_CNT_E,
-    R_SUM,
-    R_SCAT_A, R_SCAT_B, R_SCAT_C, R_SCAT_D, R_SCAT_E,
+    R_CNT_RUN, R_SUM, R_SCAT_RUN,
     R_NEXT, R_DONE
   } rstate_t;
   rstate_t rst_st;
@@ -230,7 +228,12 @@ module m1_quad_store #(
   logic [IW:0]  acc;
   logic         which;                // 0: a -> b, 1: b -> a
   logic [IW-1:0] cur_idx;
-  logic [RADIX-1:0] cur_digit;
+  // The index that goes with the digit now leaving the pipeline: cur_idx has
+  // already moved on by the time its key comes back.
+  logic [IW-1:0] cidx_d;
+  // Three valid bits, one per stage of the two registered reads. Named for the
+  // sort; the replay path below has its own.
+  logic s0, s1, s2;
 
   assign sort_busy = (rst_st != R_IDLE);
 
@@ -254,6 +257,22 @@ module m1_quad_store #(
     key_rd <= key[cur_idx];
   end
 
+  // ONE ELEMENT PER CYCLE, NOT FIVE.
+  //
+  // Both reads are registered - an asynchronous read of `key` cost 65,536
+  // registers and is not coming back - so an element takes three cycles to walk
+  // from `ri` to a digit. Doing that as five sequential states meant the two
+  // block RAMs were idle four cycles in five, and it MEASURED as 812,776 cycles
+  // of the render bench, 7.1% of everything, for a sort of at most 2,048 items:
+  //
+  //     5 cycles x 2 loops x 8 passes x count   =  80 cycles a quad
+  //
+  // Pipelined it is 16 plus a three-cycle drain per loop. The replay path in
+  // this same module was already built this way; the sort was not, and the two
+  // sat forty lines apart.
+  wire pipe_busy = s0 || s1 || s2;
+  wire more      = (ri < count);
+
   // The RADIX-bit field selected by `pass`, taken with a shift so the width is a
   // parameter rather than four hand-written slices that stop matching it.
   wire [31:0] key_shifted = key_rd >> (RADIX * pass);
@@ -262,7 +281,8 @@ module m1_quad_store #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       rst_st <= R_IDLE; pass <= '0; ri <= '0; hi <= '0; acc <= '0;
-      which <= 1'b0; cur_idx <= '0; cur_digit <= '0;
+      which <= 1'b0; cur_idx <= '0; cidx_d <= '0;
+      s0 <= 1'b0; s1 <= 1'b0; s2 <= 1'b0;
       // NBUCK, not a hardcoded 256. Narrowing the radix left this loop walking
       // sixteen times past the end of both arrays - which Verilator tolerates
       // silently and Quartus rejects outright with "index 16 cannot fall outside
@@ -287,55 +307,57 @@ module m1_quad_store #(
 
         R_CNT: begin                       // clear the histogram
           hist[hi[RADIX-1:0]] <= '0;
-          if (hi == (RADIX+1)'(NBUCK-1)) begin hi <= '0; ri <= '0; rst_st <= R_CNT_A; end
+          if (hi == (RADIX+1)'(NBUCK-1)) begin
+            hi <= '0; ri <= '0;
+            s0 <= 1'b0; s1 <= 1'b0; s2 <= 1'b0;
+            rst_st <= R_CNT_RUN;
+          end
           else                                 hi <= hi + (RADIX+1)'(1);
         end
 
-        // FIVE CYCLES AN ELEMENT, because both memory reads are registered.
+        // Three stages, one element issued a cycle:
         //
-        //   A  the index address (ri) is settled; idx_rd lands at the end
-        //   B  take idx_rd into cur_idx, which addresses the key memory
-        //   C  key_rd lands at the end
-        //   D  take the digit
-        //   E  bump the histogram, advance
+        //   s0  idx_rd has landed for the element issued three cycles ago
+        //   s1  cur_idx holds it, and addresses the key memory
+        //   s2  key_rd has landed, so `digit` is that element's digit
         //
-        // The asynchronous version was three cycles and kept both arrays in
-        // flip-flops - 65,536 registers for the keys alone. Two cycles an element
-        // is what a block RAM costs, and this runs 2,000 elements four times
-        // against a 397,515-cycle frame.
-        R_CNT_A: rst_st <= R_CNT_B;
-        R_CNT_B: begin cur_idx <= idx_rd; rst_st <= R_CNT_C; end
-        R_CNT_C: rst_st <= R_CNT_D;
-        R_CNT_D: begin cur_digit <= digit; rst_st <= R_CNT_E; end
-        R_CNT_E: begin
-          hist[cur_digit] <= hist[cur_digit] + 1'b1;
-          if (ri + 1 >= count) begin
+        // cur_idx has moved on by s2, so the index that belongs with the digit
+        // is carried alongside in cidx_d rather than re-derived.
+        R_CNT_RUN: begin
+          if (more) ri <= ri + 1'b1;
+          s0 <= more; s1 <= s0; s2 <= s1;
+          cur_idx <= idx_rd;
+          cidx_d  <= cur_idx;
+          if (s2) hist[digit] <= hist[digit] + 1'b1;
+          if (!more && !pipe_busy) begin
             hi <= '0; acc <= '0; rst_st <= R_SUM;
-          end else begin
-            ri     <= ri + 1'b1;
-            rst_st <= R_CNT_A;
           end
         end
 
         R_SUM: begin                       // exclusive prefix sum
           base[hi[RADIX-1:0]] <= acc;
           acc <= acc + hist[hi[RADIX-1:0]];
-          if (hi == (RADIX+1)'(NBUCK-1)) begin ri <= '0; rst_st <= R_SCAT_A; end
-          else                                 hi <= hi + (RADIX+1)'(1);
+          if (hi == (RADIX+1)'(NBUCK-1)) begin
+            ri <= '0; s0 <= 1'b0; s1 <= 1'b0; s2 <= 1'b0;
+            rst_st <= R_SCAT_RUN;
+          end else hi <= hi + (RADIX+1)'(1);
         end
 
-        // The scatter has the same shape, and the write at the end is what makes
-        // the sort stable: elements are placed in the order they are walked.
-        R_SCAT_A: rst_st <= R_SCAT_B;
-        R_SCAT_B: begin cur_idx <= idx_rd; rst_st <= R_SCAT_C; end
-        R_SCAT_C: rst_st <= R_SCAT_D;
-        R_SCAT_D: begin cur_digit <= digit; rst_st <= R_SCAT_E; end
-        R_SCAT_E: begin
-          if (which) idx_a[base[cur_digit][IW-1:0]] <= cur_idx;
-          else       idx_b[base[cur_digit][IW-1:0]] <= cur_idx;
-          base[cur_digit] <= base[cur_digit] + 1'b1;
-          if (ri + 1 >= count) rst_st <= R_NEXT;
-          else begin ri <= ri + 1'b1; rst_st <= R_SCAT_A; end
+        // The same pipeline, with a write at the end. The write order IS the
+        // walk order, which is what makes the sort stable and therefore what
+        // makes submission order the tie-break, exactly as quad_t::compare has
+        // it.
+        R_SCAT_RUN: begin
+          if (more) ri <= ri + 1'b1;
+          s0 <= more; s1 <= s0; s2 <= s1;
+          cur_idx <= idx_rd;
+          cidx_d  <= cur_idx;
+          if (s2) begin
+            if (which) idx_a[base[digit][IW-1:0]] <= cidx_d;
+            else       idx_b[base[digit][IW-1:0]] <= cidx_d;
+            base[digit] <= base[digit] + 1'b1;
+          end
+          if (!more && !pipe_busy) rst_st <= R_NEXT;
         end
 
         R_NEXT: begin
