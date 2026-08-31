@@ -61,6 +61,26 @@ figure from the fitter's RAM summary, not from the bit count.**
 
 ---
 
+## What the core costs today
+
+`make rbf`, Quartus 17.0, **2026-08-31**, 0 errors, worst setup **+0.318 ns**,
+no negative TNS on any clock:
+
+    36,979 ALM of 41,910   88%      4,931 free
+       504 M10K of 553     91%         49 free
+        53 DSP  of 112     47%
+
+      s32_v60:cpu        17,264 ALM   47% of the whole design
+      m1_raster3d         6,977 ALM   922,912 bits
+      m1_tgp              2,434 ALM
+      m1_video              789 ALM
+      m1_diag (overlay)     176 ALM
+      m1_integrated      29,097 ALM total
+
+So the sound section as measured needs **8,837 ALM against 4,931 free** and
+**84 M10K against 49 free**. Neither fits; the memory fits after the work-RAM
+move and the logic does not fit at all.
+
 ## The two constraints, and they pull in opposite directions
 
 - **M10K** is solved by decision D5's precedent: put the 68000's work RAM in
@@ -78,19 +98,19 @@ estimate. See `docs/findings.md` for the entries behind each.
 
 | Lever | ALM | Verdict |
 |---|---|---|
-| **The V60** | 17,453 in-core, **48% of the whole design** | the only block big enough |
+| **The V60** | 17,264 in-core, **47% of the whole design** | the only block big enough |
 | ├ FP group | -1,942 standalone | **BLOCKED** — a run under `S32_V60_NO_FP` executes a *reserved* FP opcode at `FED52B`. That is a symptom of the V60 reaching a page MAME never enters, not evidence the game uses FP, and removing the group trades one wrong behaviour for another. |
 | ├ realign shift 8 | -46 in-core | already reverted; it was 485 standalone, which is the standalone-vs-in-core trap again |
 | ├ loop cache | -167, +4% CPI | worst ratio of the three; stays |
 | └ **the V60 itself** | Model 2's i960 does the equivalent job in **7,200** | this is the lever. See below. |
-| `m1_raster3d` | 6,597 | the picture; not available |
-| `m1_tgp` | 2,423 | the coprocessor; not available |
-| `m1_diag` overlay | 183 | not worth the debugging it would cost |
+| `m1_raster3d` | 6,977 | the picture; not available |
+| `m1_tgp` | 2,434 | the coprocessor; not available |
+| `m1_diag` overlay | 176 | not worth the debugging it would cost |
 | Aggressive Area on the full core | -469 to -595, **+11 M10K** and almost all the setup slack | measured twice; it spends the binding resource to save the plentiful one |
 
 ### The V60 is the answer and it is a project, not a knob
 
-17,453 ALM for a CPU that retires in 3 cycles against a bus that is the actual
+17,264 ALM for a CPU that retires in 3 cycles against a bus that is the actual
 bottleneck (`docs/findings.md`, "SPEED: 35.0 -> 23.7 cycles per instruction").
 Model 2's i960 — a wider, faster machine — is **7,200**. The V60 arrived from the
 s32 project as a 4,601-line FSM with 128 distinct adder nodes and an FSM that

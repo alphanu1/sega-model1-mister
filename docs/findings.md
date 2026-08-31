@@ -6966,3 +6966,99 @@ That is `vtx0..3` (26 M10K), `key` (8), `att` (10) and `idx_a`/`idx_b` (5) again
 So 28.8 Hz for the 3D over 57.5 Hz for the 2D is the shape of this design until
 either the quad store shrinks or the geometry reaches ~77,000 cycles, which is
 what fits in vblank. **Not a throughput problem any more.**
+
+---
+
+## 28.8 Hz IS THE BOARD'S OWN GEOMETRY RATE — measured, not a shortfall — 2026-08-31
+
+Our 3D layer completes a render pass every second frame, and the entry above
+calls that a consequence of the quad store. It is also **exactly what the
+reference does**, which changes what it means.
+
+`tools/mame_listctl_rate.lua`, 2,000 frames of `vr`:
+
+    bit 2 (automatic double buffer) set on 4 frames
+    buffer flipped 996 times
+    frames between flips:  2 frames: 993 times
+                           1 frame: 1,  3 frames: 1,  10 frames: 1
+    register values:  00b2 on 1,001 frames,  00fa on 995
+    => new geometry at 28.64 Hz of a 57.52 Hz refresh
+
+**Virtua Racing presents a new display list every two frames.** 993 of 996 flips
+are exactly two frames apart; the three exceptions are at the boot/attract
+transition.
+
+And it does it **by hand**, not through the hardware's automatic mode:
+`model1_v.cpp:1351` toggles bit 6 on odd frames only when bit 2 is set, and bit 2
+is set on 4 frames of 2,000. The game alternates `00b2` and `00fa` — bit 3, which
+bit 6 mirrors on the `!(listctl[0] & 4)` path. `m1_listctl` already implements
+both paths; the measurement says which one is used.
+
+**So the 3D layer running at 28.8 Hz over a 57.5 Hz 2D layer is the hardware, not
+a compromise.** A 3D layer that updated every frame would be rendering the same
+display list twice. The band architecture's cadence and the game's happen to
+agree, which is luck rather than design - but the number to hold it to is 28.64,
+and it meets it.
+
+---
+
+## MAME CANNOT RUN `vr` IN THIS TREE WITHOUT A DEVICE-ROM OVERLAY — 2026-08-31
+
+Every instrument in this project, and `make v60_trace` and `make tgp_trace` with
+them, dies before the machine starts:
+
+    epr-14869.25 NOT FOUND (tried in model1io vr)
+    epr-15112.17 NOT FOUND (tried in m1comm vr)
+    Fatal error: Required files are missing, the machine cannot be run.
+
+These are **device** ROM sets, not part of `vr.zip`: the I/O board's own 68000
+firmware and the comm board's. MAME 0.289 treats both as required and will not
+start, and `-video none` means there is no warning screen to dismiss - the
+documented "press a key once and autoboot proceeds" does not apply to a fatal
+error.
+
+Both are on this machine, in other sets:
+
+    epr-14869.25   ~/roms/Model2/daytona93/
+    epr-15624.17   ~/roms/vr/vformula/     (the OTHER m1comm bios)
+
+`epr-15112.17` is on no disk here — not in `vr.zip`, not in `vr.7z`, not in the
+decapped set. The overlay in `build/roms/` supplies `epr-15624.17` under that
+name, which MAME accepts with a `WRONG CHECKSUMS` warning and runs. The comm
+board is not linked in a standalone run and the V60 only touches it at
+`0xb00000`-`0xb01002`, so the substitution is visible in the log and not in the
+measurement — **but say so whenever a result comes from a run made this way.**
+
+    mame vr -rompath "$HOME/roms;<project>/build/roms" \
+            -skip_gameinfo -autoboot_delay 0 -video none -sound none -nothrottle \
+            -autoboot_script <script>.lua
+
+`build/roms/` is gitignored like everything else under `build/`, so hard rule 2
+holds. `tools/mame_run.sh` wraps this so it is not re-derived a third time.
+
+---
+
+## THE 3D REWORK COSTS 369 ALM — the whole day's work, measured — 2026-08-31
+
+`make rbf`, Quartus 17.0, 0 errors, and no negative TNS on any clock:
+
+    36,979 ALM of 41,910   88%      4,931 free   (+369 on 36,610)
+       504 M10K of 553     91%         49 free
+        53 DSP  of 112     47%
+    worst setup slack   +0.318 ns
+
+    s32_v60:cpu        17,264 ALM   47% of the whole design
+    m1_raster3d         6,977 ALM   922,912 bits
+    m1_tgp              2,434 ALM
+    m1_video              789 ALM
+    m1_diag (overlay)     176 ALM
+
+**+369 ALM for all of it** — three band buffers instead of two, a radix-4
+divider, a sort pipelined to one element a cycle, and a geometry walker
+restructured from a chain into a dataflow schedule with a ROM prefetch. The
+throughput came from scheduling, and scheduling is cheap.
+
+**M10K at 91% with 49 free is now the number to watch.** The sound section needs
+84 as measured and about 20 once the 68000's work RAM moves to SDRAM, so it fits
+- and a double-buffered quad store, the thing that would take the 3D layer to
+57 Hz, wants 49 more and does not.

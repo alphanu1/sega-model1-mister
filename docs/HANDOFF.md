@@ -51,8 +51,13 @@ is +49 M10K. Not a throughput problem any more.
 **Next:** `docs/m4-sound-budget.md`. The sound section is 8,837 ALM and 84 M10K
 measured from the sibling core's own fit report, the 68000's work RAM is 64 of
 that M10K and belongs in SDRAM by decision D5's precedent, and the ALM has to
-come out of the V60 — 17,453 in-core, 48% of the design, against Model 2's i960
+come out of the V60 — 17,264 in-core, 47% of the design, against Model 2's i960
 at 7,200.
+
+**The build after all of today's work**, `make rbf`, Quartus 17.0, 0 errors:
+**36,979 ALM (88%), 504 M10K (91%), 53 DSP, worst setup +0.318 ns**, no negative
+TNS on any clock. The whole 3D rework — three band buffers, the radix-4 divider,
+the pipelined sort and the dataflow walker — is **+369 ALM** net.
 
 ## 2026-08-30 (evening) — the coprocessor is bit-exact, and the deadlock and scroll are two bugs
 
