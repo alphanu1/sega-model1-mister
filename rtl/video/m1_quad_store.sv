@@ -300,6 +300,13 @@ module m1_quad_store #(
   logic [IW:0]  pi;
   logic [IW-1:0] q;
 
+  // QUARTUS WILL NOT TAKE A BIT-SELECT OF A PART-SELECT.
+  // `att[q][AT_W-1:25][replay_band]` is legal to Verilator and is rejected by
+  // Quartus 17.0 with "range must be the final index in the indexed name", which
+  // is a synthesis error and not a simulation one - so it passed every bench and
+  // failed the first real build. Split into a named wire.
+  wire [NBANDS-1:0] q_band_mask = att[q][AT_W-1:25];
+
   // After four passes the result is back in idx_a: each pass flips `which`, and
   // four flips return it. Stated rather than tracked, because a fifth pass added
   // later would silently read the wrong array.
@@ -322,7 +329,7 @@ module m1_quad_store #(
         end
         P_ADDR: begin q <= ord_idx; p_st <= P_RD1; end
         P_RD1:  p_st <= P_RD2;
-        P_RD2: if (!att[q][AT_W-1:25][replay_band]) begin
+        P_RD2: if (!q_band_mask[replay_band]) begin
           // Not in this band: step straight to the next quad without emitting.
           if (pi + 1 >= count) p_st <= P_IDLE;
           else begin pi <= pi + 1'b1; p_st <= P_ADDR; end

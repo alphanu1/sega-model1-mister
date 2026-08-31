@@ -108,6 +108,9 @@ int main(int argc, char** argv) {
         memories();
         cycles++; d->clk = 0; d->scan_clk = 0; d->eval();
         d->dl_valid = dreq; d->rom_valid = rreq;
+        // tgp_ram is READ/WRITE: display-list command 4 fills it. Modelling it
+        // read-only would have hidden that the module never wrote it at all.
+        if (treq && d->tex_we) tgpram[taddr & 0xfffff] = d->tex_wdata;
         d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
         d->clk = 1; d->scan_clk = 1; d->eval();
@@ -144,6 +147,19 @@ int main(int argc, char** argv) {
                             | ((uint32_t)lp.p << 24);
             pro[w++] = packed & 0xffff; pro[w++] = packed >> 16;
         }
+        // ---- and a command 4, so the tgp_ram WRITE PATH is exercised.
+        //
+        // Frame 900's list contains no command 4 either - the colour words are
+        // uploaded earlier and persist, exactly like the light banks - so
+        // without this the write path would be dead code that the render never
+        // touches, while the picture came out right off the preloaded dump.
+        // Sixteen known words at a known address, checked below.
+        const uint32_t TEX_BASE = 0x40000 + 0x1234;
+        pro[w++] = 4; pro[w++] = 0;
+        pro[w++] = TEX_BASE & 0xffff; pro[w++] = TEX_BASE >> 16;
+        pro[w++] = 15; pro[w++] = 0;            // command 4's length is n-1
+        for (int i = 0; i < 16; i++) { pro[w++] = (uint16_t)(0xC000 + i * 7); pro[w++] = 0; }
+
         pro[w++] = 0x0f; pro[w++] = 0;          // end
         std::vector<uint16_t> real = dlist;
         dlist = pro;
@@ -155,6 +171,22 @@ int main(int argc, char** argv) {
         while (++g < 20000000 && d->dbg_frames == 1 && !d->disp_valid) tick();
         for (int k = 0; k < 200000; k++) tick();
         printf("light banks uploaded through command 6 (%zu words)\n", w);
+
+        // The colour words must actually be in tgp_ram now.
+        {
+            int bad = 0;
+            for (int i = 0; i < 16; i++) {
+                uint16_t want = (uint16_t)(0xC000 + i * 7);
+                uint16_t got  = tgpram[(0x1234 + i) & 0xfffff];
+                if (got != want) {
+                    if (bad++ < 4)
+                        printf("  FAIL tgp_ram[%04x] = %04x, command 4 sent %04x\n",
+                               0x1234 + i, got, want);
+                }
+            }
+            if (bad) { printf("  command 4 did NOT write tgp_ram (%d of 16 wrong)\n", bad); return 1; }
+            printf("command 4 wrote 16 colour words into tgp_ram, all verified\n");
+        }
         dlist = real;
     }
 

@@ -637,8 +637,8 @@ module m1_integrated (
   logic        r3_rom_req, r3_rom_valid;
   logic [31:0] r3_rom_data;
   logic [19:0] r3_tex_addr;
-  logic        r3_tex_req, r3_tex_valid;
-  logic [15:0] r3_tex_data;
+  logic        r3_tex_req, r3_tex_valid, r3_tex_we;
+  logic [15:0] r3_tex_data, r3_tex_wdata;
   logic [14:0] r3_dl_addr;
   logic        r3_dl_req, r3_dl_valid;
   wire  [15:0] r3_dl_data;
@@ -678,6 +678,7 @@ module m1_integrated (
     .rom_addr(r3_rom_addr), .rom_req(r3_rom_req),
     .rom_valid(r3_rom_valid), .rom_data(r3_rom_data),
     .tex_addr(r3_tex_addr), .tex_req(r3_tex_req),
+    .tex_we(r3_tex_we), .tex_wdata(r3_tex_wdata),
     .tex_valid(r3_tex_valid), .tex_data(r3_tex_data),
     .pal_addr(r3_pal_addr), .pal_data(r3d_pal_data),
     .xlat_addr(r3_xlat_addr), .xlat_data(r3d_xlat_data),
@@ -728,9 +729,9 @@ module m1_integrated (
   // uploads colour words into it.
   m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_r3d_tex_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
-    .a_req(r3_tex_req), .a_we(1'b0),
+    .a_req(r3_tex_req), .a_we(r3_tex_we),
     .a_addr(TGP_RAM_BASE + {4'd0, r3_tex_addr}),
-    .a_din(16'd0), .a_be(2'b11),
+    .a_din(r3_tex_wdata), .a_be(2'b11),
     .a_dout(r3_tex_data), .a_ack(r3_tex_valid), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(r3d_tex_req), .b_we(r3d_tex_we), .b_addr(r3d_tex_addr),

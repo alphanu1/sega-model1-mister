@@ -81,6 +81,8 @@ module m1_raster3d #(
   // ---- colour word memory, palette and colour translation. Registered reads.
   output logic [19:0] tex_addr,
   output logic        tex_req,
+  output logic        tex_we,
+  output logic [15:0] tex_wdata,
   input  logic        tex_valid,
   input  logic [15:0] tex_data,
   output logic [12:0] pal_addr,
@@ -162,7 +164,10 @@ module m1_raster3d #(
   // ignores everything including its own start, so stalling in T_IDLE means the
   // walk never begins - which reads as an empty display list rather than as a
   // handshake fault: zero objects, zero quads, no error.
-  wire lw_stall = (st != T_WALK) && (st != T_IDLE);
+  // Held while a colour write is still outstanding as well: the walk emits one
+  // body item per cycle and an SDRAM write takes far longer, so without this the
+  // second item would overwrite the first before it left.
+  wire lw_stall = ((st != T_WALK) && (st != T_IDLE)) || w_tex_req;
 
   m1_listwalk u_walk (
     .clk(clk), .rst_n(rst_n),
@@ -198,6 +203,30 @@ module m1_raster3d #(
   logic [31:0] q_z;
   logic        q_moire;
   logic [15:0] g_rec, g_qds, g_cull, g_nolink;
+
+  // ---------------------------------------------------------- tgp_ram writes
+  //
+  // DISPLAY-LIST COMMAND 4 IS THE ONLY THING THAT EVER FILLS tgp_ram, and it is
+  // where every polygon's colour word comes from. Walking the list without
+  // performing those writes leaves the memory holding whatever SDRAM powered up
+  // with, so the geometry is perfect and every colour is noise - and nothing
+  // reports an error, because a colour word has no invalid value.
+  //
+  // The port is shared with the geometry's reads. They cannot collide: the walk
+  // is stalled whenever the geometry is running, so a command-4 upload and a
+  // polygon's colour fetch are never outstanding at the same time.
+  logic [19:0] geo_tex_addr;
+  logic        geo_tex_req, geo_tex_valid;
+  logic [19:0] w_tex_addr;
+  logic        w_tex_req;
+  logic [15:0] w_tex_data;
+  logic [19:0] tex_base;
+
+  assign tex_addr      = w_tex_req ? w_tex_addr : geo_tex_addr;
+  assign tex_req       = w_tex_req || geo_tex_req;
+  assign tex_we        = w_tex_req;
+  assign tex_wdata     = w_tex_data;
+  assign geo_tex_valid = tex_valid && !w_tex_req;
 
   // ---------------------------------------------------------------- light bank
   logic [7:0]  lp_addr;
@@ -235,8 +264,8 @@ module m1_raster3d #(
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
-    .tex_addr(tex_addr), .tex_req(tex_req),
-    .tex_valid(tex_valid), .tex_data(tex_data),
+    .tex_addr(geo_tex_addr), .tex_req(geo_tex_req),
+    .tex_valid(geo_tex_valid), .tex_data(tex_data),
     .lp_addr(lp_addr), .lp_d(lp_d), .lp_a(lp_a), .lp_s(lp_s), .lp_p(lp_p),
     .pal_addr(pal_addr), .pal_data(pal_data),
     .xlat_addr(xlat_addr), .xlat_data(xlat_data),
@@ -440,6 +469,7 @@ module m1_raster3d #(
       vspec <= 1'b0;
       rlx <= '0; rly <= '0; rlz <= '0; light_pending <= 1'b0;
       lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
+      w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0;
@@ -451,6 +481,22 @@ module m1_raster3d #(
       // command changes state for every object that follows it.
       // The viewport centre, converted and latched. Driven from the event and
       // taken the same cycle, since fp_from_int is combinational.
+      // ---- colour word uploads, command 4, into tgp_ram
+      //
+      // The header gives a base address and a length; the body items are the
+      // words. MAME indexes m_tgp_ram[adr - 0x40000 + i], so the base is
+      // subtracted here exactly as m1_geo_walk subtracts it on the read side.
+      if (w_tex_req && tex_valid) w_tex_req <= 1'b0;
+      if (lw_ev_valid && lw_ev_kind == 8'h04) begin
+        if (!lw_ev_body) begin
+          if (lw_ev_idx == 16'd0) tex_base <= lw_ev_data[19:0] - 20'h40000;
+        end else begin
+          w_tex_req  <= 1'b1;
+          w_tex_addr <= tex_base + {4'd0, lw_ev_idx};
+          w_tex_data <= lw_ev_data[15:0];
+        end
+      end
+
       // ---- light parameter uploads, command 6
       lb_we <= 1'b0;
       if (lw_ev_valid && lw_ev_kind == 8'h06) begin
