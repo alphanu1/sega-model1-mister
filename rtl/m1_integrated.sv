@@ -703,7 +703,18 @@ module m1_integrated (
   // a burst port's address must be burst-aligned - so the request is aligned
   // down and bit 0 of the model address picks which half came back. Exactly the
   // arrangement u_tgp_mem_cdc uses on p3, and for the same reason.
-  wire [24:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr[22:1], 2'b00};
+  // THE FULL ADDRESS CROSSES, AND THE ALIGNMENT HAPPENS AT THE SDRAM PIN.
+  //
+  // Aligning here instead destroys the very bit the half-select needs. POLY_BASE
+  // is 4-aligned and forcing the low two bits to zero makes rom_sdram_addr[1]
+  // always zero - so every odd model word came back with the EVEN word's data
+  // and half of every polygon model was wrong. On the board that is objects of
+  // the wrong shape, which is what it looked like.
+  //
+  // p3 has always done it the other way and this was meant to copy it: the whole
+  // address goes through the CDC, bit 1 still carries the model word's low bit,
+  // and Model1.sv aligns down with {addr[24:2], 1'b0} on the way to the port.
+  wire [24:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr, 1'b0};
 
   m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) u_r3d_rom_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
@@ -713,17 +724,9 @@ module m1_integrated (
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(r3d_rom_req), .b_we(), .b_addr(r3d_rom_addr),
     .b_din(), .b_be(),
-    .b_dout(r3_rom_half ? r3d_rom_dout[63:32] : r3d_rom_dout[31:0]),
+    .b_dout(r3d_rom_addr[1] ? r3d_rom_dout[63:32] : r3d_rom_dout[31:0]),
     .b_ack(r3d_rom_ack)
   );
-
-  // Which half of the burst was wanted, held across the transaction because
-  // r3_rom_addr moves on as soon as the request is accepted.
-  logic r3_rom_half;
-  always_ff @(posedge clk_sys or negedge rst_n_sys) begin
-    if (!rst_n_sys)         r3_rom_half <= 1'b0;
-    else if (r3d_rom_req)   r3_rom_half <= r3d_rom_addr[1];
-  end
 
   // ---- tgp_ram, through p6. Single word, and writable: display-list command 4
   // uploads colour words into it.

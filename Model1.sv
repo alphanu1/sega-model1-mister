@@ -366,7 +366,10 @@ module emu
 // is a uniform pattern that looks like a video bug rather than an address one.
 // p3's address is aligned down to its 4-word burst boundary; m1_integrated keeps
 // bit 1 to pick which 32-bit half of the burst it wanted.
-assign p_addr = {r3d_tex_addr, r3d_rom_addr, rb_addr,
+// p5's address is aligned DOWN to its 4-word burst boundary here, the same way
+// p3's is on the line below - m1_integrated keeps bit 1 to pick which 32-bit half
+// of the burst it wanted.
+assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0}, rb_addr,
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
