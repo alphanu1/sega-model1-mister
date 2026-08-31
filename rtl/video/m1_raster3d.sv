@@ -87,7 +87,13 @@ module m1_raster3d #(
 
   // ---- frame control, already synchronised to clk
   input  logic        frame_start,    // one pulse at the start of vblank
-  input  logic        dl_sel,         // which display list buffer to walk
+  // Which display list buffer to walk, live from listctl on the CPU clock, and
+  // the LATCHED choice this module actually uses. The pass takes about 48% of a
+  // frame and the game swaps buffers every second frame, so walking the live bit
+  // builds a list out of two halves. MAME latches it once per render too
+  // (set_current_render_list, model1_v.cpp:1338).
+  input  logic        dl_sel,
+  output logic        dl_sel_q,
 
   // ---- display list, 16-bit words
   output logic [14:0] dl_addr,
@@ -584,6 +590,20 @@ module m1_raster3d #(
   // that independence IS the third buffer - and when they coincide the three
   // slots rotate in one step.
   // The band phase, as opposed to the walk and the sort that precede it.
+  // Two flops, then latched at the pass start. `dl_sel` is a level from another
+  // domain that only changes once every two frames, so the synchroniser is all
+  // it needs; the latch is about WHEN it is sampled, not about the crossing.
+  logic dl_sel_s1, dl_sel_s2;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dl_sel_s1 <= 1'b0; dl_sel_s2 <= 1'b0; dl_sel_q <= 1'b0;
+    end else begin
+      dl_sel_s1 <= dl_sel;
+      dl_sel_s2 <= dl_sel_s1;
+      if ((st == T_IDLE) && frame_start) dl_sel_q <= dl_sel_s2;
+    end
+  end
+
   wire in_bands = (st == T_BAND_CLR) || (st == T_BAND_CLRW) || (st == T_REPLAY)
                || (st == T_FILL)     || (st == T_FILLW)     || (st == T_BAND_WAIT);
 

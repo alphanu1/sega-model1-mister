@@ -54,8 +54,27 @@ SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/video/m1_diag.sv \
   rtl/video/m1_listctl.sv \
-  rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/m1_main.sv rtl/m1_integrated.sv \
+  rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv $(SRCS_3D) \
+  rtl/m1_main.sv rtl/m1_integrated.sv \
   rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
+
+# THE 3D LAYER IS PART OF m1_integrated, so every bench that elaborates it needs
+# these. `make m1_frame` had been failing at elaboration with
+# "Cannot find file containing module: 'm1_raster3d'" since the layer was wired
+# in - the error names the instantiating file, not the missing source, so it
+# reads as a fault in m1_integrated.
+#
+# WITHOUT fp_mul/fp_add/fp_div: SRCS_mb86233_core already carries them, and
+# Verilator rejects the duplicate module rather than ignoring it.
+SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv \
+  rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv \
+  rtl/video/m1_geo_det.sv rtl/video/m1_geo_norm.sv \
+  rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_color.sv \
+  rtl/video/m1_fp_pool.sv rtl/video/fp_to_int.sv rtl/video/fp_from_int.sv \
+  rtl/video/m1_lightbank.sv rtl/video/m1_listwalk.sv \
+  rtl/video/m1_quad_store.sv rtl/video/m1_raster_div.sv \
+  rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv \
+  rtl/video/m1_raster3d.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv

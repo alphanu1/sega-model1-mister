@@ -335,7 +335,8 @@ module m1_integrated (
     // The 3D layer's second ports into the display lists, the colour-translation
     // table and the palette mirror, all read from clk_3d.
     .r3d_clk(clk_3d),
-    .r3d_dl_addr(r3d_dl_addr), .r3d_dl_data(r3d_dl_data), .r3d_dl_sel(r3d_dl_sel),
+    .r3d_dl_addr(r3d_dl_addr), .r3d_dl_data(r3d_dl_data),
+    .listctl_sel(listctl_sel), .r3d_dl_sel(r3d_dl_sel),
     .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
     .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
     .vblank_irq(vblank_irq_cpu),
@@ -653,6 +654,9 @@ module m1_integrated (
   // The read ports m1_main exposes for the 3D layer, and the buffer select.
   logic [14:0] r3d_dl_addr;
   wire  [15:0] r3d_dl_data;
+  // The live listctl bit out of m1_main, and the latched one coming back from
+  // the 3D layer. The read port uses the latched one.
+  wire         listctl_sel;
   wire         r3d_dl_sel;
   logic [14:0] r3d_xlat_addr;
   wire  [15:0] r3d_xlat_data;
@@ -672,7 +676,7 @@ module m1_integrated (
 
   m1_raster3d u_raster3d (
     .clk(clk_3d), .rst_n(rst_n_3d),
-    .frame_start(frame_start_3d), .dl_sel(r3d_dl_sel),
+    .frame_start(frame_start_3d), .dl_sel(listctl_sel), .dl_sel_q(r3d_dl_sel),
     .dl_addr(r3_dl_addr), .dl_req(r3_dl_req),
     .dl_valid(r3_dl_valid), .dl_data(r3_dl_data),
     .rom_addr(r3_rom_addr), .rom_req(r3_rom_req),

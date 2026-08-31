@@ -153,10 +153,21 @@ module m1_main #(
   output logic [15:0] r3d_xlat_data,
   input  logic [9:0]  r3d_pal_addr,
   output logic [15:0] r3d_pal_data,
-  // Which display list the video hardware should render, from listctl bit 6.
-  // The 3D layer must walk the SAME buffer the game finished writing, and that
-  // choice is m1_listctl's - re-deriving it here would be a second opinion.
-  output logic        r3d_dl_sel,
+  // Which display list the video hardware should render.
+  //
+  // `listctl_sel` is the live register bit, on the CPU clock. `r3d_dl_sel` is
+  // the LATCHED choice coming back from the 3D layer, and it is what the read
+  // port actually uses.
+  //
+  // THE LIVE BIT CANNOT DRIVE THE READ PORT. The walk takes about 48% of a
+  // frame and the game swaps buffers at some point inside that - measured at
+  // every second frame, tools/mame_listctl_rate.lua - so a walk in progress
+  // would switch buffers halfway and build a display list out of two. MAME
+  // takes the same care: set_current_render_list() assigns
+  // m_display_list_current once, at the start of a render, and everything
+  // afterwards reads that pointer.
+  output logic        listctl_sel,
+  input  logic        r3d_dl_sel,
 
   input  logic        vblank_irq,
 
@@ -323,7 +334,7 @@ module m1_main #(
     .vid_clk(vid_clk),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
-    .r3d_clk(r3d_clk), .r3d_dl_addr(r3d_dl_addr), .r3d_dl_sel(listctl_sel),
+    .r3d_clk(r3d_clk), .r3d_dl_addr(r3d_dl_addr), .r3d_dl_sel(r3d_dl_sel),
     .r3d_dl_data(r3d_dl_data),
     .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
     .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
@@ -417,8 +428,6 @@ module m1_main #(
   // counts — tw_vb_d already tracks it for the tile census, so reuse that rather
   // than add a second delay register that could disagree with it.
   logic [15:0] listctl_q;
-  logic        listctl_sel;
-  assign r3d_dl_sel = listctl_sel;
 
   m1_listctl u_listctl (
     .clk(clk), .rst_n(rst_n),
