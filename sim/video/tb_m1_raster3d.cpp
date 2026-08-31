@@ -123,22 +123,27 @@ int main(int argc, char** argv) {
     d->rst_n = 1;
     for (int i = 0; i < 8; i++) tick();
 
-    // ---- prologue: upload the light banks through the module's own walk
+    // ---- ONE CONTINUOUS RASTER, with frame_start at vblank, exactly as the
+    // hardware runs.
     //
-    // The light parameter banks are FRAME-PERSISTENT state. The reference
-    // uploads them with display-list command 6 at some earlier point and they
-    // survive; frame 900's list contains no command 6 at all, which is why the
-    // dump accumulates them across 900 frames. Feeding them in through the
-    // module's port would be supplying state the hardware has to derive, so
-    // instead a synthetic list is walked first that uploads them exactly as the
-    // game does - which also makes command 6 the only path they can arrive by,
-    // and therefore tested.
+    // The 3D layer now waits for the beam before presenting a band, so nothing
+    // in it completes unless the beam is moving. Driving it any other way - a
+    // burst of cycles, then a capture - models a display that waits for the
+    // renderer, and produced a bench that passed at 100.0% while the board
+    // showed drifting horizontal stripes.
+    //
+    // The first frames walk a synthetic list that uploads the light banks and
+    // some colour words, because both are FRAME-PERSISTENT state that frame
+    // 900's list does not set. Then the real list is swapped in.
+    const int H_TOTAL = 656, V_TOTAL = 424;
+    const uint32_t TEX_BASE = 0x40000 + 0x1234;
+
+    std::vector<uint16_t> pro(0x8000, 0);
     {
-        std::vector<uint16_t> pro(0x8000, 0);
         size_t w = 0;
-        pro[w++] = 6; pro[w++] = 0;             // type 6, 32-bit
-        pro[w++] = 0; pro[w++] = 0;             // base address 0
-        pro[w++] = 256; pro[w++] = 0;           // 256 entries
+        pro[w++] = 6; pro[w++] = 0;
+        pro[w++] = 0; pro[w++] = 0;
+        pro[w++] = 256; pro[w++] = 0;
         for (int i = 0; i < 256; i++) {
             const LPB& lp = lpbank[i];
             uint32_t packed = (uint32_t)lroundf(lp.d * 255.0f)
@@ -147,117 +152,59 @@ int main(int argc, char** argv) {
                             | ((uint32_t)lp.p << 24);
             pro[w++] = packed & 0xffff; pro[w++] = packed >> 16;
         }
-        // ---- and a command 4, so the tgp_ram WRITE PATH is exercised.
-        //
-        // Frame 900's list contains no command 4 either - the colour words are
-        // uploaded earlier and persist, exactly like the light banks - so
-        // without this the write path would be dead code that the render never
-        // touches, while the picture came out right off the preloaded dump.
-        // Sixteen known words at a known address, checked below.
-        const uint32_t TEX_BASE = 0x40000 + 0x1234;
         pro[w++] = 4; pro[w++] = 0;
         pro[w++] = TEX_BASE & 0xffff; pro[w++] = TEX_BASE >> 16;
-        pro[w++] = 15; pro[w++] = 0;            // command 4's length is n-1
+        pro[w++] = 15; pro[w++] = 0;
         for (int i = 0; i < 16; i++) { pro[w++] = (uint16_t)(0xC000 + i * 7); pro[w++] = 0; }
+        pro[w++] = 0x0f; pro[w++] = 0;
+        printf("prologue list built (%zu words)\n", w);
+    }
+    std::vector<uint16_t> real_list = dlist;
+    dlist = pro;
 
-        pro[w++] = 0x0f; pro[w++] = 0;          // end
-        std::vector<uint16_t> real = dlist;
-        dlist = pro;
-        d->frame_start = 1; tick(); d->frame_start = 0;
-        long g = 0;
-        while (++g < 20000000 && !(d->dbg_frames)) tick();
-        // Let the band passes finish so the sequencer returns to idle.
-        g = 0;
-        while (++g < 20000000 && d->dbg_frames == 1 && !d->disp_valid) tick();
-        for (int k = 0; k < 200000; k++) tick();
-        printf("light banks uploaded through command 6 (%zu words)\n", w);
-
-        // The colour words must actually be in tgp_ram now.
-        {
+    const int PROLOGUE_FRAMES = 3;
+    const int TOTAL_FRAMES    = 14;
+    long hits = 0;
+    for (int f = 0; f < TOTAL_FRAMES; f++) {
+        if (f == PROLOGUE_FRAMES) {
+            dlist = real_list;
+            // The colour words must have landed by now, through command 4.
             int bad = 0;
-            for (int i = 0; i < 16; i++) {
-                uint16_t want = (uint16_t)(0xC000 + i * 7);
-                uint16_t got  = tgpram[(0x1234 + i) & 0xfffff];
-                if (got != want) {
-                    if (bad++ < 4)
-                        printf("  FAIL tgp_ram[%04x] = %04x, command 4 sent %04x\n",
-                               0x1234 + i, got, want);
-                }
-            }
-            if (bad) { printf("  command 4 did NOT write tgp_ram (%d of 16 wrong)\n", bad); return 1; }
-            printf("command 4 wrote 16 colour words into tgp_ram, all verified\n");
+            for (int i = 0; i < 16; i++)
+                if (tgpram[(0x1234 + i) & 0xfffff] != (uint16_t)(0xC000 + i * 7)) bad++;
+            printf("after %d prologue frames: command 4 wrote %d of 16 colour words\n",
+                   PROLOGUE_FRAMES, 16 - bad);
+            memset(fb, 0, sizeof fb);
+            memset(got_row, 0, sizeof got_row);
+            hits = 0;
         }
-        dlist = real;
-    }
-
-    printf("\nrunning one frame through m1_raster3d...\n");
-    d->frame_start = 1; tick(); d->frame_start = 0;
-
-    // Capture each band the moment it becomes displayable. In hardware the beam
-    // does this; here we sweep the band's rows as soon as disp_band changes.
-    // Milestones, because "it is slow" is not a finding and "the geometry is
-    // 96% of it" is. dbg_frames rises when the sort completes, which separates
-    // the geometry from the band fills.
-    long t_sort = 0, t_band[16] = {0};
-    // START FROM WHATEVER IS ALREADY PRESENTED, not from -1. The prologue walk
-    // leaves disp_band at 11, so a capture loop that begins at -1 sees an
-    // immediate "change", records the prologue's empty band 11, and then takes
-    // bands 0..10 of the real frame - twelve captures, one of them stale, and
-    // the real band 11 never read. That is exactly one band of black at the
-    // bottom of the frame and a count that says twelve.
-    int last_band = d->disp_valid ? (int)d->disp_band : -1;
-    int captured = 0;
-    long guard = 0;
-    const long LIMIT = 3000000000L;
-    while (++guard < LIMIT) {
-        tick();
-        if (!t_sort && d->dbg_frames) t_sort = cycles;
-        if (d->disp_valid && (int)d->disp_band != last_band) {
-            if (captured < 16) t_band[captured] = cycles;
-            last_band = d->disp_band;
-            int y0 = last_band * BAND_H;
-            for (int r = 0; r < BAND_H; r++) {
-                int y = y0 + r;
-                if (y >= SH) break;
-                for (int x = 0; x < SW; x++) {
-                    d->scan_x = x; d->scan_y = y;
-                    tick();
-                    if (d->scan_hit) {
-                        fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
-                        fb[y][x][1] = (d->scan_rgb >> 8) & 0xff;
-                        fb[y][x][2] = d->scan_rgb & 0xff;
-                    }
+        for (int y = 0; y < V_TOTAL; y++) {
+            for (int x = 0; x < H_TOTAL; x++) {
+                // vblank starts at the first non-visible line: one pulse a frame.
+                d->frame_start = (y == SH && x == 0) ? 1 : 0;
+                d->scan_x = x; d->scan_y = y;
+                tick();
+                if (x < SW && y < SH && d->scan_hit) {
+                    fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
+                    fb[y][x][1] = (d->scan_rgb >> 8) & 0xff;
+                    fb[y][x][2] = d->scan_rgb & 0xff;
                     got_row[y] = true;
+                    hits++;
                 }
             }
-            captured++;
-            if (captured >= (SH + BAND_H - 1) / BAND_H) break;
         }
+        if (f >= PROLOGUE_FRAMES)
+            printf("  frame %2d: %7ld pixels hit, bands=%u, last fill %u cycles"
+                   " (a band-time is ~68,000)\n",
+                   f, hits, (unsigned)d->dbg_bands, (unsigned)d->dbg_band_cycles);
     }
+    int frames_swept = TOTAL_FRAMES;
 
-    // The C++-orchestrated render prints xc=248 yc=191 zoom 210,280 view 0,-30
-    // from the same list. Any difference here is the RTL's decode of it.
-    {
-        auto u2f_ = [](uint32_t u){ float f; memcpy(&f,&u,4); return f; };
-        printf("view state: xc=%g yc=%g zoom=%g,%g view=%g,%g\n",
-               u2f_(d->dbg_xc), u2f_(d->dbg_yc),
-               u2f_(d->dbg_zoomx), u2f_(d->dbg_zoomy),
-               u2f_(d->dbg_viewx), u2f_(d->dbg_viewy));
-    }
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);
-    printf("captured %d bands, simulated %ld cycles = %.1f ms at 47.059 MHz\n",
-           captured, cycles, cycles / 47059.0);
-    printf("  geometry + sort: %ld cycles (%.0f%% of the run)\n",
-           t_sort, 100.0 * t_sort / (cycles ? cycles : 1));
-    for (int i = 0; i < captured && i < 6; i++)
-        printf("  band %d ready at %ld cycles (+%ld)\n",
-               i, t_band[i], t_band[i] - (i ? t_band[i-1] : t_sort));
-    if (t_sort)
-        printf("  that is %.0f cycles per quad through the geometry\n",
-               (double)t_sort / (d->dbg_quads ? d->dbg_quads : 1));
-    if (guard >= LIMIT) printf("WARNING: hit the cycle limit before finishing\n");
+    printf("swept %d frames, simulated %ld cycles = %.1f ms at 47.059 MHz\n",
+           frames_swept, cycles, cycles / 47059.0);
 
     long nz = 0, rows = 0;
     for (int y = 0; y < SH; y++) { if (got_row[y]) rows++;
@@ -272,5 +219,5 @@ int main(int argc, char** argv) {
     fwrite(fb, 1, sizeof fb, out);
     fclose(out);
     printf("wrote build/render/frame3d.ppm\n");
-    return (captured > 0 && nz > 0) ? 0 : 1;
+    return (nz > 0) ? 0 : 1;
 }

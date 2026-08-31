@@ -119,6 +119,11 @@ module m1_raster3d #(
   output logic [15:0] dbg_quads,
   output logic [15:0] dbg_dropped,
   output logic [15:0] dbg_frames,
+  // How long the last band's fill took, and how many bands have been presented.
+  // "One band a frame" and "twelve bands a frame" are the same picture in a
+  // still and completely different on a screen.
+  output logic [31:0] dbg_band_cycles,
+  output logic [15:0] dbg_bands,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -414,6 +419,22 @@ module m1_raster3d #(
   logic [3:0] disp_band_s1, disp_band_s2;
   logic       disp_valid_s1, disp_valid_s2;
   logic       wr_buf_s1, wr_buf_s2;
+
+  // THE BEAM'S BAND, crossed the other way - into the 3D clock - so the fill
+  // sequence can follow the raster instead of free-running beside it.
+  //
+  // Without this the sequencer advanced a band whenever a FILL FINISHED, at
+  // 58,000-66,000 cycles against a band-time of about 68,000. Nearly the same
+  // rate and locked to nothing, so the two drift: the band being presented is
+  // only occasionally the band the beam is drawing, and what reaches the screen
+  // is mostly no 3D with stripes of it flashing through as the phase slips.
+  // Measured on hardware before it was understood.
+  logic [BW-1:0] beam_band_s1, beam_band_s2;
+  always_ff @(posedge clk) begin
+    beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));
+    beam_band_s2 <= beam_band_s1;
+  end
+
   always_ff @(posedge scan_clk) begin
     disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
     disp_valid_s1 <= disp_valid; disp_valid_s2 <= disp_valid_s1;
@@ -437,11 +458,13 @@ module m1_raster3d #(
   // ---------------------------------------------------------------- sequencer
   typedef enum logic [3:0] {
     T_IDLE, T_WALK, T_OBJ, T_OBJW, T_SORT, T_SORTW,
-    T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW, T_BAND_NEXT, T_SWAP
+    T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW,
+    T_BAND_WAIT, T_BAND_NEXT, T_SWAP
   } state_t;
   state_t st;
 
   logic [BW-1:0] cur_band;
+  logic [31:0]   band_timer;
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
@@ -473,6 +496,7 @@ module m1_raster3d #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       vp_lat <= 1'b0;
       wr_buf <= 1'b0; old_z <= '0;
       disp_band <= '0; disp_valid <= 1'b0;
@@ -483,11 +507,15 @@ module m1_raster3d #(
       lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
-      mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
+      mat_we <= 1'b0;
+      if (st == T_BAND_CLR || st == T_BAND_CLRW || st == T_REPLAY ||
+          st == T_FILL || st == T_FILLW) band_timer <= band_timer + 32'd1; mat_idx <= '0; mat_data <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0;
       dbg_frames <= '0;
     end else begin
       mat_we <= 1'b0;
+      if (st == T_BAND_CLR || st == T_BAND_CLRW || st == T_REPLAY ||
+          st == T_FILL || st == T_FILLW) band_timer <= band_timer + 32'd1;
 
       // ---- display-list events. Latched wherever the walk is, because a
       // command changes state for every object that follows it.
@@ -637,6 +665,7 @@ module m1_raster3d #(
 
         // ---- one band at a time into the write buffer
         T_BAND_CLR: begin
+          band_timer <= '0;
           bd_y0[wr_buf] <= 16'(cur_band) * 16'(BAND_H);
           st <= T_BAND_CLRW;
         end
@@ -645,10 +674,19 @@ module m1_raster3d #(
         T_REPLAY: st <= T_FILL;
 
         T_FILL: begin
-          if (!qs_replay_busy && !qs_out_valid) st <= T_BAND_NEXT;
+          if (!qs_replay_busy && !qs_out_valid) st <= T_BAND_WAIT;
           else if (qs_out_valid && fl_in_ready) st <= T_FILLW;
         end
         T_FILLW: if (fl_quad_done) st <= T_FILL;
+
+        // FILLED, NOW WAIT FOR THE BEAM. The band is not presented until the
+        // raster actually reaches it, which is what keeps the two in step. If
+        // the fill was slower than the beam this simply presents late and the
+        // band is missed rather than shown in the wrong place.
+        T_BAND_WAIT: begin
+          dbg_band_cycles <= band_timer;   // the fill alone, before the wait
+          if (beam_band_s2 == cur_band) st <= T_BAND_NEXT;
+        end
 
         T_BAND_NEXT: begin
           // Hand this band to the scanout and start the next one in the other
@@ -656,6 +694,7 @@ module m1_raster3d #(
           wr_buf     <= ~wr_buf;
           disp_band  <= 4'(cur_band);
           disp_valid <= 1'b1;
+          if (dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 16'd1;
           if (cur_band == BW'(NBANDS - 1)) st <= T_IDLE;
           else begin
             cur_band <= cur_band + BW'(1);
