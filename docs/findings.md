@@ -6802,3 +6802,167 @@ the buffer selected always matches the band advertised.
 section measures on Model 2. The band-height change bought 52 and something has
 since eaten them - `cxlat` rounding up to 32,768 words and the four vertex
 memories are the candidates. It needs revisiting before M4.
+
+---
+
+## THE FRAME BUDGET WAS HALF THE REAL ONE — 397,515 against 818,133 — 2026-08-31
+
+Every per-stage budget in this project was checked against **397,515 cycles a
+frame**, in six benches and two RTL headers. That figure is a 22.9 MHz plan for
+the 3D clock: 397,515 x 57.52 = 22.87 MHz.
+
+`clk_3d` is **47.059 MHz** — its own PLL output, 800/17 — so a frame is
+**818,133 cycles**. Every budget derived from the old number was half the real
+one, and `tb_m1_geo_det`, `tb_m1_geo_xform` and `tb_m1_geo_project` all carry an
+explicit `FAIL OVER BUDGET` test against it.
+
+Corrected in all eight places. Nothing had failed against the wrong figure, so
+the error only ever made the stages look tighter than they are — but a budget
+test that is wrong by 2x is worse than none, because it drives design decisions.
+
+---
+
+## THE BENCH WAS TICKING BOTH CLOCKS TOGETHER, and understated the fill 3x — 2026-08-31
+
+`tb_m1_raster3d` drove `clk` and `scan_clk` from one `tick()`. The 3D clock is
+47.059 MHz and the pixel clock is 656 x 424 x 57.52 = **15.996 MHz**, so the fill
+gets **2.94 cycles per pixel of raster** and the bench was handing it one.
+
+Every throughput figure that bench printed understated the hardware by a factor
+of three, including the "band fill 44,868-66,819 against a band-time of 61,741"
+that drove the band-height decision. It carries the ratio as a fraction now.
+
+It also cleared the framebuffer **once** and reported the union of eleven frames
+as coverage — 93.9% for a renderer delivering a third of its bands per frame.
+Per-frame now, which is what a screen shows.
+
+**Both faults flattered the design.** A bench that is wrong in the safe direction
+is still wrong, and this one hid the fact that the geometry, not the fill, was
+the pole.
+
+---
+
+## WHERE THE GEOMETRY'S 444 CYCLES A QUAD WENT — and it was not the arithmetic — 2026-08-31
+
+`m1_geo_walk`'s state sampled every cycle and bucketed (`tb_m1_geometry`, 20
+objects, 340 quads):
+
+    transform    32.7%      three points, one at a time
+    project      38.4%      two points, one at a time
+    normalize    11.7%
+    colour       10.8%
+    polygon ROM   3.4% at a one-cycle memory, 40% at a twelve-cycle one
+    determinant   1.9%
+
+against 44 multiplies and 43 adds a record through pipelines that retire one a
+cycle — **a floor of about 68 cycles**. The stages were not slow. The walker was
+issuing them one at a time and waiting for each.
+
+`m1_geo_xform` carries a ping-pong product bank so the adds of point N-1 run
+while the multiplies of point N are issued; `m1_geo_project` keeps the reciprocal
+and the scale chain as separate stages for the same reason. **Both were built
+that way deliberately and the walker used neither.**
+
+The record path is a dataflow schedule now — each stage issued the moment its
+operands exist — and the polygon ROM is prefetched a record ahead. **444 -> 226
+cycles a quad**, and a twelve-cycle memory costs 1.0x rather than 1.4x. Exact
+throughout: 3,357 quads, 0 vertices a pixel out, 0 colours different.
+
+**A SPECULATIVE ISSUE HAS TO BE DRAINED.** Issuing the normalize before the cull
+is known takes 40 cycles off the critical path — and leaving a culled record with
+that normalize still in flight let its result land in the NEXT record. Measured:
+**345 of 3,357 colours wrong, 10.3%, with every vertex exact.** A colour is
+all-or-nothing (a luminance level selects a different translation entry), so this
+looked like a lighting bug and was a scheduling one.
+
+And **collect only what was issued**. `!collected` alone accepts any pulse the
+stage happens to make, including one left over from the previous record: a link-0
+record that asks for nothing ended up with a colour it could never match, and the
+walk deadlocked at record 19 of iteration 19 with `cl 0/1`.
+
+---
+
+## THE DIVIDER IS THE FILL — radix-4, and the measurement it asked for — 2026-08-31
+
+`m1_raster_div` was radix-2, 32 cycles, with a note that setup runs at most four
+times per quad and never per pixel, and that the lever if it ever hurt was
+"radix-4 or a reciprocal table, and that is a measurement to take rather than a
+guess to build."
+
+Taken. `tb_m1_raster3d` against a real raster: **FILLW 436,000 cycles a frame of
+818,133**, and the quad count gives 275 cycles of fill per quad against at most
+eight divides of 32.
+
+Radix-4 is 16 cycles and the quotient is exact integer division either way, so
+`tb_m1_raster_fill` is unchanged at 152,025 checks and 0 fails. **FILLW 436,000
+-> 373,000.**
+
+**Its `spans`, `lines` and `empty` totals MOVED, and that is not a regression.**
+The bench's stall model draws from the same mt19937 as the quad generator, once
+per cycle, so anything that changes how many cycles a quad takes reshuffles the
+whole corpus: 31,637,915 spans became 31,658,020. `checks` and `fails` are the
+invariants; the totals are not. This will happen again.
+
+---
+
+## THE SORT SPENT FIVE CYCLES AN ELEMENT WAITING FOR TWO BLOCK RAMS — 2026-08-31
+
+`m1_quad_store`'s radix sort walked `key` and `idx` through five sequential
+states per element, because both reads are registered and an asynchronous read
+of `key` had cost 65,536 registers. That is 5 x 2 loops x 8 passes = **80 cycles
+a quad**, and **812,776 cycles of the render bench, 7.1% of everything**, to sort
+at most 2,048 items.
+
+Pipelined to one element a cycle — the same shape the **replay path forty lines
+below it in the same file** already had — it is **172,584**. 2,000 quads sort in
+34,330 cycles.
+
+The index that belongs with a digit has to be carried alongside: `cur_idx` has
+already moved on two elements by the time its key comes back.
+
+---
+
+## BAND 0 WENT UP HALFWAY DOWN THE SCREEN — 2026-08-31
+
+The pass is geometry, then sort, then 24 beam-locked band fills. The geometry is
+367,000 cycles and the sort 21,000, so **band 0 was ready with the beam at band
+11** — and `in_disp_band` then correctly refuses to draw rows 0..191 during rows
+192..383. Sixteen of twenty-four bands presented, 257 of 384 rows painted, and
+every band was on time by its own rule.
+
+Band 0 now waits for a vblank the **band phase** sees: the one it is in if the
+geometry finished inside it, otherwise the next.
+
+**Clearing the arm on `frame_start` alone did nothing at all.** The blank flag
+comes through two synchroniser stages, so it rises three cycles AFTER
+`frame_start` and re-armed immediately — the run printed byte-identical numbers
+twice, which is the only reason it was caught rather than believed.
+
+Result: **95.9% of pixels, 369 of 384 rows, 23 of 24 bands**, every second frame.
+
+---
+
+## THE 3D LAYER IS 28.8 Hz, and the reason is the quad store — 2026-08-31
+
+Work per pass, measured by state (`tb_m1_raster3d`, the reference's frame 900):
+
+    geometry (OBJW)   367,000
+    fill     (FILLW)  373,000
+    sort     (SORTW)   21,000
+    clear    (CLRW)    34,000
+                      -------
+                      796,000   against 818,133 in a frame
+
+It fits — and it still takes two frames, because **the geometry cannot overlap
+the fill**. Both use the quad store: the geometry writes it, the sort orders it,
+and every one of the 24 band fills replays it. So a pass is
+`geometry + one whole beam traversal`, about 1.2 M cycles.
+
+The fill itself is idle for 445,000 of the 818,133 it is stretched across, so the
+geometry would fit inside it exactly — with a **double-buffered quad store**.
+That is `vtx0..3` (26 M10K), `key` (8), `att` (10) and `idx_a`/`idx_b` (5) again:
+**+49 M10K**, against 100 free and ~57 wanted by the sound section.
+
+So 28.8 Hz for the 3D over 57.5 Hz for the 2D is the shape of this design until
+either the quad store shrinks or the geometry reaches ~77,000 cycles, which is
+what fits in vblank. **Not a throughput problem any more.**

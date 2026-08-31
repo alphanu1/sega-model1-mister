@@ -1,5 +1,59 @@
 # HANDOFF
 
+## 2026-08-31 — the 3D layer draws a whole frame, and two benches were lying
+
+**95.9% of pixels, 369 of 384 rows, 23 of 24 bands.** It was 0.3% of one frame in
+three when the day started. `build/render/frame3d.png` is the reference's frame
+900 out of real RTL: road, kerb, the car ahead, the SEGA logo.
+
+**Two benches were understating the hardware, both in the flattering direction.**
+
+  1. **The frame budget is 818,133 cycles, not 397,515.** That figure is a
+     22.9 MHz plan for the 3D clock; it runs at 47.059 MHz. Six benches and two
+     RTL headers checked against half the real budget, three of them with an
+     explicit `FAIL OVER BUDGET` test.
+  2. **`tb_m1_raster3d` ticked `clk` and `scan_clk` together.** The pixel clock is
+     15.996 MHz and clk_3d is 47.059, so the fill gets 2.94 cycles per pixel and
+     the bench handed it one. It also reported the union of eleven frames as
+     coverage. Both fixed; the fill/geometry split only became visible afterwards.
+
+**Four measured changes, in the order the instruments named them:**
+
+  1. **The geometry walker serialised stages built to stream.** `m1_geo_xform`
+     has a ping-pong product bank, `m1_geo_project` keeps its reciprocal apart
+     from the scale chain, and the walker waited for `out_valid` before issuing
+     the next point. 444 cycles a quad, of which transform 32.7% and project
+     38.4%, against an arithmetic floor of about 68. The record path is a
+     dataflow schedule now and the polygon ROM is prefetched a record ahead:
+     **444 -> 223**, bit-exact, and a twelve-cycle memory costs 1.0x not 1.4x.
+  2. **The divider was the fill.** `m1_raster_div` asked for exactly this
+     measurement in its own header. Radix-4: **FILLW 436,000 -> 373,000** a
+     frame, exact quotient, `tb_m1_raster_fill` unchanged at 152,025 checks.
+  3. **The sort spent five cycles an element** waiting on two registered reads —
+     80 cycles a quad, 812,776 of the render bench. Pipelined to one a cycle, the
+     same shape the replay path forty lines below it already had: **172,584**.
+  4. **Band 0 went up halfway down the screen.** The geometry and sort are
+     388,000 cycles, so band 0 was ready with the beam at band 11 and
+     `in_disp_band` correctly refused to draw it. It waits for a vblank the band
+     phase sees now.
+
+**Three 16-row band buffers replaced two 32-row ones**, which frees 12 M10K and
+lets a band present ON ARRIVAL rather than a band early — the third buffer
+absorbs variance instead of buying time. It also found that **the last row of
+every band was never cleared**: the background clear walks the row behind the
+beam and the beam never stands one row past the bottom.
+
+**The 3D layer is 28.8 Hz and the reason is the quad store.** Work per pass is
+796,000 cycles against 818,133 in a frame, and it still takes two, because the
+geometry cannot overlap the fill — both use the quad store. Double buffering it
+is +49 M10K. Not a throughput problem any more.
+
+**Next:** `docs/m4-sound-budget.md`. The sound section is 8,837 ALM and 84 M10K
+measured from the sibling core's own fit report, the 68000's work RAM is 64 of
+that M10K and belongs in SDRAM by decision D5's precedent, and the ALM has to
+come out of the V60 — 17,453 in-core, 48% of the design, against Model 2's i960
+at 7,200.
+
 ## 2026-08-30 (evening) — the coprocessor is bit-exact, and the deadlock and scroll are two bugs
 
 **Fixed, with directed tests that fail on the old RTL:**
