@@ -121,7 +121,14 @@ module m1_geo_walk (
   input  logic        cl_out_valid,
   input  logic [23:0] cl_out_rgb,
 
-  // ---- quad out, in screen space
+  // ---- quad out. The screen coordinates AND the camera-space points, because
+  // the clipper works in camera space: MAME's planes are frustum ratios tested
+  // against p.x/p.y versus p.z, not a screen rectangle.
+  output logic [31:0] q_cx0, q_cy0, q_cz0, q_cx1, q_cy1, q_cz1,
+  output logic [31:0] q_cx2, q_cy2, q_cz2, q_cx3, q_cy3, q_cz3,
+  // HELD until the consumer takes it. The clipper can be busy for hundreds of
+  // cycles on a quad that crosses a plane, so a one-cycle pulse would be lost.
+  input  logic        q_ready,
   output logic        q_valid,
   output logic signed [31:0] q_x0, q_y0, q_x1, q_y1,
   output logic signed [31:0] q_x2, q_y2, q_x3, q_y3,
@@ -189,7 +196,7 @@ module m1_geo_walk (
     W_IDLE,
     W_HDR_W, W_HDR_XF, W_HDR_XFW, W_HDR_PJ, W_HDR_PJW,
     W_REC_W, W_REC_DEC, W_REC,
-    W_EMIT, W_NEXT, W_DONE
+    W_EMIT, W_EMITW, W_NEXT, W_DONE
   } state_t;
   state_t st /* verilator public_flat_rd */;
 
@@ -385,12 +392,16 @@ module m1_geo_walk (
       vnx <= '0; vny <= '0; vnz <= '0; nvx <= '0; nvy <= '0; nvz <= '0;
       for (int i = 0; i < 10; i++) begin rec[i] <= '0; nrec[i] <= '0; end
       q_valid <= 1'b0; q_col <= '0; q_z <= '0; q_moire <= 1'b0;
+      q_cx0 <= '0; q_cy0 <= '0; q_cz0 <= '0; q_cx1 <= '0; q_cy1 <= '0; q_cz1 <= '0;
+      q_cx2 <= '0; q_cy2 <= '0; q_cz2 <= '0; q_cx3 <= '0; q_cy3 <= '0; q_cz3 <= '0;
       q_x0 <= '0; q_y0 <= '0; q_x1 <= '0; q_y1 <= '0;
       q_x2 <= '0; q_y2 <= '0; q_x3 <= '0; q_y3 <= '0;
       done <= 1'b0;
       dbg_records <= '0; dbg_quads <= '0; dbg_culled <= '0; dbg_nolink <= '0;
     end else begin
-      q_valid <= 1'b0;
+      // q_valid is NOT cleared here: it is a held handshake and W_EMITW owns
+      // it. Clearing it every cycle made it a one-cycle pulse, which a consumer
+      // that can be busy would miss.
       done    <= 1'b0;
 
       // ---- the prefetch, running under everything else
@@ -570,10 +581,19 @@ module m1_geo_walk (
           q_x2 <= n0sx; q_y2 <= n0sy;
           q_x3 <= n1sx; q_y3 <= n1sy;
           q_z     <= qz;
+          q_cx0 <= o1x; q_cy0 <= o1y; q_cz0 <= o1z;
+          q_cx1 <= o0x; q_cy1 <= o0y; q_cz1 <= o0z;
+          q_cx2 <= n0x; q_cy2 <= n0y; q_cz2 <= n0z;
+          q_cx3 <= n1x; q_cy3 <= n1y; q_cz3 <= n1z;
           q_moire <= moire;
           q_valid <= 1'b1;
           if (dbg_quads != 16'hffff) dbg_quads <= dbg_quads + 16'd1;
-          st <= W_NEXT;
+          st <= W_EMITW;
+        end
+
+        W_EMITW: if (q_ready) begin
+          q_valid <= 1'b0;
+          st      <= W_NEXT;
         end
 
         W_NEXT: begin

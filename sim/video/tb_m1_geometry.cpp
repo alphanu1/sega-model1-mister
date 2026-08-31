@@ -150,7 +150,7 @@ struct Quad {
 // Turning it on is how the next session checks the RTL: set this, wire
 // m1_geo_clip back into m1_geometry, and the 5 objects that differ are the
 // target.
-static const bool CLIP_ON = false;
+static const bool CLIP_ON = true;
 static float VX1 = 0.0f, VX2 = 495.0f, VY1 = 0.0f, VY2 = 383.0f;
 static float A_LEFT, A_RIGHT, A_BOTTOM, A_TOP;
 
@@ -433,10 +433,11 @@ struct Dut {
         d->viewx = f2u(VIEWX); d->viewy = f2u(VIEWY);
         d->light_x = f2u(LX); d->light_y = f2u(LY); d->light_z = f2u(LZ);
         d->spec_enable = SPEC_EN; d->frame_odd = FRAME_ODD;
-        // The four plane ratios the model derives, ready for when m1_geometry
-        // takes them again. m1_geo_clip is written but not wired, so the DUT
-        // has no ports for them yet.
+        // The same four plane ratios the model derives, from the same
+        // viewport, so the two clippers are given identical planes.
         set_planes();
+        d->a_left = f2u(A_LEFT);     d->a_right = f2u(A_RIGHT);
+        d->a_bottom = f2u(A_BOTTOM); d->a_top = f2u(A_TOP);
         tick();
     }
     bool run(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float& old_z) {
@@ -687,6 +688,11 @@ int main(int argc, char** argv) {
             size_t got = fread(prom.data(), 4, PROM_WORDS, rf);
             printf("  polygon ROM: %zu model words from byte 0x840000\n", got);
 
+            // The DUT's plane inputs follow the viewport, and this test never
+            // set one - so it was comparing against a model that recomputes the
+            // planes from the current globals while the DUT still held the
+            // previous test's. Same view on both sides now.
+            t.set_view();
             unsigned cmd, tex, poly, size;
             int nobj = 0, bad_obj = 0;
             long rq = 0, rpx = 0, rcol_ok = 0, rcol_bad = 0;

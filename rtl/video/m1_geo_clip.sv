@@ -85,6 +85,15 @@ module m1_geo_clip (
   input  logic [31:0] in_x3, in_y3, in_z3,
   input  logic signed [15:0] in_sx0, in_sy0, in_sx1, in_sy1,
   input  logic signed [15:0] in_sx2, in_sy2, in_sx3, in_sy3,
+  // THE ATTRIBUTES RIDE WITH THE QUAD, and they have to be latched here.
+  // The walker moves on as soon as this module accepts, so by the time a
+  // clipped quad is emitted - hundreds of cycles later - the walker's colour
+  // and sort z registers hold the NEXT quad's values. Taken combinationally
+  // they came out wrong, which showed as `z 41480000 expected 00000000`.
+  // fclip_push_quad copies the whole quad_t for the same reason.
+  input  logic [23:0] in_col,
+  input  logic [31:0] in_z,
+  input  logic        in_moire,
 
   // Shared arithmetic - see rtl/video/m1_fp_pool.sv.
   output logic        mul_req,
@@ -117,6 +126,9 @@ module m1_geo_clip (
   input  logic        out_ready,
   output logic signed [15:0] out_sx0, out_sy0, out_sx1, out_sy1,
   output logic signed [15:0] out_sx2, out_sy2, out_sx3, out_sy3,
+  output logic [23:0] out_col,
+  output logic [31:0] out_z,
+  output logic        out_moire,
 
   // Counted: quads in, quads out, and how many were dropped entirely. A clipper
   // that silently drops everything and one that passes everything through look
@@ -259,6 +271,9 @@ module m1_geo_clip (
   assign out_sx2 = psx[q2]; assign out_sy2 = psy[q2];
   assign out_sx3 = psx[q3]; assign out_sy3 = psy[q3];
   assign out_valid = (kst == K_EMIT);
+  assign out_col   = a_col;
+  assign out_z     = a_z;
+  assign out_moire = a_moire;
 
   // ---------------------------------------------------------------- sequencer
   //
@@ -278,6 +293,9 @@ module m1_geo_clip (
   // fclip_push_quad_next does and what the fill unit already expects.
   logic [1:0] ccase;
   logic       second_child;
+  logic [23:0] a_col;
+  logic [31:0] a_z;
+  logic        a_moire;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -289,6 +307,7 @@ module m1_geo_clip (
       c_num <= '0; c_den <= '0; c_t <= '0; c_u <= '0;
       c_m1 <= '0; c_m2 <= '0; c_axis <= '0; t_zprod <= '0;
       ccase <= '0; second_child <= 1'b0;
+      a_col <= '0; a_z <= '0; a_moire <= 1'b0;
       dbg_in_r <= '0; dbg_out <= '0; dbg_dropped <= '0;
       for (int i = 0; i < NPOOL; i++) begin
         px[i] <= '0; py[i] <= '0; pz[i] <= '0; psx[i] <= '0; psy[i] <= '0;
@@ -308,6 +327,7 @@ module m1_geo_clip (
           psx[1] <= in_sx1; psy[1] <= in_sy1;
           psx[2] <= in_sx2; psy[2] <= in_sy2;
           psx[3] <= in_sx3; psy[3] <= in_sy3;
+          a_col <= in_col; a_z <= in_z; a_moire <= in_moire;
           st_lvl[0] <= 3'd0;
           st_p0[0] <= PW'(0); st_p1[0] <= PW'(1);
           st_p2[0] <= PW'(2); st_p3[0] <= PW'(3);
@@ -440,6 +460,14 @@ module m1_geo_clip (
 
         // Push the case's children, at the next level. A triangle is a quad
         // with its last vertex repeated, exactly as fclip_push_quad_next does.
+        //
+        // THE SECOND CHILD IS PUSHED FIRST. MAME recurses - it calls
+        // fclip_push_quad_next on the first child and that whole subtree
+        // retires before the second is touched. A stack is LIFO, so pushing
+        // them in call order would pop the second one first and emit the quads
+        // in the wrong order. The picture would be identical, since the
+        // rasterizer sorts by z, but the reference comparison is order
+        // sensitive and it is the only check there is.
         K_CHILD: begin
           st_lvl[sp] <= lvl + 3'd1;
           case (ccase)
@@ -447,18 +475,20 @@ module m1_geo_clip (
                         st_p2[sp] <= mk1; st_p3[sp] <= mk1; end
             2'd1: begin st_p0[sp] <= mk0; st_p1[sp] <= r2;
                         st_p2[sp] <= r3;  st_p3[sp] <= mk1; end
+            // second_child is pushed on the FIRST pass, so it sits deeper in
+            // the stack and is popped last - which is MAME's call order.
             2'd2: if (!second_child) begin
-                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
-                        st_p2[sp] <= mk1; st_p3[sp] <= mk1; end
-                  else begin
                         st_p0[sp] <= mk2; st_p1[sp] <= r3;
                         st_p2[sp] <= mk3; st_p3[sp] <= mk3; end
-            default: if (!second_child) begin
-                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
-                        st_p2[sp] <= r2;  st_p3[sp] <= r3; end
                   else begin
+                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
+                        st_p2[sp] <= mk1; st_p3[sp] <= mk1; end
+            default: if (!second_child) begin
                         st_p0[sp] <= r3;  st_p1[sp] <= mk1;
                         st_p2[sp] <= mk0; st_p3[sp] <= mk0; end
+                  else begin
+                        st_p0[sp] <= mk0; st_p1[sp] <= r1;
+                        st_p2[sp] <= r2;  st_p3[sp] <= r3; end
           endcase
           sp <= sp + 4'd1;
           if ((ccase == 2'd2 || ccase == 2'd3) && !second_child) begin

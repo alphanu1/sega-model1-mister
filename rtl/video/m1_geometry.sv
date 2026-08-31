@@ -74,6 +74,9 @@ module m1_geometry (
   input  logic [15:0] xlat_data,
 
   // ---- quads out
+  // The four frustum plane ratios, from the viewport. See m1_geo_clip.
+  input  logic [31:0] a_left, a_right, a_bottom, a_top,
+
   output logic        q_valid,
   output logic signed [31:0] q_x0, q_y0, q_x1, q_y1,
   output logic signed [31:0] q_x2, q_y2, q_x3, q_y3,
@@ -101,7 +104,9 @@ module m1_geometry (
   output logic [31:0] ext_nrm_out_x, ext_nrm_out_y, ext_nrm_out_z
 );
 
-  localparam int unsigned NC = 5;
+  // Six clients: the clipper is one. Its arithmetic is bursty - nothing for a
+  // quad that crosses no plane, about twenty operations per vertex it creates.
+  localparam int unsigned NC = 6;
 
   // ---------------------------------------------------------------- the pool
   logic [NC-1:0] mul_req, mul_gnt, mul_rsp;
@@ -133,8 +138,57 @@ module m1_geometry (
   // ---------------------------------------------------------------- walker
   logic        xf_valid, xf_ready, xf_translate, xf_out_valid;
   logic [31:0] xf_x, xf_y, xf_z, xf_out_x, xf_out_y, xf_out_z;
-  logic        pj_valid, pj_ready, pj_out_valid;
-  logic [31:0] pj_x, pj_y, pj_z, pj_out_z;
+  // THE PROJECTION UNIT HAS TWO CALLERS AND THEY DO OVERLAP.
+  //
+  // Wired first as a plain mux, on the reasoning that the walker projects a
+  // quad's corners before it emits, so it would be finished by the time the
+  // clipper wanted the unit. That is false: the walker hands the quad over and
+  // immediately starts the NEXT record, projecting, while the clipper is still
+  // cutting the last one. Both issued, and each took the other's answer.
+  //
+  // The clipper alone is bit-exact - 400 fuzzed quads through
+  // sim/video/tb_m1_geo_clip.cpp, zero disagreements with the same fclip the
+  // reference model uses - so this was the whole of the integration fault.
+  //
+  // Two parts to the fix. The walker may not ISSUE while the clipper is busy,
+  // so at most one request is ever outstanding; and an owner flag routes the
+  // answer, because "who asked last" is not something either can infer.
+  logic        pj_ready, pj_out_valid;
+  logic        w_pj_valid;
+  logic [31:0] w_pj_x, w_pj_y, w_pj_z;
+  logic        k_pj_valid;
+  logic [31:0] k_pj_x, k_pj_y, k_pj_z;
+  logic [31:0] pj_out_z;
+  // in_ready is high only when the clipper is idle, so this is exactly "the
+  // clipper is not busy". The walker stalls mid-record instead of corrupting
+  // the answer, which it would otherwise be waiting to do at its next handoff
+  // in any case.
+  wire         w_pj_gated = w_pj_valid && w_q_ready;
+  wire         pj_valid = w_pj_gated || k_pj_valid;
+  logic        pj_owner;      // 0 = walker, 1 = clipper
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)                    pj_owner <= 1'b0;
+    else if (pj_valid && pj_ready) pj_owner <= k_pj_valid;
+  end
+  wire w_pj_out_valid = pj_out_valid && !pj_owner;
+  wire k_pj_out_valid = pj_out_valid &&  pj_owner;
+  wire [31:0]  pj_x = k_pj_valid ? k_pj_x : w_pj_x;
+  wire [31:0]  pj_y = k_pj_valid ? k_pj_y : w_pj_y;
+  wire [31:0]  pj_z = k_pj_valid ? k_pj_z : w_pj_z;
+
+  logic        w_q_valid /* verilator public_flat_rd */;
+  logic        w_q_ready /* verilator public_flat_rd */;
+  logic signed [31:0] w_x0, w_y0, w_x1, w_y1, w_x2, w_y2, w_x3, w_y3;
+  logic [31:0] w_cx0 /* verilator public_flat_rd */, w_cy0 /* verilator public_flat_rd */, w_cz0 /* verilator public_flat_rd */;
+  logic [31:0] w_cx1 /* verilator public_flat_rd */, w_cy1 /* verilator public_flat_rd */, w_cz1 /* verilator public_flat_rd */;
+  logic [31:0] w_cx2 /* verilator public_flat_rd */, w_cy2 /* verilator public_flat_rd */, w_cz2 /* verilator public_flat_rd */;
+  logic [31:0] w_cx3 /* verilator public_flat_rd */, w_cy3 /* verilator public_flat_rd */, w_cz3 /* verilator public_flat_rd */;
+  logic [23:0] w_col;
+  logic [31:0] w_z;
+  logic        w_moire;
+  logic signed [15:0] k_sx0, k_sy0, k_sx1, k_sy1, k_sx2, k_sy2, k_sx3, k_sy3;
+  logic        k_out_valid;
+  logic [15:0] k_dbg_in, k_dbg_out, k_dbg_drop;
   logic signed [31:0] pj_out_sx, pj_out_sy;
   logic        pj_out_behind;
   logic        dt_valid, dt_ready, dt_out_valid, dt_out_positive;
@@ -154,7 +208,7 @@ module m1_geometry (
   m1_geo_walk u_walk (
     .clk(clk), .rst_n(rst_n),
     .start(start), .in_tex_adr(in_tex_adr), .in_poly_adr(in_poly_adr),
-    .in_size(in_size), .busy(busy), .done(done),
+    .in_size(in_size), .busy(busy), .done(w_done),
     .old_z_in(old_z_in), .old_z_out(old_z_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
@@ -166,9 +220,9 @@ module m1_geometry (
     .xf_x(xf_x), .xf_y(xf_y), .xf_z(xf_z), .xf_translate(xf_translate),
     .xf_out_valid(xf_out_valid),
     .xf_out_x(xf_out_x), .xf_out_y(xf_out_y), .xf_out_z(xf_out_z),
-    .pj_valid(pj_valid), .pj_ready(pj_ready),
-    .pj_x(pj_x), .pj_y(pj_y), .pj_z(pj_z),
-    .pj_out_valid(pj_out_valid), .pj_out_sx(pj_out_sx), .pj_out_sy(pj_out_sy),
+    .pj_valid(w_pj_valid), .pj_ready(pj_ready && w_q_ready),
+    .pj_x(w_pj_x), .pj_y(w_pj_y), .pj_z(w_pj_z),
+    .pj_out_valid(w_pj_out_valid), .pj_out_sx(pj_out_sx), .pj_out_sy(pj_out_sy),
     .dt_valid(dt_valid), .dt_ready(dt_ready),
     .dt_p1x(dt_p1x), .dt_p1y(dt_p1y), .dt_p1z(dt_p1z),
     .dt_p2x(dt_p2x), .dt_p2y(dt_p2y), .dt_p2z(dt_p2z),
@@ -182,10 +236,14 @@ module m1_geometry (
     .cl_nx(cl_nx), .cl_ny(cl_ny), .cl_nz(cl_nz), .cl_tex(cl_tex),
     .cl_lp_d(cl_lp_d), .cl_lp_a(cl_lp_a), .cl_lp_s(cl_lp_s), .cl_lp_p(cl_lp_p),
     .cl_out_valid(cl_out_valid), .cl_out_rgb(cl_out_rgb),
-    .q_valid(q_valid),
-    .q_x0(q_x0), .q_y0(q_y0), .q_x1(q_x1), .q_y1(q_y1),
-    .q_x2(q_x2), .q_y2(q_y2), .q_x3(q_x3), .q_y3(q_y3),
-    .q_col(q_col), .q_z(q_z), .q_moire(q_moire),
+    .q_valid(w_q_valid), .q_ready(w_q_ready),
+    .q_cx0(w_cx0), .q_cy0(w_cy0), .q_cz0(w_cz0),
+    .q_cx1(w_cx1), .q_cy1(w_cy1), .q_cz1(w_cz1),
+    .q_cx2(w_cx2), .q_cy2(w_cy2), .q_cz2(w_cz2),
+    .q_cx3(w_cx3), .q_cy3(w_cy3), .q_cz3(w_cz3),
+    .q_x0(w_x0), .q_y0(w_y0), .q_x1(w_x1), .q_y1(w_y1),
+    .q_x2(w_x2), .q_y2(w_y2), .q_x3(w_x3), .q_y3(w_y3),
+    .q_col(w_col), .q_z(w_z), .q_moire(w_moire),
     .dbg_records(dbg_records), .dbg_quads(dbg_quads),
     .dbg_culled(dbg_culled), .dbg_nolink(dbg_nolink)
   );
@@ -202,6 +260,67 @@ module m1_geometry (
     .add_gnt(add_gnt[0]), .add_rsp(add_rsp[0]), .add_res(add_res),
     .out_valid(xf_out_valid), .out_x(xf_out_x), .out_y(xf_out_y), .out_z(xf_out_z)
   );
+
+  // The walker's quad goes through the frustum clipper before it leaves. A quad
+  // crossing no plane passes through for sixteen multiplies; one that does is
+  // cut into one or two with new vertices created and projected on the
+  // boundary. Without it a road vertex past 32,767 wraps to the far side of
+  // the screen, because the store keeps 16 bits and the fill works in 16.16.
+  // DONE WAITS FOR THE CLIPPER TO DRAIN.
+  //
+  // It used to be the walker's own done, which says "no more RECORDS" - not "no
+  // more quads". The clipper can still be cutting the last one, and its output
+  // then lands after the consumer has been told the object finished: measured
+  // as a quad emitted before the first quad of the NEXT object was even handed
+  // over, and counted against it. In m1_raster3d that is worse than a miscount,
+  // because the sort starts on geo_done and would begin while geometry was
+  // still arriving.
+  logic w_done, done_pend;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) done_pend <= 1'b0;
+    else if (w_done) done_pend <= 1'b1;
+    else if (done_pend && w_q_ready) done_pend <= 1'b0;
+  end
+  assign done = done_pend && w_q_ready;
+
+  m1_geo_clip u_clip (
+    .clk(clk), .rst_n(rst_n),
+    .a_left(a_left), .a_right(a_right), .a_bottom(a_bottom), .a_top(a_top),
+    .in_valid(w_q_valid), .in_ready(w_q_ready),
+    .in_x0(w_cx0), .in_y0(w_cy0), .in_z0(w_cz0),
+    .in_x1(w_cx1), .in_y1(w_cy1), .in_z1(w_cz1),
+    .in_x2(w_cx2), .in_y2(w_cy2), .in_z2(w_cz2),
+    .in_x3(w_cx3), .in_y3(w_cy3), .in_z3(w_cz3),
+    .in_sx0(w_x0[15:0]), .in_sy0(w_y0[15:0]),
+    .in_sx1(w_x1[15:0]), .in_sy1(w_y1[15:0]),
+    .in_sx2(w_x2[15:0]), .in_sy2(w_y2[15:0]),
+    .in_sx3(w_x3[15:0]), .in_sy3(w_y3[15:0]),
+    .in_col(w_col), .in_z(w_z), .in_moire(w_moire),
+    .mul_req(mul_req[5]), .mul_a(mul_a[5]), .mul_b(mul_b[5]),
+    .mul_gnt(mul_gnt[5]), .mul_rsp(mul_rsp[5]), .mul_res(mul_res),
+    .add_req(add_req[5]), .add_a(add_a[5]), .add_b(add_b[5]),
+    .add_sub(add_sub[5]),
+    .add_gnt(add_gnt[5]), .add_rsp(add_rsp[5]), .add_res(add_res),
+    .div_req(div_req[5]), .div_a(div_a[5]), .div_b(div_b[5]),
+    .div_gnt(div_gnt[5]), .div_rsp(div_rsp[5]), .div_res(div_res),
+    .pj_valid(k_pj_valid), .pj_ready(pj_ready),
+    .pj_x(k_pj_x), .pj_y(k_pj_y), .pj_z(k_pj_z),
+    .pj_out_valid(k_pj_out_valid),
+    .pj_out_sx(pj_out_sx), .pj_out_sy(pj_out_sy),
+    .out_valid(k_out_valid), .out_ready(1'b1),
+    .out_sx0(k_sx0), .out_sy0(k_sy0), .out_sx1(k_sx1), .out_sy1(k_sy1),
+    .out_sx2(k_sx2), .out_sy2(k_sy2), .out_sx3(k_sx3), .out_sy3(k_sy3),
+    .out_col(q_col), .out_z(q_z), .out_moire(q_moire),
+    .dbg_in(k_dbg_in), .dbg_out(k_dbg_out), .dbg_dropped(k_dbg_drop)
+  );
+
+  // The attributes ride through unchanged: a clipped quad keeps its colour, its
+  // sort z and its stipple, exactly as fclip_push_quad copies them.
+  assign q_valid = k_out_valid;
+  assign q_x0 = 32'(signed'(k_sx0)); assign q_y0 = 32'(signed'(k_sy0));
+  assign q_x1 = 32'(signed'(k_sx1)); assign q_y1 = 32'(signed'(k_sy1));
+  assign q_x2 = 32'(signed'(k_sx2)); assign q_y2 = 32'(signed'(k_sy2));
+  assign q_x3 = 32'(signed'(k_sx3)); assign q_y3 = 32'(signed'(k_sy3));
 
   m1_geo_project u_project (
     .clk(clk), .rst_n(rst_n),
