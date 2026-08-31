@@ -85,7 +85,30 @@ module sdram_model #(
   // Storage is sparse and cannot be pre-filled cheaply, so the default comes
   // from a parameter instead. Left at zero so every existing harness keeps the
   // numbers it was baselined with.
-  parameter logic [DQ_BITS-1:0] DEFAULT_DATA = '0
+  parameter logic [DQ_BITS-1:0] DEFAULT_DATA = '0,
+
+  // A RAW BINARY BACKING THE UNWRITTEN PART OF THE ARRAY.
+  //
+  // The board's SDRAM holds everything the MRA lists - sixteen megabytes of
+  // polygon models among it - while a bench that streams only the V60 image
+  // over ioctl leaves that region reading DEFAULT_DATA. The 3D layer then reads
+  // 0xFFFF for every model word and draws nothing, so the bench shows a clean
+  // picture for a machine that on hardware is drawing garbage. That is not a
+  // small difference in coverage; it is the difference between a bug being
+  // reproducible and a person having to photograph a screen.
+  //
+  // Streaming all sixteen megabytes through ioctl would be the faithful thing
+  // and is far too slow in simulation, so the file backs the array instead:
+  // anything the run has actually written wins, and everything else reads what
+  // the ROM image holds. The data is right; only the moment it arrived is not,
+  // and the 3D layer does not run until long after the download finishes.
+  //
+  // Dense, not associative: sixteen megabytes is 8.4 M words, which as
+  // associative entries costs hundreds of megabytes and as a packed array costs
+  // sixteen.
+  parameter string  BACKING_FILE  = "",
+  parameter longint BACKING_BASE  = 0,     // word address the file starts at
+  parameter longint BACKING_WORDS = 0
 ) (
   input  logic                clk,
   input  logic                cke,
@@ -150,6 +173,54 @@ module sdram_model #(
   // Sparse storage. A 13/10/2 device is 33.5 M words, and a dense array would
   // cost 67 MB of simulator memory to hold a few thousand written locations.
   logic [DQ_BITS-1:0] mem [longint];
+
+  // ---------------------------------------------------------------- backing
+  logic [DQ_BITS-1:0] backing [];
+  integer bk_fd;
+  longint bk_got;
+  initial begin
+    if (BACKING_FILE != "") begin
+      bk_fd = $fopen(BACKING_FILE, "rb");
+      if (bk_fd == 0) begin
+        $display("sdram_model: cannot open backing file %s", BACKING_FILE);
+      end else begin
+        backing = new[BACKING_WORDS];
+        // BYTE AT A TIME, because Verilator's $fread refuses a dynamic array
+        // ("$fread loading other than unpacked-array variable") and a fixed one
+        // cannot be sized from a parameter that is zero when the feature is
+        // off. $fgetc over twenty-five megabytes costs a few seconds once.
+        //
+        // Low byte first: the image is little-endian and assembling it the
+        // other way swaps every word of every model, which produces geometry
+        // that is wrong while still looking like geometry.
+        bk_got = 0;
+        for (longint w = 0; w < BACKING_WORDS; w++) begin
+          int lo, hi;
+          lo = $fgetc(bk_fd);
+          hi = $fgetc(bk_fd);
+          if (lo < 0 || hi < 0) begin
+            backing[w] = DEFAULT_DATA;
+          end else begin
+            backing[w] = {hi[7:0], lo[7:0]};
+            bk_got = bk_got + 2;
+          end
+        end
+        $fclose(bk_fd);
+        $display("sdram_model: backed %0d words from %s (%0d bytes read) at word 0x%0h",
+                 BACKING_WORDS, BACKING_FILE, bk_got, BACKING_BASE);
+      end
+    end
+  end
+
+  // Written data always wins; the backing file answers everything else in
+  // range, and DEFAULT_DATA answers the rest.
+  function automatic logic [DQ_BITS-1:0] read_at(input longint adr);
+    if (mem.exists(adr)) return mem[adr];
+    if (backing.size() != 0 && adr >= BACKING_BASE
+        && adr < BACKING_BASE + BACKING_WORDS)
+      return backing[adr - BACKING_BASE];
+    return DEFAULT_DATA;
+  endfunction
 
   logic                row_open [BANKS];
   logic [ROW_BITS-1:0] open_row [BANKS];
@@ -304,10 +375,10 @@ module sdram_model #(
               // exact off-by-one has cost this project five debugging sessions
               // already and it always looks like broken hardware.
               rd_v[CL-1] <= 1'b1;
-              rd_d[CL-1] <= mem.exists(adr) ? mem[adr] : DEFAULT_DATA;
+              rd_d[CL-1] <= read_at(adr);
               reads_served <= reads_served + 1;
             end else begin
-              cur = mem.exists(adr) ? mem[adr] : DEFAULT_DATA;
+              cur = read_at(adr);
               // DQM is active-high mask: a set bit suppresses that byte.
               if (!dqm[0]) cur[7:0]  = dq_i[7:0];
               if (!dqm[1]) cur[15:8] = dq_i[15:8];

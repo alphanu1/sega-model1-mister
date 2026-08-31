@@ -31,9 +31,18 @@
 // framebuffer is overwritten every frame and dumped at the end, so whatever
 // state the machine reached is what comes out.
 //
-// NO 3D. There is no TGP and no rasterizer here, so the polygon field is
-// empty by construction. What should appear is whatever the 2D tilemap layers
-// hold — boot text, a test screen, or the game's HUD.
+// THE 3D IS HERE NOW, and the polygon field is no longer empty. This header
+// used to say "no TGP and no rasterizer here, so the polygon field is empty by
+// construction" - true when it was written, false since m1_integrated gained
+// both, and it was the reason this bench showed a clean picture for a machine
+// that on hardware was drawing dithered garbage over the whole screen.
+//
+// The ioctl download streams the V60 image only. The polygon models are
+// sixteen megabytes and would take longer to push through ioctl than the run
+// itself, so sdram_model BACKS the unwritten array from the same packed image
+// the MRA loads (build/rom/vr_stream.bin, polygons at byte 0x840000). Anything
+// the run writes still wins; only the moment the data arrived is unfaithful,
+// and the 3D layer does not run until long after the download completes.
 //============================================================================
 `timescale 1ns/1ps
 
@@ -45,6 +54,12 @@ module tb_m1_frame #(
     // is actually in needs about 3.6e9, so this has to be 64-bit.
     parameter longint RUN_CYCLES = 120000000,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
+    // The whole packed SDRAM image, in words. Build it with
+    //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
+    // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
+    // draws no 3D at all.
+    parameter string  STREAMBIN  = "build/rom/vr_stream.bin",
+    parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
     parameter string  PPMOUT     = "build/frame.ppm",
     parameter string  TRAMOUT    = "build/frame_tram.hex",
     parameter string  DPRAMOUT   = "build/frame_dpram.hex",
@@ -117,9 +132,13 @@ localparam integer PRELOAD_WORDS = 32'h420000;
 // 1 ns timescale — so the CPU half period is 26 ns, giving 19.23 MHz. The error
 // is 0.16%, and what matters is that the edges drift against each other the way
 // the real ones do instead of lining up every fourth cycle forever.
-reg clk = 0, clk_cpu = 0, rst_n = 0;
+reg clk = 0, clk_cpu = 0, clk_3d = 0, rst_n = 0;
 always #6.25 clk     = ~clk;      // 80 MHz
 always #21.25 clk_cpu = ~clk_cpu;   // 23.529 MHz, matching the PLL (800/34)
+// 47.059 MHz, the PLL's 800/17 and an exact double of clk_cpu. 10.625 ns is
+// expressible at this timescale's 1 ps precision; rounding it to 10 or 11 would
+// break the exact halving the CDC relies on.
+always #10.625 clk_3d = ~clk_3d;
 
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
@@ -145,24 +164,45 @@ wire [24:1] ifp_addr;
 wire        char_req;
 wire [17:0] char_addr;
 
-wire [4:0]       p_req, p_we, p_ack;
-wire [4:0][24:1] p_addr;
-wire [4:0][15:0] p_din;
-wire [4:0][1:0]  p_be;
-wire [4:0][63:0] p_dout;
+// SEVEN PORTS, NOT FIVE, AND THE SAME SEVEN Model1.sv HAS.
+//
+// p5 bursts the polygon models and p6 carries tgp_ram. This bench had five and
+// left the 3D layer's two masters unconnected - which, with -Wno-PINMISSING,
+// ties their acknowledges to zero. Every polygon read and every tgp_ram write
+// then waits forever: the list walk hung in S_BODY on command 4, which is the
+// colour-word upload, and the whole 3D layer stopped after 39 passes while the
+// 2D carried on drawing a perfectly convincing picture.
+//
+// The bench and the top level having different port counts is exactly the
+// divergence docs/mister-integration.md warns about, and it hid for as long as
+// it did because the missing piece produced NO OUTPUT rather than wrong output.
+wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
+wire [24:1] r3d_rom_addr, r3d_tex_addr;
+wire [15:0] r3d_tex_din;
 
-assign p_req  = {rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-assign p_we   = {2'b00, 1'b0,    1'b0,              sdr_we};
+wire [6:0]       p_req, p_we, p_ack;
+wire [6:0][24:1] p_addr;
+wire [6:0][15:0] p_din;
+wire [6:0][1:0]  p_be;
+wire [6:0][63:0] p_dout;
+
+assign p_req  = {r3d_tex_req, r3d_rom_req, rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+assign p_we   = {r3d_tex_we,  1'b0,        1'b0,   1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
 // from word 0, which is V60 program ROM, and every glyph decodes from the same
 // wrong data. 31 distinct tile numbers then render identically and the screen
 // is a uniform pattern that looks like a video bug rather than an address one.
-assign p_addr = {rb_addr, {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
+// p5's address is aligned DOWN to its 4-word burst boundary, the same way p3's
+// is; m1_integrated keeps bit 1 to pick which 32-bit half of the burst it
+// wanted. Aligning it any earlier destroys that bit and every odd model word
+// returns the even one's data.
+assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0}, rb_addr,
+                 {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-assign p_din  = {16'd0, 16'd0, 16'd0,    16'd0,             sdr_din};
-assign p_be   = {2'd0,  2'd0,  2'd0,     2'd0,              sdr_be};
+assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -183,7 +223,7 @@ wire        dq_oe_c, dq_oe_m;
 wire [15:0] v_flags;
 wire        mem_ready;
 
-m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
+m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .rd_lat_sel(2'd0),   // CL+3: sdram_model presents data on the same edge
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
@@ -200,7 +240,12 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
 // is what an SDRAM the loader has not reached actually looks like. With a
 // preloaded image every location is written before the run, so the default
 // never shows.
-sdram_model #(.COL_BITS(9), .DEFAULT_DATA(DOWNLOAD ? 16'hFFFF : 16'h0000)) device (
+// POLY_WORDS covers the whole packed image, not just the polygon field: the
+// coprocessor's data ROM and tables sit below it and the same argument applies
+// to them.
+sdram_model #(.COL_BITS(9), .DEFAULT_DATA(DOWNLOAD ? 16'hFFFF : 16'h0000),
+              .BACKING_FILE(STREAMBIN), .BACKING_BASE(0),
+              .BACKING_WORDS(STREAM_WORDS)) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
     .we_n(we_n), .ba(ba), .a(a), .dqm(dqm),
     .dq_i(dq_c2m), .dq_oe_i(dq_oe_c), .dq_o(dq_m2c), .dq_oe_o(dq_oe_m),
@@ -224,6 +269,22 @@ wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
+    // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
+    //
+    // The tool tied it to zero and said nothing, so the 3D layer has never
+    // been clocked here since it was wired into m1_integrated - every frame
+    // this bench has dumped shows a machine whose rasterizer is held still.
+    // It looked exactly like a correct 2D picture, which is the worst way for
+    // a missing clock to present.
+    .clk_3d(clk_3d),
+
+    // The 3D layer's SDRAM masters, wired exactly as Model1.sv wires them:
+    // p5 for the polygon models, p6 for tgp_ram.
+    .r3d_rom_req(r3d_rom_req), .r3d_rom_addr(r3d_rom_addr),
+    .r3d_rom_dout(p_dout[5]), .r3d_rom_ack(p_ack[5]),
+    .r3d_tex_req(r3d_tex_req), .r3d_tex_we(r3d_tex_we),
+    .r3d_tex_addr(r3d_tex_addr), .r3d_tex_din(r3d_tex_din),
+    .r3d_tex_dout(p_dout[6][15:0]), .r3d_tex_ack(p_ack[6]),
     .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
     // The control region as the board presents it at rest, with one byte
     // overridden. Not uniformly idle-high: the three ADC channels at 0x00-0x02
@@ -1299,6 +1360,57 @@ always @(posedge clk) begin
     end
 end
 
+// ---------------------------------------------- WHERE THE CPU'S CYCLES GO
+//
+// tb_m1_boot carries these buckets already, and it instantiates m1_main - no 3D
+// layer, no polygon ROM prefetch, no tgp_ram traffic. So its numbers describe a
+// V60 that has the SDRAM controller mostly to itself, which since 2026-08-31 is
+// not the machine we ship.
+//
+// The same three buckets, here, with every master live. A cycle can be in both
+// stall buckets - the V60 arbitrates one bus between fetch and data - so the
+// union is counted rather than the sum, which would overstate it.
+// LONGINT. `integer` is 32-bit signed and the percentage print multiplies by
+// 100 first, so 104,727,411 stalled cycles reported as 6% and the union as -3%.
+// The raw counts were right and the arithmetic on them was not.
+longint v_cyc = 0, v_dstall = 0, v_fstall = 0, v_anystall = 0;
+always @(posedge clk_cpu) begin
+    if (rs_cpu[1]) begin
+        automatic bit ds = core.main.cpu.dbus_req && !core.main.cpu.dack;
+        automatic bit fs = core.main.cpu.if_req && !core.main.cpu.u_ifetch.if_ack_i;
+        v_cyc = v_cyc + 1;
+        if (ds)       v_dstall   = v_dstall   + 1;
+        if (fs)       v_fstall   = v_fstall   + 1;
+        if (ds || fs) v_anystall = v_anystall + 1;
+    end
+end
+
+// Retire to retire, in CPU-clock cycles, counted as PC changes. A uniform
+// distribution means every instruction is genuinely multi-cycle; a bimodal one
+// means a short average dragged by a few slow classes, and those want a targeted
+// fix rather than a pipeline.
+integer  cpi_hist [0:63];
+longint  cpi_retires = 0, cpi_cycles = 0;
+integer cpi_run = 0, cpi_i;
+reg [23:0] cpi_last_pc = 24'hffffff;
+initial for (cpi_i = 0; cpi_i < 64; cpi_i = cpi_i + 1) cpi_hist[cpi_i] = 0;
+always @(posedge clk_cpu) begin
+    if (rs_cpu[1]) begin
+        if (core.dbg_pc != cpi_last_pc) begin
+            if (cpi_last_pc != 24'hffffff) begin
+                cpi_retires = cpi_retires + 1;
+                cpi_cycles  = cpi_cycles + cpi_run;
+                cpi_hist[(cpi_run > 63) ? 63 : cpi_run] =
+                    cpi_hist[(cpi_run > 63) ? 63 : cpi_run] + 1;
+            end
+            cpi_last_pc = core.dbg_pc;
+            cpi_run = 1;
+        end else begin
+            cpi_run = cpi_run + 1;
+        end
+    end
+end
+
 // ------------------------------------------------ character fetch latency
 //
 // The unit test models char_ack coming back in 14 cycles, and on that basis
@@ -1430,8 +1542,18 @@ initial begin
                 // pushing COMMANDS into a full inbound FIFO, neither can drain
                 // the other and the machine is DEADLOCKED rather than slow.
                 // v60_stall is m1_copro_if's own `fin_full`.
-                $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d  fin=%0d/16 fout=%0d/16 v60_stall=%0b tgp_wr=%0b",
+                $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d  3d obj=%0d q=%0d f=%0d st=%0d b=%0d rb=%0d bands=%0d rv=%0b armed=%0b beam=%0d | lw st=%0d off=%0h cur=%0h cmd=%02h  fin=%0d/16 fout=%0d/16 v60_stall=%0b tgp_wr=%0b",
                          cycles/1000000, dbg_pc, frames, dbg_overruns,
+                         core.r3_dbg_objects, core.r3_dbg_quads,
+                         core.r3_dbg_frames,
+                         core.u_raster3d.st, core.u_raster3d.cur_band,
+                         core.u_raster3d.ready_band, core.u_raster3d.dbg_bands,
+                         core.u_raster3d.ready_valid, core.u_raster3d.frame_armed,
+                         core.u_raster3d.beam_band_s2,
+                         core.u_raster3d.u_walk.st,
+                         core.u_raster3d.u_walk.off,
+                         core.u_raster3d.u_walk.cur,
+                         core.u_raster3d.u_walk.cmd,
                          core.main.copro.fin_wr - core.main.copro.fin_rd,
                          core.main.copro.fout_wr - core.main.copro.fout_rd,
                          core.main.copro.v60_stall, core.main.tgp.fifo_wr);
@@ -1446,6 +1568,31 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    $display("FRAME: 3D layer: objects=%0d quads=%0d dropped=%0d passes=%0d",
+             core.r3_dbg_objects, core.r3_dbg_quads,
+             core.r3_dbg_dropped, core.r3_dbg_frames);
+    $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",
+             core.u_raster3d.st, core.u_raster3d.cur_band,
+             core.u_raster3d.dbg_bands, core.u_raster3d.fill_buf,
+             core.u_raster3d.ready_buf, core.u_raster3d.disp_buf,
+             core.u_raster3d.ready_valid, core.u_raster3d.frame_armed,
+             core.u_raster3d.disp_valid, core.listctl_sel);
+    if (v_cyc > 0)
+        $display("FRAME: CPU %0d cycles: data stall %0d (%0d.%02d%%), fetch stall %0d (%0d.%02d%%), either %0d (%0d.%02d%%)",
+                 v_cyc,
+                 v_dstall,   (10000*v_dstall)/v_cyc/100,   ((10000*v_dstall)/v_cyc)%100,
+                 v_fstall,   (10000*v_fstall)/v_cyc/100,   ((10000*v_fstall)/v_cyc)%100,
+                 v_anystall, (10000*v_anystall)/v_cyc/100, ((10000*v_anystall)/v_cyc)%100);
+    if (cpi_retires > 0) begin
+        $display("FRAME: %0d retires in %0d CPU cycles = %0d.%02d CPI",
+                 cpi_retires, cpi_cycles, cpi_cycles/cpi_retires,
+                 ((cpi_cycles*100)/cpi_retires) % 100);
+        $write("FRAME: retire-to-retire histogram:");
+        for (cpi_i = 1; cpi_i < 64; cpi_i = cpi_i + 1)
+            if (cpi_hist[cpi_i] * 200 > cpi_retires)
+                $write(" %0d:%0d%%", cpi_i, (100*cpi_hist[cpi_i])/cpi_retires);
+        $write("\n");
+    end
     if (cl_n > 0)
         $display("FRAME: char fetch wait avg=%0d cycles over %0d fetches (%0d total)",
                  cl_wait / cl_n, cl_n, cl_wait);
@@ -1610,6 +1757,30 @@ initial begin
         $fclose(fd);
         $display("FRAME: wrote %s (32768 tile-RAM words)", TRAMOUT);
     end
+
+    // THE DISPLAY LIST OUR V60 WROTE, both buffers and the one selected.
+    //
+    // render3d already renders correctly from MAME's captured list and real
+    // polygon data, so if the same rasterizer draws the wrong picture on the
+    // board the difference is either what the V60 WRITES or the plumbing
+    // between them. This is the half of that bisection the standalone bench
+    // cannot supply: feed these to render3d and the two cases separate.
+    fd = $fopen("build/frame_dlist0.hex", "w");
+    if (fd != 0) begin
+        for (i = 0; i < 32768; i = i + 1)
+            $fwrite(fd, "%04h\n", {core.main.rams.u_dl0.mem_hi[i],
+                                   core.main.rams.u_dl0.mem_lo[i]});
+        $fclose(fd);
+    end
+    fd = $fopen("build/frame_dlist1.hex", "w");
+    if (fd != 0) begin
+        for (i = 0; i < 32768; i = i + 1)
+            $fwrite(fd, "%04h\n", {core.main.rams.u_dl1.mem_hi[i],
+                                   core.main.rams.u_dl1.mem_lo[i]});
+        $fclose(fd);
+    end
+    $display("FRAME: wrote build/frame_dlist0.hex and _dlist1.hex, listctl_sel=%0d",
+             core.listctl_sel);
 
     fd = $fopen(PALOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PALOUT);
