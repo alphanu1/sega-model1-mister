@@ -43,6 +43,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/bw_monitor.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_glue.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_ioboard.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_uart_tx.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_speed_report.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/m1_copro_if.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/m1_tgp.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_pkg.sv

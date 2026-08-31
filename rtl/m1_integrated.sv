@@ -192,6 +192,9 @@ module m1_integrated (
   // Visible pixels per tilemap, per frame — see m1_video. An alarm for a layer
   // that never reaches the screen, not a proof the composite is right.
   output logic [17:0] dbg_layer_px [4],
+  // The printf channel's transmit line, out to UART_TXD. See
+  // rtl/io/m1_speed_report.sv for what it says and how to read it.
+  output logic        uart_tx,
 
   // Each pair's window/split-scroll control register, as the renderer read it.
   output logic [15:0] dbg_ctrl [2],
@@ -807,6 +810,16 @@ module m1_integrated (
     .dbg_ctrl(dbg_ctrl), .dbg_layer_have(dbg_layer_have),
     .poly_rgb(r3_scan_rgb), .poly_hit(r3_scan_hit),
     .vid_hpos(vid_hpos), .vid_vpos(vid_vpos)
+  );
+
+  // Game speed, measured on the board rather than inferred. The counters are
+  // on clk_sys because that is what the UART's baud divider is written for and
+  // what vblank_irq_sys is already in.
+  m1_speed_report #(.CLK_HZ(80_000_000), .BAUD(115_200)) u_speed (
+    .clk(clk_sys), .rst_n(rst_n_sys),
+    .vblank(vblank_irq_sys), .list_sel(listctl_sel),
+    .bands(r3_dbg_frames), .passes(r3_dbg_objects),
+    .tx(uart_tx)
   );
 
   m1_rom_loader loader (

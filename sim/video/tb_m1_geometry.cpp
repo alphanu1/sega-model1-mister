@@ -136,10 +136,109 @@ struct Quad {
     int record;
 };
 
+// ---------------------------------------------------------------- the clipper
+//
+// model1_v.cpp fclip_push_quad (:697) and the four clip/isclipped pairs at
+// :635-:690, transcribed. Without it this model disagrees with any RTL that
+// clips - and the RTL has to clip, because m1_quad_store keeps 16-bit screen
+// coordinates and m1_raster_fill works in 16.16, so both require vertices
+// inside +/-32768. MAME guarantees that by clipping; unclipped, a road vertex
+// at x = 100,000 wraps to the other side of the screen.
+static float VX1 = 0.0f, VX2 = 495.0f, VY1 = 0.0f, VY2 = 383.0f;
+static float A_LEFT, A_RIGHT, A_BOTTOM, A_TOP;
+
+static void set_planes() {
+    A_LEFT   = ( VX1 - XC - VIEWX) / ZOOMX;
+    A_RIGHT  = ( VX2 - XC - VIEWX) / ZOOMX;
+    A_BOTTOM = (-VY1 + YC - VIEWY) / ZOOMY;
+    A_TOP    = (-VY2 + YC - VIEWY) / ZOOMY;
+}
+
+static bool isc(int level, const Pt& p) {
+    switch (level) {
+        case 0:  return p.y > (p.z * A_BOTTOM);
+        case 1:  return p.y < (p.z * A_TOP);
+        case 2:  return p.x < (p.z * A_LEFT);
+        default: return p.x > (p.z * A_RIGHT);
+    }
+}
+
+static void project(Pt& p);
+static Pt clip_edge(int level, const Pt& p1, const Pt& p2) {
+    float a = (level == 0) ? A_BOTTOM : (level == 1) ? A_TOP
+            : (level == 2) ? A_LEFT   : A_RIGHT;
+    float v1 = (level >= 2) ? p1.x : p1.y;
+    float v2 = (level >= 2) ? p2.x : p2.y;
+    float t = (p2.z * a - v2) / ((p2.z - p1.z) * a - (v2 - v1));
+    Pt r;
+    r.x = p1.x * t + p2.x * (1 - t);
+    r.y = p1.y * t + p2.y * (1 - t);
+    r.z = p1.z * t + p2.z * (1 - t);
+    project(r);
+    return r;
+}
+
+// Emits into `out`, which the caller has primed with the quad's attributes.
+static void fclip(int level, const Pt q[4], const Quad& attrs,
+                  std::vector<Quad>& out) {
+    if (level == 4) {
+        Quad e = attrs;
+        for (int i = 0; i < 4; i++) { e.x[i] = q[i].sx; e.y[i] = q[i].sy; }
+        out.push_back(e);
+        return;
+    }
+    bool is_out[4];
+    for (int i = 0; i < 4; i++) is_out[i] = isc(level, q[i]);
+    if (!is_out[0] && !is_out[1] && !is_out[2] && !is_out[3]) {
+        fclip(level + 1, q, attrs, out); return;
+    }
+    if (is_out[0] && is_out[1] && is_out[2] && is_out[3]) return;
+
+    int i;
+    for (i = 0; i < 4; i++) if (is_out[i] && !is_out[(i - 1) & 3]) break;
+    Pt pt[4]; bool o2[4];
+    for (int j = 0; j < 4; j++) { pt[j] = q[(i + j) & 3]; o2[j] = is_out[(i + j) & 3]; }
+
+    Pt c[4];
+    auto push = [&](const Pt& a, const Pt& b, const Pt& cc, const Pt& d) {
+        Pt n[4] = { a, b, cc, d };
+        fclip(level + 1, n, attrs, out);
+    };
+    if (o2[1]) {
+        if (o2[2]) {                                  // 0,1,2 out: a triangle
+            c[0] = clip_edge(level, pt[2], pt[3]);
+            c[1] = clip_edge(level, pt[3], pt[0]);
+            push(c[0], pt[3], c[1], c[1]);
+        } else {                                      // 0,1 out: a quad
+            c[0] = clip_edge(level, pt[1], pt[2]);
+            c[1] = clip_edge(level, pt[3], pt[0]);
+            push(c[0], pt[2], pt[3], c[1]);
+        }
+    } else {
+        if (o2[2]) {                                  // 0,2 out: two triangles
+            c[0] = clip_edge(level, pt[0], pt[1]);
+            c[1] = clip_edge(level, pt[1], pt[2]);
+            push(c[0], pt[1], c[1], c[1]);
+            c[2] = clip_edge(level, pt[2], pt[3]);
+            c[3] = clip_edge(level, pt[3], pt[0]);
+            push(c[2], pt[3], c[3], c[3]);
+        } else {                                      // 0 out: a quad and a tri
+            c[0] = clip_edge(level, pt[0], pt[1]);
+            c[1] = clip_edge(level, pt[3], pt[0]);
+            push(c[0], pt[1], pt[2], pt[3]);
+            push(pt[3], c[1], c[0], c[0]);
+        }
+    }
+}
+
+
 // push_object, transcribed.
 static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t size,
                                float& old_z) {
     std::vector<Quad> out;
+    // The plane ratios follow the viewport and the zoom, so they are derived
+    // here rather than cached - set_viewport does the same on every change.
+    set_planes();
     if (tex_adr == 0xffffffff || size >= 0x1000000) return out;
     if (!size) size = 0xffffffff;
     auto rdf = [&](uint32_t a) { return u2f(prom[PA(a)]); };
@@ -198,7 +297,12 @@ static std::vector<Quad> model(uint32_t tex_adr, uint32_t poly_adr, uint32_t siz
                           tgpram[(tex_adr - 0x40000) & 0xfffff]);
             q.moire = (flags & 0x00002000) != 0;
             q.record = (int)i;
-            out.push_back(q);
+            // fclip_push_quad(0, cquad) - the quad goes to the clipper, not
+            // straight out, and may become none, one or several.
+            {
+                Pt cq[4] = { o1, o0, p0, p1 };
+                fclip(0, cq, q, out);
+            }
         }
 
         poly_adr += 10;

@@ -38,7 +38,13 @@ module emu
   // ------------------------------------------------------------- unused ports
   assign ADC_BUS  = 'Z;
   assign USER_OUT = '1;
-  assign {UART_RTS, UART_TXD, UART_DTR} = 0;
+  // UART_TXD IS THE PRINTF CHANNEL, not a tie-off. sys_top wires it to the
+  // HPS UART's RECEIVE line, so bytes the core sends arrive on the Linux side
+  // as /dev/ttyS0. It was tied to zero and never considered; the core now
+  // reports its own game speed there once a second.
+  assign {UART_RTS, UART_DTR} = 0;
+  assign UART_TXD = core_uart_tx;
+  wire core_uart_tx;
   assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
   assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN,
           DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
@@ -517,7 +523,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0}, rb_addr,
     .dbg_io_replies(dbg_io_replies),
     .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
     .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
-    .dbg_layer_px(dbg_layer_px), .dbg_ctrl(dbg_ctrl),
+    .dbg_layer_px(dbg_layer_px), .uart_tx(core_uart_tx), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
     .dbg_tram_writes(dbg_tram_writes),
     .dbg_ucode_ram_csum(dbg_ucode_ram_csum), .dbg_ucode_ram_ok(dbg_ucode_ram_ok),

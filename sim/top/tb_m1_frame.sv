@@ -1656,8 +1656,7 @@ initial begin
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
     if (swap_n > 0) begin
-        $display("FRAME: %0d display-list swaps, mean %0d.%02d frames apart"
-                 " (the board is 2.00 = 100%% speed, so this is %0d%%)",
+        $display("FRAME: %0d display-list swaps, mean %0d.%02d frames apart (the board is 2.00 = 100%% speed, so this is %0d%%)",
                  swap_n, swap_sum/swap_n, ((swap_sum*100)/swap_n) % 100,
                  (200*swap_n)/(swap_sum ? swap_sum : 1));
         $write("FRAME: frames between swaps:");
