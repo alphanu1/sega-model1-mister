@@ -647,7 +647,7 @@ module m1_integrated (
   logic [23:0] r3_scan_rgb;
   logic        r3_scan_hit;
   logic [15:0] r3_dbg_objects, r3_dbg_quads, r3_dbg_dropped, r3_dbg_frames;
-  logic [3:0]  r3_disp_band;
+  logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
   // The read ports m1_main exposes for the 3D layer, and the buffer select.

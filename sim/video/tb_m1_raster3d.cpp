@@ -102,26 +102,34 @@ int main(int argc, char** argv) {
         // display-list command 6. Nothing to drive - and that is the point: the
         // bench no longer supplies state the hardware would have to derive.
     };
-    auto tick = [&]() {
+    // THE TWO CLOCKS ARE NOT THE SAME RATE, and modelling them as one made the
+    // renderer look three times slower than it is.
+    //
+    // clk_3d is 47.059 MHz; the pixel clock is 656 x 424 x 57.52 = 15.996 MHz.
+    // So the fill gets 2.94 cycles per pixel of raster, not one. A bench that
+    // ticks both together hands it a third of its real budget and reports bands
+    // missed that the hardware makes comfortably - which is exactly what this
+    // one did.
+    auto tick = [&](bool pixel_edge) {
         int dreq = d->dl_req, rreq = d->rom_req, treq = d->tex_req;
         uint32_t taddr = d->tex_addr;
         memories();
-        cycles++; d->clk = 0; d->scan_clk = 0; d->eval();
+        cycles++; d->clk = 0; if (pixel_edge) d->scan_clk = 0; d->eval();
         d->dl_valid = dreq; d->rom_valid = rreq;
         // tgp_ram is READ/WRITE: display-list command 4 fills it. Modelling it
         // read-only would have hidden that the module never wrote it at all.
         if (treq && d->tex_we) tgpram[taddr & 0xfffff] = d->tex_wdata;
         d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
-        d->clk = 1; d->scan_clk = 1; d->eval();
+        d->clk = 1; if (pixel_edge) d->scan_clk = 1; d->eval();
     };
 
     d->rst_n = 0; d->frame_start = 0; d->frame_odd = 0; d->dl_sel = 0;
     d->scan_clk = 0; d->scan_x = 0; d->scan_y = 0; d->dl_valid = 0; d->rom_valid = 0;
     d->tex_valid = 0;
-    for (int i = 0; i < 8; i++) tick();
+    for (int i = 0; i < 8; i++) tick(true);
     d->rst_n = 1;
-    for (int i = 0; i < 8; i++) tick();
+    for (int i = 0; i < 8; i++) tick(true);
 
     // ---- ONE CONTINUOUS RASTER, with frame_start at vblank, exactly as the
     // hardware runs.
@@ -136,6 +144,14 @@ int main(int argc, char** argv) {
     // some colour words, because both are FRAME-PERSISTENT state that frame
     // 900's list does not set. Then the real list is swapped in.
     const int H_TOTAL = 656, V_TOTAL = 424;
+    // Derived, never written down: a band-time quoted as a constant has gone
+    // stale three times on this design, once by a factor of the band height and
+    // once by dividing the frame by the visible lines instead of the total.
+    const int  BAND_H    = 16;
+    const int  NBANDS    = (SH + BAND_H - 1) / BAND_H;
+    const long CLK3D_HZ  = 47059000;
+    const long PIXCLK_HZ = 15996000;     // 656 * 424 * 57.52
+    const long BAND_TIME = CLK3D_HZ / 5752 * 100 / NBANDS;
     const uint32_t TEX_BASE = 0x40000 + 0x1234;
 
     std::vector<uint16_t> pro(0x8000, 0);
@@ -165,6 +181,7 @@ int main(int argc, char** argv) {
     const int PROLOGUE_FRAMES = 3;
     const int TOTAL_FRAMES    = 14;
     long hits = 0;
+    unsigned bands_prev = 0;
     for (int f = 0; f < TOTAL_FRAMES; f++) {
         if (f == PROLOGUE_FRAMES) {
             dlist = real_list;
@@ -178,12 +195,23 @@ int main(int argc, char** argv) {
             memset(got_row, 0, sizeof got_row);
             hits = 0;
         }
+        long acc = 0;
+        // Cleared EVERY frame. Accumulating across frames reported 93.9% for a
+        // renderer delivering a third of its bands per frame - the union of
+        // three frames is not a frame.
+        memset(fb, 0, sizeof fb);
+        memset(got_row, 0, sizeof got_row);
+        hits = 0;
         for (int y = 0; y < V_TOTAL; y++) {
             for (int x = 0; x < H_TOTAL; x++) {
                 // vblank starts at the first non-visible line: one pulse a frame.
                 d->frame_start = (y == SH && x == 0) ? 1 : 0;
                 d->scan_x = x; d->scan_y = y;
-                tick();
+                // 2.94 3D cycles per pixel, carried as a fraction so the ratio
+                // is the real one rather than a rounded 3.
+                acc += CLK3D_HZ;
+                bool first = true;
+                while (acc >= PIXCLK_HZ) { acc -= PIXCLK_HZ; tick(first); first = false; }
                 if (x < SW && y < SH && d->scan_hit) {
                     fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
                     fb[y][x][1] = (d->scan_rgb >> 8) & 0xff;
@@ -193,10 +221,16 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        long fr_rows = 0;
+        for (int y = 0; y < SH; y++) if (got_row[y]) fr_rows++;
+        unsigned bands_now = d->dbg_bands;
+        unsigned bands_this = bands_now - bands_prev;
+        bands_prev = bands_now;
         if (f >= PROLOGUE_FRAMES)
-            printf("  frame %2d: %7ld pixels hit, bands=%u, last fill %u cycles"
-                   " (a band-time is 61,741)\n",
-                   f, hits, (unsigned)d->dbg_bands, (unsigned)d->dbg_band_cycles);
+            printf("  frame %2d: %6ld px, %3ld of %d rows, bands %2u of %u,"
+                   " last fill %u of %ld\n",
+                   f, hits, fr_rows, SH, bands_this, NBANDS,
+                   (unsigned)d->dbg_band_cycles, BAND_TIME);
     }
     int frames_swept = TOTAL_FRAMES;
 

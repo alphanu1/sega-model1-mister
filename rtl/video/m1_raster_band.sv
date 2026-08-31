@@ -64,8 +64,16 @@ module m1_raster_band #(
   // buffer address and cannot get the mapping wrong in two places.
   input  logic signed [15:0]     band_y0,
 
-  // Clear the whole band. Held until clear_busy drops.
+  // Clear the band. Held until clear_busy drops.
+  //
+  // clear_all clears every row; with it low only the LAST row is cleared, which
+  // is 496 cycles rather than 496*HEIGHT. That is the normal case, because the
+  // background clear below reaches every row EXCEPT the last one - it clears the
+  // row behind the beam, and the beam leaves the band without ever being one row
+  // past the bottom. Missing that row leaves one stale scanline every HEIGHT
+  // rows, which reads as a fine horizontal banding rather than as corruption.
   input  logic                   clear_req,
+  input  logic                   clear_all,
   output logic                   clear_busy,
 
   // BACKGROUND CLEAR, BEHIND THE BEAM.
@@ -223,7 +231,7 @@ module m1_raster_band #(
       case (st)
         S_IDLE: begin
           if (clear_req) begin
-            clr_addr <= '0;
+            clr_addr <= clear_all ? '0 : AW'((HEIGHT-1) * WIDTH);
             st       <= S_CLEAR;
           end else if (span_valid) begin
             if (takeable) begin

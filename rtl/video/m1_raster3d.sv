@@ -43,7 +43,22 @@
 `timescale 1ns/1ps
 
 module m1_raster3d #(
-  // THIRTY-TWO ROWS, NOT SIXTY-FOUR, AND THE REASON IS SOUND.
+  // SIXTEEN ROWS AND THREE BUFFERS.
+  //
+  // A third buffer does not double the time a fill is given - it ABSORBS
+  // VARIANCE. The fill runs one band ahead of the one being displayed, so a slow
+  // band borrows time from a fast one instead of missing its slot. With two
+  // buffers every fill had exactly one band-time and any overrun cost it, which
+  // measured as one or two bands presented a frame out of twelve.
+  //
+  //     32 rows, 2 buffers   band-time 61,741   fill 44,868-66,819   misses
+  //     16 rows, 3 buffers   band-time 30,864   fill roughly halved  absorbs
+  //
+  // And it FREES memory rather than costing it: 496x16x17 is 14 M10K a buffer,
+  // so three are 42 against 54 for two 32-row ones. Twelve blocks back towards
+  // the sound section.
+  //
+  // THIRTY-TWO ROWS, NOT SIXTY-FOUR, AND THE REASON WAS SOUND.
   //
   // 496x64x17 is 53 M10K a buffer and 106 for the pair; at 32 rows it is 27 and
   // 54. That is 52 blocks back, which takes the 3D layer from 145 of the 181 free
@@ -55,7 +70,7 @@ module m1_raster3d #(
   // that close to free: a quad is replayed only for the bands its rows touch, so
   // halving the band height moves a quad from touching one or two bands to two
   // or three, not from six to twelve.
-  parameter int unsigned BAND_H = 32,
+  parameter int unsigned BAND_H = 16,
   parameter int unsigned SCR_W  = 496,
   parameter int unsigned SCR_H  = 384
 ) (
@@ -111,7 +126,7 @@ module m1_raster3d #(
   // contains SOME band, so returning its pixels for a scanline outside that
   // band draws band N's picture over band M's rows - a plausible, wrong image
   // rather than a blank one.
-  output logic [3:0]  disp_band,
+  output logic [5:0]  disp_band,
   output logic        disp_valid,
 
   // ---- counted, for the overlay
@@ -351,16 +366,23 @@ module m1_raster3d #(
   );
 
   // ---------------------------------------------------------------- bands
-  // Two buffers: one being filled, one being displayed. `wr_buf` is the one the
-  // fill writes; the scanout reads the other.
-  logic        wr_buf;
-  logic [1:0]  bd_clear_req, bd_clear_busy;
-  logic [1:0]  bd_span_valid, bd_span_ready;
-  logic signed [15:0] bd_y0 [2];
-  logic [15:0] bd_rd_col [2];
-  logic [1:0]  bd_rd_hit;
-  logic [15:0] bd_dbg_spans [2], bd_dbg_drop [2];
-  logic [31:0] bd_dbg_px [2];
+  // Three slots in a ring: disp_buf is on screen, ready_buf holds the next band
+  // already filled, fill_buf is being written. The fill therefore runs a band
+  // ahead of the display, which is what absorbs a slow band.
+  // Three slots in a ring: one displaying, one filled and waiting, one filling.
+  localparam int unsigned NBUF = 3;
+  logic [1:0]  fill_buf, ready_buf, disp_buf;
+  logic        ready_valid;
+
+  logic [BW-1:0]   ready_band;      // the band sitting in the ready slot
+  logic            warm;            // every buffer has been through a display pass
+  logic [NBUF-1:0] bd_clear_req, bd_clear_busy;
+  logic [NBUF-1:0] bd_span_valid, bd_span_ready;
+  logic signed [15:0] bd_y0 [NBUF];
+  logic [15:0] bd_rd_col [NBUF];
+  logic [NBUF-1:0] bd_rd_hit;
+  logic [15:0] bd_dbg_spans [NBUF], bd_dbg_drop [NBUF];
+  logic [31:0] bd_dbg_px [NBUF];
 
   // RGB565 in the band, RGB888 out of the geometry: the band buffer is 17 bits
   // wide because that is what an M10K holds without doubling (docs/findings.md),
@@ -371,14 +393,15 @@ module m1_raster3d #(
 
   genvar b;
   generate
-    for (b = 0; b < 2; b++) begin : g_band
+    for (b = 0; b < NBUF; b++) begin : g_band
       m1_raster_band #(.WIDTH(SCR_W), .HEIGHT(BAND_H)) u_band (
         .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
         .band_y0(bd_y0[b]),
-        .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
-        // Cleared while it is the one being displayed, which is when its write
-        // port is free.
-        .bg_clear_en(bg_active && (wr_buf != 1'(b))),
+        .clear_req(bd_clear_req[b]), .clear_all(!warm),
+        .clear_busy(bd_clear_busy[b]),
+        // Cleared while it is the one being DISPLAYED - its write port is idle
+        // then, because the fill is writing a different slot.
+        .bg_clear_en(bg_active && (disp_buf == 2'(b))),
         .bg_clear_row(bg_row),
         .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
         .span_y(fl_span_y[15:0]),
@@ -393,14 +416,16 @@ module m1_raster3d #(
     end
   endgenerate
 
-  assign bd_span_valid[0] = fl_span_valid && (wr_buf == 1'b0);
-  assign bd_span_valid[1] = fl_span_valid && (wr_buf == 1'b1);
-  assign fl_span_ready    = wr_buf ? bd_span_ready[1] : bd_span_ready[0];
+  always_comb begin
+    bd_span_valid = '0;
+    bd_span_valid[fill_buf] = fl_span_valid;
+  end
+  assign fl_span_ready = bd_span_ready[fill_buf];
 
   // Scanout reads the buffer that is NOT being filled, and only for the rows
   // that buffer actually covers.
-  wire [15:0] rd_col_sel = wr_buf_s2 ? bd_rd_col[0] : bd_rd_col[1];
-  wire        rd_hit_sel = wr_buf_s2 ? bd_rd_hit[0] : bd_rd_hit[1];
+  wire [15:0] rd_col_sel = bd_rd_col[disp_buf_s2];
+  wire        rd_hit_sel = bd_rd_hit[disp_buf_s2];
 
   // disp_band and disp_valid are written on `clk` and read on `scan_clk`. Two
   // flops each, and the BAND INDEX IS GRAY-SAFE BY CONSTRUCTION rather than by
@@ -410,7 +435,8 @@ module m1_raster3d #(
   // without care would normally be a real hazard; here the consequence is bounded
   // and the alternative is a Gray code on a value the fill side also compares
   // arithmetically.
-  // wr_buf IS SYNCHRONISED TOO, and leaving it out was a real fault rather than
+  // THE DISPLAY SLOT IS SYNCHRONISED TOO, and leaving its predecessor out was a
+  // real fault rather than
   // an oversight in style. It selects which band buffer the scanout reads, so
   // unsynchronised it feeds combinationally from a clk_3d register through
   // scan_hit into the mixer's poly_won, out to pal_addr, and onto the PALETTE
@@ -420,9 +446,9 @@ module m1_raster3d #(
   //
   // It changes in the same cycle as disp_band, so all three cross together and
   // stay consistent: the buffer selected always matches the band advertised.
-  logic [3:0] disp_band_s1, disp_band_s2;
+  logic [5:0] disp_band_s1, disp_band_s2;
   logic       disp_valid_s1, disp_valid_s2;
-  logic       wr_buf_s1, wr_buf_s2;
+  logic [1:0] disp_buf_s1, disp_buf_s2;
 
   // THE BEAM'S BAND, crossed the other way - into the 3D clock - so the fill
   // sequence can follow the raster instead of free-running beside it.
@@ -459,11 +485,39 @@ module m1_raster3d #(
   // And not "as soon as the displayed buffer is free" either: that presents all
   // twelve in a burst before the beam reaches any of them, which measured 8.8%
   // of the frame painted. The band has to be swapped in just ahead of the beam.
-  wire [BW:0] beam_ext = {1'b0, beam_band_s2};
-  wire [BW:0] want_ext = {1'b0, cur_band};
-  wire present_now = (beam_ext == want_ext)
-                  || (want_ext != '0 && beam_ext == want_ext - 1'b1)
-                  || (want_ext == '0 && {6'd0, scan_y} >= 10'(SCR_H));
+  wire [BW:0] beam_ext  = {1'b0, beam_band_s2};
+  wire [BW:0] want_ext  = {1'b0, ready_band};
+  wire        beam_blank = (beam_ext >= (BW+1)'(NBANDS));
+
+  // NEVER EARLY, because a third buffer removes the reason to be.
+  //
+  // With two buffers the choice was between presenting when the beam arrived -
+  // which a fill that ran even slightly long always missed, costing a whole
+  // frame - and presenting a band ahead, which blanks the tail of the band still
+  // on screen. Both were measured; the second is what shipped.
+  //
+  // Running a band ahead makes the exact-arrival rule affordable: the band is
+  // already sitting in the ready slot when the beam gets there. `>=` rather than
+  // `==` so a genuinely late band still shows its remainder instead of waiting
+  // for the next frame, and band 0 waits for BLANKING rather than for the beam
+  // to be at band 0 - by then its rows are already being drawn.
+  // BAND 0 IS ARMED BY VBLANK, not by the beam standing on it.
+  //
+  // "present band 0 while the beam is blanking" cost a whole frame every pass:
+  // the list walk, the sort and band 0's own fill all happen inside vblank and
+  // together they outlast it, so band 0 was always ready a few lines too late
+  // and waited for the NEXT vblank. Measured as 24 bands delivered over three
+  // frames rather than one.
+  //
+  // Arming instead of comparing lets a late band 0 present as soon as it exists
+  // and the bands behind it catch up immediately, since each of those is then
+  // already `>=` the beam. The arm is cleared by that present, so band 0 of the
+  // following pass cannot jump in over the middle of this frame.
+  logic frame_armed, beam_blank_d;
+
+  wire present_now = ready_valid
+                  && ((want_ext == '0) ? frame_armed
+                                       : (!beam_blank && beam_ext >= want_ext));
 
   wire                          bg_active = disp_valid && (beam_row_s2 != '0);
   wire [$clog2(BAND_H)-1:0]     bg_row    = beam_row_s2 - 1'b1;
@@ -471,7 +525,7 @@ module m1_raster3d #(
   always_ff @(posedge scan_clk) begin
     disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
     disp_valid_s1 <= disp_valid; disp_valid_s2 <= disp_valid_s1;
-    wr_buf_s1     <= wr_buf;     wr_buf_s2     <= wr_buf_s1;
+    disp_buf_s1   <= disp_buf;   disp_buf_s2   <= disp_buf_s1;
   end
 
   wire in_disp_band = disp_valid_s2
@@ -492,12 +546,18 @@ module m1_raster3d #(
   typedef enum logic [3:0] {
     T_IDLE, T_WALK, T_OBJ, T_OBJW, T_SORT, T_SORTW,
     T_BAND_CLR, T_BAND_CLRW, T_REPLAY, T_FILL, T_FILLW,
-    T_BAND_WAIT, T_BAND_NEXT, T_SWAP
+    T_BAND_WAIT
   } state_t;
   state_t st;
 
   logic [BW-1:0] cur_band;
   logic [31:0]   band_timer;
+
+  // The two things that move a buffer round the ring. They are independent -
+  // that independence IS the third buffer - and when they coincide the three
+  // slots rotate in one step.
+  wire ev_present = present_now;
+  wire ev_handoff = (st == T_BAND_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
@@ -508,8 +568,15 @@ module m1_raster3d #(
   assign qs_replay_start = (st == T_REPLAY);
   assign qs_out_ready    = (st == T_FILL) && fl_in_ready;
   assign fl_in_valid     = (st == T_FILL) && qs_out_valid;
-  assign bd_clear_req[0] = (st == T_BAND_CLR) && (cur_band == '0) && (wr_buf == 1'b0);
-  assign bd_clear_req[1] = (st == T_BAND_CLR) && (cur_band == '0) && (wr_buf == 1'b1);
+  always_comb begin
+    bd_clear_req = '0;
+    // Every band clears, but only of its LAST ROW once warm: the background
+    // clear behind the beam reaches every other row, and cannot reach that one
+    // because the beam leaves the band without ever standing one row past its
+    // bottom. Before `warm` the buffers have never displayed, so nothing has
+    // cleared them and the clear has to be a full one.
+    if (st == T_BAND_CLR) bd_clear_req[fill_buf] = 1'b1;
+  end
   assign fill_band       = cur_band;
 
   // Issued only while the geometry is idle, which the service also enforces.
@@ -529,9 +596,12 @@ module m1_raster3d #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      ready_band <= '0; warm <= 1'b0;
+      frame_armed <= 1'b0; beam_blank_d <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       vp_lat <= 1'b0;
-      wr_buf <= 1'b0; old_z <= '0;
+      fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
+      ready_valid <= 1'b0; old_z <= '0;
       disp_band <= '0; disp_valid <= 1'b0;
       vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
@@ -659,6 +729,34 @@ module m1_raster3d #(
         endcase
       end
 
+      beam_blank_d <= beam_blank;
+      // The clear wins a tie: arming again in the same cycle a band 0 presents
+      // would let the NEXT pass's band 0 land in the middle of this frame.
+      if (ev_present && (ready_band == '0))    frame_armed <= 1'b0;
+      else if (beam_blank && !beam_blank_d)    frame_armed <= 1'b1;
+
+      // ---- the three-slot ring
+      //
+      //   handoff   the fill finished a band and the ready slot is free
+      //   present   the beam reached the band the ready slot holds
+      //
+      // Together they are a three-way rotation: what was ready goes on screen,
+      // what was filling becomes ready, and what the beam has finished with
+      // becomes the next fill target. Either alone is a two-way swap.
+      if (ev_handoff && ev_present) begin
+        disp_buf  <= ready_buf;  ready_buf <= fill_buf;  fill_buf <= disp_buf;
+        disp_band <= 6'(ready_band); disp_valid <= 1'b1;
+        ready_band <= cur_band;  ready_valid <= 1'b1;
+      end else if (ev_present) begin
+        disp_buf  <= ready_buf;  ready_buf <= disp_buf;
+        disp_band <= 6'(ready_band); disp_valid <= 1'b1;
+        ready_valid <= 1'b0;
+      end else if (ev_handoff) begin
+        ready_buf <= fill_buf;   fill_buf  <= ready_buf;
+        ready_band <= cur_band;  ready_valid <= 1'b1;
+      end
+      if (ev_present && dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 16'd1;
+
       case (st)
         T_IDLE: if (frame_start) begin
           old_z <= '0;
@@ -705,10 +803,10 @@ module m1_raster3d #(
         // buffer has displayed anything yet.
         T_BAND_CLR: begin
           band_timer <= '0;
-          bd_y0[wr_buf] <= 16'(cur_band) * 16'(BAND_H);
-          st <= (cur_band == '0) ? T_BAND_CLRW : T_REPLAY;
+          bd_y0[fill_buf] <= 16'(cur_band) * 16'(BAND_H);
+          st <= T_BAND_CLRW;
         end
-        T_BAND_CLRW: if (!bd_clear_busy[wr_buf]) st <= T_REPLAY;
+        T_BAND_CLRW: if (!bd_clear_busy[fill_buf]) st <= T_REPLAY;
 
         T_REPLAY: st <= T_FILL;
 
@@ -722,36 +820,23 @@ module m1_raster3d #(
         // raster actually reaches it, which is what keeps the two in step. If
         // the fill was slower than the beam this simply presents late and the
         // band is missed rather than shown in the wrong place.
+        // FILLED - HAND IT TO THE READY SLOT, do not wait for the beam.
+        //
+        // With two buffers this state waited for the raster, because the only
+        // other buffer was on screen. With three it waits only for the ready
+        // slot to be free, so the fill of band N+1 starts while band N is still
+        // waiting to be shown - which is what lets a slow band borrow time from
+        // a fast one instead of missing outright.
         T_BAND_WAIT: begin
           dbg_band_cycles <= band_timer;   // the fill alone, before the wait
-          // PRESENT AS SOON AS THE DISPLAYED BUFFER IS NO LONGER BEING READ, not
-          // when the beam reaches this band exactly.
-          //
-          // Waiting for equality means a fill that runs even slightly long has
-          // already missed its band, and then waits a WHOLE FRAME for the beam to
-          // come round - so one late fill costs a frame and, being late, the next
-          // one is late too. That is a self-sustaining failure: measured at
-          // exactly one band presented per frame out of twelve, with fills of
-          // 45,511 to 64,397 against a band-time of 61,741.
-          //
-          // Swapping the moment the beam leaves the band on screen is safe - that
-          // buffer is finished with - and a late fill then shows the remainder of
-          // its band rather than none of it, and the band after it gets a full
-          // band-time again. The chain recovers instead of degrading.
-          if (present_now) st <= T_BAND_NEXT;
-        end
-
-        T_BAND_NEXT: begin
-          // Hand this band to the scanout and start the next one in the other
-          // buffer. The display side reads whichever buffer is not `wr_buf`.
-          wr_buf     <= ~wr_buf;
-          disp_band  <= 4'(cur_band);
-          disp_valid <= 1'b1;
-          if (dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 16'd1;
-          if (cur_band == BW'(NBANDS - 1)) st <= T_IDLE;
-          else begin
-            cur_band <= cur_band + BW'(1);
-            st       <= T_BAND_CLR;
+          if (ev_handoff) begin
+            if (cur_band == BW'(NBANDS - 1)) begin
+              st   <= T_IDLE;
+              warm <= 1'b1;                // every buffer has now displayed
+            end else begin
+              cur_band <= cur_band + BW'(1);
+              st       <= T_BAND_CLR;
+            end
           end
         end
 
