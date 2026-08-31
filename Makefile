@@ -111,6 +111,10 @@ SRCS_m1_palette := rtl/video/m1_palette.sv
 SRCS_m1_diag := rtl/video/m1_diag.sv
 SRCS_m1_listctl := rtl/video/m1_listctl.sv
 SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv rtl/video/m1_palette.sv rtl/video/m1_video.sv
+# For `make quartus MOD=m1_quad_store` - the store is 91 M10K of the design's
+# 501 and its packing is worth watching on its own, even though the standalone
+# figure never predicts the in-core one.
+SRCS_m1_quad_store := rtl/video/m1_quad_store.sv
 SRCS_m1_raster_div := rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
 GEO_SRCS := rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv \

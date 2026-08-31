@@ -1360,6 +1360,33 @@ always @(posedge clk) begin
     end
 end
 
+// ---------------------------------------------- BANDS PRESENTED PER FRAME
+//
+// The average is not the question. 24 bands a pass and a pass every two frames
+// is the right RATE and can still leave any individual frame showing only part
+// of the picture - which is exactly what Ben reads off the board: some bands
+// missing, and the whole thing seeming to redraw about one frame in five. So
+// count presentations per VIDEO FRAME and keep the distribution.
+integer bpf_hist [0:31];
+integer bands_this_frame = 0, bpf_i;
+integer bands_prev_s = 0, bpf_frames = 0;
+initial for (bpf_i = 0; bpf_i < 32; bpf_i = bpf_i + 1) bpf_hist[bpf_i] = 0;
+always @(posedge clk) begin
+    if (rst_n_sys) begin
+        if (core.u_raster3d.dbg_bands != bands_prev_s) begin
+            bands_this_frame = bands_this_frame
+                             + (core.u_raster3d.dbg_bands - bands_prev_s);
+            bands_prev_s = core.u_raster3d.dbg_bands;
+        end
+        if (core.video.vblank_start) begin
+            bpf_hist[(bands_this_frame > 31) ? 31 : bands_this_frame] =
+                bpf_hist[(bands_this_frame > 31) ? 31 : bands_this_frame] + 1;
+            bands_this_frame = 0;
+            bpf_frames = bpf_frames + 1;
+        end
+    end
+end
+
 // ---------------------------------------------- WHERE THE CPU'S CYCLES GO
 //
 // tb_m1_boot carries these buckets already, and it instantiates m1_main - no 3D
@@ -1568,6 +1595,11 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    $write("FRAME: bands presented per video frame, over %0d frames:", bpf_frames);
+    for (bpf_i = 0; bpf_i < 32; bpf_i = bpf_i + 1)
+        if (bpf_hist[bpf_i] * 100 > bpf_frames)
+            $write(" %0d:%0d%%", bpf_i, (100*bpf_hist[bpf_i])/bpf_frames);
+    $write("\n");
     $display("FRAME: 3D layer: objects=%0d quads=%0d dropped=%0d passes=%0d",
              core.r3_dbg_objects, core.r3_dbg_quads,
              core.r3_dbg_dropped, core.r3_dbg_frames);

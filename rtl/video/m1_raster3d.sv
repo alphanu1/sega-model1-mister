@@ -437,28 +437,42 @@ module m1_raster3d #(
   wire [15:0] rd_col_sel = bd_rd_col[disp_buf_s2];
   wire        rd_hit_sel = bd_rd_hit[disp_buf_s2];
 
-  // disp_band and disp_valid are written on `clk` and read on `scan_clk`. Two
-  // flops each, and the BAND INDEX IS GRAY-SAFE BY CONSTRUCTION rather than by
-  // encoding: it only ever increments, and a scanline that samples the old value
-  // during a change simply shows the previous band for one pixel - which is a
-  // pixel that was already showing that band. A multi-bit counter crossing
-  // without care would normally be a real hazard; here the consequence is bounded
-  // and the alternative is a Gray code on a value the fill side also compares
-  // arithmetically.
-  // THE DISPLAY SLOT IS SYNCHRONISED TOO, and leaving its predecessor out was a
-  // real fault rather than
-  // an oversight in style. It selects which band buffer the scanout reads, so
-  // unsynchronised it feeds combinationally from a clk_3d register through
-  // scan_hit into the mixer's poly_won, out to pal_addr, and onto the PALETTE
-  // RAM's address register in the clk_sys domain. The timing report named the
-  // path exactly - wr_buf to u_pram's portb_address_reg, -5.934 ns - and it is
-  // the largest violation in the design.
+  // A MULTI-BIT CROSSING NEEDS A HANDSHAKE, AND "IT ONLY EVER INCREMENTS" IS
+  // NOT ONE.
   //
-  // It changes in the same cycle as disp_band, so all three cross together and
-  // stay consistent: the buffer selected always matches the band advertised.
-  logic [5:0] disp_band_s1, disp_band_s2;
-  logic       disp_valid_s1, disp_valid_s2;
-  logic [1:0] disp_buf_s1, disp_buf_s2;
+  // This carried three values into the video clock on plain two-flop
+  // synchronisers - the band index, its valid, and which of the three buffers
+  // holds it - with a comment claiming the band index was "gray-safe by
+  // construction, it only ever increments". An increment is not a single-bit
+  // change: 7 to 8 flips four bits and 15 to 16 flips five. The two flops of a
+  // multi-bit bus can resolve differently on the same edge, so the receiver can
+  // see a value that is neither the old one nor the new one.
+  //
+  // What that looks like on a screen: at a band boundary disp_band_s2 is
+  // briefly wrong, in_disp_band goes false, scan_hit drops and the 2D shows
+  // through - at the same rows every frame, twenty-four times a frame. Bars of
+  // transparency. And disp_buf can transiently read 2'd3, which is not one of
+  // the three buffers at all.
+  //
+  // NONE OF THIS CAN APPEAR IN THE BENCHES. render3d ticks both clocks from one
+  // edge and tb_m1_frame drives them from exact multiples, so neither has any
+  // way to produce a settling failure. It is a hardware-only fault by
+  // construction, which is why two throughput fixes measured well and changed
+  // nothing on the board.
+  //
+  // So: the data is held stable, a single toggle bit crosses, and the receiver
+  // captures the data when it sees the toggle change. The toggle flips one
+  // clk_3d cycle AFTER the data, so by the time it has been through two
+  // synchroniser flops the data has been stable for longer than the crossing.
+  // The data only changes once a band - about 34,000 cycles - so there is no
+  // shortage of settling time.
+  logic       disp_tog;          // flips one cycle after disp_* changes
+  logic       disp_upd;          // disp_* changed last cycle
+  logic [2:0] disp_tog_s;        // synchroniser + edge detect on scan_clk
+
+  logic [5:0] disp_band_s2;
+  logic       disp_valid_s2;
+  logic [1:0] disp_buf_s2;
 
   // THE BEAM'S BAND, crossed the other way - into the 3D clock - so the fill
   // sequence can follow the raster instead of free-running beside it.
@@ -549,10 +563,19 @@ module m1_raster3d #(
                                        : (!beam_blank && beam_ext >= want_ext));
 
 
-  always_ff @(posedge scan_clk) begin
-    disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
-    disp_valid_s1 <= disp_valid; disp_valid_s2 <= disp_valid_s1;
-    disp_buf_s1   <= disp_buf;   disp_buf_s2   <= disp_buf_s1;
+  always_ff @(posedge scan_clk or negedge rst_n) begin
+    if (!rst_n) begin
+      disp_tog_s <= '0;
+      disp_band_s2 <= '0; disp_valid_s2 <= 1'b0; disp_buf_s2 <= 2'd0;
+    end else begin
+      disp_tog_s <= {disp_tog_s[1:0], disp_tog};
+      // Capture only on the toggle's edge, when the data behind it is settled.
+      if (disp_tog_s[2] != disp_tog_s[1]) begin
+        disp_band_s2  <= disp_band;
+        disp_valid_s2 <= disp_valid;
+        disp_buf_s2   <= disp_buf;
+      end
+    end
   end
 
   wire in_disp_band = disp_valid_s2
@@ -655,6 +678,7 @@ module m1_raster3d #(
       fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
       ready_valid <= 1'b0; old_z <= '0;
       disp_band <= '0; disp_valid <= 1'b0;
+      disp_tog <= 1'b0; disp_upd <= 1'b0;
       vxc <= '0; vyc <= '0; vzoomx <= '0; vzoomy <= '0;
       vviewx <= '0; vviewy <= '0; vlx <= '0; vly <= '0; vlz <= '0;
       vspec <= 1'b0;
@@ -782,6 +806,10 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
+      // The toggle trails the data by a cycle, so the receiver's two
+      // synchroniser flops always land on settled data.
+      disp_upd <= 1'b0;
+      if (disp_upd) disp_tog <= ~disp_tog;
       // Armed only by a vblank the BAND PHASE sees. The pass starts inside a
       // vblank of its own and the blank flag rises two synchroniser stages after
       // frame_start, so clearing on frame_start alone re-armed three cycles
@@ -801,11 +829,11 @@ module m1_raster3d #(
       // becomes the next fill target. Either alone is a two-way swap.
       if (ev_handoff && ev_present) begin
         disp_buf  <= ready_buf;  ready_buf <= fill_buf;  fill_buf <= disp_buf;
-        disp_band <= 6'(ready_band); disp_valid <= 1'b1;
+        disp_band <= 6'(ready_band); disp_valid <= 1'b1; disp_upd <= 1'b1;
         ready_band <= cur_band;  ready_valid <= 1'b1;
       end else if (ev_present) begin
         disp_buf  <= ready_buf;  ready_buf <= disp_buf;
-        disp_band <= 6'(ready_band); disp_valid <= 1'b1;
+        disp_band <= 6'(ready_band); disp_valid <= 1'b1; disp_upd <= 1'b1;
         ready_valid <= 1'b0;
       end else if (ev_handoff) begin
         ready_buf <= fill_buf;   fill_buf  <= ready_buf;

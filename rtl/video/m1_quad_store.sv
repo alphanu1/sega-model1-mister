@@ -458,11 +458,22 @@ module m1_quad_store #(
 
         // The vertex memories are registered, so the quad's data is ready the
         // cycle after q settles.
+        //
+        // ONE READ PER ARRAY, NOT TWO. `vtx0[q][15:0]` and `vtx0[q][31:16]` are
+        // two separate reads of the same array at the same address as far as
+        // synthesis is concerned, and Quartus answers a second read port by
+        // DUPLICATING the memory. Measured in the fit report: vtx0 as
+        // vtx0_rtl_0 and vtx0_rtl_1, 10 and 11 M10K for one 65,536-bit array,
+        // and the same for the other three - 91 blocks for 411,648 bits of
+        // unique data, 40% packing efficiency.
+        //
+        // A concatenation on the left is one read, split on the way out, and it
+        // is bit-identical: the store writes {in_y, in_x}.
         P_OUT: begin
-          out_x0 <= vtx0[q][15:0];  out_y0 <= vtx0[q][31:16];
-          out_x1 <= vtx1[q][15:0];  out_y1 <= vtx1[q][31:16];
-          out_x2 <= vtx2[q][15:0];  out_y2 <= vtx2[q][31:16];
-          out_x3 <= vtx3[q][15:0];  out_y3 <= vtx3[q][31:16];
+          {out_y0, out_x0} <= vtx0[q];
+          {out_y1, out_x1} <= vtx1[q];
+          {out_y2, out_x2} <= vtx2[q];
+          {out_y3, out_x3} <= vtx3[q];
           out_valid <= 1'b1;
           if (out_valid && out_ready) begin
             out_valid <= 1'b0;

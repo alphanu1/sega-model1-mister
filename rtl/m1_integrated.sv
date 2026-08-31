@@ -635,8 +635,9 @@ module m1_integrated (
   );
 
   logic [22:0] r3_rom_addr;
-  logic        r3_rom_req, r3_rom_valid;
-  logic [31:0] r3_rom_data;
+  logic        r3_rom_req;
+  wire         r3_rom_valid;
+  wire  [31:0] r3_rom_data;
   logic [19:0] r3_tex_addr;
   logic        r3_tex_req, r3_tex_valid, r3_tex_we;
   logic [15:0] r3_tex_data, r3_tex_wdata;
@@ -720,15 +721,60 @@ module m1_integrated (
   // and Model1.sv aligns down with {addr[24:2], 1'b0} on the way to the port.
   wire [24:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr, 1'b0};
 
-  m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) u_r3d_rom_cdc (
+  // ONE BURST IS TWO MODEL WORDS, SO KEEP BOTH.
+  //
+  // p5 returns 64 bits - four 16-bit words, which is two 32-bit model words -
+  // and this used to select one half at the SDRAM end and discard the other.
+  // The walker reads a record's ten words in order, so consecutive words are
+  // siblings in the same burst and every second read was fetching a line the
+  // core had just been handed and thrown away. Double the round trips on the
+  // heaviest reader in the design, over a port sharing an arbiter with six
+  // others.
+  //
+  // The full burst crosses now and the half-select happens here, in front of a
+  // one-line cache. A sibling read is answered from the register with no SDRAM
+  // access at all, which halves the polygon traffic outright.
+  wire [63:0] rom_burst;
+  wire        rom_burst_ack;
+  wire [24:1] rom_tag = {rom_sdram_addr[24:2], 1'b0};
+
+  logic [63:0] rom_cache;
+  logic [24:1] rom_cache_tag;
+  logic        rom_cache_ok;
+  logic        rom_hit_ack;
+
+  wire rom_hit = rom_cache_ok && (rom_tag == rom_cache_tag);
+  // A held request must not be acknowledged twice for the same word: the
+  // walker advances its own address on the ack, so one cycle is one word.
+  wire rom_hit_now = r3_rom_req && rom_hit && !rom_hit_ack;
+
+  always_ff @(posedge clk_3d or negedge rst_n_3d) begin
+    if (!rst_n_3d) begin
+      rom_cache <= '0; rom_cache_tag <= '0; rom_cache_ok <= 1'b0;
+      rom_hit_ack <= 1'b0;
+    end else begin
+      rom_hit_ack <= rom_hit_now;
+      if (rom_burst_ack) begin
+        rom_cache     <= rom_burst;
+        rom_cache_tag <= rom_tag;
+        rom_cache_ok  <= 1'b1;
+      end
+    end
+  end
+
+  wire [63:0] rom_src = rom_hit_ack ? rom_cache : rom_burst;
+  assign r3_rom_data  = rom_sdram_addr[1] ? rom_src[63:32] : rom_src[31:0];
+  assign r3_rom_valid = rom_hit_ack || rom_burst_ack;
+
+  m1_cdc_port #(.AW(24), .DW(64), .BEW(2)) u_r3d_rom_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
-    .a_req(r3_rom_req), .a_we(1'b0), .a_addr(rom_sdram_addr),
-    .a_din(32'd0), .a_be(2'b11),
-    .a_dout(r3_rom_data), .a_ack(r3_rom_valid), .a_busy(),
+    .a_req(r3_rom_req && !rom_hit), .a_we(1'b0), .a_addr(rom_sdram_addr),
+    .a_din(64'd0), .a_be(2'b11),
+    .a_dout(rom_burst), .a_ack(rom_burst_ack), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(r3d_rom_req), .b_we(), .b_addr(r3d_rom_addr),
     .b_din(), .b_be(),
-    .b_dout(r3d_rom_addr[1] ? r3d_rom_dout[63:32] : r3d_rom_dout[31:0]),
+    .b_dout(r3d_rom_dout),
     .b_ack(r3d_rom_ack)
   );
 
