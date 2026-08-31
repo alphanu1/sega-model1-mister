@@ -263,7 +263,13 @@ module m1_quad_store #(
     if (!rst_n) begin
       rst_st <= R_IDLE; pass <= '0; ri <= '0; hi <= '0; acc <= '0;
       which <= 1'b0; cur_idx <= '0; cur_digit <= '0;
-      for (int i = 0; i < 256; i++) begin hist[i] <= '0; base[i] <= '0; end
+      // NBUCK, not a hardcoded 256. Narrowing the radix left this loop walking
+      // sixteen times past the end of both arrays - which Verilator tolerates
+      // silently and Quartus rejects outright with "index 16 cannot fall outside
+      // the declared range". A constant that has to track a parameter and does
+      // not is the same class of bug as the band mask that was still six bits
+      // after the band height halved.
+      for (int i = 0; i < int'(NBUCK); i++) begin hist[i] <= '0; base[i] <= '0; end
     end else begin
       case (rst_st)
         R_IDLE: if (sort_start) begin
