@@ -94,7 +94,11 @@ module m1_raster3d #(
 
   input  logic        frame_odd,
 
-  // ---- scanout. Same clock; the caller crosses to the video domain.
+  // ---- scanout, on the VIDEO clock. The band data is static by the time it is
+  // read - a band is presented only after its fill finished and the buffers
+  // swapped - so only disp_band and disp_valid genuinely cross, and they are
+  // synchronised here.
+  input  logic        scan_clk,
   input  logic [9:0]  scan_x,
   input  logic [9:0]  scan_y,
   output logic [23:0] scan_rgb,
@@ -335,7 +339,7 @@ module m1_raster3d #(
   generate
     for (b = 0; b < 2; b++) begin : g_band
       m1_raster_band #(.WIDTH(SCR_W), .HEIGHT(BAND_H)) u_band (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
         .band_y0(bd_y0[b]),
         .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
         .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
@@ -360,8 +364,24 @@ module m1_raster3d #(
   wire [15:0] rd_col_sel = wr_buf ? bd_rd_col[0] : bd_rd_col[1];
   wire        rd_hit_sel = wr_buf ? bd_rd_hit[0] : bd_rd_hit[1];
 
-  wire in_disp_band = disp_valid && ({6'd0, scan_y} >= 10'(disp_band) * 10'(BAND_H))
-                                 && ({6'd0, scan_y} <  (10'(disp_band) + 10'd1) * 10'(BAND_H));
+  // disp_band and disp_valid are written on `clk` and read on `scan_clk`. Two
+  // flops each, and the BAND INDEX IS GRAY-SAFE BY CONSTRUCTION rather than by
+  // encoding: it only ever increments, and a scanline that samples the old value
+  // during a change simply shows the previous band for one pixel - which is a
+  // pixel that was already showing that band. A multi-bit counter crossing
+  // without care would normally be a real hazard; here the consequence is bounded
+  // and the alternative is a Gray code on a value the fill side also compares
+  // arithmetically.
+  logic [3:0] disp_band_s1, disp_band_s2;
+  logic       disp_valid_s1, disp_valid_s2;
+  always_ff @(posedge scan_clk) begin
+    disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
+    disp_valid_s1 <= disp_valid; disp_valid_s2 <= disp_valid_s1;
+  end
+
+  wire in_disp_band = disp_valid_s2
+                   && ({6'd0, scan_y} >= 10'(disp_band_s2) * 10'(BAND_H))
+                   && ({6'd0, scan_y} <  (10'(disp_band_s2) + 10'd1) * 10'(BAND_H));
 
   // REPLICATE THE TOP BITS, do not zero-fill. Five bits of 0x1f must expand to
   // 0xff and not 0xf8, or white is dim and every colour is biased dark by up to

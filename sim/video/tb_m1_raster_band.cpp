@@ -51,8 +51,11 @@ struct Dut {
     std::vector<uint32_t> mem = std::vector<uint32_t>(W * H, 0);
 
     void tick() {
-        d->clk = 0; d->eval();
-        d->clk = 1; d->eval();
+        // One clock in the bench: the read port has its own in the design, but
+        // the module's behaviour is identical when they are the same, and the
+        // crossing itself is the caller's to get right.
+        d->clk = 0; d->rd_clk = 0; d->eval();
+        d->clk = 1; d->rd_clk = 1; d->eval();
     }
     void reset() {
         d->rst_n = 0; d->span_valid = 0; d->clear_req = 0; d->band_y0 = 0;

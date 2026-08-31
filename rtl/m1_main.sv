@@ -144,6 +144,17 @@ module m1_main #(
   input  logic [11:0] vid_pal_addr,
   output logic [15:0] vid_pal_data,
 
+  // The 3D layer's reads of the display list and the colour-translation table,
+  // from its own clock. Both memories are true dual port for this.
+  input  logic        r3d_clk,
+  input  logic [14:0] r3d_dl_addr,
+  input  logic        r3d_dl_sel,
+  output logic [15:0] r3d_dl_data,
+  input  logic [14:0] r3d_xlat_addr,
+  output logic [15:0] r3d_xlat_data,
+  input  logic [9:0]  r3d_pal_addr,
+  output logic [15:0] r3d_pal_data,
+
   input  logic        vblank_irq,
 
   output logic [23:0] dbg_pc,
@@ -309,6 +320,10 @@ module m1_main #(
     .vid_clk(vid_clk),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
+    .r3d_clk(r3d_clk), .r3d_dl_addr(r3d_dl_addr), .r3d_dl_sel(r3d_dl_sel),
+    .r3d_dl_data(r3d_dl_data),
+    .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
+    .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
     .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack)
   );
 

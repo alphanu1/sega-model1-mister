@@ -75,6 +75,16 @@ module m1_video #(
   input  logic [15:0] pal_data,
 
   // Video out
+  // ---- the 3D layer, from m1_raster3d on its own clock.
+  //
+  // The colour arrives as RGB, not as a palette index: a lit polygon is a
+  // palette entry MULTIPLIED by a luminance and lands between entries, which an
+  // index cannot carry. So the mixer decides only WHO WINS and the real colour is
+  // muxed in after the palette lookup - the option recorded in docs/findings.md,
+  // and the one that keeps the tile path indexed.
+  input  logic [23:0] poly_rgb,
+  input  logic        poly_hit,
+
   output logic [7:0]  vid_r,
   output logic [7:0]  vid_g,
   output logic [7:0]  vid_b,
@@ -753,17 +763,27 @@ module m1_video #(
     .prio(mix_prio),
     .masked(mix_masked),
     .disabled(4'b0000),          // already folded into transparent by the fetch
-    .poly_index(12'd0),
-    .poly_valid(1'b0),           // no 3D until M2
+    .poly_index(12'd0),          // unused: the 3D layer's colour is RGB
+    .poly_valid(poly_hit),
     .backdrop(12'd0),
     .pixel(mixed),
-    .source(mix_src)
+    .source(mix_src),
+    .poly_won(poly_won)
   );
 
   assign pal_addr = mixed;
 
-  logic [7:0] pr, pg, pb;
-  m1_palette pal (.entry(pal_data), .r(pr), .g(pg), .b(pb));
+  logic       poly_won;
+  logic [7:0] pr_t, pg_t, pb_t;
+  m1_palette pal (.entry(pal_data), .r(pr_t), .g(pg_t), .b(pb_t));
+
+  // The 3D layer's colour replaces the palette lookup where it won, and only
+  // there. Everything else about the tile path is unchanged - it still resolves
+  // an index and still looks it up - so a fault in the 3D layer can black out
+  // its own pixels and cannot disturb the 2D.
+  wire [7:0] pr = poly_won ? poly_rgb[23:16] : pr_t;
+  wire [7:0] pg = poly_won ? poly_rgb[15:8]  : pg_t;
+  wire [7:0] pb = poly_won ? poly_rgb[7:0]   : pb_t;
 
   // The colour for column hcnt is not ready in the same pixel it is addressed:
   // the line buffer read is registered, and so is the palette RAM. Both settle

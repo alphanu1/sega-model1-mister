@@ -73,6 +73,24 @@ module m1_mainram (
   input  logic [11:0] vid_pal_addr,
   output logic [15:0] vid_pal_data,
 
+  // The 3D layer's read ports. The display list and the colour-translation table
+  // are read by m1_raster3d while the CPU is writing them, which is exactly what
+  // m1_tdp_ram exists for - the alternative is a second copy of each, and the
+  // display lists alone are 64 KB.
+  input  logic        r3d_clk,
+  input  logic [14:0] r3d_dl_addr,
+  input  logic        r3d_dl_sel,
+  output logic [15:0] r3d_dl_data,
+  input  logic [14:0] r3d_xlat_addr,
+  output logic [15:0] r3d_xlat_data,
+
+  // The 3D layer's palette read. ONLY 1,024 ENTRIES, not the whole 8,192: the
+  // colour unit indexes `0x1000 | (tex & 0x3ff)` and nothing else, so a mirror of
+  // that one bank is 2 M10K where a second full copy would be 13 and a third port
+  // on the real palette is not something altsyncram offers.
+  input  logic [9:0]  r3d_pal_addr,
+  output logic [15:0] r3d_pal_data,
+
   // I/O board side of the RAM at 0xc00000. Byte-wide, write-only, and it
   // shares the V60's physical write port — hold io_we until io_ack.
   input  logic        io_we,
@@ -121,32 +139,50 @@ module m1_mainram (
     .b_addr({1'b0, vid_pal_addr}), .b_q(vid_pal_data)
   );
 
-  // TGP 0x600000-0x60ffff
-  (* ramstyle = "M10K" *) logic [7:0] dl0_lo [32768];
-  (* ramstyle = "M10K" *) logic [7:0] dl0_hi [32768];
-  always_ff @(posedge clk) begin
-    if (dl0_we && be[0]) dl0_lo[addr[15:1]] <= wdata[7:0];
-    if (dl0_we && be[1]) dl0_hi[addr[15:1]] <= wdata[15:8];
-    dl0_q <= {dl0_hi[addr[15:1]], dl0_lo[addr[15:1]]};
-  end
+  // TGP 0x600000-0x60ffff and 0x610000-0x61ffff, and COL 0x910000-0x91bfff.
+  //
+  // All three are TRUE DUAL PORT now: the CPU writes them while the 3D layer
+  // reads them from its own clock domain. Byte-split arrays with one port would
+  // need a second copy of each to be readable, and the two display lists alone
+  // are 64 KB - 51 M10K duplicated for want of a port.
+  logic [15:0] dl0_b_q, dl1_b_q;
 
-  // TGP 0x610000-0x61ffff
-  (* ramstyle = "M10K" *) logic [7:0] dl1_lo [32768];
-  (* ramstyle = "M10K" *) logic [7:0] dl1_hi [32768];
-  always_ff @(posedge clk) begin
-    if (dl1_we && be[0]) dl1_lo[addr[15:1]] <= wdata[7:0];
-    if (dl1_we && be[1]) dl1_hi[addr[15:1]] <= wdata[15:8];
-    dl1_q <= {dl1_hi[addr[15:1]], dl1_lo[addr[15:1]]};
-  end
+  m1_tdp_ram #(.AW(15)) u_dl0 (
+    .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
+    .a_we(dl0_we), .a_q(dl0_q),
+    .b_clk(r3d_clk), .b_addr(r3d_dl_addr), .b_q(dl0_b_q)
+  );
 
-  // COL 0x910000-0x91bfff
-  (* ramstyle = "M10K" *) logic [7:0] cxlat_lo [24576];
-  (* ramstyle = "M10K" *) logic [7:0] cxlat_hi [24576];
-  always_ff @(posedge clk) begin
-    if (cxlat_we && be[0]) cxlat_lo[addr[14:1]] <= wdata[7:0];
-    if (cxlat_we && be[1]) cxlat_hi[addr[14:1]] <= wdata[15:8];
-    cxlat_q <= {cxlat_hi[addr[14:1]], cxlat_lo[addr[14:1]]};
-  end
+  m1_tdp_ram #(.AW(15)) u_dl1 (
+    .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
+    .a_we(dl1_we), .a_q(dl1_q),
+    .b_clk(r3d_clk), .b_addr(r3d_dl_addr), .b_q(dl1_b_q)
+  );
+
+  // The buffer select is the reader's, and it is applied to the DATA rather than
+  // the address so both memories are read in parallel and the choice costs a mux
+  // instead of a cycle.
+  assign r3d_dl_data = r3d_dl_sel ? dl1_b_q : dl0_b_q;
+
+  // 24,576 words rounds up to a 32,768-word memory. The waste is real - eight
+  // M10K - and the alternative is a non-power-of-two depth, which altsyncram
+  // will take but which stops the two ports sharing an address decode cleanly.
+  // The 3D palette bank mirror, written whenever the CPU writes 0x1000..0x13ff.
+  // Kept in step by construction rather than by a copy pass: the same write that
+  // reaches the palette reaches here.
+  wire pal_3d_hit = sel_palette && (addr[13:1] >= 13'h1000) && (addr[13:1] <= 13'h13ff);
+
+  m1_tdp_ram #(.AW(10)) u_pal3d (
+    .a_clk(clk), .a_addr(addr[10:1]), .a_din(wdata), .a_be(be),
+    .a_we(we && pal_3d_hit), .a_q(),
+    .b_clk(r3d_clk), .b_addr(r3d_pal_addr), .b_q(r3d_pal_data)
+  );
+
+  m1_tdp_ram #(.AW(15)) u_cxlat (
+    .a_clk(clk), .a_addr({1'b0, addr[14:1]}), .a_din(wdata), .a_be(be),
+    .a_we(cxlat_we), .a_q(cxlat_q),
+    .b_clk(r3d_clk), .b_addr(r3d_xlat_addr), .b_q(r3d_xlat_data)
+  );
 
   // I/O 0xc00000-0xc00fff
   //
@@ -248,16 +284,9 @@ module m1_mainram (
   // to rely on when the simulator is relying on the initialiser.
   integer zi, zc;
   initial begin
-    for (zc = 0; zc < 8; zc = zc + 1)
-      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
-        // tile RAM and palette are cleared inside m1_tdp_ram now.
-        dl0_lo[zi]    = 8'd0; dl0_hi[zi]    = 8'd0;
-        dl1_lo[zi]    = 8'd0; dl1_hi[zi]    = 8'd0;
-      end
-    for (zc = 0; zc < 6; zc = zc + 1)
-      for (zi = zc*4096; zi < (zc+1)*4096; zi = zi + 1) begin
-        cxlat_lo[zi] = 8'd0; cxlat_hi[zi] = 8'd0;
-      end
+    // The display lists and the translation table are cleared inside m1_tdp_ram
+    // now, along with the tile RAM and the palette. Only the DPRAM is still a
+    // plain array here.
     for (zi = 0; zi < 2048; zi = zi + 1) begin
       dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
     end

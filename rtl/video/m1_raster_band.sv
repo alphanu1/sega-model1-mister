@@ -48,6 +48,17 @@ module m1_raster_band #(
   input  logic                   clk,
   input  logic                   rst_n,
 
+  // The READ PORT HAS ITS OWN CLOCK. The band is filled on the 3D layer's clock
+  // and scanned out on the video's, which are unrelated - so this is a
+  // dual-clock simple dual port, which is what an M10K natively is. Sharing one
+  // clock would mean crossing every pixel instead, once per dot.
+  //
+  // No handshake is needed on the read side because the data is STATIC by the
+  // time it is read: a band is only presented after its fill has finished and
+  // the buffers have swapped. The only signals that genuinely cross are the
+  // band index and its valid, and those are synchronised by the caller.
+  input  logic                   rd_clk,
+
   // The band's top row on screen. Spans are addressed in SCREEN coordinates and
   // this is what maps them into the buffer, so the caller never computes a
   // buffer address and cannot get the mapping wrong in two places.
@@ -100,6 +111,9 @@ module m1_raster_band #(
 
   always_ff @(posedge clk) begin
     if (wr_en) mem[wr_addr] <= wr_data;
+  end
+
+  always_ff @(posedge rd_clk) begin
     // Widths stated rather than inferred: rd_row * WIDTH is a 32-bit product and
     // rd_x is 9 bits, and letting the tool reconcile them is how an address
     // silently truncates on a geometry change.
