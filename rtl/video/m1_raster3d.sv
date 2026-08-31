@@ -389,6 +389,7 @@ module m1_raster3d #(
   logic        ready_valid;
 
   logic [BW-1:0]   ready_band;      // the band sitting in the ready slot
+  logic            clr_seen;        // the clear has been observed to start
   logic            warm;            // every buffer has been through a display pass
   logic [NBUF-1:0] bd_clear_req, bd_clear_busy;
   logic [NBUF-1:0] bd_span_valid, bd_span_ready;
@@ -411,12 +412,7 @@ module m1_raster3d #(
       m1_raster_band #(.WIDTH(SCR_W), .HEIGHT(BAND_H)) u_band (
         .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
         .band_y0(bd_y0[b]),
-        .clear_req(bd_clear_req[b]), .clear_all(!warm),
-        .clear_busy(bd_clear_busy[b]),
-        // Cleared while it is the one being DISPLAYED - its write port is idle
-        // then, because the fill is writing a different slot.
-        .bg_clear_en(bg_active && (disp_buf == 2'(b))),
-        .bg_clear_row(bg_row),
+        .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
         .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
         .span_y(fl_span_y[15:0]),
         .span_x0(fl_span_x0[15:0]), .span_x1(fl_span_x1[15:0]),
@@ -552,8 +548,6 @@ module m1_raster3d #(
                   && ((want_ext == '0) ? (beam_blank || frame_armed)
                                        : (!beam_blank && beam_ext >= want_ext));
 
-  wire                          bg_active = disp_valid && (beam_row_s2 != '0);
-  wire [$clog2(BAND_H)-1:0]     bg_row    = beam_row_s2 - 1'b1;
 
   always_ff @(posedge scan_clk) begin
     disp_band_s1  <= disp_band;  disp_band_s2  <= disp_band_s1;
@@ -621,12 +615,19 @@ module m1_raster3d #(
   assign fl_in_valid     = (st == T_FILL) && qs_out_valid;
   always_comb begin
     bd_clear_req = '0;
-    // Every band clears, but only of its LAST ROW once warm: the background
-    // clear behind the beam reaches every other row, and cannot reach that one
-    // because the beam leaves the band without ever standing one row past its
-    // bottom. Before `warm` the buffers have never displayed, so nothing has
-    // cleared them and the clear has to be a full one.
-    if (st == T_BAND_CLR) bd_clear_req[fill_buf] = 1'b1;
+    // Every band clears in full, and it costs 1,984 cycles because the band
+    // memory is banked four ways and the clear writes all four at once. The
+    // background clear this replaces wrote a buffer while the beam was reading
+    // it - see rtl/video/m1_raster_band.sv.
+    // HELD UNTIL THE CLEAR IS SEEN TO START, not pulsed for one cycle.
+    // clear_busy is registered, so the first cycle of T_BAND_CLRW reads it LOW
+    // whether or not the clear has begun - and the sequencer then went to the
+    // replay while the clear ran on underneath, erasing spans behind the fill.
+    // At 496 cycles that cost a few pixels of band 0 of the first frame; a
+    // full-band clear the same way wiped the picture entirely, 95.9% of pixels
+    // to zero, which is how it was found.
+    if ((st == T_BAND_CLR) || ((st == T_BAND_CLRW) && !clr_seen))
+      bd_clear_req[fill_buf] = 1'b1;
   end
   assign fill_band       = cur_band;
 
@@ -647,7 +648,7 @@ module m1_raster3d #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= T_IDLE; cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
-      ready_band <= '0; warm <= 1'b0;
+      ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       vp_lat <= 1'b0;
@@ -859,9 +860,13 @@ module m1_raster3d #(
         T_BAND_CLR: begin
           band_timer <= '0;
           bd_y0[fill_buf] <= 16'(cur_band) * 16'(BAND_H);
+          clr_seen <= 1'b0;
           st <= T_BAND_CLRW;
         end
-        T_BAND_CLRW: if (!bd_clear_busy[fill_buf]) st <= T_REPLAY;
+        T_BAND_CLRW: begin
+          if (bd_clear_busy[fill_buf])      clr_seen <= 1'b1;
+          else if (clr_seen)                st <= T_REPLAY;
+        end
 
         T_REPLAY: st <= T_FILL;
 
@@ -886,8 +891,7 @@ module m1_raster3d #(
           dbg_band_cycles <= band_timer;   // the fill alone, before the wait
           if (ev_handoff) begin
             if (cur_band == BW'(NBANDS - 1)) begin
-              st   <= T_IDLE;
-              warm <= 1'b1;                // every buffer has now displayed
+              st <= T_IDLE;
             end else begin
               cur_band <= cur_band + BW'(1);
               st       <= T_BAND_CLR;

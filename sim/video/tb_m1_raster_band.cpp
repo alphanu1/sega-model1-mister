@@ -59,14 +59,13 @@ struct Dut {
     }
     void reset() {
         d->rst_n = 0; d->span_valid = 0; d->clear_req = 0; d->band_y0 = 0;
-        d->bg_clear_en = 0; d->bg_clear_row = 0; d->clear_all = 1;
+
         d->rd_x = 0; d->rd_row = 0;
         for (int i = 0; i < 4; i++) tick();
         d->rst_n = 1;
         for (int i = 0; i < 4; i++) tick();
     }
     void clear() {
-        d->clear_all = 1;
         d->clear_req = 1;
         tick();
         while (d->clear_busy) tick();
@@ -200,22 +199,6 @@ int main(int argc, char** argv) {
         bool row3_x0 = t.mem[3 * W + 0] != 0;
         bool row4_x0 = t.mem[4 * W + 0] != 0;
         check(row3_x0 != row4_x0, "the stipple phase must alternate between rows");
-    }
-
-    printf("test: clear_all=0 clears ONLY the last row\n");
-    {
-        Dut t; t.reset(); t.clear();
-        // Paint every row, then ask for a partial clear.
-        for (int r = 0; r < H; r++) t.span(r, 0, W - 1, 0x1357, false);
-        t.d->clear_all = 0;
-        t.d->clear_req = 1;
-        t.tick();
-        while (t.d->clear_busy) t.tick();
-        t.d->clear_req = 0;
-        t.tick();
-        for (int x = 0; x < W; x++) t.mem[(H - 1) * W + x] = 0;
-        t.verify("partial clear");
-        printf("  rows 0..%d kept, row %d cleared\n", H - 2, H - 1);
     }
 
     printf("test: fuzz, random spans compared against the model each time\n");

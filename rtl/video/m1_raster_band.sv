@@ -66,34 +66,20 @@ module m1_raster_band #(
 
   // Clear the band. Held until clear_busy drops.
   //
-  // clear_all clears every row; with it low only the LAST row is cleared, which
-  // is 496 cycles rather than 496*HEIGHT. That is the normal case, because the
-  // background clear below reaches every row EXCEPT the last one - it clears the
-  // row behind the beam, and the beam leaves the band without ever being one row
-  // past the bottom. Missing that row leaves one stale scanline every HEIGHT
-  // rows, which reads as a fine horizontal banding rather than as corruption.
+  // Every row, every band. 1,984 cycles of a 34,087-cycle band-time.
   input  logic                   clear_req,
-  input  logic                   clear_all,
   output logic                   clear_busy,
 
-  // BACKGROUND CLEAR, BEHIND THE BEAM.
+  // THE BACKGROUND CLEAR IS GONE, and it was never sound.
   //
-  // Clearing this buffer in the fill path costs 15,872 cycles - 23% of a
-  // band-time of about 68,000, against a fill measured at 60,777 to 77,618. That
-  // is the difference between holding a band-time and missing it, and a missed
-  // band waits a whole frame for the beam to come round.
-  //
-  // While a buffer is DISPLAYING, its write port is idle: the fill is writing the
-  // other one. So the caller clears it a row at a time behind the beam, and by
-  // the time the beam leaves the band the buffer is clean and ready to be filled
-  // with no clear at all.
-  //
-  // Behind the beam and not ahead of it: a row is only cleared once the beam has
-  // read it. The caller owns that ordering; this module just clears the row it
-  // is given.
-  input  logic                   bg_clear_en,
-  input  logic [$clog2(HEIGHT)-1:0] bg_clear_row,
-
+  // It cleared one row behind the beam while a buffer was DISPLAYING, to keep a
+  // 15,872-cycle full clear out of a 68,000-cycle band-time. Two things ended
+  // it. The banked memory above makes a full clear 1,984 cycles, so the reason
+  // is gone; and writing a buffer while the beam reads it is a READ DURING WRITE
+  // ON A DUAL-CLOCK M10K, which the device leaves undefined. Simulation shows
+  // the written value and hardware shows whatever it likes - speckled pixels
+  // that lose the hit bit, so the 2D shows through in bands the height of a
+  // band buffer. Clean in every bench, wrong on the board.
   // Span input, in SCREEN coordinates, x0..x1 INCLUSIVE - the fill unit's
   // contract (docs/m3-rasterizer-spec.md: "span emit [x1>>16, x2>>16]
   // inclusive"). A span outside the band, or entirely off-screen, is accepted
@@ -125,25 +111,69 @@ module m1_raster_band #(
   localparam int unsigned XW = $clog2(WIDTH);
   localparam int unsigned YW = $clog2(HEIGHT);
 
-  // 17 bits: {hit, RGB565}. One write port and one read port, which is a Simple
-  // Dual Port M10K and infers cleanly - unlike the tile RAM's case, the two
-  // ports here are on the SAME clock, so no altsyncram is needed. See
-  // rtl/mem/m1_tdp_ram.sv for when that stops being true.
-  (* ramstyle = "M10K" *) logic [16:0] mem [WIDTH*HEIGHT];
+  // FOUR BANKS BY COLUMN, AND THE REASON IS THE CLEAR.
+  //
+  // 17 bits: {hit, RGB565}. One write port and one read port, on different
+  // clocks - a dual-clock simple dual port, which is what an M10K natively is.
+  //
+  // Split four ways on the low two bits of x. A span still writes one pixel a
+  // cycle, because it walks x and lands in one bank at a time; but a CLEAR
+  // writes all four banks at the same offset, so clearing the band costs
+  // WIDTH*HEIGHT/4 cycles instead of WIDTH*HEIGHT - 1,984 rather than 7,936.
+  //
+  // THAT IS WHAT MAKES CLEARING IN THE FILL PATH AFFORDABLE, and clearing in
+  // the fill path is what removes the background clear - the only thing in this
+  // design that wrote a band buffer while the beam was reading it. A read
+  // during a write on a DUAL-CLOCK M10K is undefined by the device, which
+  // Quartus warns about and simulation cannot show: the picture came out
+  // speckled on hardware and clean in every bench.
+  //
+  // The block count does not change. Each bank is (WIDTH/4)*HEIGHT words of 17
+  // bits, and four of them pack into the same M10Ks the single array did.
+  localparam int unsigned BW_    = 2;                 // bank select bits
+  localparam int unsigned NBANK  = 1 << BW_;
+  localparam int unsigned BCOLS  = (WIDTH + NBANK - 1) / NBANK;
+  localparam int unsigned BWORDS = BCOLS * HEIGHT;
+  localparam int unsigned BAW    = $clog2(BWORDS);
 
-  logic [AW-1:0] wr_addr;
-  logic [16:0]   wr_data;
-  logic          wr_en;
+  (* ramstyle = "M10K" *) logic [16:0] mem0 [BWORDS];
+  (* ramstyle = "M10K" *) logic [16:0] mem1 [BWORDS];
+  (* ramstyle = "M10K" *) logic [16:0] mem2 [BWORDS];
+  (* ramstyle = "M10K" *) logic [16:0] mem3 [BWORDS];
+
+  // NAMED, not a bit-select of a cast: Verilator rejects `XW'(cur_x)[1:0]` and
+  // Quartus 17.0 rejects a bit-select of a part-select for the same reason.
+  wire [XW-1:0] cur_xu = XW'(cur_x);
+
+  logic [BAW-1:0]    wr_addr;      // offset WITHIN a bank
+  logic [NBANK-1:0]  wr_en;        // one bit per bank; the clear raises all four
+  logic [16:0]       wr_data;
 
   always_ff @(posedge clk) begin
-    if (wr_en) mem[wr_addr] <= wr_data;
+    if (wr_en[0]) mem0[wr_addr] <= wr_data;
+    if (wr_en[1]) mem1[wr_addr] <= wr_data;
+    if (wr_en[2]) mem2[wr_addr] <= wr_data;
+    if (wr_en[3]) mem3[wr_addr] <= wr_data;
   end
 
+  // Widths stated rather than inferred: rd_row * BCOLS is a 32-bit product and
+  // letting the tool reconcile them is how an address silently truncates on a
+  // geometry change.
+  wire [BAW-1:0] rd_off = BAW'(rd_row) * BAW'(BCOLS) + BAW'(rd_x >> BW_);
+  logic [16:0] q0, q1, q2, q3;
+  logic [BW_-1:0] rd_bank_d;
   always_ff @(posedge rd_clk) begin
-    // Widths stated rather than inferred: rd_row * WIDTH is a 32-bit product and
-    // rd_x is 9 bits, and letting the tool reconcile them is how an address
-    // silently truncates on a geometry change.
-    {rd_hit, rd_col} <= mem[AW'(rd_row) * AW'(WIDTH) + AW'(rd_x)];
+    q0 <= mem0[rd_off]; q1 <= mem1[rd_off];
+    q2 <= mem2[rd_off]; q3 <= mem3[rd_off];
+    rd_bank_d <= rd_x[BW_-1:0];
+  end
+  always_comb begin
+    case (rd_bank_d)
+      2'd0:    {rd_hit, rd_col} = q0;
+      2'd1:    {rd_hit, rd_col} = q1;
+      2'd2:    {rd_hit, rd_col} = q2;
+      default: {rd_hit, rd_col} = q3;
+    endcase
   end
 
   // ------------------------------------------------------------ paint FSM
@@ -154,7 +184,7 @@ module m1_raster_band #(
   logic [15:0]        cur_col;
   logic               cur_moire;
   logic [YW-1:0]      cur_row;
-  logic [AW-1:0]      clr_addr;
+  logic [BAW-1:0]     clr_addr;
 
   // In-band and on-screen tests, both in screen coordinates.
   //
@@ -182,28 +212,21 @@ module m1_raster_band #(
   assign span_ready = (st == S_IDLE) && !clear_req;
   assign clear_busy = (st == S_CLEAR);
 
-  // The background clear walks one row; it uses the write port, which is free
-  // whenever this buffer is the one being displayed.
-  logic [XW-1:0] bg_x;
-  logic          bg_run;
-
   always_comb begin
-    wr_en   = 1'b0;
+    wr_en   = '0;
     wr_addr = '0;
     wr_data = '0;
-    if (bg_run) begin
-      wr_en   = 1'b1;
-      wr_addr = AW'({{(AW-YW){1'b0}}, bg_clear_row} * AW'(WIDTH) + AW'(bg_x));
-      wr_data = 17'd0;
-    end else if (st == S_CLEAR) begin
-      wr_en   = 1'b1;
+    if (st == S_CLEAR) begin
+      // ALL FOUR BANKS AT ONCE. This is the whole point of the split.
+      wr_en   = '1;
       wr_addr = clr_addr;
       wr_data = 17'd0;                      // hit = 0: show the 2D
     end else if (st == S_PAINT) begin
       // The stipple is tested against SCREEN x and y, per fill_quad's
       // draw_hline_moired: `if(!((x1 ^ y) & 1))`.
-      wr_en   = !cur_moire || !((cur_x[0] ^ cur_y[0]));
-      wr_addr = AW'(cur_row * WIDTH + XW'(cur_x));
+      if (!cur_moire || !((cur_x[0] ^ cur_y[0])))
+        wr_en[cur_xu[BW_-1:0]] = 1'b1;
+      wr_addr = BAW'(cur_row) * BAW'(BCOLS) + BAW'(cur_xu >> BW_);
       wr_data = {1'b1, cur_col};
     end
   end
@@ -211,27 +234,15 @@ module m1_raster_band #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st          <= S_IDLE;
-      bg_x        <= '0; bg_run <= 1'b0;
       cur_x       <= '0; cur_x1 <= '0; cur_y <= '0;
       cur_col     <= '0; cur_moire <= 1'b0; cur_row <= '0;
       clr_addr    <= '0;
       dbg_spans   <= '0; dbg_dropped <= '0; dbg_pixels <= '0;
     end else begin
-      // The background clear runs whenever it is enabled and the fill is not
-      // using the port. It cannot collide: the caller only enables it on the
-      // buffer that is displaying, and the fill only writes the other one.
-      if (bg_clear_en && (st == S_IDLE)) begin
-        bg_run <= 1'b1;
-        bg_x   <= (bg_x == XW'(WIDTH-1)) ? '0 : bg_x + XW'(1);
-      end else begin
-        bg_run <= 1'b0;
-        bg_x   <= '0;
-      end
-
       case (st)
         S_IDLE: begin
           if (clear_req) begin
-            clr_addr <= clear_all ? '0 : AW'((HEIGHT-1) * WIDTH);
+            clr_addr <= '0;
             st       <= S_CLEAR;
           end else if (span_valid) begin
             if (takeable) begin
@@ -252,14 +263,14 @@ module m1_raster_band #(
         end
 
         S_PAINT: begin
-          if (wr_en) dbg_pixels <= dbg_pixels + 32'd1;
+          if (|wr_en) dbg_pixels <= dbg_pixels + 32'd1;
           if (cur_x >= cur_x1) st <= S_IDLE;
           else                 cur_x <= cur_x + 16'sd1;
         end
 
         S_CLEAR: begin
-          if (clr_addr == AW'(WIDTH*HEIGHT - 1)) st <= S_IDLE;
-          else                                   clr_addr <= clr_addr + AW'(1);
+          if (clr_addr == BAW'(BWORDS - 1)) st <= S_IDLE;
+          else                              clr_addr <= clr_addr + BAW'(1);
         end
 
         default: st <= S_IDLE;
