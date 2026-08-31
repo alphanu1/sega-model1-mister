@@ -705,9 +705,17 @@ module m1_raster3d #(
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
-  // The producer starts a pass whenever its bank is free - it does not wait for
-  // a frame, because the consumer no longer waits for it.
-  wire prod_go = (pst == P_IDLE);
+  // THE PRODUCER STILL STARTS ON A FRAME, even though the consumer no longer
+  // waits for it.
+  //
+  // Splitting the sequencers, this was left free-running - a pass began the
+  // moment its bank was free. That lets a walk start while the V60 is halfway
+  // through rewriting the display list, so objects are transformed with a
+  // half-updated matrix and viewport and coloured from a partly-uploaded table.
+  // On the board that showed as geometry in the wrong place with vertices
+  // collapsed toward the origin. The list is only coherent at vblank, which is
+  // when listctl's buffer select is latched, so that is when a pass may begin.
+  wire prod_go = (pst == P_IDLE) && frame_start;
   assign lw_start        = prod_go;
   assign geo_start       = (pst == P_OBJ);
   assign qs_clear        = prod_go;
@@ -922,7 +930,10 @@ module m1_raster3d #(
 
       // ---- PRODUCER: list walk, geometry, sort, into store `bank`
       case (pst)
-        P_IDLE: begin
+        // The transition is gated as well as the outputs. Gating only lw_start
+        // left the state machine walking with a walker that was never started -
+        // f=0 passes, and the layer showing nothing at all.
+        P_IDLE: if (frame_start) begin
           old_z <= '0;
           pst   <= P_WALK;
         end

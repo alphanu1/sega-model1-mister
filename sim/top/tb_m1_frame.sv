@@ -1573,7 +1573,7 @@ initial begin
                          cycles/1000000, dbg_pc, frames, dbg_overruns,
                          core.r3_dbg_objects, core.r3_dbg_quads,
                          core.r3_dbg_frames,
-                         core.u_raster3d.st, core.u_raster3d.cur_band,
+                         core.u_raster3d.cst, core.u_raster3d.cur_band,
                          core.u_raster3d.ready_band, core.u_raster3d.dbg_bands,
                          core.u_raster3d.ready_valid, core.u_raster3d.frame_armed,
                          core.u_raster3d.beam_band_s2,
@@ -1604,7 +1604,7 @@ initial begin
              core.r3_dbg_objects, core.r3_dbg_quads,
              core.r3_dbg_dropped, core.r3_dbg_frames);
     $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",
-             core.u_raster3d.st, core.u_raster3d.cur_band,
+             core.u_raster3d.cst, core.u_raster3d.cur_band,
              core.u_raster3d.dbg_bands, core.u_raster3d.fill_buf,
              core.u_raster3d.ready_buf, core.u_raster3d.disp_buf,
              core.u_raster3d.ready_valid, core.u_raster3d.frame_armed,
@@ -1813,6 +1813,23 @@ initial begin
     end
     $display("FRAME: wrote build/frame_dlist0.hex and _dlist1.hex, listctl_sel=%0d",
              core.listctl_sel);
+
+    // THE COLOUR TRANSLATION TABLE, all three thirds.
+    //
+    // m1_geo_color looks a component up at (v << 8) | lum | base, with base
+    // 0x0000 for red, 0x2000 for green and 0x4000 for BLUE - so blue lives in
+    // the highest range and is the first thing lost if any part of the table is
+    // missing. The board draws the 3D with no blue at all: a grey road comes out
+    // olive and a white car comes out yellow, while red is unaffected because
+    // its blue was already zero.
+    fd = $fopen("build/frame_cxlat.hex", "w");
+    if (fd != 0) begin
+        for (i = 0; i < 24576; i = i + 1)
+            $fwrite(fd, "%04h\n", {core.main.rams.u_cxlat.mem_hi[i],
+                                   core.main.rams.u_cxlat.mem_lo[i]});
+        $fclose(fd);
+        $display("FRAME: wrote build/frame_cxlat.hex (24576 words)");
+    end
 
     fd = $fopen(PALOUT, "w");
     if (fd == 0) $display("FRAME: could not open %s", PALOUT);

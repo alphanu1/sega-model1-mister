@@ -178,8 +178,25 @@ module m1_mainram (
     .b_clk(r3d_clk), .b_addr(r3d_pal_addr), .b_q(r3d_pal_data)
   );
 
+  // addr[15:1], NOT {1'b0, addr[14:1]} - THE TABLE IS 24,576 WORDS AND NEEDS
+  // ALL FIFTEEN BITS.
+  //
+  // The colour translation table is three stacked 8,192-word sections and
+  // m1_geo_color addresses them at 0x0000 for red, 0x2000 for green and 0x4000
+  // for BLUE. Forcing the top bit to zero dropped word-address bit 14, so every
+  // blue write aliased onto the red section - and because the game writes red
+  // after blue, red came out correct and blue was never stored at all.
+  //
+  // Measured: our table against MAME's, per section. Red identical 8,192 of
+  // 8,192, green identical 8,192 of 8,192, blue ZERO non-zero words against the
+  // reference's 7,935. On the board that is a 3D layer with no blue in it - a
+  // grey road drawn olive, a white car drawn yellow, and red unaffected because
+  // its blue was already zero.
+  //
+  // Every other memory here already slices the address the natural way; this
+  // was the only one that did not.
   m1_tdp_ram #(.AW(15)) u_cxlat (
-    .a_clk(clk), .a_addr({1'b0, addr[14:1]}), .a_din(wdata), .a_be(be),
+    .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
     .a_we(cxlat_we), .a_q(cxlat_q),
     .b_clk(r3d_clk), .b_addr(r3d_xlat_addr), .b_q(r3d_xlat_data)
   );
