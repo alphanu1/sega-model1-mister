@@ -199,8 +199,11 @@ module m1_quad_store #(
 
   // ---------------------------------------------------------------- radix sort
   typedef enum logic [3:0] {
-    R_IDLE, R_INIT, R_CNT, R_CNT2, R_CNT3, R_CNT4,
-    R_SUM, R_SCAT, R_SCAT2, R_SCAT3, R_NEXT, R_DONE
+    R_IDLE, R_INIT, R_CNT,
+    R_CNT_A, R_CNT_B, R_CNT_C, R_CNT_D, R_CNT_E,
+    R_SUM,
+    R_SCAT_A, R_SCAT_B, R_SCAT_C, R_SCAT_D, R_SCAT_E,
+    R_NEXT, R_DONE
   } rstate_t;
   rstate_t rst_st;
 
@@ -216,11 +219,29 @@ module m1_quad_store #(
 
   assign sort_busy = (rst_st != R_IDLE);
 
-  wire [IW-1:0] src_idx = which ? idx_b[ri[IW-1:0]] : idx_a[ri[IW-1:0]];
-  wire [31:0]   src_key = key[cur_idx];
-  wire [7:0]    digit   = (pass == 2'd0) ? src_key[7:0]   :
-                          (pass == 2'd1) ? src_key[15:8]  :
-                          (pass == 2'd2) ? src_key[23:16] : src_key[31:24];
+  // EVERY READ OF A MEMORY IS REGISTERED, and that is not a style preference.
+  //
+  // An M10K has a registered read port. A continuous assignment out of an array -
+  // `wire x = mem[addr];` - is an ASYNCHRONOUS read, which no block RAM can do,
+  // so Quartus builds the whole array out of flip-flops and says nothing.
+  //
+  // Measured: key[2048] as an async read was 65,536 registers, and this module
+  // carried 63,630 of the design's 93,971 while m1_geometry - doing all the
+  // arithmetic - had 5,778. The fit failed needing 7,465 LABs of the device's
+  // 4,191. Three arrays were being read asynchronously: the sort keys, the index
+  // arrays, and the band mask out of att.
+  //
+  // The cost is a cycle per access, which this sequencer already had states for.
+  logic [IW-1:0] idx_rd;
+  logic [31:0]   key_rd;
+  always_ff @(posedge clk) begin
+    idx_rd <= which ? idx_b[ri[IW-1:0]] : idx_a[ri[IW-1:0]];
+    key_rd <= key[cur_idx];
+  end
+
+  wire [7:0] digit = (pass == 2'd0) ? key_rd[7:0]   :
+                     (pass == 2'd1) ? key_rd[15:8]  :
+                     (pass == 2'd2) ? key_rd[23:16] : key_rd[31:24];
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -244,55 +265,55 @@ module m1_quad_store #(
 
         R_CNT: begin                       // clear the histogram
           hist[hi[7:0]] <= '0;
-          if (hi == 9'd255) begin hi <= '0; ri <= '0; rst_st <= R_CNT2; end
+          if (hi == 9'd255) begin hi <= '0; ri <= '0; rst_st <= R_CNT_A; end
           else                     hi <= hi + 9'd1;
         end
 
-        // Counting is THREE cycles an element, the same shape as the scatter
-        // below, and for the same reason: the index memory answers in one cycle
-        // and the key memory in another, so the digit is only valid two cycles
-        // after the index is addressed.
+        // FIVE CYCLES AN ELEMENT, because both memory reads are registered.
         //
-        // The first version folded all three into one state and incremented
-        // hist[cur_digit] while cur_digit still held the PREVIOUS element's
-        // digit - and, on the last element, wrote hist[cur_digit] twice in one
-        // cycle, so one count was silently lost. Both faults leave the histogram
-        // nearly right, which is why the directed cases passed and only the fuzz
-        // caught it.
-        R_CNT2: begin cur_idx <= src_idx; rst_st <= R_CNT3; end
-        R_CNT3: begin cur_digit <= digit; rst_st <= R_CNT4; end
-        R_CNT4: begin
+        //   A  the index address (ri) is settled; idx_rd lands at the end
+        //   B  take idx_rd into cur_idx, which addresses the key memory
+        //   C  key_rd lands at the end
+        //   D  take the digit
+        //   E  bump the histogram, advance
+        //
+        // The asynchronous version was three cycles and kept both arrays in
+        // flip-flops - 65,536 registers for the keys alone. Two cycles an element
+        // is what a block RAM costs, and this runs 2,000 elements four times
+        // against a 397,515-cycle frame.
+        R_CNT_A: rst_st <= R_CNT_B;
+        R_CNT_B: begin cur_idx <= idx_rd; rst_st <= R_CNT_C; end
+        R_CNT_C: rst_st <= R_CNT_D;
+        R_CNT_D: begin cur_digit <= digit; rst_st <= R_CNT_E; end
+        R_CNT_E: begin
           hist[cur_digit] <= hist[cur_digit] + 1'b1;
           if (ri + 1 >= count) begin
             hi <= '0; acc <= '0; rst_st <= R_SUM;
           end else begin
             ri     <= ri + 1'b1;
-            rst_st <= R_CNT2;
+            rst_st <= R_CNT_A;
           end
         end
 
         R_SUM: begin                       // exclusive prefix sum
           base[hi[7:0]] <= acc;
           acc <= acc + hist[hi[7:0]];
-          if (hi == 9'd255) begin ri <= '0; rst_st <= R_SCAT; end
+          if (hi == 9'd255) begin ri <= '0; rst_st <= R_SCAT_A; end
           else                     hi <= hi + 9'd1;
         end
 
-        // Scatter, in order, which is what makes it stable.
-        R_SCAT: begin
-          cur_idx <= src_idx;
-          rst_st  <= R_SCAT2;
-        end
-        R_SCAT2: begin
-          cur_digit <= digit;
-          rst_st    <= R_SCAT3;
-        end
-        R_SCAT3: begin
+        // The scatter has the same shape, and the write at the end is what makes
+        // the sort stable: elements are placed in the order they are walked.
+        R_SCAT_A: rst_st <= R_SCAT_B;
+        R_SCAT_B: begin cur_idx <= idx_rd; rst_st <= R_SCAT_C; end
+        R_SCAT_C: rst_st <= R_SCAT_D;
+        R_SCAT_D: begin cur_digit <= digit; rst_st <= R_SCAT_E; end
+        R_SCAT_E: begin
           if (which) idx_a[base[cur_digit][IW-1:0]] <= cur_idx;
           else       idx_b[base[cur_digit][IW-1:0]] <= cur_idx;
           base[cur_digit] <= base[cur_digit] + 1'b1;
           if (ri + 1 >= count) rst_st <= R_NEXT;
-          else begin ri <= ri + 1'b1; rst_st <= R_SCAT; end
+          else begin ri <= ri + 1'b1; rst_st <= R_SCAT_A; end
         end
 
         R_NEXT: begin
@@ -312,7 +333,7 @@ module m1_quad_store #(
   end
 
   // ---------------------------------------------------------------- replay
-  typedef enum logic [2:0] { P_IDLE, P_ADDR, P_RD1, P_RD2, P_OUT } pstate_t;
+  typedef enum logic [2:0] { P_IDLE, P_WAIT, P_ADDR, P_RD1, P_RD2, P_OUT } pstate_t;
   pstate_t p_st;
   logic [IW:0]  pi;
   logic [IW-1:0] q;
@@ -322,12 +343,17 @@ module m1_quad_store #(
   // Quartus 17.0 with "range must be the final index in the indexed name", which
   // is a synthesis error and not a simulation one - so it passed every bench and
   // failed the first real build. Split into a named wire.
-  wire [NBANDS-1:0] q_band_mask = att[q][AT_W-1:25];
+  // Registered, for the same reason: reading att asynchronously to test one bit
+  // of the band mask would keep the whole 2,048 x 37-bit array in flip-flops.
+  logic [AT_W-1:0] att_rd;
+  always_ff @(posedge clk) att_rd <= att[q];
+  wire [NBANDS-1:0] q_band_mask = att_rd[AT_W-1:25];
 
   // After four passes the result is back in idx_a: each pass flips `which`, and
   // four flips return it. Stated rather than tracked, because a fifth pass added
   // later would silently read the wrong array.
-  wire [IW-1:0] ord_idx = idx_a[pi[IW-1:0]];
+  logic [IW-1:0] ord_idx;
+  always_ff @(posedge clk) ord_idx <= idx_a[pi[IW-1:0]];
 
   assign replay_busy = (p_st != P_IDLE);
 
@@ -342,28 +368,33 @@ module m1_quad_store #(
       case (p_st)
         P_IDLE: begin
           out_valid <= 1'b0;
-          if (replay_start) begin pi <= '0; p_st <= (count == 0) ? P_IDLE : P_ADDR; end
+          if (replay_start) begin pi <= '0; p_st <= (count == 0) ? P_IDLE : P_WAIT; end
         end
+        // ord_idx is a REGISTERED read of idx_a, so it is valid one cycle after
+        // pi settles - hence the wait. Taking it in the same cycle pi changes
+        // reads the previous quad's index, which reorders the whole frame while
+        // still drawing every quad exactly once.
+        P_WAIT: p_st <= P_ADDR;
         P_ADDR: begin q <= ord_idx; p_st <= P_RD1; end
         P_RD1:  p_st <= P_RD2;
         P_RD2: if (!q_band_mask[replay_band]) begin
           // Not in this band: step straight to the next quad without emitting.
           if (pi + 1 >= count) p_st <= P_IDLE;
-          else begin pi <= pi + 1'b1; p_st <= P_ADDR; end
+          else begin pi <= pi + 1'b1; p_st <= P_WAIT; end
         end else begin
           out_x0 <= vtx0[q][15:0];  out_y0 <= vtx0[q][31:16];
           out_x1 <= vtx1[q][15:0];  out_y1 <= vtx1[q][31:16];
           out_x2 <= vtx2[q][15:0];  out_y2 <= vtx2[q][31:16];
           out_x3 <= vtx3[q][15:0];  out_y3 <= vtx3[q][31:16];
-          out_col   <= att[q][23:0];
-          out_moire <= att[q][24];
+          out_col   <= att_rd[23:0];
+          out_moire <= att_rd[24];
           out_valid <= 1'b1;
           p_st      <= P_OUT;
         end
         P_OUT: if (out_ready) begin
           out_valid <= 1'b0;
           if (pi + 1 >= count) p_st <= P_IDLE;
-          else begin pi <= pi + 1'b1; p_st <= P_ADDR; end
+          else begin pi <= pi + 1'b1; p_st <= P_WAIT; end
         end
         default: p_st <= P_IDLE;
       endcase
