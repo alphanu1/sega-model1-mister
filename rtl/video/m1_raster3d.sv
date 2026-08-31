@@ -446,6 +446,25 @@ module m1_raster3d #(
   // cleared once the beam has read it, so the clear can never erase a pixel that
   // is still to be shown. The beam spends about 2,100 cycles on a row and a row
   // is 496 words, so it stays comfortably behind.
+  // WHEN TO PRESENT A FILLED BAND.
+  //
+  //   the beam is in the band BEFORE this one   ready just in time
+  //   the beam is already in this band          late; show the rest of it
+  //   this is band 0 and the beam is blanking   the top of a frame
+  //
+  // Not "the beam has reached it exactly": a fill that runs slightly long has
+  // then already missed, and waits a WHOLE FRAME for the beam to come round -
+  // and being late, the next is late too. Measured as exactly one band a frame.
+  //
+  // And not "as soon as the displayed buffer is free" either: that presents all
+  // twelve in a burst before the beam reaches any of them, which measured 8.8%
+  // of the frame painted. The band has to be swapped in just ahead of the beam.
+  wire [BW:0] beam_ext = {1'b0, beam_band_s2};
+  wire [BW:0] want_ext = {1'b0, cur_band};
+  wire present_now = (beam_ext == want_ext)
+                  || (want_ext != '0 && beam_ext == want_ext - 1'b1)
+                  || (want_ext == '0 && {6'd0, scan_y} >= 10'(SCR_H));
+
   wire                          bg_active = disp_valid && (beam_row_s2 != '0);
   wire [$clog2(BAND_H)-1:0]     bg_row    = beam_row_s2 - 1'b1;
 
@@ -705,7 +724,21 @@ module m1_raster3d #(
         // band is missed rather than shown in the wrong place.
         T_BAND_WAIT: begin
           dbg_band_cycles <= band_timer;   // the fill alone, before the wait
-          if (beam_band_s2 == cur_band) st <= T_BAND_NEXT;
+          // PRESENT AS SOON AS THE DISPLAYED BUFFER IS NO LONGER BEING READ, not
+          // when the beam reaches this band exactly.
+          //
+          // Waiting for equality means a fill that runs even slightly long has
+          // already missed its band, and then waits a WHOLE FRAME for the beam to
+          // come round - so one late fill costs a frame and, being late, the next
+          // one is late too. That is a self-sustaining failure: measured at
+          // exactly one band presented per frame out of twelve, with fills of
+          // 45,511 to 64,397 against a band-time of 61,741.
+          //
+          // Swapping the moment the beam leaves the band on screen is safe - that
+          // buffer is finished with - and a late fill then shows the remainder of
+          // its band rather than none of it, and the band after it gets a full
+          // band-time again. The chain recovers instead of degrading.
+          if (present_now) st <= T_BAND_NEXT;
         end
 
         T_BAND_NEXT: begin

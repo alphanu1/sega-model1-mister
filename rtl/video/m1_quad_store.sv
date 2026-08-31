@@ -355,69 +355,100 @@ module m1_quad_store #(
   end
 
   // ---------------------------------------------------------------- replay
-  typedef enum logic [2:0] { P_IDLE, P_WAIT, P_ADDR, P_RD1, P_RD2, P_OUT } pstate_t;
+  //
+  // A THREE-STAGE PIPELINE, so a quad that is not in this band costs ONE cycle.
+  //
+  // The sorted list is walked once per band - twelve times a frame - and almost
+  // all of what it walks is skipped, because a quad touches two or three bands.
+  // As a four-state sequence that cost 4 cycles a quad, so 2,001 quads cost 8,004
+  // cycles of a band-time of 61,741 no matter what the band contained.
+  //
+  // THE ALIGNMENT IS THE WHOLE DIFFICULTY, and a first attempt at this reordered
+  // the sort by getting it wrong. Both memory reads are registered, so:
+  //
+  //   cycle N    pi addresses idx_a          valid v0 = (pi < count)
+  //   cycle N+1  ord_idx holds idx_a[pi@N]   valid v1, and it addresses att
+  //   cycle N+2  att_rd holds att[ord@N+1]   valid v2, quad q2 = ord_idx@N+1
+  //
+  // So the decision stage must pair att_rd with a COPY of ord_idx taken at N+1,
+  // not with ord_idx itself. Re-registering ord_idx into another stage instead
+  // shifts the quad one place against its own attributes, which draws every quad
+  // exactly once and in the wrong order.
+  typedef enum logic [1:0] { P_IDLE, P_RUN, P_OUT } pstate_t;
   pstate_t p_st;
-  logic [IW:0]  pi;
+
+  logic [IW:0]   pi;
   logic [IW-1:0] q;
+  logic          v1, v2;
+  logic [IW-1:0] q2;
 
-  // QUARTUS WILL NOT TAKE A BIT-SELECT OF A PART-SELECT.
-  // `att[q][AT_W-1:25][replay_band]` is legal to Verilator and is rejected by
-  // Quartus 17.0 with "range must be the final index in the indexed name", which
-  // is a synthesis error and not a simulation one - so it passed every bench and
-  // failed the first real build. Split into a named wire.
-  // Registered, for the same reason: reading att asynchronously to test one bit
-  // of the band mask would keep the whole 2,048 x 37-bit array in flip-flops.
-  logic [AT_W-1:0] att_rd;
-  always_ff @(posedge clk) att_rd <= att[q];
-  wire [NBANDS-1:0] q_band_mask = att_rd[AT_W-1:25];
-
-  // After an EVEN number of passes the result is back in idx_a: each pass flips
-  // `which`, and 32/RADIX is even for every sensible radix. Stated rather than tracked, because a fifth pass added
-  // later would silently read the wrong array.
   logic [IW-1:0] ord_idx;
-  always_ff @(posedge clk) ord_idx <= idx_a[pi[IW-1:0]];
+  logic [AT_W-1:0] att_rd;
+
+  wire v0 = (pi < count);
+
+  // Frozen while a quad is being emitted: the vertex reads and the output
+  // register are shared, and those are the quads the band exists to draw.
+  wire [NBANDS-1:0] q_band_mask = att_rd[AT_W-1:25];
+  wire              hit = v2 && q_band_mask[replay_band];
+  wire              adv = (p_st == P_RUN) && !hit;
 
   assign replay_busy = (p_st != P_IDLE);
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       p_st <= P_IDLE; pi <= '0; q <= '0;
+      v1 <= 1'b0; v2 <= 1'b0; q2 <= '0;
+      ord_idx <= '0; att_rd <= '0;
       out_valid <= 1'b0;
       out_x0 <= '0; out_y0 <= '0; out_x1 <= '0; out_y1 <= '0;
       out_x2 <= '0; out_y2 <= '0; out_x3 <= '0; out_y3 <= '0;
       out_col <= '0; out_moire <= 1'b0;
     end else begin
+      if (adv) begin
+        ord_idx <= idx_a[pi[IW-1:0]];
+        att_rd  <= att[ord_idx];
+        q2      <= ord_idx;
+        v1      <= v0;
+        v2      <= v1;
+        if (v0) pi <= pi + 1'b1;
+      end
+
       case (p_st)
         P_IDLE: begin
           out_valid <= 1'b0;
-          if (replay_start) begin pi <= '0; p_st <= (count == 0) ? P_IDLE : P_WAIT; end
+          if (replay_start && count != 0) begin
+            pi <= '0; v1 <= 1'b0; v2 <= 1'b0;
+            p_st <= P_RUN;
+          end
         end
-        // ord_idx is a REGISTERED read of idx_a, so it is valid one cycle after
-        // pi settles - hence the wait. Taking it in the same cycle pi changes
-        // reads the previous quad's index, which reorders the whole frame while
-        // still drawing every quad exactly once.
-        P_WAIT: p_st <= P_ADDR;
-        P_ADDR: begin q <= ord_idx; p_st <= P_RD1; end
-        P_RD1:  p_st <= P_RD2;
-        P_RD2: if (!q_band_mask[replay_band]) begin
-          // Not in this band: step straight to the next quad without emitting.
-          if (pi + 1 >= count) p_st <= P_IDLE;
-          else begin pi <= pi + 1'b1; p_st <= P_WAIT; end
-        end else begin
+
+        P_RUN: begin
+          if (hit) begin
+            q         <= q2;
+            out_col   <= att_rd[23:0];
+            out_moire <= att_rd[24];
+            p_st      <= P_OUT;
+          end else if (!v0 && !v1 && !v2) begin
+            p_st <= P_IDLE;              // drained
+          end
+        end
+
+        // The vertex memories are registered, so the quad's data is ready the
+        // cycle after q settles.
+        P_OUT: begin
           out_x0 <= vtx0[q][15:0];  out_y0 <= vtx0[q][31:16];
           out_x1 <= vtx1[q][15:0];  out_y1 <= vtx1[q][31:16];
           out_x2 <= vtx2[q][15:0];  out_y2 <= vtx2[q][31:16];
           out_x3 <= vtx3[q][15:0];  out_y3 <= vtx3[q][31:16];
-          out_col   <= att_rd[23:0];
-          out_moire <= att_rd[24];
           out_valid <= 1'b1;
-          p_st      <= P_OUT;
+          if (out_valid && out_ready) begin
+            out_valid <= 1'b0;
+            v2        <= 1'b0;           // this one is consumed
+            p_st      <= P_RUN;
+          end
         end
-        P_OUT: if (out_ready) begin
-          out_valid <= 1'b0;
-          if (pi + 1 >= count) p_st <= P_IDLE;
-          else begin pi <= pi + 1'b1; p_st <= P_WAIT; end
-        end
+
         default: p_st <= P_IDLE;
       endcase
     end
