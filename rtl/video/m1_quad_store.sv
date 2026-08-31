@@ -97,13 +97,30 @@ module m1_quad_store #(
   output logic [15:0] dbg_dropped
 );
 
-  localparam int unsigned AW = IW + 2;        // four words per quad
 
   // Four 32-bit words a quad: two vertices, then colour and key.
   //   w0 {y0,x0}   w1 {y1,x1}   w2 {y2,x2}   w3 {y3,x3}
   // and a separate narrow array for colour+moire, and one for the sort key, so
   // the sort never reads the wide one.
-  (* ramstyle = "M10K" *) logic [31:0] vtx [NQ*4];
+  // FOUR SEPARATE MEMORIES, ONE PER VERTEX, and this is not a style choice.
+  //
+  // As a single `vtx [NQ*4]` array this module wrote all four vertices of a quad
+  // in one cycle and read all four in one cycle. An array with four simultaneous
+  // accesses cannot be a RAM, and Quartus does not say so - it builds the whole
+  // 8,192 x 32 bits out of flip-flops with 8192:1 multiplexers and carries on.
+  //
+  // Measured: 112,742 combinational nodes in this module alone, 93% of the 3D
+  // layer and 68% of the entire design, against a device that holds 83,820. The
+  // first real build failed to fit at 166,497. m1_geometry, doing all the actual
+  // arithmetic, is 6,238.
+  //
+  // One vertex per memory gives each a single write port and a single read port,
+  // which is a Simple Dual Port M10K and infers cleanly. CLAUDE.md's warning that
+  // "block RAM inference is silent when it fails" cost 28,816 ALM once before.
+  (* ramstyle = "M10K" *) logic [31:0] vtx0 [NQ];
+  (* ramstyle = "M10K" *) logic [31:0] vtx1 [NQ];
+  (* ramstyle = "M10K" *) logic [31:0] vtx2 [NQ];
+  (* ramstyle = "M10K" *) logic [31:0] vtx3 [NQ];
   localparam int unsigned AT_W = NBANDS + 25;   // {band_mask, moire, col}
   (* ramstyle = "M10K" *) logic [AT_W-1:0] att [NQ];
   (* ramstyle = "M10K" *) logic [31:0] key [NQ];
@@ -166,10 +183,10 @@ module m1_quad_store #(
       count <= '0; wi <= '0; dbg_dropped <= '0;
     end else if (in_valid) begin
       if (has_room) begin
-        vtx[{count[IW-1:0], 2'd0}] <= {in_y0, in_x0};
-        vtx[{count[IW-1:0], 2'd1}] <= {in_y1, in_x1};
-        vtx[{count[IW-1:0], 2'd2}] <= {in_y2, in_x2};
-        vtx[{count[IW-1:0], 2'd3}] <= {in_y3, in_x3};
+        vtx0[count[IW-1:0]] <= {in_y0, in_x0};
+        vtx1[count[IW-1:0]] <= {in_y1, in_x1};
+        vtx2[count[IW-1:0]] <= {in_y2, in_x2};
+        vtx3[count[IW-1:0]] <= {in_y3, in_x3};
         att[count[IW-1:0]] <= {band_mask(in_y0, in_y1, in_y2, in_y3),
                                in_moire, in_col};
         key[count[IW-1:0]] <= sort_key(in_z);
@@ -334,10 +351,10 @@ module m1_quad_store #(
           if (pi + 1 >= count) p_st <= P_IDLE;
           else begin pi <= pi + 1'b1; p_st <= P_ADDR; end
         end else begin
-          out_x0 <= vtx[{q, 2'd0}][15:0];  out_y0 <= vtx[{q, 2'd0}][31:16];
-          out_x1 <= vtx[{q, 2'd1}][15:0];  out_y1 <= vtx[{q, 2'd1}][31:16];
-          out_x2 <= vtx[{q, 2'd2}][15:0];  out_y2 <= vtx[{q, 2'd2}][31:16];
-          out_x3 <= vtx[{q, 2'd3}][15:0];  out_y3 <= vtx[{q, 2'd3}][31:16];
+          out_x0 <= vtx0[q][15:0];  out_y0 <= vtx0[q][31:16];
+          out_x1 <= vtx1[q][15:0];  out_y1 <= vtx1[q][31:16];
+          out_x2 <= vtx2[q][15:0];  out_y2 <= vtx2[q][31:16];
+          out_x3 <= vtx3[q][15:0];  out_y3 <= vtx3[q][31:16];
           out_col   <= att[q][23:0];
           out_moire <= att[q][24];
           out_valid <= 1'b1;
