@@ -56,6 +56,17 @@ module m1_quad_store #(
   parameter int unsigned BAND_H = 32,
   parameter int unsigned NBANDS = 12,
   parameter int unsigned BW     = 4,         // ceil(log2(NBANDS))
+  // FOUR BITS A PASS, NOT EIGHT, AND THE DEVICE DECIDED IT.
+  //
+  // A radix sort's histogram is read-modify-written at a dynamic address, which
+  // no block RAM can do, so it is registers plus a multiplexer per entry. At
+  // eight bits that is two 256-entry arrays of 12 bits - about 6,000 flops and
+  // two 256:1 muxes - and the design missed fitting by 15 LABs of 4,191.
+  //
+  // At four bits the arrays are 16 entries: a sixteenth of the flops and muxes.
+  // The cost is eight passes over the key instead of four, so the sort doubles
+  // from 21% of a frame to about 42%. That is affordable and not fitting is not.
+  parameter int unsigned RADIX  = 4,
   parameter int unsigned SCR_H  = 384
 ) (
   input  logic        clk,
@@ -207,15 +218,19 @@ module m1_quad_store #(
   } rstate_t;
   rstate_t rst_st;
 
-  logic [1:0]   pass;                 // which byte of the key
+  localparam int unsigned NPASS = 32 / RADIX;
+  localparam int unsigned NBUCK = 1 << RADIX;
+  localparam int unsigned PW    = $clog2(NPASS);
+
+  logic [PW-1:0] pass;                // which digit of the key
   logic [IW:0]  ri;
-  logic [8:0]   hi;
-  logic [IW:0]  hist [256];
-  logic [IW:0]  base [256];
+  logic [RADIX:0] hi;
+  logic [IW:0]  hist [NBUCK];
+  logic [IW:0]  base [NBUCK];
   logic [IW:0]  acc;
   logic         which;                // 0: a -> b, 1: b -> a
   logic [IW-1:0] cur_idx;
-  logic [7:0]   cur_digit;
+  logic [RADIX-1:0] cur_digit;
 
   assign sort_busy = (rst_st != R_IDLE);
 
@@ -239,9 +254,10 @@ module m1_quad_store #(
     key_rd <= key[cur_idx];
   end
 
-  wire [7:0] digit = (pass == 2'd0) ? key_rd[7:0]   :
-                     (pass == 2'd1) ? key_rd[15:8]  :
-                     (pass == 2'd2) ? key_rd[23:16] : key_rd[31:24];
+  // The RADIX-bit field selected by `pass`, taken with a shift so the width is a
+  // parameter rather than four hand-written slices that stop matching it.
+  wire [31:0] key_shifted = key_rd >> (RADIX * pass);
+  wire [RADIX-1:0] digit = key_shifted[RADIX-1:0];
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -264,9 +280,9 @@ module m1_quad_store #(
         end
 
         R_CNT: begin                       // clear the histogram
-          hist[hi[7:0]] <= '0;
-          if (hi == 9'd255) begin hi <= '0; ri <= '0; rst_st <= R_CNT_A; end
-          else                     hi <= hi + 9'd1;
+          hist[hi[RADIX-1:0]] <= '0;
+          if (hi == (RADIX+1)'(NBUCK-1)) begin hi <= '0; ri <= '0; rst_st <= R_CNT_A; end
+          else                                 hi <= hi + (RADIX+1)'(1);
         end
 
         // FIVE CYCLES AN ELEMENT, because both memory reads are registered.
@@ -296,10 +312,10 @@ module m1_quad_store #(
         end
 
         R_SUM: begin                       // exclusive prefix sum
-          base[hi[7:0]] <= acc;
-          acc <= acc + hist[hi[7:0]];
-          if (hi == 9'd255) begin ri <= '0; rst_st <= R_SCAT_A; end
-          else                     hi <= hi + 9'd1;
+          base[hi[RADIX-1:0]] <= acc;
+          acc <= acc + hist[hi[RADIX-1:0]];
+          if (hi == (RADIX+1)'(NBUCK-1)) begin ri <= '0; rst_st <= R_SCAT_A; end
+          else                                 hi <= hi + (RADIX+1)'(1);
         end
 
         // The scatter has the same shape, and the write at the end is what makes
@@ -318,9 +334,9 @@ module m1_quad_store #(
 
         R_NEXT: begin
           which <= ~which;
-          if (pass == 2'd3) rst_st <= R_DONE;
+          if (pass == PW'(NPASS-1)) rst_st <= R_DONE;
           else begin
-            pass   <= pass + 2'd1;
+            pass   <= pass + PW'(1);
             hi     <= '0;
             rst_st <= R_CNT;
           end
@@ -349,8 +365,8 @@ module m1_quad_store #(
   always_ff @(posedge clk) att_rd <= att[q];
   wire [NBANDS-1:0] q_band_mask = att_rd[AT_W-1:25];
 
-  // After four passes the result is back in idx_a: each pass flips `which`, and
-  // four flips return it. Stated rather than tracked, because a fifth pass added
+  // After an EVEN number of passes the result is back in idx_a: each pass flips
+  // `which`, and 32/RADIX is even for every sensible radix. Stated rather than tracked, because a fifth pass added
   // later would silently read the wrong array.
   logic [IW-1:0] ord_idx;
   always_ff @(posedge clk) ord_idx <= idx_a[pi[IW-1:0]];
