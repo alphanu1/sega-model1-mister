@@ -148,12 +148,15 @@ module m1_main #(
   // from its own clock. Both memories are true dual port for this.
   input  logic        r3d_clk,
   input  logic [14:0] r3d_dl_addr,
-  input  logic        r3d_dl_sel,
   output logic [15:0] r3d_dl_data,
   input  logic [14:0] r3d_xlat_addr,
   output logic [15:0] r3d_xlat_data,
   input  logic [9:0]  r3d_pal_addr,
   output logic [15:0] r3d_pal_data,
+  // Which display list the video hardware should render, from listctl bit 6.
+  // The 3D layer must walk the SAME buffer the game finished writing, and that
+  // choice is m1_listctl's - re-deriving it here would be a second opinion.
+  output logic        r3d_dl_sel,
 
   input  logic        vblank_irq,
 
@@ -320,7 +323,7 @@ module m1_main #(
     .vid_clk(vid_clk),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
-    .r3d_clk(r3d_clk), .r3d_dl_addr(r3d_dl_addr), .r3d_dl_sel(r3d_dl_sel),
+    .r3d_clk(r3d_clk), .r3d_dl_addr(r3d_dl_addr), .r3d_dl_sel(listctl_sel),
     .r3d_dl_data(r3d_dl_data),
     .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
     .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
@@ -415,6 +418,7 @@ module m1_main #(
   // than add a second delay register that could disagree with it.
   logic [15:0] listctl_q;
   logic        listctl_sel;
+  assign r3d_dl_sel = listctl_sel;
 
   m1_listctl u_listctl (
     .clk(clk), .rst_n(rst_n),

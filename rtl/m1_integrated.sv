@@ -50,6 +50,9 @@ module m1_integrated (
   // closes at, and ce_cpu throttles it from there.
   input  logic        clk_cpu,
   input  logic        ce_cpu,
+  // The 3D layer's clock, 47.059 MHz - an exact half of nothing here, but an
+  // exact DOUBLE of clk_cpu, which is what keeps that crossing cheap.
+  input  logic        clk_3d,
 
   // Asynchronous, released into both domains by the synchronisers below.
   input  logic        rst_n,
@@ -91,6 +94,19 @@ module m1_integrated (
   output logic [1:0]  sdr_be,
   input  logic [15:0] sdr_dout,
   input  logic        sdr_ack,
+
+  // The 3D layer's two SDRAM masters, in the clk_sys domain like the others.
+  // p5 bursts the polygon models, p6 carries tgp_ram.
+  output logic        r3d_rom_req,
+  output logic [24:1] r3d_rom_addr,
+  input  logic [63:0] r3d_rom_dout,
+  input  logic        r3d_rom_ack,
+  output logic        r3d_tex_req,
+  output logic        r3d_tex_we,
+  output logic [24:1] r3d_tex_addr,
+  output logic [15:0] r3d_tex_din,
+  input  logic [15:0] r3d_tex_dout,
+  input  logic        r3d_tex_ack,
 
   output logic        if_req,
   output logic [23:0] if_addr,
@@ -316,6 +332,12 @@ module m1_integrated (
     .vid_clk(clk_sys),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),
+    // The 3D layer's second ports into the display lists, the colour-translation
+    // table and the palette mirror, all read from clk_3d.
+    .r3d_clk(clk_3d),
+    .r3d_dl_addr(r3d_dl_addr), .r3d_dl_data(r3d_dl_data), .r3d_dl_sel(r3d_dl_sel),
+    .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
+    .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
     .vblank_irq(vblank_irq_cpu),
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
@@ -573,6 +595,149 @@ module m1_integrated (
     .p_dout(if_data), .p_ack(if_ack)
   );
 
+  // ------------------------------------------------------------- the 3D layer
+  //
+  // m1_raster3d is the whole 3D path in one block: the display-list walk, the
+  // geometry, the painter's sort, the fill and the band buffers. It runs on its
+  // own 47.059 MHz clock because the shared FP pool measures 53.25 MHz and the
+  // fill unit 63.75 - clk_sys's 80 does not close - and reads five memories.
+  //
+  // WHERE ITS TWO SDRAM REGIONS LIVE
+  //
+  //   polygon models  0x840000 bytes = word 0x420000, 16 MB, read-only, in the
+  //                   ROM image (mra/*.mra and tools/build_rom_image.py)
+  //   tgp_ram         word 0xC20000, 786,432 words, read/write at run time,
+  //                   ABOVE the 25.4 MB ROM image and inside the 32 MB device
+  //
+  // tgp_ram is not part of the ROM image: it is written by display-list command
+  // 4 while the game runs. It is far too large for M10K - 12.6 Mbit against the
+  // device's 5.5 - and declaring it as an array would have Quartus build it from
+  // flip-flops without saying so.
+  localparam logic [24:1] POLY_BASE    = 24'h420000;
+  localparam logic [24:1] TGP_RAM_BASE = 24'hC20000;
+
+  logic        rst_n_3d;
+  logic [1:0]  rst_sync_3d;
+  always_ff @(posedge clk_3d or negedge rst_n) begin
+    if (!rst_n) rst_sync_3d <= 2'b00;
+    else        rst_sync_3d <= {rst_sync_3d[0], 1'b1};
+  end
+  assign rst_n_3d = rst_sync_3d[1];
+
+  // The frame pulse. vblank_irq_sys is one clk_sys cycle; m1_cdc_pulse is what
+  // this design already uses to carry a pulse across a domain, and a pulse is
+  // exactly what must not be sampled directly.
+  logic frame_start_3d;
+  m1_cdc_pulse u_frame_pulse (
+    .a_clk(clk_sys), .a_rst_n(rst_n_sys), .a_pulse(vblank_irq_sys),
+    .b_clk(clk_3d),  .b_rst_n(rst_n_3d),  .b_pulse(frame_start_3d)
+  );
+
+  logic [22:0] r3_rom_addr;
+  logic        r3_rom_req, r3_rom_valid;
+  logic [31:0] r3_rom_data;
+  logic [19:0] r3_tex_addr;
+  logic        r3_tex_req, r3_tex_valid;
+  logic [15:0] r3_tex_data;
+  logic [14:0] r3_dl_addr;
+  logic        r3_dl_req, r3_dl_valid;
+  wire  [15:0] r3_dl_data;
+  logic [12:0] r3_pal_addr;
+  logic [14:0] r3_xlat_addr;
+  logic [23:0] r3_scan_rgb;
+  logic        r3_scan_hit;
+  logic [15:0] r3_dbg_objects, r3_dbg_quads, r3_dbg_dropped, r3_dbg_frames;
+  logic [3:0]  r3_disp_band;
+  logic        r3_disp_valid;
+
+  // The read ports m1_main exposes for the 3D layer, and the buffer select.
+  logic [14:0] r3d_dl_addr;
+  wire  [15:0] r3d_dl_data;
+  wire         r3d_dl_sel;
+  logic [14:0] r3d_xlat_addr;
+  wire  [15:0] r3d_xlat_data;
+  logic [9:0]  r3d_pal_addr;
+  wire  [15:0] r3d_pal_data;
+
+  // The raster position, from the video timing.
+  logic [9:0]  vid_hpos, vid_vpos;
+
+  // The display list and the translation table answer in one cycle from their
+  // second port, so `valid` is the request delayed by one. The palette mirror is
+  // the same and needs no handshake at all.
+  always_ff @(posedge clk_3d or negedge rst_n_3d) begin
+    if (!rst_n_3d) r3_dl_valid <= 1'b0;
+    else           r3_dl_valid <= r3_dl_req;
+  end
+
+  m1_raster3d u_raster3d (
+    .clk(clk_3d), .rst_n(rst_n_3d),
+    .frame_start(frame_start_3d), .dl_sel(r3d_dl_sel),
+    .dl_addr(r3_dl_addr), .dl_req(r3_dl_req),
+    .dl_valid(r3_dl_valid), .dl_data(r3_dl_data),
+    .rom_addr(r3_rom_addr), .rom_req(r3_rom_req),
+    .rom_valid(r3_rom_valid), .rom_data(r3_rom_data),
+    .tex_addr(r3_tex_addr), .tex_req(r3_tex_req),
+    .tex_valid(r3_tex_valid), .tex_data(r3_tex_data),
+    .pal_addr(r3_pal_addr), .pal_data(r3d_pal_data),
+    .xlat_addr(r3_xlat_addr), .xlat_data(r3d_xlat_data),
+    .frame_odd(1'b0),
+    .scan_clk(clk_sys), .scan_x(vid_hpos), .scan_y(vid_vpos),
+    .scan_rgb(r3_scan_rgb), .scan_hit(r3_scan_hit),
+    .disp_band(r3_disp_band), .disp_valid(r3_disp_valid),
+    .dbg_objects(r3_dbg_objects), .dbg_quads(r3_dbg_quads),
+    .dbg_dropped(r3_dbg_dropped), .dbg_frames(r3_dbg_frames)
+  );
+
+  // The display list's data comes back from m1_main's second port.
+  assign r3_dl_data    = r3d_dl_data;
+  assign r3d_pal_addr  = r3_pal_addr[9:0];
+  assign r3d_xlat_addr = r3_xlat_addr;
+  assign r3d_dl_addr   = r3_dl_addr;
+
+  // ---- polygon models, through p5.
+  //
+  // rom_addr counts 32-bit model words; SDRAM counts 16-bit words, so the
+  // address doubles. p5 bursts four 16-bit words, which is TWO model words, and
+  // a burst port's address must be burst-aligned - so the request is aligned
+  // down and bit 0 of the model address picks which half came back. Exactly the
+  // arrangement u_tgp_mem_cdc uses on p3, and for the same reason.
+  wire [24:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr[22:1], 2'b00};
+
+  m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) u_r3d_rom_cdc (
+    .a_clk(clk_3d), .a_rst_n(rst_n_3d),
+    .a_req(r3_rom_req), .a_we(1'b0), .a_addr(rom_sdram_addr),
+    .a_din(32'd0), .a_be(2'b11),
+    .a_dout(r3_rom_data), .a_ack(r3_rom_valid), .a_busy(),
+    .b_clk(clk_sys), .b_rst_n(rst_n_sys),
+    .b_req(r3d_rom_req), .b_we(), .b_addr(r3d_rom_addr),
+    .b_din(), .b_be(),
+    .b_dout(r3_rom_half ? r3d_rom_dout[63:32] : r3d_rom_dout[31:0]),
+    .b_ack(r3d_rom_ack)
+  );
+
+  // Which half of the burst was wanted, held across the transaction because
+  // r3_rom_addr moves on as soon as the request is accepted.
+  logic r3_rom_half;
+  always_ff @(posedge clk_sys or negedge rst_n_sys) begin
+    if (!rst_n_sys)         r3_rom_half <= 1'b0;
+    else if (r3d_rom_req)   r3_rom_half <= r3d_rom_addr[1];
+  end
+
+  // ---- tgp_ram, through p6. Single word, and writable: display-list command 4
+  // uploads colour words into it.
+  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_r3d_tex_cdc (
+    .a_clk(clk_3d), .a_rst_n(rst_n_3d),
+    .a_req(r3_tex_req), .a_we(1'b0),
+    .a_addr(TGP_RAM_BASE + {4'd0, r3_tex_addr}),
+    .a_din(16'd0), .a_be(2'b11),
+    .a_dout(r3_tex_data), .a_ack(r3_tex_valid), .a_busy(),
+    .b_clk(clk_sys), .b_rst_n(rst_n_sys),
+    .b_req(r3d_tex_req), .b_we(r3d_tex_we), .b_addr(r3d_tex_addr),
+    .b_din(r3d_tex_din), .b_be(),
+    .b_dout(r3d_tex_dout), .b_ack(r3d_tex_ack)
+  );
+
   // ------------------------------------------------------------- fast domain
   m1_video video (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(rst_n_sys),
@@ -585,7 +750,9 @@ module m1_integrated (
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
     .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
     .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px),
-    .dbg_ctrl(dbg_ctrl), .dbg_layer_have(dbg_layer_have)
+    .dbg_ctrl(dbg_ctrl), .dbg_layer_have(dbg_layer_have),
+    .poly_rgb(r3_scan_rgb), .poly_hit(r3_scan_hit),
+    .vid_hpos(vid_hpos), .vid_vpos(vid_vpos)
   );
 
   m1_rom_loader loader (

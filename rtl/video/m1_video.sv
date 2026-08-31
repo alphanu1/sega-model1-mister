@@ -85,6 +85,12 @@ module m1_video #(
   input  logic [23:0] poly_rgb,
   input  logic        poly_hit,
 
+  // The raster position, so the 3D layer can present the right band. Taken from
+  // the same counters that address the tile line buffer, not re-derived - two
+  // counters that are meant to agree and are computed separately will not.
+  output logic [9:0]  vid_hpos,
+  output logic [9:0]  vid_vpos,
+
   output logic [7:0]  vid_r,
   output logic [7:0]  vid_g,
   output logic [7:0]  vid_b,
@@ -170,6 +176,8 @@ module m1_video #(
 
   // ------------------------------------------------------------- timing
   logic [9:0] hcnt, vcnt;
+  assign vid_hpos = hcnt;
+  assign vid_vpos = vcnt;
   logic       hblank, vblank, visible, line_start, vblank_start;
   logic       hsync_i, vsync_i;
   logic [8:0] line_number;
