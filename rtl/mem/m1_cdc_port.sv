@@ -55,6 +55,11 @@
 module m1_cdc_port #(
   parameter int AW  = 24,
   parameter int DW  = 16,
+  // READ WIDTH, SEPARATE FROM WRITE WIDTH, defaulting to DW so every existing
+  // instantiation is unchanged. m1_sdram returns 64 bits on a bursting port and
+  // the CPU data port now bursts four so the data cache can fill a line in one
+  // transaction; the write side stays 16 bits because p_din is 16 bits wide.
+  parameter int DWO = DW,
   parameter int BEW = 2
 ) (
   // ---------------------------------------------------- requester, slow domain
@@ -65,7 +70,7 @@ module m1_cdc_port #(
   input  logic [AW-1:0]  a_addr,
   input  logic [DW-1:0]  a_din,
   input  logic [BEW-1:0] a_be,
-  output logic [DW-1:0]  a_dout,
+  output logic [DWO-1:0] a_dout,
   output logic           a_ack,     // one-cycle pulse, data valid with it
   output logic           a_busy,
 
@@ -77,7 +82,7 @@ module m1_cdc_port #(
   output logic [AW-1:0]  b_addr,
   output logic [DW-1:0]  b_din,
   output logic [BEW-1:0] b_be,
-  input  logic [DW-1:0]  b_dout,
+  input  logic [DWO-1:0] b_dout,
   input  logic           b_ack
 );
 
@@ -88,7 +93,7 @@ module m1_cdc_port #(
   logic [DW-1:0]  x_din;
   logic [BEW-1:0] x_be;
   logic           x_we;
-  logic [DW-1:0]  x_dout;
+  logic [DWO-1:0] x_dout;
 
   logic req_tog;   // A -> B, one edge per request
   logic ack_tog;   // B -> A, one edge per completion

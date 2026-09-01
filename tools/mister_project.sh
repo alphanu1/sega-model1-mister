@@ -36,6 +36,7 @@ set_global_assignment -name QIP_FILE rtl/pll.qip
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_cdc_port.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_dcache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_cdc_pulse.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_fetch_bridge.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/bw_monitor.sv

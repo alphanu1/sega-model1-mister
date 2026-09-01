@@ -259,6 +259,12 @@ wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 wire [15:0] dbg_overruns;
+wire [31:0] dc_hits, dc_misses, dc_dropped;
+integer dbg_sdr_reqs = 0, dbg_c_acks = 0;
+always @(posedge clk) if (rst_n_sys) begin
+    if (core.cpu_sdr_req) dbg_sdr_reqs = dbg_sdr_reqs + 1;
+    if (core.cpu_sdr_ack) dbg_c_acks  = dbg_c_acks + 1;
+end
 
 // mem_rst_n is the memory subsystem's own reset and must not follow the game
 // reset: the loader holds ioctl_wait until SDRAM is ready, so a loader held in
@@ -267,6 +273,7 @@ wire [15:0] dbg_overruns;
 wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
 m1_integrated core (
+    .dbg_dc_hits(dc_hits), .dbg_dc_misses(dc_misses), .dbg_dc_dropped(dc_dropped),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
@@ -321,7 +328,7 @@ m1_integrated core (
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
-    .sdr_dout(p_dout[0][15:0]), .sdr_ack(p_ack[0]),
+    .sdr_dout(p_dout[0]), .sdr_ack(p_ack[0]),
 
     .if_req(ifp_req), .if_addr(), .if_sdram_addr(ifp_addr),
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
@@ -1430,6 +1437,9 @@ integer blat_i, blat_run = 0, blat_n = 0;
 longint blat_sum = 0;
 reg     blat_busy = 0;
 reg     m_req_d = 0, m_ack_d = 0;
+reg [23:1] blat_addr = 0;
+integer cache_fd = 0;
+initial if ($test$plusargs("cache_trace")) cache_fd = $fopen("build/cache_trace.txt", "w");
 initial for (blat_i = 0; blat_i < 128; blat_i = blat_i + 1) blat_hist[blat_i] = 0;
 integer  rgn_n [0:4];
 // WHERE THE ~4 CPU CYCLES PER ACCESS GO. The region split showed SDRAM costs
@@ -1480,6 +1490,7 @@ always @(posedge clk) begin
                        core.main.sel_nvram   ? 2 :
                        core.main.sel_charram ? 3 : 4;   // 4 = stayed on chip
             blat_rgn_wr = core.main.m_we;
+            blat_addr   = core.main.m_addr;
             if (blat_rgn_wr) rgn_wr[blat_rgn] = rgn_wr[blat_rgn] + 1;
         end else if (blat_busy) begin
             blat_run = blat_run + 1;
@@ -1494,6 +1505,13 @@ always @(posedge clk) begin
                 // M10K - and a stall attributed to "ROM tables" may be nothing
                 // of the kind. The split decides whether a cache is worth its
                 // ALM and what it should cache.
+                // THE ACCESS STREAM, for sizing a cache offline. SDRAM is
+                // 4.3x on-chip and 72% of traffic, so a cache is worth ALM -
+                // but how much depends on the hit rate, and that is a property
+                // of the program, not of the RTL. Dump address+write and sweep
+                // sizes in Python rather than guess a geometry and build it.
+                if (cache_fd != 0 && blat_rgn != 4)
+                    $fwrite(cache_fd, "%h %0d\n", blat_addr, blat_rgn_wr);
                 rgn_n[blat_rgn]   = rgn_n[blat_rgn] + 1;
                 rgn_sum[blat_rgn] = rgn_sum[blat_rgn] + blat_run;
                 rgn_hist[blat_rgn][(blat_run > 63) ? 63 : blat_run] =
@@ -1723,6 +1741,15 @@ initial begin
         $write("\n");
     end else
         $display("FRAME: NO display-list swaps at all - the game never finished a list");
+    // OUTSIDE the blat_n guard on purpose: a cache that never acknowledges
+    // makes blat_n zero, which would hide the very counter that says so.
+    $display("FRAME: dcache: %0d hits, %0d misses, %0d writes, state=%0d flush=%0d",
+             dc_hits, dc_misses, core.u_dcache.dbg_writes,
+             core.u_dcache.cst, core.u_dcache.flush);
+    if (dc_dropped != 0)
+        $display("FRAME: *** dcache DROPPED %0d requests - the CPU cannot survive that", dc_dropped);
+    $display("FRAME: bus: m1_main bst=%0d m_req=%0d m_ack=%0d | sdr_req pulses=%0d cache c_ack=%0d",
+             core.main.bst, core.main.m_req, core.main.m_ack, dbg_sdr_reqs, dbg_c_acks);
     if (blat_n > 0) begin
         // THE DISPLAY-LIST CAP REPORTS ITSELF. m1_mainram sizes both buffers
         // to 16,384 words because MAME's V60 never writes above word 0x3fff in
@@ -1741,6 +1768,7 @@ initial begin
                          rgn_n[blat_i], (100*rgn_n[blat_i])/blat_n, rgn_wr[blat_i],
                          rgn_sum[blat_i]/rgn_n[blat_i],
                          ((rgn_sum[blat_i]*100)/rgn_n[blat_i]) % 100);
+        if (cache_fd != 0) begin $fclose(cache_fd); $display("FRAME: wrote build/cache_trace.txt"); end
         $write("FRAME: on-chip latency histogram:");
         for (blat_i = 0; blat_i < 64; blat_i = blat_i + 1)
             if (rgn_hist[4][blat_i] * 100 > rgn_n[4])
