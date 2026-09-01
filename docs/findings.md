@@ -7296,7 +7296,7 @@ gives per-port rx counts and would have answered this in one command, on day one
 CLAUDE.md also says to measure BEFORE building. This nearly bought a Quartus build
 to "fix" a UART that was working.
 
-## THE BOARD RUNS AT 91%, AND SIMULATION WAS RIGHT ALL ALONG — 2026-09-01
+## THE BOARD RUNS AT 58% WITH 3D ON SCREEN — the 91% was a 3D-free screen — 2026-09-01
 
 **Instrument:** `rtl/io/m1_speed_report.sv` over the printf channel, 794 seconds
 captured from `/dev/ttyS1` (see the ttyS1 finding above — this is the first time
@@ -7326,12 +7326,32 @@ about four minutes to reach its steady state, and any capture shorter than that
 measures the boot sequence. A 60-second sample of this channel is not a speed
 measurement.
 
-**What this changes:** the ~2x sim-to-board discrepancy that justified a great deal
-of suspicion does not exist. Simulation is an accurate absolute predictor of this
-core's speed, not merely a relative one, so `tb_m1_frame`'s number can be trusted
-without a hardware round trip. The remaining gap to 100% is 9%, not 200%, which
-makes further memory optimisation a small prize - the freed M10K is better spent on
-M4 than on chasing it.
+**WITHDRAWN WITHIN THE HOUR, BY THE SAME CAPTURE.** The reporter's fourth field is
+`r3_dbg_objects`, and splitting the identical 794 lines on it:
+
+```
+with 3D objects (P>0): 195 lines, mean 16.8 swaps/s = 58% of hardware
+with NO 3D      (P=0): 599 lines, mean 26.4 swaps/s = 91%
+```
+
+The flat ten minutes of "91%" are **a screen with no 3D being drawn**. The board
+does **58%** when it is actually rendering, which is what Ben sees and what he said:
+"hardware speed is not at 90%, maybe the video renderer is behind". He was right.
+
+So this is the SAME error twice in one hour on ONE capture - 48% read off five
+startup lines, then 91% read off a stretch with the 3D layer idle. Both times a
+subset of the data was reported as the answer without checking what the rest of it
+was doing. The columns needed to catch it were in every line.
+
+**The measurement that means anything is speed WITH 3D ON SCREEN**, and it is 58%.
+Simulation's 91% is measured over a window that includes both regimes and is
+therefore not comparable to either.
+
+**And P stays 0000 for the last NINE MINUTES.** Attract loops far faster than that,
+so the 3D layer plausibly stopped and never recovered, with the CPU still alive
+underneath - which is why the swap counter kept ticking. Ben reports the black-screen
+crash happens at the same point every time, so this is a lead for it and not an idle
+screen.
 
 **Also measured:** 13.2 minutes of continuous running with no crash, `F` and `S`
 steady throughout. The black-screen failure is therefore intermittent or
