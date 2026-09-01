@@ -27,10 +27,19 @@
 //     6.00                  33%   (what the board looks like)
 //
 // One line a second over rtl/io/m1_uart_tx.sv, which drives UART_TXD into the
-// HPS's own ttyS0. Read it with the console's getty out of the way, since
+// HPS's own ttyS1. Read it with the console's getty out of the way, since
 // /proc/cmdline carries console=ttyS0,115200:
 //
-//     ssh root@<mister> "kill \$(pgrep -f 'agetty.*console'); cat /dev/ttyS0"
+//     ssh root@<mister> "stty -F /dev/ttyS1 115200 raw -echo; cat /dev/ttyS1"
+//
+// IT IS ttyS1, NOT ttyS0, AND THERE IS NO GETTY TO KILL. Measured on the board
+// 2026-09-01: /proc/tty/driver/serial shows port 0 (ttyS0, mmio FFC02000) is the
+// console with rx:0, and port 1 (ttyS1, mmio FFC03000) carrying rx:460058 - our
+// bytes. sys_top wires emu's UART_TXD into cyclonev_hps_interface_peripheral_uart,
+// which is the HPS's SECOND uart; ttyS0 is the physical console header and never
+// sees a byte of this. The old instruction also piped through `pgrep`, which does
+// not exist on the MiSTer's BusyBox, so the kill was a silent no-op - and killing
+// it was never needed, because nothing holds ttyS1.
 //
 // HEX, NOT DECIMAL. A binary-to-decimal conversion is a divider and a state
 // machine for something a human reads once; a nibble to ASCII is four gates.

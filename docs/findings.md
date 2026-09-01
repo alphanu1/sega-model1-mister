@@ -7244,3 +7244,54 @@ every access, whatever the target - about 7% of CPU cycles.
 being measured is the instrument confessing, and it outranks the plausibility of the
 means. Check the tails before the averages. And when two instruments disagree, the one
 that measures state directly beats the one that infers it from a handshake.
+
+## THE PRINTF CHANNEL IS ttyS1, NOT ttyS0 — and it worked all along — 2026-09-01
+
+**Instrument:** `/proc/tty/driver/serial` on the board, while the core was running.
+
+The printf channel out of the fabric — `rtl/io/m1_uart_tx.sv` driving `UART_TXD`,
+with `rtl/io/m1_speed_report.sv` printing one line a second — had **never produced a
+byte** in any attempt. The documented procedure, in `CLAUDE.md`, in the module's own
+header and in the session memory, was:
+
+```sh
+ssh root@<mister> "kill $(pgrep -f 'agetty.*console'); cat /dev/ttyS0"
+```
+
+Every part of that is wrong, and it fails **silently**, which is what made it cost so
+much. A capture returns zero bytes and reads exactly like RTL that does not transmit.
+
+```
+0: uart:16550A mmio:0xFFC02000 irq:48 tx:7613 rx:0        <- ttyS0, the console
+1: uart:16550A mmio:0xFFC03000 irq:49 tx:0 rx:460058      <- ttyS1, OUR BYTES
+```
+
+* **ttyS0 is the physical USB UART header, and nothing is plugged into it** (Ben,
+  confirming the `rx:0`). It was never a candidate.
+* **It is ttyS1.** `sys_top.v:1869` wires `emu`'s `UART_TXD` into
+  `cyclonev_hps_interface_peripheral_uart`, which is the HPS's *second* uart.
+  `/proc/cmdline` carries `console=ttyS0,115200`, and that console is a different
+  device on different mmio - it had received **zero** bytes in 3h51m of uptime while
+  ttyS1 had taken 460,058.
+* **`pgrep` does not exist on the MiSTer's BusyBox.** `kill $(pgrep ...)` expands to
+  `kill` with no argument: a no-op that prints nothing and returns success.
+* **Nothing holds ttyS1**, so there was never a getty to kill. `fuser /dev/ttyS1`
+  returns empty. The whole dance was unnecessary as well as ineffective.
+* **The getty respawns in under two seconds anyway** (killed 698/699, saw 6715/6716),
+  so even against ttyS0 a one-shot kill could not have cleared the port.
+
+The working procedure is one command and needs no privileges beyond root:
+
+```sh
+ssh root@<mister> "stty -F /dev/ttyS1 115200 raw -echo; cat /dev/ttyS1"
+```
+
+**What generalises:** the same trap as the FP trap and the latency counter earlier
+today, in a third costume. An instrument that cannot see the thing it is pointed at
+returns a clean, confident, wrong answer - "no bytes" is indistinguishable from "the
+hardware does not transmit". Before concluding that a channel is dead, check that
+the *receiver* is the one the transmitter is wired to: `/proc/tty/driver/serial`
+gives per-port rx counts and would have answered this in one command, on day one.
+
+CLAUDE.md also says to measure BEFORE building. This nearly bought a Quartus build
+to "fix" a UART that was working.
