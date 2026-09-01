@@ -7295,3 +7295,44 @@ gives per-port rx counts and would have answered this in one command, on day one
 
 CLAUDE.md also says to measure BEFORE building. This nearly bought a Quartus build
 to "fix" a UART that was working.
+
+## THE BOARD RUNS AT 91%, AND SIMULATION WAS RIGHT ALL ALONG — 2026-09-01
+
+**Instrument:** `rtl/io/m1_speed_report.sv` over the printf channel, 794 seconds
+captured from `/dev/ttyS1` (see the ttyS1 finding above — this is the first time
+that channel has ever been read).
+
+The project has carried, since `m1_speed_report.sv` was written, the belief that
+**simulation says 65% and the board looks like a third**, and that module's own
+header says the two "cannot describe the same machine" and call for completely
+different work. That premise is now measured and it is **false**.
+
+```
+minute  0: 14.3 swaps/s = 49%     <- boot and early attract
+minute  1: 17.8          = 61%
+minute  2: 18.4          = 63%
+minute  3: 23.6          = 81%
+minute  4: 26.4          = 91%
+minute  5-13: 26.4-26.5  = 91%    <- flat for ten minutes
+```
+
+`F` held 58 frames/s for all 794 lines. The reference swaps one display list every
+two video frames (993 flips of 996, `tools/mame_listctl_rate.lua`), so 29 swaps/s is
+100%; 26.4 is **91%**, which is what `tb_m1_frame` predicts to the point.
+
+**THE FIRST FIVE LINES SAY 48%.** They were read here and reported as the answer
+before the capture had run, and the ramp above is why that was wrong: the game takes
+about four minutes to reach its steady state, and any capture shorter than that
+measures the boot sequence. A 60-second sample of this channel is not a speed
+measurement.
+
+**What this changes:** the ~2x sim-to-board discrepancy that justified a great deal
+of suspicion does not exist. Simulation is an accurate absolute predictor of this
+core's speed, not merely a relative one, so `tb_m1_frame`'s number can be trusted
+without a hardware round trip. The remaining gap to 100% is 9%, not 200%, which
+makes further memory optimisation a small prize - the freed M10K is better spent on
+M4 than on chasing it.
+
+**Also measured:** 13.2 minutes of continuous running with no crash, `F` and `S`
+steady throughout. The black-screen failure is therefore intermittent or
+content-dependent rather than a fixed five-minute timer, which are different hunts.
