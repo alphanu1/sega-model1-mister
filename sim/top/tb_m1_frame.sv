@@ -1406,18 +1406,39 @@ end
 // modelling at all.
 integer swap_gap [0:63];
 integer swap_i, swap_n = 0, swap_since = 0;
+integer swap_n_3d = 0, swap_n_2d = 0, swap_3d_frames = 0;
+longint swap_sum_3d = 0, swap_sum_2d = 0;
+integer r3_objects_seen = 0;
+// Latches "the 3D layer produced something during this display-list interval".
+always @(posedge clk) if (rst_n_sys && core.r3_dbg_objects != 0) r3_objects_seen = 1;
 longint swap_sum = 0;
 reg     sel_d = 0;
 initial for (swap_i = 0; swap_i < 64; swap_i = swap_i + 1) swap_gap[swap_i] = 0;
 always @(posedge clk) begin
     if (rst_n_sys && core.video.vblank_start) begin
         swap_since = swap_since + 1;
+        // WAS THE 3D LAYER ACTUALLY DRAWING? The board's printf channel showed
+        // 26.4 swaps/s - 91% - held flat for ten minutes, and splitting the SAME
+        // capture on the objects counter showed those minutes had NO 3D on
+        // screen at all; with 3D the board does 16.8 swaps/s, 58%. An overall
+        // mean mixes the two regimes and is comparable to neither, which is how
+        // 91% got reported here as the core's speed. Ben, from the board: "its
+        // not just 3d behind, the 2d glyphs are also slow."
+        if (r3_objects_seen != 0) swap_3d_frames = swap_3d_frames + 1;
         if (core.listctl_sel != sel_d) begin
             sel_d = core.listctl_sel;
             swap_gap[(swap_since > 63) ? 63 : swap_since] =
                 swap_gap[(swap_since > 63) ? 63 : swap_since] + 1;
             swap_sum = swap_sum + swap_since;
             swap_n   = swap_n + 1;
+            if (r3_objects_seen != 0) begin
+                swap_sum_3d = swap_sum_3d + swap_since;
+                swap_n_3d   = swap_n_3d + 1;
+            end else begin
+                swap_sum_2d = swap_sum_2d + swap_since;
+                swap_n_2d   = swap_n_2d + 1;
+            end
+            r3_objects_seen = 0;
             swap_since = 0;
         end
     end
@@ -1439,6 +1460,20 @@ reg     blat_busy = 0;
 reg     m_req_d = 0, m_ack_d = 0;
 reg [23:1] blat_addr = 0;
 integer cache_fd = 0;
+// THE TGP'S SDRAM STREAM, for sizing its cache the same way the V60's was.
+// The coprocessor has a memory request outstanding 75% of every cycle and the
+// V60 waits on its results 99.2% of the time it reads the FIFO, so the 3D path
+// is gated on this port. It is READ-ONLY (p_we bit 3 is tied low) and holds
+// copro_data and the math tables, loaded before the CPU runs - so a cache for
+// it needs no write path, no coherency and no invalidation.
+integer tgp_fd = 0;
+reg     tgp_req_d = 0;
+initial if ($test$plusargs("cache_trace")) tgp_fd = $fopen("build/tgp_trace.txt", "w");
+always @(posedge clk) if (rst_n_sys) begin
+    tgp_req_d <= tgp_mem_req;
+    if (tgp_mem_req && !tgp_req_d && tgp_fd != 0)
+        $fwrite(tgp_fd, "%h 0\n", tgp_mem_addr);
+end
 initial if ($test$plusargs("cache_trace")) cache_fd = $fopen("build/cache_trace.txt", "w");
 initial for (blat_i = 0; blat_i < 128; blat_i = blat_i + 1) blat_hist[blat_i] = 0;
 integer  rgn_n [0:4];
@@ -1734,6 +1769,14 @@ initial begin
         $display("FRAME: %0d display-list swaps, mean %0d.%02d frames apart (the board is 2.00 = 100%% speed, so this is %0d%%)",
                  swap_n, swap_sum/swap_n, ((swap_sum*100)/swap_n) % 100,
                  (200*swap_n)/(swap_sum ? swap_sum : 1));
+        if (swap_n_3d > 0)
+            $display("FRAME:   with 3D drawing: %0d swaps, mean %0d.%02d frames apart = %0d%% of hardware",
+                     swap_n_3d, swap_sum_3d/swap_n_3d, ((swap_sum_3d*100)/swap_n_3d)%100,
+                     (200*swap_n_3d)/(swap_sum_3d ? swap_sum_3d : 1));
+        if (swap_n_2d > 0)
+            $display("FRAME:   with NO 3D     : %0d swaps, mean %0d.%02d frames apart = %0d%% of hardware",
+                     swap_n_2d, swap_sum_2d/swap_n_2d, ((swap_sum_2d*100)/swap_n_2d)%100,
+                     (200*swap_n_2d)/(swap_sum_2d ? swap_sum_2d : 1));
         $write("FRAME: frames between swaps:");
         for (swap_i = 1; swap_i < 64; swap_i = swap_i + 1)
             if (swap_gap[swap_i] * 50 > swap_n)
@@ -1769,6 +1812,7 @@ initial begin
                          rgn_sum[blat_i]/rgn_n[blat_i],
                          ((rgn_sum[blat_i]*100)/rgn_n[blat_i]) % 100);
         if (cache_fd != 0) begin $fclose(cache_fd); $display("FRAME: wrote build/cache_trace.txt"); end
+        if (tgp_fd != 0) begin $fclose(tgp_fd); $display("FRAME: wrote build/tgp_trace.txt"); end
         $write("FRAME: on-chip latency histogram:");
         for (blat_i = 0; blat_i < 64; blat_i = blat_i + 1)
             if (rgn_hist[4][blat_i] * 100 > rgn_n[4])

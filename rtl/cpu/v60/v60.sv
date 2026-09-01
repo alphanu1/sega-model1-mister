@@ -288,6 +288,31 @@ reg [15:0] dec_res;            // result awaiting memory write-back
 `ifndef S32_V60_NO_FP
 reg [31:0] fp_a, fp_b;         // operand float bit patterns (a=op1, b=op2)
 reg [31:0] fp_res;             // packed binary32 result awaiting writeback
+
+// FP ARITHMETIC IS PIPELINED IN TWO STAGES, AND THIS IS THE BOUNDARY.
+//
+// MEASURED, Quartus 17.0 on the real build: the V60's worst setup path is
+// s32_v60|Equal194~1 -> s32_v60|fp_res[23], 35.9 ns of combinational logic,
+// giving Fmax 27.4 MHz against the 23.529 we clock at. The whole of an FP add
+// -- unpack, exponent compare, align, add, round, normalise, exponent adjust --
+// was one cycle, and it is the critical path of the entire CPU.
+//
+// The FP GROUP CANNOT SIMPLY GO: docs/findings.md 2026-09-01 shows the game
+// converting float angles into sine-table indices, so `cvt.sw`/`cmpf.s` are
+// live code. Removing it measured 45.98 MHz and is not available.
+//
+// So it is cut instead, at fp_pack -- the normalise/round/adjust tail that
+// fp_add, fp_mul, fp_scale and cvt_w_s all end in. On the timing path that is
+// everything from `sticky` at 22.6 ns to fp_res at 44.3, about 21.7 ns of the
+// 35.9, so one register here splits the path roughly in half. It costs ONE
+// extra cycle on FP arithmetic only, which is a small share of the instruction
+// mix, and buys clock on every instruction.
+//
+// The bundle is {direct, val[31:0], sign, E[15:0], sg[26:0]}:
+//   direct  the operation short-circuited (NaN, inf, zero, exact cancellation)
+//           and val is already the answer -- fp_pack must NOT run on it
+//   sign/E/sg  the significand and exponent fp_pack would have been handed
+reg [76:0] fp_pk;
 reg [49:0] fdiv_rem;           // FDIV restoring-division partial remainder
 reg [26:0] fdiv_qacc;          // FDIV quotient accumulator (27 bits, MSB=int bit)
 reg [23:0] fdiv_den;           // FDIV divisor mantissa (normalized, bit23=1)
@@ -332,7 +357,7 @@ typedef enum logic [6:0] {
     S_BS_SCH1, S_BS_SCHRD, S_BS_SCHB, S_BS_SCHW,
     S_BS_MOV1, S_BS_MOV2, S_BS_MOVS, S_BS_MOVD, S_BS_MOVB, S_BS_MOVF,
 `ifndef S32_V60_NO_FP
-    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_DIV, S_FP_WB,
+    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_PACK, S_FP_DIV, S_FP_WB,
 `endif
     S_EXC_PUSH1, S_EXC_EXTRA, S_EXC_CODE, S_EXC_PUSH2, S_EXC_VEC, S_EXC_JMP,
     S_TASK_LD_NEXT, S_TASK_LD_ACK, S_TASK_ST_NEXT, S_TASK_ST_ACK,
@@ -2410,6 +2435,14 @@ else if (ce) begin
         else st <= S_FP_EXEC;                            // MOVFS/CVTWS/CVTSW: write-only
     end
     S_FP_EXEC: fp_exec();
+    // Second half of an FP add/multiply: normalise, round, adjust, set flags.
+    S_FP_PACK: begin
+        logic [31:0] rp;
+        rp = fp_pk_result(fp_pk);
+        fp_arith_flags(rp);
+        fp_res <= rp;
+        fp_finish_write();
+    end
     // FDIV restoring mantissa division: one quotient bit per enabled clock.
     // 27 bits are produced MSB-first (bit 26 = the integer quotient bit).
     S_FP_DIV: begin
@@ -4120,22 +4153,22 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
 endfunction
 
 // x + y  (binary32).  SUBFS passes y with its sign flipped.
-function automatic [31:0] fp_add(input [31:0] x, input [31:0] y);
+function automatic [76:0] fp_add(input [31:0] x, input [31:0] y);
     logic sx, sy, sr; logic signed [15:0] ex, ey, er, d;
     logic [23:0] mx, my;
     logic [26:0] bx, by, sm, res27; logic [27:0] sum;
-    logic sticky; logic [4:0] lz; logic [31:0] out;
-    if (fp_isnan(x) || fp_isnan(y)) out = 32'h7fc00000;
+    logic sticky; logic [4:0] lz; logic [76:0] out;
+    if (fp_isnan(x) || fp_isnan(y)) out = {1'b1, 32'h7fc00000, 1'b0, 16'd0, 27'd0};
     else if (fp_isinf(x) && fp_isinf(y))
-        out = (x[31] == y[31]) ? x : 32'h7fc00000;     // inf-inf = NaN
-    else if (fp_isinf(x)) out = x;
-    else if (fp_isinf(y)) out = y;
+        out = {1'b1, (x[31] == y[31]) ? x : 32'h7fc00000, 1'b0, 16'd0, 27'd0};     // inf-inf = NaN
+    else if (fp_isinf(x)) out = {1'b1, x, 1'b0, 16'd0, 27'd0};
+    else if (fp_isinf(y)) out = {1'b1, y, 1'b0, 16'd0, 27'd0};
     else begin
         {sx, ex, mx} = fp_unpack(x);
         {sy, ey, my} = fp_unpack(y);
-        if (mx == 0 && my == 0) out = {sx & sy, 31'd0};        // (+/-0)+(+/-0)
-        else if (mx == 0) out = y;
-        else if (my == 0) out = x;
+        if (mx == 0 && my == 0) out = {1'b1, {sx & sy, 31'd0}, 1'b0, 16'd0, 27'd0};        // (+/-0)+(+/-0)
+        else if (mx == 0) out = {1'b1, y, 1'b0, 16'd0, 27'd0};
+        else if (my == 0) out = {1'b1, x, 1'b0, 16'd0, 27'd0};
         else begin
             // order so (ex,mx) is the larger magnitude
             if ((ey > ex) || (ey == ex && my > mx)) begin
@@ -4155,18 +4188,18 @@ function automatic [31:0] fp_add(input [31:0] x, input [31:0] y);
                 sr  = sx;
                 if (sum[27]) begin er = ex + 16'sd1; res27 = sum[27:1]; res27[0] = res27[0] | sum[0]; end
                 else         begin er = ex;          res27 = sum[26:0]; end
-                out = fp_pack(sr, er, res27);
+                out = {1'b0, 32'd0, sr, 16'(er), res27};
             end
             else begin
                 res27 = bx - by;                        // bx >= by (x is larger)
                 sr = sx;
-                if (res27 == 27'd0) out = 32'd0;        // exact cancellation -> +0
+                if (res27 == 27'd0) out = {1'b1, 32'd0, 1'b0, 16'd0, 27'd0};        // exact cancellation -> +0
                 else begin
                     // shift the leading 1 back to bit 26; fp_clz28({0,res27})
                     // returns 27-p for a leading 1 at bit p, so shift = that - 1.
                     lz = fp_clz28({1'b0, res27}) - 5'd1;
                     er = ex - $signed({11'd0, lz});
-                    out = fp_pack(sr, er, res27 << lz);
+                    out = {1'b0, 32'd0, sr, 16'(er), res27 << lz};
                 end
             end
         end
@@ -4175,16 +4208,16 @@ function automatic [31:0] fp_add(input [31:0] x, input [31:0] y);
 endfunction
 
 // x * y  (binary32)
-function automatic [31:0] fp_mul(input [31:0] x, input [31:0] y);
+function automatic [76:0] fp_mul(input [31:0] x, input [31:0] y);
     logic sx, sy, sr; logic signed [15:0] ex, ey, er;
-    logic [23:0] mx, my; logic [47:0] p; logic [26:0] sg; logic [31:0] out;
+    logic [23:0] mx, my; logic [47:0] p; logic [26:0] sg; logic [76:0] out;
     sr = x[31] ^ y[31];
-    if (fp_isnan(x) || fp_isnan(y)) out = 32'h7fc00000;
+    if (fp_isnan(x) || fp_isnan(y)) out = {1'b1, 32'h7fc00000, 1'b0, 16'd0, 27'd0};
     else if (fp_isinf(x) || fp_isinf(y)) begin
-        if (fp_iszero(x) || fp_iszero(y)) out = 32'h7fc00000;   // inf*0 = NaN
-        else out = {sr, 8'hff, 23'd0};
+        if (fp_iszero(x) || fp_iszero(y)) out = {1'b1, 32'h7fc00000, 1'b0, 16'd0, 27'd0};   // inf*0 = NaN
+        else out = {1'b1, {sr, 8'hff, 23'd0}, 1'b0, 16'd0, 27'd0};
     end
-    else if (fp_iszero(x) || fp_iszero(y)) out = {sr, 31'd0};
+    else if (fp_iszero(x) || fp_iszero(y)) out = {1'b1, {sr, 31'd0}, 1'b0, 16'd0, 27'd0};
     else begin
         {sx, ex, mx} = fp_unpack(x);
         {sy, ey, my} = fp_unpack(y);
@@ -4197,7 +4230,7 @@ function automatic [31:0] fp_mul(input [31:0] x, input [31:0] y);
             er = ex + ey;
             sg = {p[46:23], p[22], p[21], (|p[20:0])};
         end
-        out = fp_pack(sr, er, sg);
+        out = {1'b0, 32'd0, sr, 16'(er), sg};
     end
     fp_mul = out;
 endfunction
@@ -4379,6 +4412,12 @@ function automatic [31:0] fdiv_finish(input [26:0] q, input [49:0] rem);
     fdiv_finish = fp_pack(fdiv_sign, e, {mant, g, r, s});
 endfunction
 
+// Stage two. `direct` results bypass fp_pack entirely - running it on a NaN or
+// an infinity would renormalise a value that is already final.
+function automatic [31:0] fp_pk_result(input [76:0] b);
+    fp_pk_result = b[76] ? b[75:44] : fp_pack(b[43], $signed(b[42:27]), b[26:0]);
+endfunction
+
 task automatic fp_arith_flags(input [31:0] r);
     f_ov <= 1'b0; f_cy <= 1'b0; f_s <= r[31]; f_z <= (r == 32'd0);
 endtask
@@ -4440,9 +4479,9 @@ task automatic fp_exec;
             r = fp_scale(fp_b, $signed(fp_a[15:0]));
             fp_arith_flags(r); fp_res <= r; fp_finish_write();
         end
-        5'h18: begin r = fp_add(fp_b, fp_a);                  fp_arith_flags(r); fp_res <= r; fp_finish_write(); end // ADDFS
-        5'h19: begin r = fp_add(fp_b, fp_a ^ 32'h8000_0000);  fp_arith_flags(r); fp_res <= r; fp_finish_write(); end // SUBFS
-        5'h1a: begin r = fp_mul(fp_b, fp_a);                  fp_arith_flags(r); fp_res <= r; fp_finish_write(); end // MULFS
+        5'h18: begin fp_pk <= fp_add(fp_b, fp_a);                 st <= S_FP_PACK; end // ADDFS
+        5'h19: begin fp_pk <= fp_add(fp_b, fp_a ^ 32'h8000_0000); st <= S_FP_PACK; end // SUBFS
+        5'h1a: begin fp_pk <= fp_mul(fp_b, fp_a);                 st <= S_FP_PACK; end // MULFS
         5'h1b: fp_div_start(fp_b, fp_a);             // DIVFS (iterative)
         default: st <= S_NEXT;
         endcase
