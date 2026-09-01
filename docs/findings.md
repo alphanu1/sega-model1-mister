@@ -7187,3 +7187,60 @@ exercised none of it.
 And when a single trap does fire at an odd-looking address, **disassemble before
 concluding the PC is wrong.** One debugger command distinguished a wild branch from
 a trig routine, and the two call for opposite work.
+
+## SDRAM IS 4.3x SLOWER THAN ON-CHIP FOR THE V60 — and the first instrument said 1.2x — 2026-09-01
+
+**Instrument:** `tb_m1_frame`'s req->ack latency counter, split by decode region
+(`rom` / `wram` / `nvram` / `charram` / on-chip), 200 M cycles.
+
+The question was where the V60's 32-38% data stall goes, and whether a data cache
+earns its ALM on a device with 519 free.
+
+**THE FIRST ANSWER WAS AN ARTEFACT OF THE COUNTER.** It started a measurement on
+"`m_req` high and not already timing one", and finished it on "`m_ack` high".
+`m1_main` **holds** `m_ack` until `m_req` drops — it must, because the bus adapter
+runs on a clk/3 enable and would miss a pulse (see `B_ACK`'s note). So on the cycle
+after every real completion the counter restarted, saw the still-held ack, and
+booked a phantom 2-cycle access.
+
+That put `2:58%` in **every** region's histogram — including SDRAM, where a 2-cycle
+completion is physically impossible, and that impossibility was visible in the output
+and not acted on for one round:
+
+```
+wram latency histogram: 2:58% 31:10% 32:15% 35:6% 38:4% 39:2%
+```
+
+It dragged every mean down by roughly the same factor, which is the dangerous part:
+the regions stayed in the right ORDER, so the table looked coherent. It reported
+on-chip 12.10 clk and wram 15.89 — a gap of 1.2 CPU cycles — and the conclusion drawn
+from it was **"the cost is the handshake, not the memory; a cache is not worth its
+ALM."** That was stated and withdrawn.
+
+Edge to edge (`m_req` rising to `m_ack` rising), same run length:
+
+| region | accesses | share | mean clk | CPU cycles |
+|---|---:|---:|---:|---:|
+| on-chip | 668,222 | 28% | **7.80** | 2.4 |
+| wram | 1,038,981 | 43% | **33.80** | 10.3 |
+| rom | 410,659 | 17% | 32.34 | 9.8 |
+| nvram | 77,131 | 3% | 34.60 | 10.5 |
+| charram | 168,288 | 7% | 29.51 | 9.0 |
+
+On-chip is a tight `7:19% 8:80%`; SDRAM is `31:24% 32:36% 35:15% 38:10%`. **4.3x**, and
+SDRAM is 72% of all data traffic, costing ~24.8% of every CPU cycle.
+
+The FSM occupancy counters were never contaminated - they count states directly - and
+they agreed with the corrected view the whole time: `LOCAL` is 2,273,421 clk over
+1.6 M on-chip accesses (**1.4 clk each**) while `SDRAM` is 48,520,967 over 4.07 M
+(**11.9 clk each**). Two instruments disagreed and the wrong one was believed, because
+it was the one that had been asked the question.
+
+**Real, and separately worth having:** ~1.42 clk of dispatch delay (`B_IDLE` with a
+request pending) and ~1.42 clk of ack tail (`B_ACK` with the request still held) on
+every access, whatever the target - about 7% of CPU cycles.
+
+**What generalises:** a histogram bucket that is *physically impossible* for the thing
+being measured is the instrument confessing, and it outranks the plausibility of the
+means. Check the tails before the averages. And when two instruments disagree, the one
+that measures state directly beats the one that infers it from a handshake.
