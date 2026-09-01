@@ -7127,3 +7127,63 @@ instructions will not find it. The end-to-end metric is the display-list swap
 rate - one swap per completed game-logic frame - and the reference's is measured
 at exactly 2 video frames (`tools/mame_listctl_rate.lua`, 993 of 996). Ours
 against that number is the game-speed ratio with no modelling in it at all.
+
+## THE V60'S FP GROUP CANNOT BE REMOVED — the game uses it — 2026-09-01
+
+**Instrument:** `make m1_frame FRAME_CYCLES=900000000 FRAME_DEFS="+define+S32_V60_NO_FP"`,
+then MAME's own disassembler on the trapping address
+(`dasm out.txt,0xfed4f0,0x60,0,maincpu` under `-debugscript`).
+
+`CLAUDE.md` carried this as an **unspent lever**: the V60 without its FP group is
+**-2,984 ALM** on the full core and takes Fmax from **24.92 to 45.98 MHz** — and we
+clock at 23.529, hard against that ceiling, so it was worth up to a doubling. The
+caveat recorded with it was correct and load-bearing: `dbg_fp_trap` had never fired,
+but only through boot and attract, and it is inert by construction in a build that
+has FP, so silence was not evidence.
+
+Run long enough, it fires:
+
+```
+V60: reserved FP opcode 5f at 00fed52b
+FRAME: cycles=421742288 halted=1 fp_trap=1
+```
+
+Once, at 421.7 M cycles — about 18 emulated seconds, frame 325, well past attract.
+
+**A single trap at an odd address late in a run looks exactly like a wild branch**,
+and that was the first reading here: the PC had wandered into ROM and was executing
+data as code. It had not. MAME's disassembler puts a real instruction boundary
+there, immediately after an `rsr`, so `FED52B` is the **first instruction of a
+routine**:
+
+```
+FED4F0: cmpf.s  #BCF9C3DC, R1
+FED4F8: bgt     FED502
+FED4FB: mov.w   #BCF9C3DC, R1
+...
+FED52A: rsr
+FED52B: cvt.sw  R5, R5      <- the trap
+FED52F: add.w   #400, R5
+FED536: shl.w   #FC, R5
+FED53A: and.w   #7F, R5
+FED541: cvt.sw  R6, R6      <- and again for a second argument
+```
+
+Float-to-word, bias by 0x400, shift, mask to 7 bits: an angle in float converted to
+an index into a **128-entry table**, twice, for two arguments. A sine/cosine pair.
+There is a `cmpf.s` against a float immediate a few instructions earlier in the same
+region. This is ordinary V60 floating-point code and the game runs it.
+
+**So the lever is spent, and it was never real.** The FP group stays. Every remaining
+speed gain has to come from memory stalls, and there is no ALM headroom to buy them
+with — 41,391 of 41,910 ALM, 553 of 553 M10K.
+
+**What generalises:** "the trap has never fired" is a statement about the window, not
+about the program, whenever the trap is inert in the build being run. The way to
+settle it is a build in which it is *not* inert, run past the point where the
+behaviour would appear — here, past attract into the game proper. Boot and attract
+exercised none of it.
+
+And when a single trap does fire at an odd-looking address, **disassemble before
+concluding the PC is wrong.** One debugger command distinguished a wild branch from
+a trig routine, and the two call for opposite work.

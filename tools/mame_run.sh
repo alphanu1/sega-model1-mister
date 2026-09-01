@@ -47,6 +47,7 @@ mk() {  # mk <set> <filename> <source path>
 mk model1io epr-14869.25 "$roms/Model2/daytona93/epr-14869.25"
 mk m1comm   epr-15112.17 "$roms/vr/vformula/epr-15624.17"
 
+if [ "${1:-}" = "--overlay-only" ]; then exit 0; fi
 script=""
 if [ $# -gt 0 ] && [ "${1##*.}" = "lua" ]; then script="$1"; shift; fi
 

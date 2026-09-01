@@ -23,6 +23,7 @@
 # against that reports phantom extras and reads as a CPU bug — it did exactly that
 # here, and the false finding survived until the trace file was read by eye.
 set -euo pipefail
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # captured before any cd
 
 # Temporaries in THIS project's build/, never /tmp: /tmp here is a quota'd tmpfs
 # that reports free space and then refuses writes with EDQUOT, which stops a
@@ -71,7 +72,14 @@ cd "$out"
 # reads 0xffff too — the same as us. The V60 was correct all along.
 rm -rf "$out/nvram"
 printf 'trace %s/mame.tr,maincpu,noloop\ngo\n' "$out" > "$out/dbg.txt"
-mame "$game" -rompath "$rompath" -skip_gameinfo -autoboot_delay 0 \
+# THE DEVICE ROM OVERLAY IS NOT OPTIONAL. MAME 0.289 will not start `vr` here
+# at all - the I/O board's and the comm board's own firmware are separate rom
+# sets and neither is in vr.zip, and it is a fatal error rather than the warning
+# screen -skip_gameinfo leaves behind. tools/mame_run.sh builds the overlay in
+# build/roms; this reuses it.
+bash "$repo/tools/mame_run.sh" --overlay-only >/dev/null 2>&1 || true
+overlay="$repo/build/roms"
+mame "$game" -rompath "$rompath;$overlay" -skip_gameinfo -autoboot_delay 0 \
      -video none -sound none -nothrottle -debug -debugscript "$out/dbg.txt" \
      -seconds_to_run "$seconds" >/dev/null 2>&1 || true
 [ -s "$out/mame.tr" ] || { echo "MAME produced no trace"; exit 1; }
