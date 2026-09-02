@@ -4015,9 +4015,23 @@ function automatic [31:0] rot_res(input [31:0] v, input [7:0] cnt, input [1:0] d
         2'd1: begin w = 6'd16; sh = {2'b0, mag[3:0]}; mask = 32'h0000_ffff; end
         default: begin w = 6'd32; sh = {1'b0, mag[4:0]}; mask = 32'hffff_ffff; end
     endcase
+    // ONE ROTATE, NOT TWO. A rotate RIGHT by sh is a rotate LEFT by w-sh, so
+    // both directions are the same expression with a different amount. Written
+    // as two branches it inferred FOUR 32-bit barrel shifters - the genuinely
+    // variable kind, unlike the `1 << n` decoders and the 0-or-1 amounts
+    // elsewhere in this file - because Quartus will not share logic across
+    // branches it cannot prove exclusive. Now it infers two.
+    //
+    // sh is nonzero here (the first branch takes sh == 0) and is masked to
+    // log2(w) bits, so sh and w-sh both lie in 1..w-1 and neither shift can
+    // reach w. Checked for all three widths: for c[7], L = w-sh turns
+    // (x >> sh)|(x << (w-sh)) into (x << (w-sh))|(x >> sh), the same two terms.
     if (sh == 0)     rot_res = x & mask;
-    else if (!c[7])  rot_res = ((x << sh) | (x >> (w - sh))) & mask;
-    else             rot_res = ((x >> sh) | (x << (w - sh))) & mask;
+    else begin
+        logic [5:0] l;
+        l = c[7] ? (w - sh) : sh;
+        rot_res = ((x << l) | (x >> (w - l))) & mask;
+    end
 endfunction
 // ---------------------------------------------------------------------------
 // multiply/divide iterative engine
