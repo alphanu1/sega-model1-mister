@@ -14,6 +14,18 @@ attributing each black screen to whichever piece had been touched most recently.
 Five different "found it" moments all produced the same black screen, because the
 experiment could not distinguish them.
 
+## ALWAYS `rm -rf build/mister` BEFORE A BUILD
+
+`tools/mister_project.sh` does not fully refresh the staging directory, so files
+from a previous build survive into the next one. Measured 2026-09-02: after
+switching to this branch, `build/mister/Model1.sv` still carried `dbg_dc_dropped`
+from the data-cache work and the build failed with 102 errors naming a port that
+does not exist on this branch.
+
+Worse than the failure is the case where it does NOT fail: a stale file that
+still elaborates produces a build from a MIXTURE of branches, which is
+unattributable. Some builds over the preceding two days did not clear staging.
+
 ## Base
 
 `61e383e` — confirmed working on the board by Ben, 2026-09-02.
