@@ -3303,6 +3303,28 @@ function automatic st_t bam_next();
     else                       bam_next = S_BS_MOV2;
 endfunction
 
+// ---------------------------------------------------------------------------
+// THE SHARED INTEGER ALU - ONE INSTANCE, thirty opcodes. See v60_alu.sv for why
+// it exists and how one adder covers all of them.
+//
+// The operands are exactly what exec_op computed for itself, lifted to module
+// scope because a task's locals cannot drive a module instance. They are pure
+// functions of cur_op, op1, flag2, rf_rdata_b and op2val, all of which are
+// stable while S_EXEC runs, so the unit sees the same values the inline code did.
+// ---------------------------------------------------------------------------
+wire [1:0]  alu_d2 = f12_dim2(cur_op);
+wire [31:0] alu_a  = op1;
+wire [31:0] alu_b  = flag2 ? dimext(rf_rdata_b, alu_d2) : op2val;
+
+wire [31:0] alu_result;
+wire        alu_cy, alu_ov, alu_z, alu_s, alu_writes, alu_valid, alu_cy_we;
+
+v60_alu u_alu (
+    .op(cur_op), .d(alu_d2), .a(alu_a), .b(alu_b), .cy_in(f_cy),
+    .result(alu_result), .cy(alu_cy), .ov(alu_ov), .z(alu_z), .s(alu_s),
+    .writes(alu_writes), .valid(alu_valid), .cy_we(alu_cy_we)
+);
+
 task automatic exec_op;
     logic [31:0] a, b, res;
     logic [32:0] wide;
@@ -3364,70 +3386,36 @@ task automatic exec_op;
     end
 
     // ------------ arith ------------
-    8'h80, 8'h82, 8'h84: begin      // ADD
-        wide = {1'b0, dimext(b,d2)} + {1'b0, dimext(a,d2)};
-        res = wide[31:0];
-        f_cy <= (d2==2'd0) ? (({1'b0,b[7:0]}+{1'b0,a[7:0]}) >> 8) != 0 :
-                (d2==2'd1) ? (({1'b0,b[15:0]}+{1'b0,a[15:0]}) >> 16) != 0 :
-                wide[32];
-        f_ov <= (d2==2'd0) ? (~(b[7]^a[7]) & (b[7]^res[7])) :
-                (d2==2'd1) ? (~(b[15]^a[15]) & (b[15]^res[15])) :
-                             (~(b[31]^a[31]) & (b[31]^res[31]));
-        set_zs(res, d2);
-        wb_op2(res, d2);
+    // ------------ arith and logic: ONE SHARED UNIT ------------
+    //
+    // ADD ADDC SUB CMP SUBC NOT NEG AND OR XOR, all three operand widths, used
+    // to be fifteen separate arms. Each built its own datapath because Quartus
+    // cannot share logic across case arms it is unable to prove exclusive: ADD
+    // alone inferred three adders, two of them existing purely to produce the
+    // carry flag at byte and halfword width. v60_alu computes all of it from a
+    // single 33-bit sum. tb_v60_alu checks the unit against the expressions
+    // that stood here, 360,001 cases over all thirty opcodes, zero mismatches.
+    //
+    // AND/OR/XOR are the only arms that leave a flag ALONE rather than clearing
+    // it, hence alu_cy_we; CMP is SUB without the writeback, hence alu_writes.
+    8'h80, 8'h82, 8'h84,        // ADD
+    8'h90, 8'h92, 8'h94,        // ADDC
+    8'ha8, 8'haa, 8'hac,        // SUB
+    8'hb8, 8'hba, 8'hbc,        // CMP
+    8'h98, 8'h9a, 8'h9c,        // SUBC
+    8'h38, 8'h3a, 8'h3c,        // NOT
+    8'h39, 8'h3b, 8'h3d,        // NEG
+    8'ha0, 8'ha2, 8'ha4,        // AND
+    8'h88, 8'h8a, 8'h8c,        // OR
+    8'hb0, 8'hb2, 8'hb4: begin  // XOR
+        res  = alu_result;
+        f_z  <= alu_z;
+        f_s  <= alu_s;
+        f_ov <= alu_ov;
+        if (alu_cy_we) f_cy <= alu_cy;
+        if (alu_writes) wb_op2(res, d2);
+        else            st <= S_NEXT;   // CMP: flags only
     end
-    8'h90, 8'h92, 8'h94: begin      // ADDC
-        wide = {1'b0, dimext(b,d2)} + {1'b0, dimext(a,d2)} + {32'b0, f_cy};
-        res = wide[31:0];
-        f_cy <= (d2==2'd2) ? wide[32] :
-                (d2==2'd1) ? res[16] : res[8];
-        f_ov <= (d2==2'd0) ? (~(b[7]^a[7]) & (b[7]^res[7])) :
-                (d2==2'd1) ? (~(b[15]^a[15]) & (b[15]^res[15])) :
-                             (~(b[31]^a[31]) & (b[31]^res[31]));
-        set_zs(res, d2);
-        wb_op2(res, d2);
-    end
-    8'ha8, 8'haa, 8'hac,            // SUB
-    8'hb8, 8'hba, 8'hbc: begin      // CMP (no writeback)
-        res = dimext(b,d2) - dimext(a,d2);
-        f_cy <= (dimext(b,d2) < dimext(a,d2));
-        f_ov <= (d2==2'd0) ? ((b[7]^a[7]) & (b[7]^res[7])) :
-                (d2==2'd1) ? ((b[15]^a[15]) & (b[15]^res[15])) :
-                             ((b[31]^a[31]) & (b[31]^res[31]));
-        set_zs(res, d2);
-        if (cur_op[4]) begin
-            // CMP: 0xb8/ba/bc -> no store
-            st <= S_NEXT;
-        end
-        else wb_op2(res, d2);
-    end
-    8'h98, 8'h9a, 8'h9c: begin      // SUBC
-        res = dimext(b,d2) - dimext(a,d2) - {31'b0, f_cy};
-        // 33-bit borrow: the old 32-bit compare wrapped when a+carry overflowed
-        // (SUBC.W with a=0xFFFFFFFF, carry=1 read borrow=0); and OV used bit 31
-        // for every width, so byte/half OV was constant 0 (audit R20 V60-16).
-        f_cy <= ({1'b0, dimext(b,d2)} < ({1'b0, dimext(a,d2)} + {32'b0, f_cy}));
-        f_ov <= (d2==2'd0) ? ((b[7]^a[7]) & (b[7]^res[7])) :
-                (d2==2'd1) ? ((b[15]^a[15]) & (b[15]^res[15])) :
-                             ((b[31]^a[31]) & (b[31]^res[31]));
-        set_zs(res, d2);
-        wb_op2(res, d2);
-    end
-    8'h38, 8'h3a, 8'h3c: begin      // NOT
-        res = ~dimext(a,d2);
-        set_zs(res, d2); f_ov <= 0; f_cy <= 0;
-        wb_op2(res, d2);
-    end
-    8'h39, 8'h3b, 8'h3d: begin      // NEG
-        res = 32'd0 - dimext(a,d2);
-        f_cy <= (dimext(a,d2) != 0);
-        f_ov <= sgn(a,d2) & sgn(res,d2);
-        set_zs(res, d2);
-        wb_op2(res, d2);
-    end
-    8'ha0, 8'ha2, 8'ha4: begin res = b & a; set_zs(res,d2); f_ov<=0; wb_op2(res,d2); end // AND
-    8'h88, 8'h8a, 8'h8c: begin res = b | a; set_zs(res,d2); f_ov<=0; wb_op2(res,d2); end // OR
-    8'hb0, 8'hb2, 8'hb4: begin res = b ^ a; set_zs(res,d2); f_ov<=0; wb_op2(res,d2); end // XOR
     8'hf0, 8'hf1, 8'hf2, 8'hf3, 8'hf4, 8'hf5: begin
         // TEST single operand
         set_zs(op1, cur_op[2:1] == 2'b00 ? 2'd0 : cur_op[2:1]==2'b01 ? 2'd1 : 2'd2);

@@ -56,7 +56,7 @@ SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/video/m1_listctl.sv \
   rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv $(SRCS_3D) \
   rtl/m1_main.sv rtl/m1_integrated.sv \
-  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
+  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv
 
 # THE 3D LAYER IS PART OF m1_integrated, so every bench that elaborates it needs
 # these. `make m1_frame` had been failing at elaboration with
@@ -88,7 +88,7 @@ SRCS_m1_tgp = rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core)
 SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.
-SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv \
+SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
   rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
@@ -137,7 +137,7 @@ SRCS_m1_listwalk    := rtl/video/m1_listwalk.sv
 SRCS_m1_loader_harness := $(SRCS_m1_rom_loader) $(SRCS_m1_sdram) $(SRCS_sdram_model) sim/io/m1_loader_harness.sv
 # Top module is s32_v60; the Quartus target keys off MOD, so the .qsf needs the
 # module name to match. Built standalone for area only, not integrated yet.
-SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
+SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv
 SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/fp_div.sv \
@@ -250,10 +250,10 @@ lint_top:
 lint_v60:
 	verilator --lint-only -Wall $(VFLAGS) -Wno-DECLFILENAME -Wno-VARHIDDEN \
 	  -Wno-BLKSEQ -Wno-CASEINCOMPLETE -Wno-SYNCASYNCNET \
-	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
-	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
+	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv --top-module s32_v60
+	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -751,7 +751,7 @@ m1_boot:
 	  +define+SIMULATION $(BOOT_DEFS) --top-module tb_m1_boot -GRUN_CYCLES=$(BOOT_CYCLES) \
 	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) -GMATH_ZERO=$(MATH_ZERO) \
 	  --Mdir build/m1boot -o m1boot \
-	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/io/m1_decode.sv \
+	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
 	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
@@ -896,11 +896,21 @@ rbf:
 # suite test covered the form; this one FAILS on the pre-fix v60.sv and passes
 # on the fix - checked both ways before it was added. Sources and flags follow
 # tools/v60_cpi_sweep.sh, whose bench it clones with a write path added.
+# The shared integer ALU against the fifteen inline arms it replaced. The
+# reference in the bench is the OLD CODE, transcribed - quirks included - so a
+# mismatch names the opcode and width rather than surfacing as a game bug
+# months later. The 29-test V60 suite covers these opcodes but not densely.
+test_v60_alu:
+	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-DECLFILENAME \
+	  -Wno-UNUSEDSIGNAL -Wno-WIDTH --top-module tb_v60_alu --Mdir obj_v60_alu -o run \
+	  rtl/cpu/v60/v60_alu.sv sim/cpu/tb_v60_alu.sv
+	./obj_v60_alu/run | grep -E '^v60_alu:|FAIL'
+
 test_v60_in_mem:
 	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-PINMISSING +define+SIMULATION \
 	  -GFAST=1 -GCEDIV=1 -GLAT=4 --top-module tb_v60_in_mem --Mdir obj_v60_in_mem -o run \
-	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv sim/cpu/tb_v60_in_mem.sv
+	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv sim/cpu/tb_v60_in_mem.sv
 	./obj_v60_in_mem/run | grep -E '^v60_in_mem:|FAIL'
 
 v60_cpi:
