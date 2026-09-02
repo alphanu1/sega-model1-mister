@@ -105,6 +105,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/v60/v60_bus.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/v60/v60.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/v60/v60_ifetch.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/v60/v60_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/v60/v60_shift.sv
 
 set_global_assignment -name SDC_FILE Model1.sdc
 EOF

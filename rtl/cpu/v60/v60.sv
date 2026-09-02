@@ -3325,6 +3325,19 @@ v60_alu u_alu (
     .writes(alu_writes), .valid(alu_valid), .cy_we(alu_cy_we)
 );
 
+// THE SHARED SHIFT/ROTATE UNIT - ONE INSTANCE for SHL, SHA and ROT. See
+// v60_shift.sv. Same operands as the ALU: the value is exec_op's `b` and the
+// count is the low byte of `a`, signed. ROTC is NOT here - it rotates through
+// carry over multiple cycles and stays in the sequencer.
+wire [31:0] shf_result;
+wire        shf_cy, shf_ov, shf_z, shf_s, shf_valid;
+
+v60_shift u_shift (
+    .op(cur_op), .d(alu_d2), .val(alu_b), .cnt(alu_a[7:0]),
+    .result(shf_result), .cy(shf_cy), .ov(shf_ov),
+    .z(shf_z), .s(shf_s), .valid(shf_valid)
+);
+
 task automatic exec_op;
     logic [31:0] a, b, res;
     logic [32:0] wide;
@@ -3425,45 +3438,28 @@ task automatic exec_op;
     end
 
     // ------------ shifts/rotates: count in op1 (byte, signed) ------------
-    8'ha9, 8'hab, 8'had: begin      // SHL: CY = last bit out, OV=0, Z/S set
-        logic signed [7:0] cnt;
-        cnt = a[7:0];
-        res = shl_res(b, a[7:0], d2);
-        // A zero count must clear CY (MAME); the old code left it unchanged
-        // (audit R20 V60-7).
-        if (cnt > 0)      f_cy <= shl_lastout(b, cnt, d2, 1'b1);
-        else if (cnt < 0) f_cy <= shl_lastout(b, -cnt, d2, 1'b0);
-        else              f_cy <= 1'b0;
-        f_ov <= 0;
-        set_zs(res, d2);
-        wb_op2(res, d2);
-    end
-    8'hb9, 8'hbb, 8'hbd: begin      // SHA: CY last-out; OV = left-shift overflow
-        logic signed [7:0] cnt;
-        cnt = a[7:0];
-        res = sha_res(b, a[7:0], d2);
-        // Zero count clears CY, and a left shift sets OV when a bit different
-        // from the sign is shifted through the top — previously hardwired 0
-        // (audit R20 V60-7).
-        if (cnt > 0)      f_cy <= shl_lastout(b, cnt, d2, 1'b1);
-        else if (cnt < 0) f_cy <= shl_lastout(b, -cnt, d2, 1'b0);
-        else              f_cy <= 1'b0;
-        f_ov <= sha_left_ov(b, a[7:0], d2);
-        set_zs(res, d2);
-        wb_op2(res, d2);
-    end
-    8'h89, 8'h8b, 8'h8d: begin      // ROT: CY = bit rotated around
-        logic signed [7:0] cnt;
-        cnt = a[7:0];
-        res = rot_res(b, a[7:0], d2);
-        // MAME defines CY from the post-rotate wrap bit: LSB after a
-        // positive (left) rotate, MSB after a negative (right) rotate.
-        // A zero count explicitly clears CY.
-        if (cnt > 0)      f_cy <= res[0];
-        else if (cnt < 0) f_cy <= sgn(res, d2);
-        else              f_cy <= 1'b0;
-        f_ov <= 0;
-        set_zs(res, d2);
+    // ------------ shifts/rotates: ONE SHARED UNIT ------------
+    //
+    // SHL, SHA and ROT at all three widths were three arms calling five helper
+    // functions, and a function is INLINED at every call site, so nothing was
+    // shared: seven genuinely variable barrel shifters between them, plus four
+    // inlined copies of shl_lastout. Only one arm can execute per instruction,
+    // so muxing the operands into a single left/right pair costs three small
+    // muxes and saves the rest. Same argument as v60_alu's single adder.
+    //
+    // tb_v60_shift sweeps every count from -128 to +127 at all three widths -
+    // not a sample - because every correction this code has ever needed was at
+    // a boundary (audit R20 V60-7). It found two bugs in the unit before it was
+    // wired in here: an arithmetic right shift that was silently logical, and
+    // an empty overflow mask at count == width. 69,121 checks, 0 fails.
+    8'ha9, 8'hab, 8'had,        // SHL
+    8'hb9, 8'hbb, 8'hbd,        // SHA
+    8'h89, 8'h8b, 8'h8d: begin  // ROT
+        res  = shf_result;
+        f_cy <= shf_cy;
+        f_ov <= shf_ov;
+        f_z  <= shf_z;
+        f_s  <= shf_s;
         wb_op2(res, d2);
     end
     8'h99, 8'h9b, 8'h9d: begin      // ROTC: rotate through carry, iterative

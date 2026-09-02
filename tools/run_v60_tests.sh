@@ -37,7 +37,7 @@ VERIF="$S32/verif/v60"
 
 [ -d "$VERIF" ] || { echo "third_party/s32/verif/v60 missing - run tools/bootstrap.sh"; exit 1; }
 
-CPU="$ROOT/rtl/cpu/v60/v60_bus.sv $ROOT/rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv $ROOT/rtl/cpu/v60/v60_alu.sv"
+CPU="$ROOT/rtl/cpu/v60/v60_bus.sv $ROOT/rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv $ROOT/rtl/cpu/v60/v60_alu.sv $ROOT/rtl/cpu/v60/v60_shift.sv"
 # -j is capped rather than 0 (unlimited). Verilator fans out one g++ per
 # translation unit; across a CPU this size that was 32 concurrent compilers,
 # which is how a few hundred MB of build became several GB in flight.
