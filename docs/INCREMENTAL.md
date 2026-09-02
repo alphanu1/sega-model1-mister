@@ -36,11 +36,26 @@ Binary and md5 in `known_good/`. Built with `M1_SEED=5`, closes at +0.061.
 | # | change | commit | why it might break the board | status |
 |---|---|---|---|---|
 | 1 | display lists halved | `cc3b548` | 64 M10K freed; reads above the cap return zero | **WORKS** - 41,310 ALM, 495 M10K, +0.340 |
-| 2 | data cache, WITH its burst and crossing changes | `949c0a8` | caches charram, wram, rom, nvram; changes bus occupancy for all seven masters | untested |
-| 3 | FP pipelining | `7418cfd` | −1,672 ALM, one extra cycle on FP arith | untested |
-| 4 | SDRAM arbiter registered | uncommitted | −1,305 ALM, changes grant timing | untested |
-| 5 | pixel census pipelined | uncommitted | telemetry off the critical path | untested |
-| 6 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested |
+| 2 | data cache, WITH its burst and crossing changes | `be22c31` | caches charram, wram, rom, nvram; changes bus occupancy for all seven masters | **BREAKS THE BOARD** - reverted |
+| 3 | FP pipelining | `7418cfd` | one extra cycle on FP arith | **WORKS** - 41,034 ALM, 495 M10K, +0.026 |
+| 4 | SDRAM arbiter registered | `4b41233` | changes grant timing | **DID NOT CLOSE** - −0.132, parked |
+| 5 | V60 multiplexer reduction | `fdbfee7` | MOVD and the scaled index rewritten, not rebehaved | **WORKS** - 39,087 ALM, 495 M10K, +0.035 |
+| 6 | pixel census pipelined | not started | telemetry off the critical path | untested |
+| 7 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested, LAST |
+
+Rung 5 measured on hardware 2026-09-02: `F=003A S=000E/F B=0246..0326 P=001B..0037`.
+58 fps, bands climbing, **P non-zero** - the working-core signature. It took four
+seeds to close: 1 gave −0.077, 5 gave −0.037, 3 gave +0.014 and 4 gave +0.035, a
+0.11 ns spread on identical RTL, so the first build's −0.037 was placement and
+not a marginal design.
+
+THE STANDALONE V60 UNDER-PREDICTED THIS RUNG BY A FACTOR OF THREE. `make quartus
+MOD=s32_v60` measured −530 ALM; integrated it was −1,947. Standalone normally
+reports HIGH and compresses when integrated, so the direction was the surprise.
+The likely cause is occupancy: dropping from 98% to 93% gives the fitter room to
+pack, so part of that gain is placement rather than logic genuinely removed. Use
+standalone to decide whether an edit is worth keeping; use `make rbf` for the
+number that counts.
 
 **Rungs 2-4 of the original plan are ONE change and must not be split.** Making
 port 0 burst four words requires the requester to send burst-aligned addresses
