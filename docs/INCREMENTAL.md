@@ -71,3 +71,33 @@ Full reference: `known_good/uart_working_reference.txt`.
 Capture five minutes minimum — the game needs about four to reach steady state.
 `S` is only meaningful while `P` is non-zero. A healthy board draws both layers;
 `S` pinned at 29 with `P=0000` is the failure signature seen throughout.
+
+
+## Open question: the FP cut's area saving
+
+The first FP pipeline cut was recorded as **-1,672 ALM** (41,372 -> 39,700),
+measured on the full stack. Measured alone on this branch it is **-276**
+(41,310 -> 41,034).
+
+Both builds should have used the default `Aggressive Area` optimisation, but that
+was not verified at the time, so the two figures are not known to be comparable.
+Ben's recollection is that the larger figure may have been taken with aggressive
+area explicitly enabled.
+
+Worth settling, because area is what blocks the 2:1 coprocessor: `tools/mister_project.sh`
+now takes `M1_QOPT`, `M1_QTECH` and `M1_QDUP` independently, so the same RTL can
+be built both ways and compared directly.
+
+## The design has almost no timing margin
+
+Step 3, identical RTL, four seeds:
+
+    SEED 5   -0.187
+    SEED 3   -0.523
+    SEED 1   +0.026    <- the only one that closed
+    SEED 4   -0.420
+
+Half a nanosecond of spread from placement alone. Single-seed builds are a
+lottery at this occupancy, which is why `build/tmp/seeds_par.sh` runs four at
+once - Quartus only exploits about five of 32 cores per build, so four
+concurrent builds cost nothing and turn an 80-minute sweep into 25.
