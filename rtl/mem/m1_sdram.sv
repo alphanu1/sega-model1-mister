@@ -336,6 +336,40 @@ module m1_sdram #(
     end
   end
 
+  // THE ARBITER'S DECISION IS REGISTERED, one cycle ahead of dispatch.
+  //
+  // MEASURED: rr_next -> rr_next was the worst path in the whole design, and it
+  // is the binding one - even at TGP 1:1 the build closes by only +0.044 ns. The
+  // chain is rr_next -> rotate -> NP-deep priority -> rr_grant -> and then
+  // rr_grant fans out to 7:1 muxes on addr (24 bits), din (16), be, blen() and
+  // we_p before anything is registered. Arbitration and the whole port mux in
+  // one cycle.
+  //
+  // Splitting it is free because the decision is only consumed at DISPATCH, and
+  // a transfer occupies the controller for ten cycles or more - so the next
+  // grant is computed while the current one is still running. The guard below
+  // re-checks the port at dispatch, because a decision taken a cycle early can
+  // be stale: a port may have gone in flight, or its request may have dropped.
+  // Round-robin fairness is unaffected - a stale choice simply defers that port
+  // by one transfer, which the rotation corrects on the next pass.
+  logic [$clog2(NP)-1:0] arb_grant;
+  logic                  arb_valid;
+  // SYNCHRONOUS reset, like the rest of this module - see the note above
+  // cap_depth. Mixing disciplines on one reset net is what SYNCASYNCNET flags,
+  // and this block was written async first and caught by it.
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      arb_grant <= '0;
+      arb_valid <= 1'b0;
+    end else begin
+      arb_grant <= rr_grant;
+      arb_valid <= rr_valid;
+    end
+  end
+  // Stale-proofing: the registered choice is only usable if that port is still
+  // asking and still free.
+  wire arb_ok = arb_valid && pend[arb_grant] && !inflight[rr_grant];
+
   // ------------------------------------------------------------- transfer
   logic [$clog2(NP+1)-1:0] grant;
   logic                    grant_is_wr;

@@ -2078,3 +2078,52 @@ share it rather than each carrying its own.
 **Standalone numbers do not predict in-context ones.** The V60 measures 20,129 ALM alone and
 17,445 in the design; Aggressive Area saves 13% alone and 2% in place. Use standalone figures
 only to compare two versions of the same block.
+
+## 2026-09-01, end of session: the TGP at 2:1 is UNRESOLVED
+
+**Do not trust an evening's worth of hypotheses here. Bisect it.**
+
+The coprocessor should run 2:1 against the V60 - the board is a 40 MHz MB86233
+against a 16 MHz V60 - and at one point today it DID, measured in
+`build/frame_tgpclk3.log`: TGP retires 6,072,544, V60 result-FIFO waits
+30,484,392 -> 10,436,790, CPI 20.85 -> 18.78, retires +11%. The mechanism is real.
+
+It now fails in simulation with **`TGP retires=342, pc=004c, pushes=61 pops=20`** -
+the pair deadlocks after twenty transactions. Four explanations were proposed and
+all four were wrong:
+
+1. the TGP reset losing its `rom_loaded` gate - real bug, fixed, not this
+2. the SDC cutting clk_cpu from clk_3d - REAL and important, see below, not this
+3. the held vs pulsed acknowledge - real and ratio-dependent, not this
+4. "the loader writes copro RAM through the interface" - a MISREADING;
+   `dbg_ram_writes` counts writes FROM THE TGP, so `copro RAM writes=0` is a
+   symptom of the coprocessor being idle, not a cause
+
+A bisect back to what was believed to be the working configuration still gives 342,
+so the reference point itself is wrong. **Start from the last commit, confirm 2:1
+works there, then reapply one file at a time with `make m1_frame
+FRAME_CYCLES=300000000` between each.** Six minutes a step. The signal is
+unambiguous: healthy is ~6,000,000 retires, wedged is 342.
+
+**WORTH KEEPING regardless, and independently verified:**
+
+* **The SDC fix** (`tools/mister_project.sh`). `set_clock_groups -asynchronous`
+  cut clk_cpu from clk_3d, so with the coprocessor on clk_3d every V60-side path
+  in m1_copro_if was UNCONSTRAINED - never timed. That is why the board went black
+  at 2:1 while the CPU ran normally at 90% and P=0000 in 375 telemetry samples.
+  clk_3d is exactly 2x clk_cpu from one PLL, so they are synchronous and belong in
+  one group; clk_sys stays cut, and m1_raster3d's two genuine synchronisers get
+  named false paths instead of a blanket cut.
+* **The SDRAM arbiter registration.** `rr_next -> rotate -> NP-deep priority ->
+  rr_grant -> 7:1 muxes on addr/din/be/blen` was the binding path of the WHOLE
+  design - even at 1:1 the build closes by only +0.044 ns. Registering the
+  decision one cycle ahead of dispatch: -1,305 ALM and -0.514 -> -0.329 ns.
+  Bisected and PROVEN INNOCENT of the TGP failure.
+* **The pixel census pipeline** (`m1_video`). A debug counter feeding the overlay
+  had become the critical path at -0.329. Registering its inputs: -0.329 -> -0.055.
+  Currently stashed - `git stash list`.
+
+**The held acknowledge is RATIO-DEPENDENT** and this cost a build: at 2:1 a
+one-cycle ack is half a clk_cpu period and m1_main never sees it, so it must be
+held; at 1:1 the held form lets m1_main read a stale ack as a completion and the
+TGP parks with 684 retires. Whichever ratio ships, check this.

@@ -357,7 +357,7 @@ typedef enum logic [6:0] {
     S_BS_SCH1, S_BS_SCHRD, S_BS_SCHB, S_BS_SCHW,
     S_BS_MOV1, S_BS_MOV2, S_BS_MOVS, S_BS_MOVD, S_BS_MOVB, S_BS_MOVF,
 `ifndef S32_V60_NO_FP
-    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_PACK, S_FP_DIV, S_FP_WB,
+    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_NORM, S_FP_PACK, S_FP_DIV, S_FP_WB,
 `endif
     S_EXC_PUSH1, S_EXC_EXTRA, S_EXC_CODE, S_EXC_PUSH2, S_EXC_VEC, S_EXC_JMP,
     S_TASK_LD_NEXT, S_TASK_LD_ACK, S_TASK_ST_NEXT, S_TASK_ST_ACK,
@@ -2435,6 +2435,17 @@ else if (ce) begin
         else st <= S_FP_EXEC;                            // MOVFS/CVTWS/CVTSW: write-only
     end
     S_FP_EXEC: fp_exec();
+    // Stage two: normalise a cancelled subtraction, if that is what this is.
+    // Everything else falls straight through, so the cost is one cycle on the
+    // subtract-with-cancellation case alone.
+    S_FP_NORM: begin
+        if (!fp_pk[76] && fp_pk[75:44] == 32'd1)
+            fp_pk <= {1'b0, 32'd0, fp_pk[43],
+                      16'($signed(fp_pk[42:27]) -
+                          $signed({11'd0, (fp_clz28({1'b0, fp_pk[26:0]}) - 5'd1)})),
+                      fp_pk[26:0] << (fp_clz28({1'b0, fp_pk[26:0]}) - 5'd1)};
+        st <= S_FP_PACK;
+    end
     // Second half of an FP add/multiply: normalise, round, adjust, set flags.
     S_FP_PACK: begin
         logic [31:0] rp;
@@ -4197,9 +4208,17 @@ function automatic [76:0] fp_add(input [31:0] x, input [31:0] y);
                 else begin
                     // shift the leading 1 back to bit 26; fp_clz28({0,res27})
                     // returns 27-p for a leading 1 at bit p, so shift = that - 1.
-                    lz = fp_clz28({1'b0, res27}) - 5'd1;
-                    er = ex - $signed({11'd0, lz});
-                    out = {1'b0, 32'd0, sr, 16'(er), res27 << lz};
+                    // NORMALISATION DEFERRED to S_FP_NORM. fp_clz28 plus its
+                    // shift and exponent adjust are the deepest part of stage
+                    // one, and they are needed ONLY here - the addition branch
+                    // and fp_mul both produce an already-normalised significand.
+                    //
+                    // No wider bundle: when `direct` is clear, val[31:0] is
+                    // unused (it is written as zero), so it carries the flag.
+                    // Widening to 78 bits was tried and broke the ADDITION path
+                    // through a bit-field slip, which is a poor trade for one
+                    // bit of information.
+                    out = {1'b0, 32'd1, sr, 16'(ex), res27};
                 end
             end
         end
@@ -4479,9 +4498,9 @@ task automatic fp_exec;
             r = fp_scale(fp_b, $signed(fp_a[15:0]));
             fp_arith_flags(r); fp_res <= r; fp_finish_write();
         end
-        5'h18: begin fp_pk <= fp_add(fp_b, fp_a);                 st <= S_FP_PACK; end // ADDFS
-        5'h19: begin fp_pk <= fp_add(fp_b, fp_a ^ 32'h8000_0000); st <= S_FP_PACK; end // SUBFS
-        5'h1a: begin fp_pk <= fp_mul(fp_b, fp_a);                 st <= S_FP_PACK; end // MULFS
+        5'h18: begin fp_pk <= fp_add(fp_b, fp_a);                 st <= S_FP_NORM;  end // ADDFS
+        5'h19: begin fp_pk <= fp_add(fp_b, fp_a ^ 32'h8000_0000); st <= S_FP_NORM;  end // SUBFS
+        5'h1a: begin fp_pk <= fp_mul(fp_b, fp_a);                 st <= S_FP_NORM;  end // MULFS
         5'h1b: fp_div_start(fp_b, fp_a);             // DIVFS (iterative)
         default: st <= S_NEXT;
         endcase

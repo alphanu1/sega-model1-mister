@@ -75,6 +75,26 @@ module m1_main #(
   // From m1_rom_loader, in the FAST memory domain. The program RAM inside
   // m1_tgp is dual-clock for this reason; the write side finishes before the
   // CPU is released, so no handshake is needed.
+  // THE COPROCESSOR'S OWN CLOCK. The real board runs the MB86233 at 40 MHz
+  // against a 16 MHz V60 - a 2.5:1 ratio - and we had both on clk_cpu at 1:1.
+  // Measured: the TGP asserts a command-FIFO read on 71% of cycles (idle,
+  // waiting for the V60) while the V60 finds the result FIFO empty on 99.2% of
+  // its reads (waiting for the TGP). Neither is starved; they are SERIALISED,
+  // and each half of the ping-pong runs at our clock. Halving the TGP's half
+  // is what the board's 2.5:1 buys, and 1.70x of clock deficit is the same
+  // size as the 1.71x by which the board's 3D frames trail simulation's.
+  //
+  // clk_3d is 47.059 MHz, EXACTLY twice clk_cpu and from the same PLL, so this
+  // is not an asynchronous crossing: the edges are phase-aligned at an integer
+  // ratio and Quartus times the paths normally. What makes it safe is that the
+  // V60 side of m1_copro_if is level-based throughout - `v60_acc = req &&
+  // !served`, with `served` cleared on `!req` - so it serves one access per
+  // request however many fast edges observe the level, and the acknowledge is
+  // held until the request drops, which is the house rule anyway.
+  input  logic        clk_tgp,
+  input  logic        rst_n_tgp,     // gated on rom_loaded: the coprocessor
+  input  logic        rst_n_tgp_if,  // raw: its interface, live during ROM load
+
   input  logic        ucode_clk,
   input  logic        ucode_we,
   input  logic [10:0] ucode_addr,
@@ -505,8 +525,20 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
   logic [15:0] dbg_copro_fifo_pushes;
   logic        copro_v60_stall;
 
+  // THE INTERFACE TAKES THE RAW RESET, THE COPROCESSOR TAKES THE GATED ONE.
+  //
+  // That asymmetry is original and load-bearing: m1_copro_if was `.rst_n(rst_n)`
+  // while m1_tgp was `.rst_n(~rst_cpu)` - the coprocessor is held until the ROMs
+  // have arrived, but the INTERFACE around it, which holds the copro RAM and
+  // both FIFOs, stays live. Giving them a single shared reset put the interface
+  // in reset for the whole ROM load too, and that is a black screen on the
+  // board: the CPU runs normally (S=26-27 swaps/s, the healthy rate) while the
+  // coprocessor produces nothing at all (P=0000 in every telemetry sample).
+  //
+  // Ben: the Model 2 core had the same failure, from things not being held
+  // correctly while the ROM loaded.
   m1_copro_if copro (
-    .clk(clk), .rst_n(rst_n),
+    .clk(clk_tgp), .rst_n(rst_n_tgp_if),
     .dbg_tgp_ram_writes(dbg_tgp_ram_writes), .dbg_sync_word(dbg_sync_word),
     .sel_adr(sel_copro_adr), .sel_ram(sel_copro_ram), .sel_fifo(sel_copro_fifo),
     // The request is held until copro_ack; the interface serves one access per
@@ -555,7 +587,7 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
   // - the real instance, on the path hardware actually uses.
   m1_tgp #(.MATH_ZERO(TGP_MATH_ZERO)) tgp (
     .dbg_ucode_ram_csum(dbg_ucode_ram_csum), .dbg_ucode_ram_ok(dbg_ucode_ram_ok),
-    .clk(clk), .rst_n(~rst_cpu),
+    .clk(clk_tgp), .rst_n(rst_n_tgp),
     .ucode_clk(ucode_clk), .ucode_we(ucode_we),
     .ucode_addr(ucode_addr), .ucode_data(ucode_data),
     .ram_req(t_ram_req), .ram_we(t_ram_we), .ram_addr(t_ram_addr),

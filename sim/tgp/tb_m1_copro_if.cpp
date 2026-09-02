@@ -53,7 +53,17 @@ struct Dut {
 
   void tick() { d->clk = 0; d->eval(); d->clk = 1; d->eval(); }
 
-  void idle(int n = 1) {
+  // THREE CYCLES, NOT ONE. m1_copro_if synchronises `req` into its own clock
+  // domain with two flops, so `served` - the one-shot that stops a held request
+  // being serviced twice - clears two cycles after req falls rather than
+  // immediately. A one-cycle gap starts the next access while served is still
+  // set, and it is silently skipped: the symptom is data landing in the wrong
+  // byte lane, not a missing acknowledge.
+  //
+  // The synchroniser is there because clk_cpu and clk_3d are cut apart in the
+  // SDC. Without it every V60-side signal crossed unconstrained and the board
+  // went black; with the clocks timed together instead, the design does not fit.
+  void idle(int n = 3) {
     d->req = 0; d->sel_adr = d->sel_ram = d->sel_fifo = 0; d->we = 0;
     for (int i = 0; i < n; i++) tick();
   }
@@ -296,7 +306,19 @@ int main(int argc, char** argv) {
     }
     check(v60_at >= 0, "the V60 access never completed under contention");
     check(tgp_at >= 0, "the TGP access never completed — starved");
-    check(v60_at <= tgp_at, "the TGP was served before the V60");
+    // NO STRICT ORDERING ANY MORE, and that is correct rather than a
+    // concession. The V60's request is synchronised into the coprocessor's
+    // clock domain with two flops, so from this module's point of view it
+    // genuinely arrives later than a TGP request issued on the same edge.
+    // "Simultaneous" is not a meaningful relationship across a crossing, and
+    // asserting V60-first only held while the two shared a clock.
+    //
+    // What matters is that NEITHER SIDE IS STARVED - both checks above - and
+    // that the V60 completes promptly once it is seen. A CPU waiting behind one
+    // coprocessor access is fine; a CPU waiting behind an unbounded number is
+    // not, and that is what this now measures.
+    check(v60_at <= tgp_at + 8,
+          "the V60 waited far too long behind the TGP under contention");
     printf("  V60 acked at cycle %d, TGP at %d\n", v60_at, tgp_at);
     t.d->req = 0; t.d->tgp_req = 0; t.d->tgp_we = 0; t.idle();
 

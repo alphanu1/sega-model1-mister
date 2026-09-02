@@ -424,13 +424,26 @@ end
 // cannot be divided by a cycle count.
 longint tgp_cycles = 0, tgp_retires = 0, tgp_memwait = 0, tgp_fifordwait = 0,
         tgp_fifowrwait = 0, v60_fifo_reads = 0, v60_fifo_pushed = 0;
-always @(posedge clk_cpu) begin
+// THE TGP'S COUNTERS SAMPLE ITS OWN CLOCK, NOT THE CPU'S.
+//
+// These were on posedge clk_cpu, which was right while the coprocessor shared
+// that clock. It now runs on clk_3d at twice the rate, and `retire` is a
+// one-cycle pulse - so sampling at clk_cpu sees only every OTHER retire and
+// reported 6,007,498 -> 3,052,817 when the TGP was given twice the clock.
+// Exactly half, which is the signature. It read as the coprocessor doing half
+// the work at double the speed, and was very nearly acted on as a real defect.
+always @(posedge clk_3d) begin
     if (core.main.rst_n) begin
         tgp_cycles <= tgp_cycles + 1;
         if (core.main.tgp.core.retire)  tgp_retires    <= tgp_retires + 1;
         if (core.main.tgp.core.mem_req) tgp_memwait    <= tgp_memwait + 1;
         if (core.main.tgp.fifo_rd)      tgp_fifordwait <= tgp_fifordwait + 1;
         if (core.main.tgp.fifo_wr)      tgp_fifowrwait <= tgp_fifowrwait + 1;
+    end
+end
+
+always @(posedge clk_cpu) begin
+    if (core.main.rst_n) begin
         // AND WHAT THE V60 DOES ABOUT IT. The outbound FIFO is 16 deep and full
         // halts the producer, so if the V60 does not drain it the TGP stalls on
         // the push - which is what fifo_wr at 69% of cycles says is happening.
@@ -1833,10 +1846,19 @@ initial begin
                 $write(" %0d:%0d%%", blat_i, (100*blat_hist[blat_i])/blat_n);
         $write("\n");
     end
+    // EVERY BUCKET, NOT JUST THE COMMON ONES. A frame that presents fewer than
+    // all 24 bands is a visible horizontal band of stale or missing picture, and
+    // Ben reports a couple of those still on the board (2026-09-01). At one
+    // frame in a hundred the old `*100 > bpf_frames` threshold hid them
+    // completely - the line read a clean "24:99%" and the 1% that is the actual
+    // defect never printed. Which bands are short says whether it is the top of
+    // the frame (the producer starting late) or the bottom (it running out of
+    // time), and those are different bugs.
     $write("FRAME: bands presented per video frame, over %0d frames:", bpf_frames);
     for (bpf_i = 0; bpf_i < 32; bpf_i = bpf_i + 1)
-        if (bpf_hist[bpf_i] * 100 > bpf_frames)
-            $write(" %0d:%0d%%", bpf_i, (100*bpf_hist[bpf_i])/bpf_frames);
+        if (bpf_hist[bpf_i] != 0)
+            $write(" %0d:%0d(%0d%%)", bpf_i, bpf_hist[bpf_i],
+                   (100*bpf_hist[bpf_i])/bpf_frames);
     $write("\n");
     $display("FRAME: 3D layer: objects=%0d quads=%0d dropped=%0d passes=%0d",
              core.r3_dbg_objects, core.r3_dbg_quads,

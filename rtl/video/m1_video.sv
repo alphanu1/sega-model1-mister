@@ -198,6 +198,21 @@ module m1_video #(
   // tilemap. 8 is the 3D layer and 15 the backdrop; neither is a tilemap.
   logic [17:0] px_acc [4];
   logic [11:0] tw_acc [4];
+
+  // Pipeline registers for the census above: the qualifying condition, the
+  // tilemap it belongs to, and whether that counter has already saturated.
+  logic       px_cnt_en;
+  logic [1:0] px_cnt_idx;
+  logic       px_sat;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      px_cnt_en <= 1'b0; px_cnt_idx <= 2'd0; px_sat <= 1'b0;
+    end else begin
+      px_cnt_en  <= ce_pix && visible && (mix_src < 4'd8);
+      px_cnt_idx <= mix_src[1:0];
+      px_sat     <= (px_acc[mix_src[1:0]] == 18'h3ffff);
+    end
+  end
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       for (int i = 0; i < 4; i++) begin
@@ -213,10 +228,20 @@ module m1_video #(
           tw_acc[i]         <= '0;
         end
       end else begin
-        if (ce_pix && visible && mix_src < 4'd8) begin
-          if (px_acc[mix_src[1:0]] != 18'h3ffff)
-            px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 18'd1;
-        end
+        // ONE CYCLE LATE, ON PURPOSE. This census is telemetry - it feeds
+        // dbg_layer_px for the overlay - and it had become the CRITICAL PATH OF
+        // THE WHOLE DESIGN at -0.329 ns: a tile-lane RAM output reaching
+        // mix_src, indexing px_acc four ways, comparing 18 bits against the
+        // saturation value and incrementing, all in the pixel cycle.
+        //
+        // Registering the inputs splits that. The count is unchanged - every
+        // qualifying pixel is still counted exactly once, just a cycle later -
+        // and the only visible difference is that a pixel landing on the very
+        // last cycle before vblank_start is counted into the next frame's
+        // total. For a per-frame pixel census that is noise, and no logic
+        // depends on these counters.
+        if (px_cnt_en && !px_sat)
+          px_acc[px_cnt_idx] <= px_acc[px_cnt_idx] + 18'd1;
         // Counted against cur_layer, which is the layer the fetch engine is
         // rendering when the pulse arrives — not the pixel being scanned out,
         // which belongs to the previous line and a different layer.

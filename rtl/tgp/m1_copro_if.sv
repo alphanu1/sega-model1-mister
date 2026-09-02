@@ -292,10 +292,36 @@ module m1_copro_if #(
   // address once per pass. That is the complement of this project's other
   // handshake lesson ("acknowledges must be held, not pulsed"): here the
   // request is held and the ACTION must be a one-shot.
+  // A REAL CLOCK-DOMAIN CROSSING, so the SDC's asynchronous cut is LEGITIMATE
+  // for this module rather than a lie about it.
+  //
+  // This interface assumed clk_cpu and clk_3d were synchronous. They are - 2:1
+  // from one PLL - but the SDC cuts them apart, so with the coprocessor on
+  // clk_3d every V60-side signal was UNCONSTRAINED and the board went black:
+  // CPU running at 82-90% of hardware, coprocessor receiving nothing, P=0000 in
+  // 397 consecutive telemetry samples. Timing them instead overflows the device
+  // outright - "Can't fit design in device".
+  //
+  // So the request is synchronised in. Only the CONTROL signal needs it: req is
+  // a level held until ack, and addr, wdata, be and the selects are stable for
+  // the whole transaction by construction. That is the standard
+  // data-stable-during-handshake pattern, and it is what lets the data cross
+  // without synchronisers of its own.
+  //
+  // COSTS TWO CYCLES OF LATENCY, which is why the directed test had to learn to
+  // wait: it drove both sides on one clock and expected service in a fixed
+  // window.
+  logic [1:0] req_sync;
+  always_ff @(posedge clk) begin
+    if (!rst_n) req_sync <= 2'b00;
+    else        req_sync <= {req_sync[0], req};
+  end
+  wire req_s = req_sync[1];
+
   logic served;
 
-  wire v60_acc = req && !served && (sel_adr || sel_ram || sel_fifo);
-  wire v60_ram = req && !served && sel_ram;
+  wire v60_acc = req_s && !served && (sel_adr || sel_ram || sel_fifo);
+  wire v60_ram = req_s && !served && sel_ram;
 
   // Post-increment: on the completing cycle of a HIGH-half RAM access, read or
   // write, and only when the register asks for it. The `a1` term is not
@@ -338,9 +364,17 @@ module m1_copro_if #(
       dbg_ram_writes <= '0; dbg_fifo_pushes <= '0;
       dbg_fifo_returns <= '0; dbg_fifo_pops <= '0; dbg_fifo_drains <= '0;
     end else begin
-      ack     <= 1'b0;
+      // HELD UNTIL THE REQUEST DROPS. Required at 2:1: this runs on clk_3d at
+      // 47 MHz against a 23.5 MHz requester, so a one-cycle ack is high for half
+      // a clk_cpu period and m1_main never sees it - the bus waits forever and
+      // it presents as a dead coprocessor. `served` already gates re-service, so
+      // holding costs nothing: one access per request however long it is held.
+      // NOTE this is ratio-dependent. At 1:1 the held form lets m1_main see an
+      // acknowledge left over from the previous transaction and take it as a
+      // completion - measured, TGP retires 684 instead of ~6,000,000.
+      if (!req_s) ack <= 1'b0;
       tgp_ack <= 1'b0;
-      if (!req) served <= 1'b0;
+      if (!req_s) served <= 1'b0;
 
       // The TGP's FIFO ends are independent of the RAM arbiter.
       if (fifo_out_push && !fout_full) begin

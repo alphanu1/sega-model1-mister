@@ -315,6 +315,89 @@ module m1_integrated (
 
   m1_main main (
     .clk(clk_cpu), .ce(ce_cpu), .rst_n(rst_n_cpu),
+    // THE COPROCESSOR STAYS ON THE CPU'S CLOCK. Running it on clk_3d at 47 MHz
+    // is right in principle - the board is 40 MHz TGP against a 16 MHz V60, a
+    // 2.5:1 ratio where we have 1:1 - and it WORKED: the V60's result-FIFO waits
+    // fell from 30,484,392 to 10,436,790, CPI 20.85 -> 18.78, retires +11%.
+    //
+    // IT FITS AND FAILS TIMING, which are different things. Quartus places it -
+    // 41,116 of 41,910 ALM, 514 of 553 M10K, 0 errors, a valid .rbf - and then
+    // reports NEGATIVE SETUP SLACK. Moving 2,419 ALM of coprocessor into the 3D
+    // domain costs ~1,300 ALM of its own and enough placement pressure to break
+    // clk_sys, a domain the TGP is not even in:
+    //
+    //     SEED 5:  clk_sys -0.268, pll_hdmi -0.262   (was +0.376 / +0.162)
+    //     SEED 7:  clk_sys -0.368, pll_hdmi -0.747
+    //
+    // Two seeds, the second worse, on a device already at 98%. The seed lottery
+    // has closed this design twice before and cannot close this.
+    //
+    // A build that fails timing still loads and still appears to run: paths
+    // that do not settle give wrong values intermittently, varying with
+    // temperature and with the individual part. That is worse than a build
+    // that refuses, because nothing announces it - so this is not shipped even
+    // though it would flash.
+    //
+    // What is kept is the HELD ACKNOWLEDGE in m1_copro_if - correct at any
+    // ratio, and the bug this attempt exposed. Revisit when there is real area:
+    // a slower dedicated clock (800/24 = 33.3 MHz, a 1.4:1 ratio) would take
+    // most of the latency win for a fraction of the pressure.
+    // TGP AT 1:1 FOR NOW, and the reset keeps m1_main's own gate:
+    // rst_cpu = ~rst_n | ~rom_loaded, so this must be rst_n AND rom_loaded.
+    // Passing rst_n_cpu alone drops the rom_loaded half, the coprocessor leaves
+    // reset while the HPS is still streaming ROMs into its program RAM, and it
+    // blocks at microcode 0x004c forever. That was flashed to the board and gave
+    // a black screen with P=0000 in all 377 telemetry samples - not one object
+    // ever produced. CLAUDE.md documents the same failure from last time.
+    //
+    // 2:1 is what the board does (40 MHz TGP against a 16 MHz V60) and it WORKS
+    // in simulation - V60 result-FIFO waits 30,484,392 -> 10,436,790, CPI
+    // 20.85 -> 18.78. It is blocked on timing, and on ONE path: m1_sdram's
+    // arbiter closes rr_next -> rotate -> 7-way priority -> rr_grant -> rr_next
+    // in a single cycle. That loop is the binding path of the whole design - it
+    // makes 1:1 by only +0.044 ns - so pipelining it is worth doing for its own
+    // sake and unblocks 2:1 as a side effect.
+    // THE COPROCESSOR RUNS AT 2:1, AND EVERYTHING IN IT IS HELD UNTIL THE ROM
+    // LANDS. The board is a 40 MHz MB86233 against a 16 MHz V60; we had 1:1.
+    // Measured at 2:1: V60 result-FIFO waits 30,484,392 -> 10,436,790, CPI
+    // 20.85 -> 18.78, retires +11%.
+    //
+    // BOTH resets are gated on rom_loaded - the coprocessor AND its interface,
+    // which holds the copro RAM and both FIFOs. Splitting them so the interface
+    // took the raw reset parked the TGP at microcode 0x004c with 342 retires.
+    // Ben, from the Model 2 core: the same failure came from things not being
+    // held while the ROM loaded.
+    //
+    // What actually caused the black screen was not the reset at all - it was
+    // the SDC cutting clk_cpu from clk_3d as asynchronous, leaving every
+    // V60-to-coprocessor path unconstrained. That is fixed in
+    // tools/mister_project.sh: the two are timed against each other now.
+    // THE INTERFACE IS LIVE DURING THE ROM LOAD BECAUSE THE LOADER WRITES THROUGH
+    // IT. m1_copro_if holds the coprocessor RAM, and m1_rom_loader puts 4,095
+    // words into it while the ROMs stream in. Hold the interface in reset and
+    // those writes are simply dropped - measured, "TGP writes to copro RAM"
+    // goes 4095 -> 0, the coprocessor has no data, and the pair deadlocks after
+    // twenty transactions with the TGP parked at microcode 0x004c.
+    //
+    // So the asymmetry in the original code was load-bearing and is restored:
+    //   rst_n_tgp     gated on rom_loaded - the COPROCESSOR waits for its data
+    //   rst_n_tgp_if  raw                 - the INTERFACE must accept it
+    //
+    // Getting this backwards is what a black screen looks like: the V60 runs
+    // normally at 90% of hardware and the 3D layer never receives one object.
+    // THE ORIGINAL ASYMMETRY, restored: the COPROCESSOR waits for the ROMs, its
+    // INTERFACE does not. m1_copro_if was `.rst_n(rst_n)` and m1_tgp was
+    // `.rst_n(~rst_cpu)`, and that difference is load-bearing - the interface
+    // holds the copro RAM and both FIFOs and has to be live while the load runs.
+    //
+    // Holding both gives a black screen with S pinned at 29 swaps/s - the game
+    // loop spinning through frames doing no work - and P=0000, no geometry ever.
+    //
+    // This was tested last night and REJECTED ON A BAD MEASUREMENT: a 300 M-cycle
+    // run reported 342 TGP retires, which is a HEALTHY IDLE coprocessor that
+    // early in the game, not a wedged one. Verify at 900 M, where healthy is
+    // ~6,072,544.
+    .clk_tgp(clk_3d), .rst_n_tgp(rst_n_tgp), .rst_n_tgp_if(rst_n_3d),
     .rom_loaded(rom_loaded_sync[1]),
     .in_bytes(in_bytes),
     // Microcode from the loader, written in the FAST domain into the dual-clock
@@ -656,6 +739,18 @@ module m1_integrated (
   localparam logic [24:1] POLY_BASE    = 24'h420000;
   localparam logic [24:1] TGP_RAM_BASE = 24'hC20000;
 
+  // The coprocessor's reset, on its new clock. It MUST keep the rom_loaded
+  // gate: wiring the TGP to the raw reset once let it execute program RAM while
+  // the HPS was still streaming ROMs into it, where it blocked on a command
+  // FIFO read at microcode 0x004c and never recovered. That cost a session.
+  logic [1:0]  rst_sync_tgp;
+  logic        rst_n_tgp;
+  always_ff @(posedge clk_3d or negedge rst_n_cpu) begin
+    if (!rst_n_cpu) rst_sync_tgp <= 2'b00;
+    else            rst_sync_tgp <= {rst_sync_tgp[0], rom_loaded_sync[1]};
+  end
+  assign rst_n_tgp = rst_sync_tgp[1];
+
   logic        rst_n_3d;
   logic [1:0]  rst_sync_3d;
   always_ff @(posedge clk_3d or negedge rst_n) begin
@@ -855,6 +950,11 @@ module m1_integrated (
     .clk(clk_sys), .rst_n(rst_n_sys),
     .vblank(vblank_irq_sys), .list_sel(listctl_sel),
     .bands(r3_dbg_frames), .passes(r3_dbg_objects),
+    // The coprocessor's own state, straight from m1_main. These cross clk_cpu
+    // (or clk_3d at 2:1) into clk_sys unsynchronised, which is fine for a
+    // number displayed to a human and is false-pathed in the SDC - a torn digit
+    // is invisible, and nothing reads these but the UART.
+    .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .tx(uart_tx)
   );
 
