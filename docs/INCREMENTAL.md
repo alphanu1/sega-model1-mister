@@ -41,7 +41,21 @@ Binary and md5 in `known_good/`. Built with `M1_SEED=5`, closes at +0.061.
 | 4 | SDRAM arbiter registered | `4b41233` | changes grant timing | **DID NOT CLOSE** - −0.132, parked |
 | 5 | V60 multiplexer reduction | `fdbfee7` | MOVD and the scaled index rewritten, not rebehaved | **WORKS** - 39,087 ALM, 495 M10K, +0.035 |
 | 6 | pixel census pipelined | not started | telemetry off the critical path | untested |
-| 7 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested, LAST |
+| 7 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested |
+
+**THE 2:1 TGP HAS NEVER BEEN SHOWN TO FAIL ON HARDWARE. Do not treat it as
+suspect.** It was in the images during the two-day black-screen episode, so it
+sat under suspicion for a long time, but the bisect from `61e383e` found the
+cause and it was the DATA CACHE (rung 2), not the coprocessor ratio. Every
+failing image contained the cache; 2:1 was never tested on its own.
+
+Two things have also changed since it was last built. Those builds ran at 98-99%
+ALM occupancy, where the fitter has no room to place and a marginal design can
+behave badly; the core is at 93% now. And timing is no longer a constraint on our
+own logic at all - `emu|pll general[0]` has +0.964 ns of margin, and the only
+failing path is `ascal|o_hcpt` inside the MiSTer framework, which is seed luck.
+
+So 2:1 is an ordinary next rung, worth ~1,300 ALM, not a known-bad change.
 
 Rung 5 measured on hardware 2026-09-02: `F=003A S=000E/F B=0246..0326 P=001B..0037`.
 58 fps, bands climbing, **P non-zero** - the working-core signature. It took four

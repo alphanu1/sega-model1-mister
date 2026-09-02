@@ -1,5 +1,116 @@
 # HANDOFF
 
+## 2026-09-02 — the V60's area is SELECTION, not operators, and the critical path was a debug counter
+
+Four splits of the V60, each committed on its own so any can be reverted alone,
+each verified against the code it replaced rather than only against the suite.
+
+    baseline                                     19,368 ALM standalone
+    MOVD through the register file's read ports  18,838   (-530)
+    rotate: four barrel shifters -> two          18,667   (-171)
+    v60_alu: thirty opcodes, one adder           18,439   (-228)
+    v60_shift: seven barrels -> one pair         18,411    (-28)
+
+**THE SPLIT STRATEGY IS LARGELY SPENT, and the shifter is the proof.** It should
+have been the biggest of the four - seven genuinely variable barrel shifters plus
+four inlined copies of `shl_lastout`, and only one of SHL/SHA/ROT can execute per
+instruction. It returned **28 ALM**. I predicted 600-800.
+
+The estimate came from the map report's Multiplexer Restructuring Statistics.
+Those are PRE-restructuring estimates: the report says so, its totals exceed the
+module's whole area, and Quartus was already sharing most of what I counted.
+`v60_alu` told the same story more quietly - ten adders removed, 228 returned.
+
+**So the bulk of this CPU is not duplicated operators.** Four splits moved the
+combinational-ALUT-per-register ratio from 6.57 to 6.31, on 4,224 registers that
+are the right size for 32 GPRs plus PC, flags, state and the fetch buffer. What
+remains is SELECTION: 3,747 seven-input `extend` cells, and destination registers
+with enormous fan-in - `st` alone has **280 assignment sites**. Extracting a
+datapath does not touch those, because the arms still exist and still mux into
+the same destinations. Reducing them means restructuring the state machine, which
+is a different and much riskier job.
+
+Plan the remaining splits (`v60_regs`, `v60_muldiv`) at tens to low hundreds of
+ALM, not thousands. The one item still sized in thousands is the FP group,
+measured at -2,984 when REMOVED - and it cannot be removed: `dbg_fp_trap` fires
+at `00fed52b`, a real `cvt.sw` sine-table lookup in gameplay.
+
+### THE CRITICAL PATH OF THE WHOLE DESIGN WAS A DEBUG COUNTER
+
+Five builds in a row landed between -0.17 and +0.04 ns and every one was answered
+with a reseed. Nobody had run `report_timing.tcl` on the full core. Its own header
+says why that was guesswork: "The STA summary gives a slack number and nothing
+else, which is enough to know a design misses its constraint and useless for
+knowing where to cut."
+
+    From: m1_video ... tile RAM block, PORT_B_WRITE_ENABLE_REG
+    To:   m1_video | px_acc[0][14]
+
+    RAM out -> Mux1143 -> Mux1143~2 -> mixer|hit_cat1[0] -> mixer|source[1]~4
+            -> Mux3~0 -> Equal0~1 -> Equal0~3 -> px_acc[0][7]~3 -> px_acc.ena
+
+Nine levels, 10.2 ns, ending in the clock enable of a telemetry counter. The
+pixel census hung off `mix_src`, the mixer's LATEST-arriving signal because it is
+the winner of the priority resolution, then piled `mix_src < 8`, a four-way
+indexed read, an 18-bit saturation compare, an increment and a write-enable
+decode on top. Registering the decision one cycle earlier moved all of it off the
+mixer's cone. Cost: a pixel straddling `vblank_start` can land in the next
+frame's tally.
+
+### TIMING IS NOT OUR CONSTRAINT, AND THE HEADLINE NUMBER HID THAT
+
+The headline "worst-case setup slack" is the worst clock in the WHOLE design, so
+once our logic fell below the framework's it stopped reporting our progress at
+all. Per-clock, after the census fix:
+
+    pll_hdmi (-> ascal|o_hcpt)   -0.047   <- the only violation, FRAMEWORK
+    emu|pll general[0]           +0.964   <- OUR main clock
+    general[3]                   +2.815
+    general[1]                   +9.977
+
+The census fix moved `general[0]` from -0.171 to **+0.964**, a 1.13 ns gain, not
+the 0.124 the headline suggested. **Our logic has a nanosecond spare.** The only
+thing deciding whether a build closes is `ascal|o_hcpt[5]` in the MiSTer
+framework, which this project does not modify - and that is seed luck: ten seeds
+spanned 0.60 ns with exactly one closing.
+
+`tools/archive_reports.sh <label> [project-dir]` now stashes each build's reports
+under `build/reports/`, because every build overwrites the same output_files path
+and a stale `s32_v60.fit.rpt` was read as current once today.
+
+### WHERE THE M10K GO, which matters more than ALM for sound
+
+    framework (sys_top - emu)   59
+    m1_mainram                 198     main RAM + display lists, after the halving
+    m1_raster3d                157     of which m1_quad_store 51 x 2 = 102
+    tile RAM u_tram             64
+    u_cxlat                     48
+                               ---
+    total                      495 / 553
+
+Sound wants ~57 and 58 are free. The headroom has to come out of `m1_mainram` or
+a `m1_quad_store` buffer - shrinking a real buffer, not trimming instrumentation.
+
+### THE BENCHES ARE THE POINT
+
+`tb_v60_alu` and `tb_v60_shift` check the new units against the expressions they
+replaced, transcribed quirk for quirk, and they found **three real bugs** before
+any of it reached hardware:
+
+  - AND/OR/XOR leave carry UNTOUCHED rather than clearing it - the only arms that
+    do. Without `cy_we` every logic op would have quietly cleared carry.
+  - the shared arithmetic right shift was silently LOGICAL. `wire signed` plus
+    `>>>` is not enough: a concatenation is always unsigned in SystemVerilog, so
+    the sign-extending ternary came out unsigned.
+  - the overflow mask was EMPTY at count == width. `mag[4:0]` turns 32 into 0;
+    the original leans on `32'd1 << 32` being 0 so minus one gives the full-width
+    mask, which is MAME's count == bitsize case.
+
+The 29-test suite passes with or without all three. It is a good regression net
+and it is NOT dense enough to prove a datapath refactor - the same reason
+CLAUDE.md records that it passed both before and after the `st_hold` fix. Sweep
+the boundaries by construction; do not sample and hope.
+
 ## 2026-08-31 — the 3D layer draws a whole frame, and two benches were lying
 
 **95.9% of pixels, 369 of 384 rows, 23 of 24 bands.** It was 0.3% of one frame in
