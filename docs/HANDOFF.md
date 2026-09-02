@@ -35,6 +35,55 @@ ALM, not thousands. The one item still sized in thousands is the FP group,
 measured at -2,984 when REMOVED - and it cannot be removed: `dbg_fp_trap` fires
 at `00fed52b`, a real `cvt.sw` sine-table lookup in gameplay.
 
+### WHY THE i960 IS HALF THE SIZE, MEASURED - and what would actually fix it
+
+Both cores fitted on the same device with the same Quartus. From
+`output_files/Model2.fit.rpt` in the Model 2 repo (read-only reference) and our
+own rung-7 report:
+
+                    ALM      comb-ALUTs   registers   ALUTs/register
+    our V60        15,733      23,535        4,164        5.65
+    Model 2 i960    8,246      12,243        5,307        2.31
+
+**The i960 has MORE registers than we do and HALF the combinational logic.** And
+packing efficiency is identical - both sit at ~1.5 ALUTs per ALM - so ALM is
+simply proportional to combinational logic here. Halving the V60's area means
+halving its LUTs; no amount of restructuring that leaves the LUT count alone
+will do it.
+
+A second number says where the headroom is. Registers per ALM: i960 0.64, ours
+**0.26**. A Cyclone V ALM carries up to four registers beside its LUTs, so
+registers added to ALMs we are already paying for are nearly free, and we are
+using a quarter of that capacity. The V60 is register-poor and logic-rich; the
+i960 is the opposite.
+
+**The structural cause is visible in the source.** i960_top.sv is 1,903 lines
+with **17 always blocks**; our v60.sv is ~4,500 lines with essentially **one**,
+spanning 47 case arms. Seventeen smaller blocks each drive their own small set
+of destinations. One giant block makes every destination register a selection
+tree over every arm - which is why `st` has 280 assignment sites and why the
+netlist carries 3,747 seven-input mux cells.
+
+**SO EXTRACTING MORE UNITS WILL NOT DO IT, and four splits proved that**: v60_alu
+took ten adders out for 228 ALM, v60_shift seven barrel shifters for 28. The
+arms remain, and they still evaluate in parallel and still mux into the same
+destinations. The logic that costs is the parallel evaluation itself, not the
+operators inside it.
+
+What would actually work is the opposite of extraction: compute LESS per cycle.
+A microsequenced CPU is supposed to reuse one datapath across several cycles,
+and ours evaluates every arm at once and discards all but one result. Turning
+depth into cycles uses the register capacity that is already bought and paid
+for. That is a rewrite of the execute stage, not a refactor, and it would need
+the same bench treatment the ALU and shifter got - equivalence against the code
+it replaces, not just the 29-test suite.
+
+**Some of the gap is real and not recoverable.** The V60 is a genuinely more
+complex ISA than the i960 - full CISC addressing modes, string and bit-field
+instruction groups, decimal arithmetic - so parity is not the target. But 2.4x
+the combinational logic for fewer registers is not explained by the instruction
+set alone.
+
 ### THE CRITICAL PATH OF THE WHOLE DESIGN WAS A DEBUG COUNTER
 
 Five builds in a row landed between -0.17 and +0.04 ns and every one was answered
