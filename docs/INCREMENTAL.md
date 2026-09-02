@@ -35,17 +35,20 @@ Binary and md5 in `known_good/`. Built with `M1_SEED=5`, closes at +0.061.
 
 | # | change | commit | why it might break the board | status |
 |---|---|---|---|---|
-| 1 | display lists halved | `cc3b548` | 64 M10K freed; reads above the cap return zero | untested |
-| 2 | SDRAM port 0 bursts 4 | part of `949c0a8` | changes bus occupancy for ALL seven masters | untested |
-| 3 | CPU port return 16→64 bits | part of `949c0a8` | more data crossing clk_cpu↔clk_sys | untested |
-| 4 | data cache | part of `949c0a8` | caches charram, wram, rom, nvram | untested |
-| 5 | FP pipelining | `7418cfd` | −1,672 ALM, one extra cycle on FP arith | untested |
-| 6 | SDRAM arbiter registered | uncommitted | −1,305 ALM, changes grant timing | untested |
-| 7 | pixel census pipelined | uncommitted | telemetry off the critical path | untested |
-| 8 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested |
+| 1 | display lists halved | `cc3b548` | 64 M10K freed; reads above the cap return zero | **WORKS** - 41,310 ALM, 495 M10K, +0.340 |
+| 2 | data cache, WITH its burst and crossing changes | `949c0a8` | caches charram, wram, rom, nvram; changes bus occupancy for all seven masters | untested |
+| 3 | FP pipelining | `7418cfd` | −1,672 ALM, one extra cycle on FP arith | untested |
+| 4 | SDRAM arbiter registered | uncommitted | −1,305 ALM, changes grant timing | untested |
+| 5 | pixel census pipelined | uncommitted | telemetry off the critical path | untested |
+| 6 | TGP at 2:1 + CDC | uncommitted | the coprocessor at the board's own ratio | untested |
 
-Steps 2, 3 and 4 are one commit and may need splitting; the burst-length change
-is one line in `m1_sdram.sv`'s `blen()` and is independently testable.
+**Rungs 2-4 of the original plan are ONE change and must not be split.** Making
+port 0 burst four words requires the requester to send burst-aligned addresses
+and select the wanted word from the 64-bit return - which is precisely what
+m1_dcache does. Split apart, `m1_main` would send unaligned addresses and take
+`p_dout[15:0]`, reading the wrong word. The widened crossing exists for the same
+reason: so a 4-word line arrives in one transaction. Testing them separately
+would be testing something that was never meant to work.
 
 ## Verify each step on the BOARD, not in simulation
 
