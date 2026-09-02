@@ -92,9 +92,7 @@ module m1_integrated (
   output logic [24:1] sdr_addr,
   output logic [15:0] sdr_din,
   output logic [1:0]  sdr_be,
-  // SIXTY-FOUR BITS: port 0 bursts four words now so m1_dcache can fill a
-  // 4-word line in one transaction. The write side stays 16 bits.
-  input  logic [63:0] sdr_dout,
+  input  logic [15:0] sdr_dout,
   input  logic        sdr_ack,
 
   // The 3D layer's two SDRAM masters, in the clk_sys domain like the others.
@@ -184,12 +182,6 @@ module m1_integrated (
   output logic        dbg_fp_trap,
   output logic [15:0] dbg_io_replies,
   output logic        rom_loaded_o,
-  // Cache telemetry. A cache that silently never hits looks exactly like one
-  // that works, so the rate is reported rather than assumed.
-  output logic [31:0] dbg_dc_hits,
-  output logic [31:0] dbg_dc_misses,
-  // Must be zero. A dropped request stops the V60 with no other symptom.
-  output logic [31:0] dbg_dc_dropped,
   // Set, and stuck, if the loader ever had to drop a word the HPS sent after
   // ioctl_wait went up. Brought out because a dropped word is a corrupt ROM
   // that reports a successful load and fails much later as a CPU fault.
@@ -582,39 +574,11 @@ module m1_integrated (
   // ------------------------------------------------------------- the crossings
   logic cpu_sdr_busy;
 
-  // THE DATA CACHE SITS ON THIS SIDE OF THE CROSSING, which is the whole point
-  // of it. Measured (docs/findings.md 2026-09-01): an SDRAM access costs the
-  // V60 33 clk_sys against 7.80 for on-chip block RAM, and the gap is the
-  // crossing below plus arbitration against six other masters, not the DRAM. A
-  // hit here never crosses clocks and never arbitrates.
-  //
-  // Flushed while the ROM is still arriving. That is the only coherency this
-  // needs: of the seven SDRAM masters the other six are read-only, and the
-  // loader - the one writer - runs while the CPU is held in reset.
-  logic        dc_req, dc_we, dc_ack;
-  logic [24:1] dc_addr;
-  logic [15:0] dc_din;
-  logic [1:0]  dc_be;
-  logic [63:0] dc_dout;
-
-  m1_dcache u_dcache (
-    .clk(clk_cpu), .rst_n(rst_n_cpu),
-    .flush(!rom_loaded_sync[1]),
-    .c_req(cpu_sdr_req), .c_we(cpu_sdr_we), .c_addr(cpu_sdr_addr),
-    .c_din(cpu_sdr_din), .c_be(cpu_sdr_be),
-    .c_dout(cpu_sdr_dout), .c_ack(cpu_sdr_ack),
-    .m_req(dc_req), .m_we(dc_we), .m_addr(dc_addr),
-    .m_din(dc_din), .m_be(dc_be),
-    .m_dout(dc_dout), .m_ack(dc_ack),
-    .dbg_hits(dbg_dc_hits), .dbg_misses(dbg_dc_misses), .dbg_writes(),
-    .dbg_dropped(dbg_dc_dropped)
-  );
-
-  m1_cdc_port #(.AW(24), .DW(16), .DWO(64), .BEW(2)) u_data_cdc (
+  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_data_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
-    .a_req(dc_req), .a_we(dc_we), .a_addr(dc_addr),
-    .a_din(dc_din), .a_be(dc_be),
-    .a_dout(dc_dout), .a_ack(dc_ack), .a_busy(cpu_sdr_busy),
+    .a_req(cpu_sdr_req), .a_we(cpu_sdr_we), .a_addr(cpu_sdr_addr),
+    .a_din(cpu_sdr_din), .a_be(cpu_sdr_be),
+    .a_dout(cpu_sdr_dout), .a_ack(cpu_sdr_ack), .a_busy(cpu_sdr_busy),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(sdr_req), .b_we(sdr_we), .b_addr(sdr_addr),
     .b_din(sdr_din), .b_be(sdr_be),
