@@ -124,3 +124,8 @@ Thumbs.db
 # ROM-derived images. Hard rule 2: nothing derived from ROMs is committed.
 /build/rom/
 *.hex
+
+# The confirmed-working .rbf is kept for restore but not committed - it is a
+# 4.6 MB build artefact. Its md5 and the README that says how to rebuild it ARE
+# committed, so the binary can always be reproduced from 61e383e.
+known_good/*.rbf
