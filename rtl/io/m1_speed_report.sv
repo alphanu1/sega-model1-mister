@@ -27,10 +27,19 @@
 //     6.00                  33%   (what the board looks like)
 //
 // One line a second over rtl/io/m1_uart_tx.sv, which drives UART_TXD into the
-// HPS's own ttyS0. Read it with the console's getty out of the way, since
+// HPS's own ttyS1. Read it with the console's getty out of the way, since
 // /proc/cmdline carries console=ttyS0,115200:
 //
-//     ssh root@<mister> "kill \$(pgrep -f 'agetty.*console'); cat /dev/ttyS0"
+//     ssh root@<mister> "stty -F /dev/ttyS1 115200 raw -echo; cat /dev/ttyS1"
+//
+// IT IS ttyS1, NOT ttyS0, AND THERE IS NO GETTY TO KILL. Measured on the board
+// 2026-09-01: /proc/tty/driver/serial shows port 0 (ttyS0, mmio FFC02000) is the
+// console with rx:0, and port 1 (ttyS1, mmio FFC03000) carrying rx:460058 - our
+// bytes. sys_top wires emu's UART_TXD into cyclonev_hps_interface_peripheral_uart,
+// which is the HPS's SECOND uart; ttyS0 is the physical console header and never
+// sees a byte of this. The old instruction also piped through `pgrep`, which does
+// not exist on the MiSTer's BusyBox, so the kill was a silent no-op - and killing
+// it was never needed, because nothing holds ttyS1.
 //
 // HEX, NOT DECIMAL. A binary-to-decimal conversion is a divider and a state
 // machine for something a human reads once; a nibble to ASCII is four gates.
@@ -53,6 +62,13 @@ module m1_speed_report #(
   input  logic list_sel,        // listctl bit 6, the display-list buffer select
   input  logic [15:0] bands,    // 3D bands presented, free-running
   input  logic [15:0] passes,   // 3D geometry passes, free-running
+  // THE COPROCESSOR'S OWN STATE, because the board keeps showing a black screen
+  // with the 3D layer receiving nothing and the existing fields cannot say why.
+  // Parked at microcode 0x004c means starved of commands; anywhere else means it
+  // is executing; retires stuck at zero means it never left reset at all. Those
+  // are different faults and five builds have been spent guessing between them.
+  input  logic [15:0] tgp_pc,      // coprocessor program counter
+  input  logic [15:0] tgp_retires, // free-running retire count
 
   output logic tx
 );
@@ -62,12 +78,14 @@ module m1_speed_report #(
   logic [15:0] period_cnt;
   logic        sel_d;
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
+  logic [15:0] r_tpc, r_tret;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       n_frame <= '0; n_swap <= '0; period_cnt <= '0; sel_d <= 1'b0;
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
+      r_tpc <= '0; r_tret <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -83,6 +101,8 @@ module m1_speed_report #(
           r_swap  <= n_swap;          n_swap  <= '0;
           r_bands <= bands;
           r_pass  <= passes;
+          r_tpc   <= tgp_pc;
+          r_tret  <= tgp_retires;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -90,10 +110,10 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx\r\n" - 29 bytes.
-  localparam int unsigned NCH = 29;
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx\r\n" - 43 bytes.
+  localparam int unsigned NCH = 43;
 
-  logic [4:0]  ci;
+  logic [5:0]  ci;
   logic        busy;
   logic [7:0]  ch;
   logic        wr;
@@ -112,34 +132,48 @@ module m1_speed_report #(
   always_comb begin
     ch = 8'h20;
     case (ci)
-      5'd0:  ch = "F";
-      5'd1:  ch = "=";
-      5'd2:  ch = hexc(vals[63:60]);
-      5'd3:  ch = hexc(vals[59:56]);
-      5'd4:  ch = hexc(vals[55:52]);
-      5'd5:  ch = hexc(vals[51:48]);
-      5'd6:  ch = " ";
-      5'd7:  ch = "S";
-      5'd8:  ch = "=";
-      5'd9:  ch = hexc(vals[47:44]);
-      5'd10: ch = hexc(vals[43:40]);
-      5'd11: ch = hexc(vals[39:36]);
-      5'd12: ch = hexc(vals[35:32]);
-      5'd13: ch = " ";
-      5'd14: ch = "B";
-      5'd15: ch = "=";
-      5'd16: ch = hexc(vals[31:28]);
-      5'd17: ch = hexc(vals[27:24]);
-      5'd18: ch = hexc(vals[23:20]);
-      5'd19: ch = hexc(vals[19:16]);
-      5'd20: ch = " ";
-      5'd21: ch = "P";
-      5'd22: ch = "=";
-      5'd23: ch = hexc(vals[15:12]);
-      5'd24: ch = hexc(vals[11:8]);
-      5'd25: ch = hexc(vals[7:4]);
-      5'd26: ch = hexc(vals[3:0]);
-      5'd27: ch = 8'h0d;
+      6'd0:  ch = "F";
+      6'd1:  ch = "=";
+      6'd2:  ch = hexc(vals[63:60]);
+      6'd3:  ch = hexc(vals[59:56]);
+      6'd4:  ch = hexc(vals[55:52]);
+      6'd5:  ch = hexc(vals[51:48]);
+      6'd6:  ch = " ";
+      6'd7:  ch = "S";
+      6'd8:  ch = "=";
+      6'd9:  ch = hexc(vals[47:44]);
+      6'd10: ch = hexc(vals[43:40]);
+      6'd11: ch = hexc(vals[39:36]);
+      6'd12: ch = hexc(vals[35:32]);
+      6'd13: ch = " ";
+      6'd14: ch = "B";
+      6'd15: ch = "=";
+      6'd16: ch = hexc(vals[31:28]);
+      6'd17: ch = hexc(vals[27:24]);
+      6'd18: ch = hexc(vals[23:20]);
+      6'd19: ch = hexc(vals[19:16]);
+      6'd20: ch = " ";
+      6'd21: ch = "P";
+      6'd22: ch = "=";
+      6'd23: ch = hexc(vals[15:12]);
+      6'd24: ch = hexc(vals[11:8]);
+      6'd25: ch = hexc(vals[7:4]);
+      6'd26: ch = hexc(vals[3:0]);
+      6'd27: ch = " ";
+      6'd28: ch = "C";
+      6'd29: ch = "=";
+      6'd30: ch = hexc(r_tpc[15:12]);
+      6'd31: ch = hexc(r_tpc[11:8]);
+      6'd32: ch = hexc(r_tpc[7:4]);
+      6'd33: ch = hexc(r_tpc[3:0]);
+      6'd34: ch = " ";
+      6'd35: ch = "R";
+      6'd36: ch = "=";
+      6'd37: ch = hexc(r_tret[15:12]);
+      6'd38: ch = hexc(r_tret[11:8]);
+      6'd39: ch = hexc(r_tret[7:4]);
+      6'd40: ch = hexc(r_tret[3:0]);
+      6'd41: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end
@@ -153,8 +187,8 @@ module m1_speed_report #(
       if (report_go) begin
         busy <= 1'b1; ci <= '0;
       end else if (busy && !full) begin
-        if (ci == 5'(NCH - 1)) busy <= 1'b0;
-        else                   ci <= ci + 5'd1;
+        if (ci == 6'(NCH - 1)) busy <= 1'b0;
+        else                   ci <= ci + 6'd1;
       end
     end
   end

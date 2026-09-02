@@ -303,8 +303,20 @@ if {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0 && [llength $r3d_clk] > 0} 
     #
     # Measured before the cut: -2.277 ns and -142 ns of total negative slack,
     # entirely from those two structures.
+    # THE THREE-WAY CUT IS CORRECT AGAIN, because m1_copro_if is now a REAL
+    # crossing: it synchronises the V60's request into the coprocessor's clock
+    # domain with two flops, so these paths genuinely do not need timing.
+    #
+    # It was not always so, and that is the whole story of the 2:1 work:
+    #   cut, interface not a CDC  -> unconstrained, board BLACK, P=0000
+    #   clocks grouped            -> "Can't fit design in device"
+    #   set_max_delay over the cut-> no effect, only 2 paths ever analysed
+    #   interface made a real CDC -> cut is honest, and this is that build
     set_clock_groups -asynchronous -group $sys_clk -group $cpu_clk -group $r3d_clk
-    post_message "Model1: clk_sys, clk_cpu and clk_3d cut from each other"
+    set_false_path -from [get_registers -nowarn {*m1_copro_if*dbg_*}]
+    set_false_path -from [get_registers -nowarn {*m1_tgp*dbg_*}]
+    set_false_path -to   [get_registers -nowarn {*m1_speed_report*}]
+    post_message "Model1: three-way cut; copro_if is a real CDC"
 } elseif {[llength $sys_clk] > 0 && [llength $cpu_clk] > 0} {
     set_clock_groups -asynchronous -group $sys_clk -group $cpu_clk
     post_message -type warning \
@@ -407,16 +419,28 @@ fi
 #
 # M1_QSPEED=1 puts all of it back, for when timing is the problem again.
 M1_QOPT="${M1_QOPT:-Aggressive Area}"
+# THE FOUR SETTINGS ARE INDEPENDENT, and coupling them under one switch hides a
+# useful middle. The two DUPLICATION options are what spend ALM most directly -
+# they replicate registers and insert logic cells - while MODE and TECHNIQUE
+# bias the optimiser without necessarily inflating the netlist. So a balanced
+# build with duplication still off is a real point on the curve, and it is the
+# one worth trying when area mode misses timing but speed mode will not fit:
+#
+#   M1_QTECH=BALANCED M1_QOPT=Balanced make rbf
+#
+# Measured trade for reference: Aggressive Area saved 469 ALM for 0.272 ns.
+M1_QTECH="${M1_QTECH:-AREA}"
+M1_QDUP="${M1_QDUP:-OFF}"
 if [ -n "${M1_QSPEED:-}" ]; then
     echo "  M1_QSPEED set: keeping the template's speed-biased settings"
 else
     sed -i -e "s/^set_global_assignment -name OPTIMIZATION_MODE .*/set_global_assignment -name OPTIMIZATION_MODE \"$M1_QOPT\"/" \
-           -e 's/^set_global_assignment -name OPTIMIZATION_TECHNIQUE .*/set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA/' \
-           -e 's/^set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION .*/set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF/' \
-           -e 's/^set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION .*/set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION OFF/' \
+           -e "s/^set_global_assignment -name OPTIMIZATION_TECHNIQUE .*/set_global_assignment -name OPTIMIZATION_TECHNIQUE $M1_QTECH/" \
+           -e "s/^set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION .*/set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION $M1_QDUP/" \
+           -e "s/^set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION .*/set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION $M1_QDUP/" \
            "$stage/Model1.qsf"
-    echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = AREA"
-    echo "  register duplication OFF, router logic duplication OFF"
+    echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = $M1_QTECH"
+    echo "  register duplication $M1_QDUP, router logic duplication $M1_QDUP"
 fi
 
 cat > "$stage/Model1.qpf" <<'EOF'

@@ -307,6 +307,19 @@ module m1_integrated (
 
   m1_main main (
     .clk(clk_cpu), .ce(ce_cpu), .rst_n(rst_n_cpu),
+    // THE COPROCESSOR RUNS AT 2:1, which is what the board does - 40 MHz TGP
+    // against a 16 MHz V60 - where we had 1:1. clk_3d is 47.059 MHz, EXACTLY
+    // twice clk_cpu and from the same PLL, so the edges are phase-aligned at an
+    // integer ratio rather than genuinely asynchronous.
+    //
+    // Measured at 2:1: V60 result-FIFO waits 30,484,392 -> 10,436,790, CPI
+    // 20.85 -> 18.78, retires +11%.
+    //
+    // Two resets, and the asymmetry is load-bearing. The INTERFACE takes the
+    // raw reset because it holds the copro RAM the loader writes into; the
+    // COPROCESSOR takes the rom_loaded-gated one because it must not execute
+    // program RAM while the ROMs are still arriving.
+    .clk_tgp(clk_3d), .rst_n_tgp(rst_n_tgp), .rst_n_tgp_if(rst_n_3d),
     .rom_loaded(rom_loaded_sync[1]),
     .in_bytes(in_bytes),
     // Microcode from the loader, written in the FAST domain into the dual-clock
@@ -620,6 +633,18 @@ module m1_integrated (
   localparam logic [24:1] POLY_BASE    = 24'h420000;
   localparam logic [24:1] TGP_RAM_BASE = 24'hC20000;
 
+  // The coprocessor's reset, on its new clock. It MUST keep the rom_loaded
+  // gate: wiring the TGP to the raw reset once let it execute program RAM while
+  // the HPS was still streaming ROMs into it, where it blocked on a command
+  // FIFO read at microcode 0x004c and never recovered. That cost a session.
+  logic [1:0]  rst_sync_tgp;
+  logic        rst_n_tgp;
+  always_ff @(posedge clk_3d or negedge rst_n_cpu) begin
+    if (!rst_n_cpu) rst_sync_tgp <= 2'b00;
+    else            rst_sync_tgp <= {rst_sync_tgp[0], rom_loaded_sync[1]};
+  end
+  assign rst_n_tgp = rst_sync_tgp[1];
+
   logic        rst_n_3d;
   logic [1:0]  rst_sync_3d;
   always_ff @(posedge clk_3d or negedge rst_n) begin
@@ -819,6 +844,12 @@ module m1_integrated (
     .clk(clk_sys), .rst_n(rst_n_sys),
     .vblank(vblank_irq_sys), .list_sel(listctl_sel),
     .bands(r3_dbg_frames), .passes(r3_dbg_objects),
+    // THE COPROCESSOR'S STATE, ON THE PRINTF CHANNEL. Added with 2:1 so its
+    // effect can be MEASURED on hardware rather than inferred: C= is the TGP's
+    // pc and R= its free-running retire count. Both cross from clk_cpu/clk_3d
+    // into clk_sys unsynchronised, which is fine for a counter read once a
+    // second - a torn value is one wrong sample, not a wrong conclusion.
+    .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .tx(uart_tx)
   );
 
