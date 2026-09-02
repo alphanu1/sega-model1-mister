@@ -1,7 +1,13 @@
 # Incremental bring-up from the last known-good hardware build
 
-**Rule: one change per build. Flash it. Confirm 2D AND 3D draw on the board.
-Do not add the next change until the current one is confirmed.**
+**Rule: one change per build. Flash it. Confirm on the board. ONE COMMIT PER
+ADDITION, on this branch, recording the hardware result. Do not add the next
+change until the current one is confirmed and committed.**
+
+Each rung's commit message carries: what was added, the build's slack and ALM,
+and the telemetry from the board - `P` non-zero (works) or `P=0000` (broken),
+with the swap rate. That way the branch history IS the bisect record, and a
+future session can see exactly which change was on the board when.
 
 Two days were spent flashing images containing eight changes at once and
 attributing each black screen to whichever piece had been touched most recently.
