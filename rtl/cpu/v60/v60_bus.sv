@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Sega Model 1 core for MiSTer FPGA - Copyright (C) 2026 alphanu1
+//
+// THIS FILE IS A MODIFIED VERSION OF SOMEONE ELSE'S WORK, AND SAYS SO HERE
+// BECAUSE THE LICENCE REQUIRES IT. See the fuller note at the top of v60.sv.
+//
+// Imported from the Sega System 32 MiSTer core, https://github.com/meathax/s32,
+// GPL-3.0-or-later. GPLv3 section 5(a) requires a modified file to state that
+// it was changed, and when.
+//
+// Modified for the Sega Model 1, 2026:
+//   - the first bus cycle is issued in I_IDLE rather than one state later.
+//     Measured: every page costs an identical 36 fast cycles including block
+//     RAM, so the fixed handshake, not the memory, dominates a access.
+//
 //============================================================================
 //  V60 logical-bus adapter (DESIGN.md §5.4 "bus unit")
 //  Turns the CPU's logical accesses (any address, size 1/2/4 bytes) into

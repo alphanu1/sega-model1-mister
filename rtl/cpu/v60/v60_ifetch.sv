@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sega Model 1 core for MiSTer FPGA — Copyright (C) 2026 alphanu1
 //
+// DERIVED FROM SOMEONE ELSE'S WORK. This module was split out of v60.sv, which
+// was imported from the Sega System 32 MiSTer core,
+// https://github.com/meathax/s32, GPL-3.0-or-later. Extracting code into a new
+// file does not make it independent of its licence, so this file is covered by
+// the same terms and carries the same notice. See the fuller note at the top of
+// v60.sv. Split out 2026.
+//
 // V60 instruction fetch: the 24-byte window, its realign network, the loop
 // cache and the prefetch unit.
 //
