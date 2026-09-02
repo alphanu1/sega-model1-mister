@@ -1,3 +1,32 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Sega Model 1 core for MiSTer FPGA - Copyright (C) 2026 alphanu1
+//
+// THIS FILE IS A MODIFIED VERSION OF SOMEONE ELSE'S WORK, AND SAYS SO HERE
+// BECAUSE THE LICENCE REQUIRES IT.
+//
+// Imported from the Sega System 32 MiSTer core, https://github.com/meathax/s32,
+// which is licensed GPL-3.0-or-later. This project is GPL-3.0-or-later too, so
+// the copyleft obligation is met by publishing this source; GPLv3 section 5(a)
+// additionally requires a modified file to carry prominent notice that it was
+// changed, and a date. This block is that notice.
+//
+// There is no threshold of difference at which that stops being true. A
+// derivative work carries its original licence however much of it is rewritten,
+// and every change below is a rework of the upstream's own expression rather
+// than an independent implementation.
+//
+// Modified for the Sega Model 1 between 2026-08 and 2026-09-02:
+//   - imported and fixed for this project's SystemVerilog lint settings
+//   - instruction fetch, the realign network, the loop cache and the prefetch
+//     unit extracted into v60_ifetch.sv, so their area could be measured
+//   - the floating-point normalise/round/exponent tail shared by fp_add,
+//     fp_mul, fp_scale and cvt_w_s folded into one pipelined fp_pack stage
+//   - MOVD reads the register pair through the register file's existing read
+//     ports instead of indexing r[] directly, removing a 32:1 mux and an adder
+//   - the group 6/7 scaled index computed once as ea_index rather than at seven
+//     separate sites, each of which inferred its own 32-bit barrel shifter
+//
 //============================================================================
 //  NEC V60 (uPD70616) / V70 (uPD70632) CPU core for the Sega System 32
 //  MiSTer core.  DESIGN.md §5.
@@ -648,11 +677,30 @@ always @* begin
         S_EXEC: begin
             rf_raddr_a = ((cur_op == 8'ha6) || (cur_op == 8'hb6))
                          ? op2[4:0] + 5'd1 : op1[4:0];
-            rf_raddr_b = op2[4:0];
+            // MOVD reads the register PAIR op1 and op1+1. It used to index r[]
+            // directly for both, and a variable index into a 32-entry file
+            // infers a fresh 32:1 mux on 32 bits - about 175 ALM each, with an
+            // adder in front of the second. The file already has two read
+            // ports; MOVD only WRITES op2, so port b is free for it. The +1
+            // now happens on a 5-bit address instead of behind a 32-bit mux.
+            rf_raddr_b = (cur_op == 8'h3f) ? op1[4:0] + 5'd1 : op2[4:0];
         end
         default: ;
     endcase
 end
+// THE SCALED INDEX, COMPUTED ONCE. Group 6/7 addressing scales the index
+// register by the operand size, and the expression `rf_rdata_a << ea_dim`
+// appeared at eight separate sites in the state machine. Quartus will not share
+// logic across case arms it cannot prove exclusive, so each site inferred its
+// own 32-bit shifter. ea_dim is a register written in an earlier state and
+// rf_rdata_a is combinational from rf_raddr_a, so one continuous assignment is
+// exactly equivalent to the eight - and infers one shifter instead of eight.
+//
+// DECLARED HERE rather than beside ea_dim: Icarus binds strictly in source
+// order and rejects a reference to rf_rdata_a above its declaration. Verilator
+// accepts it, and six of the V60 tests are built with Icarus.
+wire [31:0] ea_index = rf_rdata_a << ea_dim;
+
 
 // extension displacement follows mode byte(s)
 // A 20-byte F1 instruction can place the second double-displacement field at
@@ -1410,12 +1458,12 @@ else if (ce) begin
                 case (modval2[7:5])
                 3'd0, 3'd1, 3'd2: begin // Displacement indexed: [reg2+disp] + reg1*size
                     d1t = disp_of(ea_ofs+2, modval2[6:5]);
-                    ea_addr <= rf_rdata_b + d1t + (rf_rdata_a << ea_dim);
+                    ea_addr <= rf_rdata_b + d1t + ea_index;
                     ea_len  <= 5'd2 + disp_len(modval2[6:5]);
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
                 3'd3: begin            // Register indirect indexed
-                    ea_addr <= rf_rdata_b + (rf_rdata_a << ea_dim);
+                    ea_addr <= rf_rdata_b + ea_index;
                     ea_len  <= 5'd2;
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
@@ -1423,7 +1471,7 @@ else if (ce) begin
                     d1t = disp_of(ea_ofs+2, modval2[6:5]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= rf_rdata_b + d1t;
-                    ea_addr <= (rf_rdata_a << ea_dim);  // index added after deref
+                    ea_addr <= ea_index;  // index added after deref
                     ea_len  <= 5'd2 + disp_len(modval2[6:5]);
                     st <= S_EA_IND2;
                 end
@@ -1434,13 +1482,13 @@ else if (ce) begin
                     else case (modval2[3:0])
                     4'h0, 4'h1, 4'h2: begin
                         d1t = disp_of(ea_ofs+2, modval2[1:0]);
-                        ea_addr <= pc + d1t + (rf_rdata_a << ea_dim);
+                        ea_addr <= pc + d1t + ea_index;
                         ea_len  <= 5'd2 + disp_len(modval2[1:0]);
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
                     4'h3: begin
                         d1t = fb32(ea_ofs+2);
-                        ea_addr <= d1t + (rf_rdata_a << ea_dim);
+                        ea_addr <= d1t + ea_index;
                         ea_len  <= 5'd6;
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
@@ -1448,7 +1496,7 @@ else if (ce) begin
                         d1t = disp_of(ea_ofs+2, modval2[1:0]);
                         dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                         dbus_addr <= pc + d1t;
-                        ea_addr <= (rf_rdata_a << ea_dim);
+                        ea_addr <= ea_index;
                         ea_len  <= 5'd2 + disp_len(modval2[1:0]);
                         st <= S_EA_IND2;
                     end
@@ -1456,7 +1504,7 @@ else if (ce) begin
                         d1t = fb32(ea_ofs+2);
                         dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                         dbus_addr <= d1t;
-                        ea_addr <= (rf_rdata_a << ea_dim);
+                        ea_addr <= ea_index;
                         ea_len  <= 5'd6;
                         st <= S_EA_IND2;
                     end
@@ -3301,11 +3349,13 @@ task automatic exec_op;
         // number, flagN=0 -> memory address of the low word.
         if (flag1) begin
             // register-pair source: capture the pair, then dispatch the write
-            movd_lo <= r[op1[4:0]];
-            movd_hi <= r[op1[4:0] + 5'd1];
+            // Through the read ports, not a direct index - see rf_raddr_b's
+            // note in the S_EXEC arm above. rf_rdata_a is already r[op1] here.
+            movd_lo <= rf_rdata_a;
+            movd_hi <= rf_rdata_b;
             if (flag2) begin
-                queue_reg_write(op2[4:0],          r[op1[4:0]],          32'hffffffff);
-                queue_reg_write(op2[4:0] + 5'd1,   r[op1[4:0] + 5'd1],   32'hffffffff);
+                queue_reg_write(op2[4:0],          rf_rdata_a,           32'hffffffff);
+                queue_reg_write(op2[4:0] + 5'd1,   rf_rdata_b,           32'hffffffff);
                 st <= S_NEXT;
             end
             else st <= S_MOVD_WL;   // register -> memory qword

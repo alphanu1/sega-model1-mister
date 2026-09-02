@@ -141,7 +141,39 @@ Each variable index infers a fresh 32:1 mux on 32 bits, and `+ 5'd1` adds an
 adder in front of it. Routing these through the existing read ports costs
 nothing - `rf_rdata_a/b` are combinational from `rf_raddr_a/b` - but needs the
 state context, because `rf_raddr` is assigned per state and `exec_op` is a task.
-`r[init_reg_i]`, `r[rf_waddr0]` and `r[rf_waddr1]` are three more.
+DONE, 2026-09-02. `S_EXEC` already drove `rf_raddr_a = op1[4:0]` for every
+opcode but DIVX, so `rf_rdata_a` was the low word for free; MOVD only *writes*
+`op2`, which left port b available for `op1+1`. The `+1` now happens on a 5-bit
+read address instead of behind a 32-bit mux.
+
+**The three further targets listed here were wrong, and are struck off.**
+`r[init_reg_i]` is inside an `initial` block - simulation only, no hardware at
+all. `r[rf_waddr0]` and `r[rf_waddr1]` are the WRITE port: a variable index on
+the left of an assignment infers an address decoder, not a mux, and that is the
+correct structure for a register file. After MOVD no variable-index *read* of
+`r[]` remains; the only survivors are `alu_r[bi]`, single-bit selects worth
+about 2 ALM each.
+
+### The second target: the scaled index
+
+`(rf_rdata_a << ea_dim)` appeared at seven sites in the addressing-mode decoder,
+in different arms of nested case statements. Quartus will not share logic across
+arms it cannot prove exclusive, so each site inferred its own 32-bit shifter.
+`ea_dim` is registered in an earlier state and `rf_rdata_a` is combinational, so
+one `wire [31:0] ea_index` is exactly equivalent to the seven.
+
+It must be declared AFTER `rf_rdata_a` and outside the `always` block: Icarus
+binds strictly in source order, and six of the V60 tests are built with Icarus,
+so a declaration placed beside `ea_dim` passes Verilator and fails the suite.
+
+### Measuring V60 area: use the standalone target
+
+`make quartus MOD=s32_v60` synthesises and fits the CPU alone, which is both far
+faster than a full build and free of the rest of the design's placement noise.
+Counting lines that merely mention `s32_v60` in the full design's `.map.rpt` is
+NOT a measurement - it matches every message about the module, not mux-table
+rows, and comparing two such counts produced an apparent 826 -> 499 improvement
+that means nothing.
 
 ### Why it matters more than anything else left
 
