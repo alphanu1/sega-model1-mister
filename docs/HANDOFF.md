@@ -78,6 +78,64 @@ spanned 0.60 ns with exactly one closing.
 under `build/reports/`, because every build overwrites the same output_files path
 and a stale `s32_v60.fit.rpt` was read as current once today.
 
+### THE FRAMEWORK COSTS ~3,500 ALM, AND SOME OF IT IS A BUILD OPTION
+
+Asked whether area could be freed from `m1_main.sv`: no. That module's OWN logic
+is 177 ALM. Its 18,975 total is almost entirely the V60 (15,684, of which 14,687
+is the monolith and 897 is v60_ifetch). Per-entity ALM from the rung-6 build:
+
+    ascal                1,994     framework, the scaler
+    sys_top own            715     framework glue
+    video_calc             298     framework
+    alsa                   259     framework, HPS audio
+    iir_filter_tap x2      258     framework, audio filters
+                         -----
+                        ~3,524     none of it ours
+
+`alsa` plus the IIR taps is **~517 ALM of audio path currently spent on silence**.
+`ascal` is both the largest framework block and the source of the ONLY path that
+fails timing (`ascal|o_hcpt[5]`).
+
+**The framework has build-time macros and we set NONE of them.** These are `.qsf`
+VERILOG_MACRO settings, so using them is a project decision and NOT an edit to
+`sys/`, which this project does not modify:
+
+    MISTER_SMALL_VBUF        shrinks ascal's video buffer - M10K, which is the
+                             resource actually blocking sound (58 free, ~57 needed)
+    MISTER_DISABLE_ALSA      the HPS audio path, ~259 ALM and possibly the taps
+    MISTER_DISABLE_ADAPTIVE  ascal's adaptive scanline filter
+    MISTER_DOWNSCALE_NN      ascal's polyphase downscaler -> nearest neighbour
+    MISTER_DISABLE_YC        the Y/C composite encoder
+    MISTER_DEBUG_NOHDMI      HDMI entirely - deletes ascal AND our only timing
+                             violation, at the cost of HDMI output
+
+`MISTER_SMALL_VBUF` is the interesting one: ALM can be found in the V60, M10K
+cannot, and it is memory that stops sound fitting. `MISTER_DISABLE_ADAPTIVE` and
+`MISTER_DOWNSCALE_NN` shrink `ascal`, which might fix the seed lottery as a side
+effect since that is where the failing path lives.
+
+All of them change what the output looks like or what the scaler can do, so they
+are a picture-quality decision, not a free win. Measure one at a time.
+
+**THEY MAY ALSO SETTLE THE SEED LOTTERY, and there is a mechanism, not just a
+hope.** The failing path is `ascal|o_hcpt[5] -> o_hcpt[5]/[6]/[7]` - the output
+horizontal counter incrementing itself, at `ascal.vhd:2763`:
+
+    IF o_hcpt+1 < o_htotal THEN o_hcpt <= (o_hcpt+1) MOD 4096; ELSE o_hcpt <= 0;
+
+A 12-bit increment plus a 12-bit compare against a runtime register, in one
+cycle. But `o_hcpt` also FANS OUT hard: four more comparators at 2787-2793
+(`o_dev`, `o_pev`, `o_hsv`, `o_vsv`) and the interpolation terms `r1_v`/`r2_v`
+at 2846-2847. A high-fanout counter is slow because its output has to reach many
+places, and that part is routing - which is precisely what placement pressure
+makes worse, and why ten seeds spanned 0.60 ns.
+
+`MISTER_DISABLE_ADAPTIVE` and `MISTER_DOWNSCALE_NN` remove consumers of
+`r1_v`/`r2_v`, so they cut that fanout. Lower occupancy helps the same way. The
+ARITHMETIC core of the path stays whatever we do. Given the violation is only
+-0.047 ns, a fanout reduction could cover it - but this is a hypothesis with a
+mechanism, not a measurement, and it costs one build to test.
+
 ### WHERE THE M10K GO, which matters more than ALM for sound
 
     framework (sys_top - emu)   59
