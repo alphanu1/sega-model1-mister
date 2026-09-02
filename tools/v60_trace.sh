@@ -33,8 +33,28 @@ mkdir -p "$TMPDIR"
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${OUT:-$root/build/v60trace}"
+# CREATE IT, and take OUT as absolute. Neither was true before: with the
+# directory missing the dbg.txt redirect fails, MAME then runs with no
+# debugscript and the run dies at "MAME produced no trace" - which reads as a
+# broken ROM path rather than a missing directory. And a RELATIVE OUT resolves
+# against whatever directory MAME was pointed at, not the repo, so it fails the
+# same way while looking like the caller's fault.
+case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
+mkdir -p "$out"
 seconds="${SECONDS_RUN:-2}"
-cycles="${CYCLES:-80000000}"
+# DERIVED FROM SECONDS_RUN, not a fixed default. Our side counts cycles of the
+# 80 MHz domain, so N reference seconds is N * 80,000,000 - and the old default
+# pair (SECONDS_RUN=2, CYCLES=80000000) compared TWO emulated seconds of
+# reference against ONE of ours. That is not a subtle skew: it truncates our
+# stream mid-run, and the diff then reports "DIVERGES at instruction <the last
+# one we produced>", which reads exactly like a CPU bug at a plausible depth.
+#
+# Measured 2026-09-02: at 80M cycles ours ran 26,405 instructions and "diverged"
+# at 26,404; at 160M it ran 27,363 and "diverged" at 27,363. The divergence
+# point tracks the window, which is the signature of truncation rather than of
+# a fault. The script already warned about this for BOOT_CYCLES; the DEFAULTS
+# had the same bug, so it fired with no variable set at all.
+cycles="${CYCLES:-$((seconds * 80000000))}"
 
 # THE TWO WINDOWS HAVE TO MATCH, AND A WRONG VARIABLE NAME IS SILENT.
 #
@@ -55,7 +75,21 @@ if [ "$cycles" -lt $(( want / 2 )) ]; then
     echo "           The diff will end where OUR trace stops, not at a real divergence." >&2
 fi
 game="${GAME:-vr}"
-rompath="${ROMPATH:-$HOME/roms}"
+# THE DEVICE ROM SETS LIVE IN A REPO-LOCAL OVERLAY, second on the path.
+#
+# The vr machine needs two sets that are not part of the game's own dump:
+# model1io (epr-14869.25, the I/O board Z80 firmware) and m1comm
+# (epr-15112.17). Without model1io MAME exits with "Required files are
+# missing" BEFORE the debugscript loads, so the run produces no trace at all
+# and the failure looks like a broken ROM path for the game. A wrong-checksum
+# m1comm is only a warning and the machine still runs.
+#
+# build/ is gitignored, so the overlay satisfies hard rule 2: no ROM or
+# anything derived from one enters the repository. Populate it with
+#   mkdir -p build/roms/model1io
+#   cp <your daytona93 set>/epr-14869.25 build/roms/model1io/
+# whose SHA1 must be b65fdd0ad31794a565a0ca4dc67a3f16b329fd71.
+rompath="${ROMPATH:-$HOME/roms;$root/build/roms}"
 
 command -v mame >/dev/null || { echo "mame not found in PATH"; exit 1; }
 mkdir -p "$out"
@@ -74,7 +108,21 @@ printf 'trace %s/mame.tr,maincpu,noloop\ngo\n' "$out" > "$out/dbg.txt"
 mame "$game" -rompath "$rompath" -skip_gameinfo -autoboot_delay 0 \
      -video none -sound none -nothrottle -debug -debugscript "$out/dbg.txt" \
      -seconds_to_run "$seconds" >/dev/null 2>&1 || true
-[ -s "$out/mame.tr" ] || { echo "MAME produced no trace"; exit 1; }
+# THE TRACE MUST BE FROM *THIS* RUN. A bare -s test passes on a leftover trace
+# from hours ago, so a MAME that refuses to start - a missing device ROM set is
+# enough - is invisible: the script prints a confident reference instruction
+# count and diffs against a stale file. That happened on 2026-09-02, when the
+# vr set stopped resolving epr-14869.25 (model1io) and epr-15112.17 (m1comm)
+# and four consecutive runs silently reused a reference from 15:57.
+if [ ! -s "$out/mame.tr" ] || [ "$out/mame.tr" -ot "$out/dbg.txt" ]; then
+    echo "MAME produced no trace for this run."
+    echo "  Re-run the mame command by hand to see why - a missing device ROM"
+    echo "  set exits before the debugscript ever loads:"
+    echo "    cd $out && mame $game -rompath $rompath -skip_gameinfo \\"
+    echo "        -autoboot_delay 0 -video none -sound none -nothrottle"
+    [ -s "$out/mame.tr" ] && echo "  (a STALE $out/mame.tr is present and was NOT used)"
+    exit 1
+fi
 collapsed=$(grep -c "loops for" "$out/mame.tr" || true)
 if [ "$collapsed" != "0" ]; then
     echo "WARNING: $collapsed collapsed loops in the trace — noloop did not take."
