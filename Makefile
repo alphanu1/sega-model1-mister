@@ -43,11 +43,12 @@ SRCS_bw_monitor := rtl/mem/bw_monitor.sv
 SRCS_sdram_model := sim/mem/sdram_model.sv
 SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_cdc_port := rtl/mem/m1_cdc_port.sv
+SRCS_m1_dcache := rtl/mem/m1_dcache.sv
 SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
-SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
+SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv rtl/mem/m1_dcache.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/io/m1_uart_tx.sv rtl/io/m1_speed_report.sv rtl/tgp/m1_copro_if.sv \
   rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
   rtl/io/m1_rom_loader.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
@@ -146,7 +147,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_dcache test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -168,6 +169,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_sdram_model) --top-module sdram_model
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_sdram) --top-module m1_sdram
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_cdc_port) --top-module m1_cdc_port
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_dcache) --top-module m1_dcache
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_cdc_pulse) --top-module m1_cdc_pulse
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_fetch_bridge) --top-module m1_fetch_bridge
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_rom_loader) --top-module m1_rom_loader
@@ -253,7 +255,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv
 
-test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank
+test: test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_dcache test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -553,6 +555,14 @@ test_cdc_port:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_cdc_port \
 	  $(SRCS_m1_cdc_port) sim/mem/tb_m1_cdc_port.cpp -o tb_cdc --Mdir obj_cdc
 	./obj_cdc/tb_cdc
+
+# The V60 data cache. Its memory model returns 64 bits from the BURST-ALIGNED
+# base, not the word asked for, because a cache that ignored the alignment would
+# pass a single-word model and fail on hardware.
+test_dcache:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_dcache \
+	  $(SRCS_m1_dcache) sim/mem/tb_m1_dcache.cpp -o tb_dcache --Mdir obj_dcache
+	./obj_dcache/tb_dcache
 
 # vblank is one clk_sys cycle — 10 ns at 96 MHz against a 42 ns slow clock, so
 # it can fall between two destination edges and vanish. The property is exact

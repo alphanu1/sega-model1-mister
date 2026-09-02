@@ -259,6 +259,12 @@ wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
 wire [15:0] dbg_io_replies;
 wire [15:0] dbg_overruns;
+wire [31:0] dc_hits, dc_misses, dc_dropped;
+integer dbg_sdr_reqs = 0, dbg_c_acks = 0;
+always @(posedge clk) if (rst_n_sys) begin
+    if (core.cpu_sdr_req) dbg_sdr_reqs = dbg_sdr_reqs + 1;
+    if (core.cpu_sdr_ack) dbg_c_acks  = dbg_c_acks + 1;
+end
 
 // mem_rst_n is the memory subsystem's own reset and must not follow the game
 // reset: the loader holds ioctl_wait until SDRAM is ready, so a loader held in
@@ -267,6 +273,7 @@ wire [15:0] dbg_overruns;
 wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
 m1_integrated core (
+    .dbg_dc_hits(dc_hits), .dbg_dc_misses(dc_misses), .dbg_dc_dropped(dc_dropped),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
@@ -321,7 +328,7 @@ m1_integrated core (
 
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be),
-    .sdr_dout(p_dout[0][15:0]), .sdr_ack(p_ack[0]),
+    .sdr_dout(p_dout[0]), .sdr_ack(p_ack[0]),
 
     .if_req(ifp_req), .if_addr(), .if_sdram_addr(ifp_addr),
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
@@ -1429,28 +1436,65 @@ integer blat_hist [0:127];
 integer blat_i, blat_run = 0, blat_n = 0;
 longint blat_sum = 0;
 reg     blat_busy = 0;
+reg     m_req_d = 0, m_ack_d = 0;
+reg [23:1] blat_addr = 0;
+integer cache_fd = 0;
+initial if ($test$plusargs("cache_trace")) cache_fd = $fopen("build/cache_trace.txt", "w");
 initial for (blat_i = 0; blat_i < 128; blat_i = blat_i + 1) blat_hist[blat_i] = 0;
 integer  rgn_n [0:4];
+// WHERE THE ~4 CPU CYCLES PER ACCESS GO. The region split showed SDRAM costs
+// only ~1.2 CPU cycles more than on-chip block RAM, so the cost is not the
+// memory - it is the same handshake on every access. Walking the FSM says
+// B_IDLE -> B_LOCAL -> B_ACK should land the ack inside one clk/3 tick, and
+// the measurement says 12.10 clk. This splits the gap by hand rather than by
+// argument: a per-region histogram, and how long the FSM sits in each state.
+integer  rgn_hist [0:4][0:63];
+longint  bst_cnt [0:4];          // clk cycles spent in each bus state
+longint  bst_ack_wait = 0;       // in B_ACK with m_req STILL HIGH: pure tail
+longint  bst_idle_req = 0;       // in B_IDLE with m_req high: dispatch delay
 longint  rgn_sum [0:4];
 integer  rgn_wr [0:4];
 integer  blat_rgn = 4;
 reg      blat_rgn_wr = 0;
+integer rgn_j;
 initial for (blat_i = 0; blat_i < 5; blat_i = blat_i + 1) begin
     rgn_n[blat_i] = 0; rgn_sum[blat_i] = 0; rgn_wr[blat_i] = 0;
+    bst_cnt[blat_i] = 0;
+    for (rgn_j = 0; rgn_j < 64; rgn_j = rgn_j + 1) rgn_hist[blat_i][rgn_j] = 0;
+end
+
+// The bus FSM's own time, counted where it is spent.
+always @(posedge clk) if (rst_n_sys) begin
+    bst_cnt[core.main.bst] = bst_cnt[core.main.bst] + 1;
+    if (core.main.bst == 3 && core.main.m_req) bst_ack_wait = bst_ack_wait + 1;
+    if (core.main.bst == 0 && core.main.m_req) bst_idle_req = bst_idle_req + 1;
 end
 always @(posedge clk) begin
     if (rst_n_sys) begin
-        if (core.main.m_req && !blat_busy) begin
+        // EDGE TO EDGE, NOT LEVEL TO LEVEL.
+        //
+        // m1_main HOLDS m_ack until m_req drops (it must - the adapter runs on
+        // a clk/3 enable and would miss a pulse). A counter that restarts on
+        // "m_req high and not busy" therefore books a phantom 2-cycle access on
+        // the cycle after every real one, while the held ack is still up. That
+        // put 2:58% in EVERY region's histogram, including SDRAM, and dragged
+        // the means so far down that on-chip and SDRAM looked 1.2 cycles apart
+        // when the real buckets are 7-8 against 31-39. A conclusion was drawn
+        // from that and withdrawn.
+        m_req_d <= core.main.m_req;
+        m_ack_d <= core.main.m_ack;
+        if (core.main.m_req && !m_req_d && !blat_busy) begin
             blat_busy = 1; blat_run = 1;
             blat_rgn = core.main.sel_rom     ? 0 :
                        core.main.sel_wram    ? 1 :
                        core.main.sel_nvram   ? 2 :
                        core.main.sel_charram ? 3 : 4;   // 4 = stayed on chip
             blat_rgn_wr = core.main.m_we;
+            blat_addr   = core.main.m_addr;
             if (blat_rgn_wr) rgn_wr[blat_rgn] = rgn_wr[blat_rgn] + 1;
         end else if (blat_busy) begin
             blat_run = blat_run + 1;
-            if (core.main.m_ack) begin
+            if (core.main.m_ack && !m_ack_d) begin
                 blat_hist[(blat_run > 127) ? 127 : blat_run] =
                     blat_hist[(blat_run > 127) ? 127 : blat_run] + 1;
                 blat_sum = blat_sum + blat_run;
@@ -1461,8 +1505,17 @@ always @(posedge clk) begin
                 // M10K - and a stall attributed to "ROM tables" may be nothing
                 // of the kind. The split decides whether a cache is worth its
                 // ALM and what it should cache.
+                // THE ACCESS STREAM, for sizing a cache offline. SDRAM is
+                // 4.3x on-chip and 72% of traffic, so a cache is worth ALM -
+                // but how much depends on the hit rate, and that is a property
+                // of the program, not of the RTL. Dump address+write and sweep
+                // sizes in Python rather than guess a geometry and build it.
+                if (cache_fd != 0 && blat_rgn != 4)
+                    $fwrite(cache_fd, "%h %0d\n", blat_addr, blat_rgn_wr);
                 rgn_n[blat_rgn]   = rgn_n[blat_rgn] + 1;
                 rgn_sum[blat_rgn] = rgn_sum[blat_rgn] + blat_run;
+                rgn_hist[blat_rgn][(blat_run > 63) ? 63 : blat_run] =
+                    rgn_hist[blat_rgn][(blat_run > 63) ? 63 : blat_run] + 1;
                 blat_busy = 0;
             end
         end
@@ -1688,6 +1741,15 @@ initial begin
         $write("\n");
     end else
         $display("FRAME: NO display-list swaps at all - the game never finished a list");
+    // OUTSIDE the blat_n guard on purpose: a cache that never acknowledges
+    // makes blat_n zero, which would hide the very counter that says so.
+    $display("FRAME: dcache: %0d hits, %0d misses, %0d writes, state=%0d flush=%0d",
+             dc_hits, dc_misses, core.u_dcache.dbg_writes,
+             core.u_dcache.cst, core.u_dcache.flush);
+    if (dc_dropped != 0)
+        $display("FRAME: *** dcache DROPPED %0d requests - the CPU cannot survive that", dc_dropped);
+    $display("FRAME: bus: m1_main bst=%0d m_req=%0d m_ack=%0d | sdr_req pulses=%0d cache c_ack=%0d",
+             core.main.bst, core.main.m_req, core.main.m_ack, dbg_sdr_reqs, dbg_c_acks);
     if (blat_n > 0) begin
         // THE DISPLAY-LIST CAP REPORTS ITSELF. m1_mainram sizes both buffers
         // to 16,384 words because MAME's V60 never writes above word 0x3fff in
@@ -1706,6 +1768,21 @@ initial begin
                          rgn_n[blat_i], (100*rgn_n[blat_i])/blat_n, rgn_wr[blat_i],
                          rgn_sum[blat_i]/rgn_n[blat_i],
                          ((rgn_sum[blat_i]*100)/rgn_n[blat_i]) % 100);
+        if (cache_fd != 0) begin $fclose(cache_fd); $display("FRAME: wrote build/cache_trace.txt"); end
+        $write("FRAME: on-chip latency histogram:");
+        for (blat_i = 0; blat_i < 64; blat_i = blat_i + 1)
+            if (rgn_hist[4][blat_i] * 100 > rgn_n[4])
+                $write(" %0d:%0d%%", blat_i, (100*rgn_hist[4][blat_i])/rgn_n[4]);
+        $display("");
+        $write("FRAME: wram latency histogram:");
+        for (blat_i = 0; blat_i < 64; blat_i = blat_i + 1)
+            if (rgn_hist[1][blat_i] * 100 > rgn_n[1])
+                $write(" %0d:%0d%%", blat_i, (100*rgn_hist[1][blat_i])/rgn_n[1]);
+        $display("");
+        $display("FRAME: bus FSM clk cycles: IDLE=%0d SDRAM=%0d LOCAL=%0d ACK=%0d RMW=%0d",
+                 bst_cnt[0], bst_cnt[1], bst_cnt[2], bst_cnt[3], bst_cnt[4]);
+        $display("FRAME:   of which IDLE with m_req high (dispatch delay)=%0d, ACK with m_req still high (tail)=%0d",
+                 bst_idle_req, bst_ack_wait);
         $write("FRAME: latency histogram:");
         for (blat_i = 1; blat_i < 128; blat_i = blat_i + 1)
             if (blat_hist[blat_i] * 200 > blat_n)

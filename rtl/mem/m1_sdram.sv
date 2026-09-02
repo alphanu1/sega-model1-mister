@@ -156,8 +156,13 @@ module m1_sdram #(
   // path for the display list's uploads - so it stays single.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
-      1, 2, 3, 5: blen = 4'd4;
-      default:    blen = 4'd1;
+      // p0 is the V60's data port, and it bursts because m1_dcache sits in
+      // front of it: a 4-word cache line is exactly one burst, so a miss costs
+      // one transaction rather than four. Only READS burst - `rd_total` below
+      // forces length 1 whenever we_p is set - so the CPU's writes, which no
+      // other bursting port has, are unaffected.
+      0, 1, 2, 3, 5: blen = 4'd4;
+      default:       blen = 4'd1;
     endcase
   endfunction
 
