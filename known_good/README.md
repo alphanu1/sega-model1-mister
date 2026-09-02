@@ -1,44 +1,48 @@
 # KNOWN GOOD — confirmed working on the board
 
-**Commit:** `61e383e` — "SEED 5 closes the clipper build: -0.142 to +0.061 on the same RTL"
-**Built:** 2026-09-02 01:35, Quartus 17.0, `M1_SEED=5`
+**Commit:** `c9b0981` — rung 5, the V60 multiplexer reduction
+**Built:** 2026-09-02, Quartus 17.0, `M1_SEED=4` (of four; 1 and 5 missed timing)
 **Confirmed on hardware by Ben, 2026-09-02.**
 
-    Model1.rbf      md5 54ea8d51f3047b55982480e1e6813518
-    ALM             41,391 / 41,910 (99%)
-    setup slack     +0.061 ns
+    Model1.rbf      md5 fef3340c1d3d32ec3891bda7105699ad
+    ALM             39,087 / 41,910 (93%)
+    M10K            495 / 553 (90%)
+    DSP             53 / 112 (47%)
+    setup slack     +0.035 ns
     errors          0
+
+Telemetry over /dev/ttyS1 while running, in uart_working_reference.txt:
+
+    F=003A S=000E B=011C P=0039
+
+**P non-zero is the pass signature.** Every failed image during the two-day
+black-screen episode showed `P=0000`. F is video frames, NOT game speed - the
+speed metric is frames-per-swap, F/S, where 2.00 is 100% of hardware. F/S near
+4.0 is the ~50% the board currently runs at.
+
+## RECOVERING THIS FILE IF IT IS LOST
+
+The .rbf is gitignored, so only this README and the .md5 are in the repository.
+The image itself lives in two places: here, and
+`/media/fat/_Arcade/cores/Model1.rbf` on the MiSTer. If the local copy is
+deleted, check the md5 on the board against the .md5 file and scp it back.
+
+That is not hypothetical. This directory held a STALE image for a whole session
+after rung 5 passed - the seed worktree that built it was deleted during
+cleanup, and the only surviving copy was the one on the board. **Update this
+directory at the moment a hardware test passes, not afterwards.**
 
 ## What it contains
 
-Everything up to and including the frustum clipper: the V60, SDRAM controller,
-the whole 2D path, the TGP, the geometry pipeline and the band rasterizer.
+Everything up to and including rung 5: the V60 with its multiplexer reduction
+(MOVD through the register file's read ports, the shared ea_index shifter), the
+SDRAM controller, the whole 2D path with window mode and the row mask, the TGP
+at 1:1, the geometry pipeline, the band rasterizer, the display-list cap and the
+FP pipelining.
 
-It does **not** contain the 2026-09-01 work — the data cache, posted writes, the
-FP pipelining or the display-list cap. Those are committed (`1af3a77..7418cfd`,
-pushed to origin) but none of them has yet been confirmed working on hardware.
+It does **not** contain the shared integer ALU (`f216513`), the rotate sharing
+(`8defa69`) or the pixel-census timing fix (`075921c`). Those are committed and
+verified in simulation; none has been confirmed on hardware yet.
 
-## Flash it
-
-    scp known_good/Model1.rbf root@192.168.1.105:/media/fat/_Arcade/cores/Model1.rbf
-    ssh root@192.168.1.105 'md5sum /media/fat/_Arcade/cores/Model1.rbf'   # must match the .md5 file
-
-Then reboot the board, wait for `/tmp/CORENAME` to read `MENU`, and issue exactly
-one load — see the reboot-before-load rule in the session notes.
-
-## Rebuild it from scratch
-
-    git worktree add -f build/wt61 61e383e
-    ln -sfn "$PWD/third_party" build/wt61/third_party
-    cd build/wt61 && M1_SEED=5 make rbf
-
-`third_party/` is gitignored, so the worktree needs the symlink or nothing will
-elaborate.
-
-## Read the board's own speed
-
-    ssh root@192.168.1.105 "stty -F /dev/ttyS1 115200 raw -echo; cat /dev/ttyS1"
-
-ttyS1, NOT ttyS0 — ttyS0 is the physical USB header and nothing is plugged into
-it. Capture for at least five minutes: the game takes about four to reach steady
-state, and `S` is only meaningful while `P` is non-zero (3D actually drawing).
+It does **not** contain the data cache. That change breaks the board - `P=0000`,
+no video - and is parked at `be22c31`, reverted.
