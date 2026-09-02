@@ -198,6 +198,37 @@ module m1_video #(
   // tilemap. 8 is the 3D layer and 15 the backdrop; neither is a tilemap.
   logic [17:0] px_acc [4];
   logic [11:0] tw_acc [4];
+
+  // THE CENSUS IS TELEMETRY AND MUST NOT BE IN THE MIXER'S TIMING PATH.
+  //
+  // MEASURED, 2026-09-02, from the full core's worst setup path: tile RAM
+  // output -> Mux1143 -> Mux1143~2 -> mixer|hit_cat1[0] -> mixer|source[1]~4 ->
+  // Mux3~0 -> Equal0~1 -> Equal0~3 -> px_acc[0][7]~3 -> px_acc[0][14].ena.
+  // Nine levels and 10.2 ns of logic, ending in a debug counter's clock enable,
+  // and it was the critical path of the WHOLE DESIGN at -0.171 ns.
+  //
+  // mix_src is the mixer's latest-arriving output - it is the winner of the
+  // priority resolution - and the census then piled `mix_src < 8`, a four-way
+  // indexed read of px_acc, an 18-bit saturation compare, an increment and a
+  // four-way write-enable decode on top of it. Registering the decision first
+  // moves every one of those off the mixer's cone.
+  //
+  // The cost is that a pixel is counted one clock later, so a pixel straddling
+  // vblank_start can land in the next frame's tally instead of this one. That
+  // is at most one pixel out of ~250,000 in a number that exists to say whether
+  // a layer drew at all, and the alternative was constraining the entire design
+  // to a debug counter.
+  logic       cen_hit;
+  logic [1:0] cen_src;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      cen_hit <= 1'b0;
+      cen_src <= 2'd0;
+    end else begin
+      cen_hit <= ce_pix && visible && (mix_src < 4'd8);
+      cen_src <= mix_src[1:0];
+    end
+  end
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       for (int i = 0; i < 4; i++) begin
@@ -213,9 +244,10 @@ module m1_video #(
           tw_acc[i]         <= '0;
         end
       end else begin
-        if (ce_pix && visible && mix_src < 4'd8) begin
-          if (px_acc[mix_src[1:0]] != 18'h3ffff)
-            px_acc[mix_src[1:0]] <= px_acc[mix_src[1:0]] + 18'd1;
+        // Registered a cycle earlier - see cen_hit above.
+        if (cen_hit) begin
+          if (px_acc[cen_src] != 18'h3ffff)
+            px_acc[cen_src] <= px_acc[cen_src] + 18'd1;
         end
         // Counted against cur_layer, which is the layer the fetch engine is
         // rendering when the pulse arrives — not the pixel being scanned out,
