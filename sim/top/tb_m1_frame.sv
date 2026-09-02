@@ -1430,10 +1430,24 @@ integer blat_i, blat_run = 0, blat_n = 0;
 longint blat_sum = 0;
 reg     blat_busy = 0;
 initial for (blat_i = 0; blat_i < 128; blat_i = blat_i + 1) blat_hist[blat_i] = 0;
+integer  rgn_n [0:4];
+longint  rgn_sum [0:4];
+integer  rgn_wr [0:4];
+integer  blat_rgn = 4;
+reg      blat_rgn_wr = 0;
+initial for (blat_i = 0; blat_i < 5; blat_i = blat_i + 1) begin
+    rgn_n[blat_i] = 0; rgn_sum[blat_i] = 0; rgn_wr[blat_i] = 0;
+end
 always @(posedge clk) begin
     if (rst_n_sys) begin
         if (core.main.m_req && !blat_busy) begin
             blat_busy = 1; blat_run = 1;
+            blat_rgn = core.main.sel_rom     ? 0 :
+                       core.main.sel_wram    ? 1 :
+                       core.main.sel_nvram   ? 2 :
+                       core.main.sel_charram ? 3 : 4;   // 4 = stayed on chip
+            blat_rgn_wr = core.main.m_we;
+            if (blat_rgn_wr) rgn_wr[blat_rgn] = rgn_wr[blat_rgn] + 1;
         end else if (blat_busy) begin
             blat_run = blat_run + 1;
             if (core.main.m_ack) begin
@@ -1441,6 +1455,14 @@ always @(posedge clk) begin
                     blat_hist[(blat_run > 127) ? 127 : blat_run] + 1;
                 blat_sum = blat_sum + blat_run;
                 blat_n   = blat_n + 1;
+                // WHICH REGION, not just how long. `to_sdram` is
+                // sel_rom|sel_wram|sel_nvram|sel_charram, so the V60's WORK RAM
+                // is off-chip at 0x500000-0x53ffff - 256 KB, far too big for
+                // M10K - and a stall attributed to "ROM tables" may be nothing
+                // of the kind. The split decides whether a cache is worth its
+                // ALM and what it should cache.
+                rgn_n[blat_rgn]   = rgn_n[blat_rgn] + 1;
+                rgn_sum[blat_rgn] = rgn_sum[blat_rgn] + blat_run;
                 blat_busy = 0;
             end
         end
@@ -1667,8 +1689,23 @@ initial begin
     end else
         $display("FRAME: NO display-list swaps at all - the game never finished a list");
     if (blat_n > 0) begin
+        // THE DISPLAY-LIST CAP REPORTS ITSELF. m1_mainram sizes both buffers
+        // to 16,384 words because MAME's V60 never writes above word 0x3fff in
+        // 40 s. OUR V60 is not MAME's - the trace shows it spinning a different
+        // number of times in the same wait loops - so "the reference never does"
+        // is not a proof that we never do. Nonzero here means the cap is wrong.
+        $display("FRAME: display-list writes above the 16,384-word cap: %0d",
+                 core.main.rams.dbg_dl_oob);
         $display("FRAME: %0d data accesses, mean %0d.%02d clk_sys cycles req->ack",
                  blat_n, blat_sum/blat_n, ((blat_sum*100)/blat_n) % 100);
+        for (blat_i = 0; blat_i < 5; blat_i = blat_i + 1)
+            if (rgn_n[blat_i] > 0)
+                $display("FRAME: region %0s: %0d accesses (%0d%% of all, %0d writes), mean %0d.%02d cycles",
+                         (blat_i==0) ? "rom    " : (blat_i==1) ? "wram   " :
+                         (blat_i==2) ? "nvram  " : (blat_i==3) ? "charram" : "on-chip",
+                         rgn_n[blat_i], (100*rgn_n[blat_i])/blat_n, rgn_wr[blat_i],
+                         rgn_sum[blat_i]/rgn_n[blat_i],
+                         ((rgn_sum[blat_i]*100)/rgn_n[blat_i]) % 100);
         $write("FRAME: latency histogram:");
         for (blat_i = 1; blat_i < 128; blat_i = blat_i + 1)
             if (blat_hist[blat_i] * 200 > blat_n)

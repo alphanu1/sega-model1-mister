@@ -176,6 +176,9 @@ module m1_main #(
   // Sticky. Set if a build without the FP group ever meets an FP opcode; see
   // the note on the port in v60.sv.
   output logic        dbg_fp_trap,
+  // Display-list writes above the 16,384-word cap m1_mainram sizes the two
+  // buffers to. Measured zero over 40 s in MAME; nonzero means that is wrong.
+  output logic [15:0] dbg_dl_oob,
   output logic [15:0] dbg_io_replies,
   // CPU writes into tile RAM, counted by region. The video-side census in
   // m1_video says what the renderer READS; this says what the CPU WROTE, and
@@ -330,7 +333,7 @@ module m1_main #(
     .sel_dlist0(sel_dlist0), .sel_dlist1(sel_dlist1),
     .sel_colxlat(sel_colxlat), .sel_dpram(sel_dpram),
     .tram_q(tram_q), .pram_q(pram_q), .dl0_q(dl0_q), .dl1_q(dl1_q),
-    .cxlat_q(cxlat_q), .dpram_q(dpram_q),
+    .cxlat_q(cxlat_q), .dpram_q(dpram_q), .dbg_dl_oob(dbg_dl_oob),
     .vid_clk(vid_clk),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
     .vid_pal_addr(vid_pal_addr), .vid_pal_data(vid_pal_data),

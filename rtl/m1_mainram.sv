@@ -54,6 +54,9 @@ module m1_mainram (
   input  logic        sel_tileram, sel_palette, sel_dlist0,
   input  logic        sel_dlist1, sel_colxlat, sel_dpram,
   output logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q,
+  // Writes above the 16,384-word cap the two display lists are sized to.
+  // Measured zero over 40 s; nonzero means the cap is wrong. See below.
+  output logic [15:0] dbg_dl_oob,
 
   // Video side. Its own clock: the video path runs in the fast domain and the
   // CPU in the slow one, and these two arrays are where the domains meet.
@@ -147,17 +150,66 @@ module m1_mainram (
   // are 64 KB - 51 M10K duplicated for want of a port.
   logic [15:0] dl0_b_q, dl1_b_q;
 
-  m1_tdp_ram #(.AW(15)) u_dl0 (
-    .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
-    .a_we(dl0_we), .a_q(dl0_q),
-    .b_clk(r3d_clk), .b_addr(r3d_dl_addr), .b_q(dl0_b_q)
+  // THE GAME USES THE BOTTOM 16,384 WORDS OF EACH LIST, AND ONLY THOSE.
+  //
+  // `model1.cpp:994` maps each buffer as the full 64 KB, and `model1_v.cpp:25`
+  // masks the walker's address with 0x7fff, so the ARCHITECTURE really is
+  // 32,768 words. At 16 bits that is 52 M10K apiece - 104 of the device's 553,
+  // on a design already at 100% of them, which is the reason the V60 has no
+  // data cache.
+  //
+  // `tools/mame_dl_extent.lua` taps every write to 0x600000-0x61ffff and keeps
+  // the highest word touched. Over 2,400 frames - 40 seconds, well past attract
+  // and into the game - it is 0x3fff on BOTH buffers, out of 1.5 million writes
+  // each. Exactly half, which reads as a program constant rather than as an
+  // accident of what happened to be drawn.
+  //
+  // SO THE STORAGE IS HALVED AND THE DECODE IS NOT. Shrinking the address
+  // instead would alias word 0x4000 onto word 0, and word 0 holds a live
+  // command - a read that used to return an all-zero terminator would start
+  // executing the list again. Above the cap this reads as ZERO, which is what
+  // the never-written upper half returned, and writes are DROPPED.
+  //
+  // `dbg_dl_oob` counts anything that goes up there. A measurement over one
+  // 40-second window is not a proof about every code path, so the assumption
+  // reports itself rather than corrupting quietly.
+  localparam int unsigned DL_WORDS = 16384;
+
+  // addr[15:1] is the word address, so its bit 14 - which is addr[15] - is
+  // exactly "at or above 16,384".
+  wire dl_a_hi = addr[15];
+  wire dl_b_hi = r3d_dl_addr[14];
+
+  logic [15:0] dl0_q_raw, dl1_q_raw, dl0_b_raw, dl1_b_raw;
+  logic        dl_a_hi_q, dl_b_hi_q;
+
+  always_ff @(posedge clk)     dl_a_hi_q <= dl_a_hi;
+  always_ff @(posedge r3d_clk) dl_b_hi_q <= dl_b_hi;
+
+  m1_tdp_ram #(.AW(14), .WORDS(DL_WORDS)) u_dl0 (
+    .a_clk(clk), .a_addr(addr[14:1]), .a_din(wdata), .a_be(be),
+    .a_we(dl0_we && !dl_a_hi), .a_q(dl0_q_raw),
+    .b_clk(r3d_clk), .b_addr(r3d_dl_addr[13:0]), .b_q(dl0_b_raw)
   );
 
-  m1_tdp_ram #(.AW(15)) u_dl1 (
-    .a_clk(clk), .a_addr(addr[15:1]), .a_din(wdata), .a_be(be),
-    .a_we(dl1_we), .a_q(dl1_q),
-    .b_clk(r3d_clk), .b_addr(r3d_dl_addr), .b_q(dl1_b_q)
+  m1_tdp_ram #(.AW(14), .WORDS(DL_WORDS)) u_dl1 (
+    .a_clk(clk), .a_addr(addr[14:1]), .a_din(wdata), .a_be(be),
+    .a_we(dl1_we && !dl_a_hi), .a_q(dl1_q_raw),
+    .b_clk(r3d_clk), .b_addr(r3d_dl_addr[13:0]), .b_q(dl1_b_raw)
   );
+
+  assign dl0_q  = dl_a_hi_q ? 16'h0000 : dl0_q_raw;
+  assign dl1_q  = dl_a_hi_q ? 16'h0000 : dl1_q_raw;
+  assign dl0_b_q = dl_b_hi_q ? 16'h0000 : dl0_b_raw;
+  assign dl1_b_q = dl_b_hi_q ? 16'h0000 : dl1_b_raw;
+
+  // Saturating, and NOT reset: this module has no reset port and the counter
+  // does not need one - Cyclone V registers power up cleared, and an initial
+  // covers the simulator.
+  initial dbg_dl_oob = 16'd0;
+  always_ff @(posedge clk)
+    if ((dl0_we || dl1_we) && dl_a_hi && !(&dbg_dl_oob))
+      dbg_dl_oob <= dbg_dl_oob + 16'd1;
 
   // The buffer select is the reader's, and it is applied to the DATA rather than
   // the address so both memories are read in parallel and the choice costs a mux
