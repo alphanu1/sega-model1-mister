@@ -101,3 +101,57 @@ Half a nanosecond of spread from placement alone. Single-seed builds are a
 lottery at this occupancy, which is why `build/tmp/seeds_par.sh` runs four at
 once - Quartus only exploits about five of 32 cores per build, so four
 concurrent builds cost nothing and turn an 80-minute sweep into 25.
+
+## Where the V60's 16,867 ALM actually goes — MULTIPLEXERS
+
+Measured from `Model1.map.rpt`'s Multiplexer Restructuring Statistics, 2026-09-02.
+The i960 in the Model 2 core is a more capable CPU in 7,200 ALM; ours is 2.3x
+that, and it is not architecture.
+
+    826 multiplexers attributed to s32_v60, including
+     13 x 32:1   4,557 LEs  (~2,278 ALM, ~175 ALM each on 32 bits)
+    109 x  4:1
+     45 x  3:1
+     31 x  7:1
+     24 x  5:1
+     23 x  9:1
+     20 x  8:1
+     19 x  6:1
+
+Summing every mux gives more than the module's whole area, so those LE figures
+are pre-restructuring estimates and Quartus recovers much of it. The PROPORTION
+is the signal: 826 mux structures in one module is the signature of a 3,800-line
+`always` block where every destination register infers its own selection tree
+across 47 case arms, because the tool cannot prove which arms are exclusive.
+
+### The concrete first target
+
+The register file already has TWO proper read ports - `rf_rdata_a`/`rf_rdata_b`,
+each one explicit 32-way case, addressed by `rf_raddr_a`/`rf_raddr_b` and driven
+combinationally per state around line 618.
+
+But `exec_op`'s MOVD arm (opcode 0x3f, around line 3304) bypasses them entirely:
+
+    movd_lo <= r[op1[4:0]];
+    movd_hi <= r[op1[4:0] + 5'd1];
+    queue_reg_write(op2[4:0],        r[op1[4:0]],        32'hffffffff);
+    queue_reg_write(op2[4:0] + 5'd1, r[op1[4:0] + 5'd1], 32'hffffffff);
+
+Each variable index infers a fresh 32:1 mux on 32 bits, and `+ 5'd1` adds an
+adder in front of it. Routing these through the existing read ports costs
+nothing - `rf_rdata_a/b` are combinational from `rf_raddr_a/b` - but needs the
+state context, because `rf_raddr` is assigned per state and `exec_op` is a task.
+`r[init_reg_i]`, `r[rf_waddr0]` and `r[rf_waddr1]` are three more.
+
+### Why it matters more than anything else left
+
+    sound (M4)          ~5,000 ALM
+    Z80 I/O board       ~2,000     rtl/io/m1_ioz80.sv and rtl/cpu/tv80/ ALREADY
+                                   EXIST in this tree, instantiated NOWHERE
+    TGP at 2:1          ~1,300
+    -------------------------------
+                        ~8,300 ALM against ~900 free
+
+Every other lever on this project is worth a few hundred ALM. This one is worth
+thousands, and it is also why builds miss timing by 0.1-0.5 ns depending purely
+on the fitter's seed: at 98-99% occupancy there is no room to place.
