@@ -32,19 +32,21 @@ to 2:1, taking F/S from 4.30 to 2.05 - the board had been at ~46%.
     R  TGP retire count, free-running 16-bit. It WRAPS between samples here,
        which is what a busy coprocessor looks like
 
-## FLASHING: COLD-BOOT AFTER A NEW BITSTREAM
+## UPTIME CAN LOOK EXACTLY LIKE AN RTL BUG
 
-scp the .rbf, verify the md5 on both sides, then **power-cycle the MiSTer** -
-not `reboot`. A warm reboot is fine for reloading a core that is already known
-good, but a NEW bitstream can leave the fabric in a state a soft reset does not
-clear.
+scp the .rbf, verify the md5 on both sides, then reboot and load. A warm reboot
+is normally fine.
 
-Measured 2026-09-03: rung 8 came up after a warm reboot with wildly wrong
-colours, a stretched band across the middle of both the 2D and 3D layers, and
-the picture pushed off the bottom - while every telemetry counter read healthy.
-Fetch-deadline misses were ruled out by measurement and it was about to be
-chased as a window-mode rendering bug newly reachable at the higher speed. A
-cold boot fixed it completely.
+But on 2026-09-03 rung 8 came up with wildly wrong colours, a stretched band
+across the middle of both the 2D and 3D layers, and the picture pushed off the
+bottom - while every telemetry counter read healthy. Fetch-deadline misses were
+ruled out by measurement and it was about to be chased as a window-mode
+rendering bug newly reachable at the higher speed. **A cold boot fixed it, and
+the cause was four days of MiSTer uptime, not the flash.**
+
+So if the picture is wrong in a way the telemetry contradicts, ask how long the
+machine has been up before touching the RTL. And start a crash hunt or any
+timing-sensitive observation from a cold boot, so uptime is not a variable.
 
 ## RECOVERING THIS FILE IF IT IS LOST
 
