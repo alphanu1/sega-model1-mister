@@ -352,6 +352,21 @@ ARITHMETIC core of the path stays whatever we do. Given the violation is only
 -0.047 ns, a fanout reduction could cover it - but this is a hypothesis with a
 mechanism, not a measurement, and it costs one build to test.
 
+**WITHDRAWN, 2026-09-03, by reading ascal.vhd rather than building.** Neither
+macro touches `r1_v`/`r2_v` or anything else on that path. `ADAPTIVE` appears
+in the whole of `ascal.vhd` exactly ONCE, at line 2504, gating one bit of
+`poly_wr_mode` - a coefficient-write enable, not the interpolation datapath.
+`DOWNSCALE_NN` appears once too, at 1309, forcing `i_bil` low on the INPUT
+side, which only matters when the input is larger than the output and this
+core always upscales. Neither is inside a GENERATE, so neither removes any
+logic at all. `r1_v`/`r2_v` are variables in one process at 2837-2865 feeding
+`o_radl0..3`, gated by nothing either macro reaches.
+
+So the only real levers on this path are OCCUPANCY - which is going the wrong
+way, 94% ALM and 97% M10K - and the seed. `MISTER_DEBUG_NOHDMI` would delete
+the path outright by removing HDMI, which is not a trade anyone wants.
+`MISTER_SMALL_VBUF` was separately measured to free no M10K at all.
+
 ### WHERE THE M10K GO, which matters more than ALM for sound
 
     framework (sys_top - emu)   59
