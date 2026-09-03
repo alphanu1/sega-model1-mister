@@ -85,6 +85,18 @@ SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
 # Deferred (=), not immediate (:=): SRCS_mb86233_core is defined further down,
 # and := would expand it to nothing here.
 SRCS_m1_tgp = rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core)
+# Standalone, for settling M10K INFERENCE on the band memory in seconds rather
+# than after a 25-minute full build. CLAUDE.md: "Block RAM inference is silent
+# when it fails. Quartus builds memories out of flip-flops and keeps going -
+# that cost 28,816 ALM once."
+#
+# It earned its keep immediately: a clear-on-readout scheme, which would have
+# removed a full-screen wipe per frame from the 3D path, turns the buffer into a
+# dual-CLOCK true-dual-port RAM, and Quartus 17.0 will not infer that. Six
+# seconds to find out, with Error (276003), instead of a full build.
+#   make quartus MOD=m1_raster_band
+SRCS_m1_raster_band := rtl/video/m1_raster_band.sv
+
 SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.

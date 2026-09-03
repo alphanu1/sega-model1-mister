@@ -20,6 +20,51 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — clear-on-readout for the band buffer DOES NOT SYNTHESISE
+
+The 3D geometry rate is a third short of the display-list rate because the band
+sweep tips past blanking and swap_now is missed. The obvious thing to reclaim is
+the per-band clear: it walks 1,984 words at one address a cycle, per band, which
+is a FULL-SCREEN WIPE per frame - 496x384/4 = 47,616 words, 5.8% of the 818,133
+clk_3d cycles in a frame, whatever the band height.
+
+The free way to remove it is clear-on-readout: the display already reads every
+word of a band exactly once, so writing background back as it reads leaves the
+buffer clean for its next fill. No extra memory, no extra time. The ring makes
+it safe - an instance is either being filled or displayed, never both.
+
+**Quartus 17.0 will not infer it.** Adding a write to the read port makes the
+memory a dual-CLOCK true-dual-port RAM, and synthesis fails outright:
+
+    Error (276003): Cannot convert all sets of registers into RAM megafunctions
+    when creating nodes. The resulting number of registers remaining in design
+    exceeds the number of registers in the device...
+
+Tried twice: the plain form, and the symmetric template with a read added to the
+write port (a write-only port is a known inference blocker). Same error both
+times. Verilator simulates it happily - 825,351 checks pass - so this is
+invisible without asking Quartus.
+
+`make quartus MOD=m1_raster_band` was added for exactly this and answered it in
+SIX SECONDS. CLAUDE.md's rule - "Test a memory idiom small; 1024 entries settles
+the question in seconds" - is why this cost minutes instead of a 25-minute full
+build and a mystery.
+
+### What is left for the band fix
+
+    a 4th band buffer     removes the clear entirely, costs ~16 M10K
+                          (4 banks x 4 blocks). We have 57 free and sound wants
+                          ~57, so this trades the 3D fix against sound fitting.
+    find the margin       the clear is only 5.8% of a frame. Simulation puts the
+    elsewhere             sweep at 92.4%, so hardware must be over 100%, and the
+                          gap is unmeasured - 5.8% may not be enough.
+    measure the gap       how much of a frame the sweep actually takes ON THE
+    first                 BOARD. Without it, spending 16 M10K is a guess.
+
+The third is the honest next step. Two fixes have already been talked out of on
+this defect - a fourth buffer on a units error, and the FIFO deadlock - and both
+would have been wrong.
+
 ## 2026-09-03 — the crash is DETERMINISTIC, and X=FE0C9B names the code
 
 Third capture, with X= carrying the V60's pc latched at the instant the
