@@ -88,6 +88,10 @@ module m1_speed_report #(
   // cannot be a dead coprocessor, since the tile path never touches the TGP.
   // Whether the GAME has crashed or the hardware has stopped drawing is one
   // reading of this value apart.
+  // The V60's pc LATCHED at the instant the coprocessor stopped retiring, as
+  // opposed to v60_pc which is sampled once a second and cannot catch a
+  // transition. Zero until the first stall. See m1_integrated for the detector.
+  input  logic [23:0] stall_pc,
   input  logic [23:0] v60_pc,
   input  logic [15:0] bands_pres,
   input  logic [15:0] tgp_pc,      // coprocessor program counter
@@ -102,14 +106,14 @@ module m1_speed_report #(
   logic        sel_d;
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
-  logic [23:0] r_vpc;
+  logic [23:0] r_vpc, r_spc;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       n_frame <= '0; n_swap <= '0; period_cnt <= '0; sel_d <= 1'b0;
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
-      r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0;
+      r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -129,6 +133,7 @@ module m1_speed_report #(
           r_tret  <= tgp_retires;
           r_npres <= bands_pres;
           r_vpc   <= v60_pc;
+          r_spc   <= stall_pc;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -136,11 +141,13 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx\r\n" - 59 bytes.
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx\r\n"
+  // 68 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
+  // silently repeats its middle.
   // 50 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 59;
+  localparam int unsigned NCH = 68;
 
-  logic [5:0]  ci;
+  logic [6:0]  ci;
   logic        busy;
   logic [7:0]  ch;
   logic        wr;
@@ -169,54 +176,63 @@ module m1_speed_report #(
       6'd7:  ch = "S";
       6'd8:  ch = "=";
       6'd9:  ch = hexc(vals[47:44]);
-      6'd10: ch = hexc(vals[43:40]);
-      6'd11: ch = hexc(vals[39:36]);
-      6'd12: ch = hexc(vals[35:32]);
-      6'd13: ch = " ";
-      6'd14: ch = "B";
-      6'd15: ch = "=";
-      6'd16: ch = hexc(vals[31:28]);
-      6'd17: ch = hexc(vals[27:24]);
-      6'd18: ch = hexc(vals[23:20]);
-      6'd19: ch = hexc(vals[19:16]);
-      6'd20: ch = " ";
-      6'd21: ch = "P";
-      6'd22: ch = "=";
-      6'd23: ch = hexc(vals[15:12]);
-      6'd24: ch = hexc(vals[11:8]);
-      6'd25: ch = hexc(vals[7:4]);
-      6'd26: ch = hexc(vals[3:0]);
-      6'd27: ch = " ";
-      6'd28: ch = "C";
-      6'd29: ch = "=";
-      6'd30: ch = hexc(r_tpc[15:12]);
-      6'd31: ch = hexc(r_tpc[11:8]);
-      6'd32: ch = hexc(r_tpc[7:4]);
-      6'd33: ch = hexc(r_tpc[3:0]);
-      6'd34: ch = " ";
-      6'd35: ch = "R";
-      6'd36: ch = "=";
-      6'd37: ch = hexc(r_tret[15:12]);
-      6'd38: ch = hexc(r_tret[11:8]);
-      6'd39: ch = hexc(r_tret[7:4]);
-      6'd40: ch = hexc(r_tret[3:0]);
-      6'd41: ch = " ";
-      6'd42: ch = "N";
-      6'd43: ch = "=";
-      6'd44: ch = hexc(r_npres[15:12]);
-      6'd45: ch = hexc(r_npres[11:8]);
-      6'd46: ch = hexc(r_npres[7:4]);
-      6'd47: ch = hexc(r_npres[3:0]);
-      6'd48: ch = " ";
-      6'd49: ch = "V";
-      6'd50: ch = "=";
-      6'd51: ch = hexc(r_vpc[23:20]);
-      6'd52: ch = hexc(r_vpc[19:16]);
-      6'd53: ch = hexc(r_vpc[15:12]);
-      6'd54: ch = hexc(r_vpc[11:8]);
-      6'd55: ch = hexc(r_vpc[7:4]);
-      6'd56: ch = hexc(r_vpc[3:0]);
-      6'd57: ch = 8'h0d;
+      7'd10: ch = hexc(vals[43:40]);
+      7'd11: ch = hexc(vals[39:36]);
+      7'd12: ch = hexc(vals[35:32]);
+      7'd13: ch = " ";
+      7'd14: ch = "B";
+      7'd15: ch = "=";
+      7'd16: ch = hexc(vals[31:28]);
+      7'd17: ch = hexc(vals[27:24]);
+      7'd18: ch = hexc(vals[23:20]);
+      7'd19: ch = hexc(vals[19:16]);
+      7'd20: ch = " ";
+      7'd21: ch = "P";
+      7'd22: ch = "=";
+      7'd23: ch = hexc(vals[15:12]);
+      7'd24: ch = hexc(vals[11:8]);
+      7'd25: ch = hexc(vals[7:4]);
+      7'd26: ch = hexc(vals[3:0]);
+      7'd27: ch = " ";
+      7'd28: ch = "C";
+      7'd29: ch = "=";
+      7'd30: ch = hexc(r_tpc[15:12]);
+      7'd31: ch = hexc(r_tpc[11:8]);
+      7'd32: ch = hexc(r_tpc[7:4]);
+      7'd33: ch = hexc(r_tpc[3:0]);
+      7'd34: ch = " ";
+      7'd35: ch = "R";
+      7'd36: ch = "=";
+      7'd37: ch = hexc(r_tret[15:12]);
+      7'd38: ch = hexc(r_tret[11:8]);
+      7'd39: ch = hexc(r_tret[7:4]);
+      7'd40: ch = hexc(r_tret[3:0]);
+      7'd41: ch = " ";
+      7'd42: ch = "N";
+      7'd43: ch = "=";
+      7'd44: ch = hexc(r_npres[15:12]);
+      7'd45: ch = hexc(r_npres[11:8]);
+      7'd46: ch = hexc(r_npres[7:4]);
+      7'd47: ch = hexc(r_npres[3:0]);
+      7'd48: ch = " ";
+      7'd49: ch = "V";
+      7'd50: ch = "=";
+      7'd51: ch = hexc(r_vpc[23:20]);
+      7'd52: ch = hexc(r_vpc[19:16]);
+      7'd53: ch = hexc(r_vpc[15:12]);
+      7'd54: ch = hexc(r_vpc[11:8]);
+      7'd55: ch = hexc(r_vpc[7:4]);
+      7'd56: ch = hexc(r_vpc[3:0]);
+      7'd57: ch = " ";
+      7'd58: ch = "X";
+      7'd59: ch = "=";
+      7'd60: ch = hexc(r_spc[23:20]);
+      7'd61: ch = hexc(r_spc[19:16]);
+      7'd62: ch = hexc(r_spc[15:12]);
+      7'd63: ch = hexc(r_spc[11:8]);
+      7'd64: ch = hexc(r_spc[7:4]);
+      7'd65: ch = hexc(r_spc[3:0]);
+      7'd66: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

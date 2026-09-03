@@ -842,6 +842,45 @@ module m1_integrated (
   // Game speed, measured on the board rather than inferred. The counters are
   // on clk_sys because that is what the UART's baud divider is written for and
   // what vblank_irq_sys is already in.
+    // second - a torn value is one wrong sample, not a wrong conclusion.
+  // ---------------------------------------------------------------------
+  // THE PC AT THE INSTANT THE COPROCESSOR STOPS, not a second later.
+  //
+  // docs/findings.md, on an earlier hunt at this same address: "The overlay's
+  // PC row cannot help - it samples at the same point every frame and reads
+  // FFE59C blank or not. What is needed is the PC at the instant of the
+  // teardown, latched on the transition, with a counter."
+  //
+  // Sampling once a second cannot catch a transition. This resets a counter
+  // whenever the TGP's retire count moves and latches the V60's pc, once,
+  // when it has not moved for 1,000,000 clk_sys cycles - 12.5 ms, about
+  // three quarters of a frame. A healthy coprocessor retires continuously
+  // (R wraps its 16 bits between one-second samples), so any gap that long
+  // is a genuine stall rather than idleness.
+  //
+  // Sticky: the first stall is the interesting one. Later ones are the game
+  // already in its error path.
+  logic [15:0] tgp_ret_d;
+  logic [20:0] tgp_still;
+  logic [23:0] dbg_stall_pc;
+  logic        stall_seen;
+  always_ff @(posedge clk_sys or negedge rst_n_sys) begin
+    if (!rst_n_sys) begin
+      tgp_ret_d <= '0; tgp_still <= '0; dbg_stall_pc <= '0; stall_seen <= 1'b0;
+    end else begin
+      tgp_ret_d <= dbg_tgp_retires;
+      if (dbg_tgp_retires != tgp_ret_d) begin
+        tgp_still <= '0;
+      end else if (!tgp_still[20]) begin
+        tgp_still <= tgp_still + 21'd1;
+        if (tgp_still == 21'd1_000_000 && !stall_seen) begin
+          dbg_stall_pc <= dbg_pc;
+          stall_seen   <= 1'b1;
+        end
+      end
+    end
+  end
+
   m1_speed_report #(.CLK_HZ(80_000_000), .BAUD(115_200)) u_speed (
     .clk(clk_sys), .rst_n(rst_n_sys),
     .vblank(vblank_irq_sys), .list_sel(listctl_sel),
@@ -851,6 +890,7 @@ module m1_integrated (
     // pc and R= its free-running retire count. Both cross from clk_cpu/clk_3d
     // into clk_sys unsynchronised, which is fine for a counter read once a
     // second - a torn value is one wrong sample, not a wrong conclusion.
+    .stall_pc(dbg_stall_pc),
     .bands_pres(r3_dbg_bands), .v60_pc(dbg_pc),
     .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .tx(uart_tx)
