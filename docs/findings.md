@@ -20,6 +20,55 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 (later) — the crash chain, with the V60's pc on the wire
+
+Second 7-minute capture, this time with V= carrying the V60 program counter.
+Full log in `known_good/uart_crash_pc_2026-09-03.txt`. The transition:
+
+    S=0019  C=0233  R=C660  V=FF6C47   healthy - TGP pc varying, retiring
+    S=0017  C=0229  R=68B0  V=FF85E4   healthy
+    S=0017  C=004C  R=1C94  V=FF8629   TGP at idle dispatch, STILL RETIRING
+    S=0007  C=004C  R=35C5  V=FFE59C   R FREEZES - V60 pc -> FFE59C
+    S=0000  C=004C  R=35C5  V=FFE59C   V60 stalled, pc frozen
+    S=0000  ...                FFE59C   four seconds
+    S=000A  C=004C  R=35C5  V=FFE59C   swaps resume, pc STILL FFE59C
+    S=001B  ...     P=0000   V=FFE59C   and never moves again
+
+**THE TGP IS BLOCKED, NOT IDLE, and the retire count is what proves it.** Line
+three has C=004C with R still advancing: at the idle dispatch the coprocessor
+keeps retiring its polling loop, so the pc alone cannot distinguish hung from
+waiting. R then freezes at 35C5 permanently. That is a stall.
+
+**THE V60 IS PINNED AT FFE59C**, which is where the crash was reproduced in
+simulation after 2.8 emulated minutes: a `movcu.h` block copy whose length is
+read from memory. Swaps resume to ~26/s while the pc samples FFE59C every time,
+so the main loop runs but spends nearly all its time inside that copy, every
+frame.
+
+**AND THAT EXPLAINS THE 2D GOING BLACK.** A game looping on a huge block copy
+with P=0000 is clearing memory - tile RAM and display lists both. The tile path
+never touches the coprocessor, which is why a dead TGP alone could not account
+for the symptom, and this closes that gap.
+
+So the chain is:
+
+    TGP stalls -> V60 waits -> game takes an error path -> clears everything
+    every frame -> black screen
+
+The root cause is the coprocessor stall. Everything downstream is the game
+reacting to it, which is why reloading the core is the only recovery.
+
+WHAT IS STILL OPEN: why the TGP stalls at 0x004C. That address is the command
+FIFO read, and a read of an EMPTY fifo returning zero was fixed on 2026-08-29 -
+so either that regressed, or it is blocked pushing into a full OUTPUT fifo while
+the V60 is not draining. The FIFOs are 16 deep and a full one halts the CPU.
+Both sides waiting on each other fits every line above.
+
+ALSO: a core load can fail silently, and V= now says so instantly. The first
+load of this build gave V=FFFFF0 - the reset vector - with S=0000 and R=0041:
+the CPU never fetched an instruction. Before this field that state was
+indistinguishable from a core bug.
+
 ## 2026-09-03 — the five-minute crash is a COPROCESSOR deadlock, caught on the wire
 
 The long-standing "black screen after about five minutes" was characterised for
