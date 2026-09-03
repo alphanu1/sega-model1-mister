@@ -40,6 +40,27 @@ So: the TGP stops retiring, the V60 stalls COMPLETELY for about four seconds,
 then recovers to full display-list rate with P=0000 - no objects - permanently.
 Video timing (F=003A) never falters throughout.
 
+**AND THE 2D GOES BLACK TOO** - Ben, on seeing this analysis. The screen is
+entirely black, not "3D missing over a 2D background". That matters because the
+tile path never touches the coprocessor, so a dead TGP cannot explain it, and
+the first draft of this finding was wrong to imply it could.
+
+What has to be reconciled: video timing alive (F=003A throughout), the V60
+running and swapping display lists at full rate (S=001D), bands still being
+presented - and nothing on screen. Candidates, none yet tested:
+
+  - the GAME has crashed. The V60's main loop still runs and still swaps lists,
+    but the lists are empty (P=0000) and it has stopped writing tile RAM. A game
+    error path that blanks the screen would look exactly like this, and the
+    coprocessor deadlock is a plausible trigger for the game taking one.
+  - the PALETTE. Both 2D and 3D index it, so a zeroed or unreadable palette
+    blacks everything while every counter keeps moving.
+  - a shared resource in the video path downstream of both layers.
+
+The V60's pc would separate the first from the others in one reading, and it is
+NOT on the printf channel - only in the 24-row overlay, which cannot show a
+sequence. An earlier overlay photo of this fault showed pc=00FFE59C.
+
 That is a COPROCESSOR DEADLOCK, not a dead core. The coprocessor FIFOs are 16
 deep and a full one HALTS THE CPU, so the shape that fits is the TGP blocked
 pushing a result into a full output FIFO while the V60 is blocked waiting on the
