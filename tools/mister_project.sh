@@ -89,7 +89,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_clip.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geometry.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listwalk.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_store.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_recip_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_div.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_fill.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_band.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fp_from_int.sv
