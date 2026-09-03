@@ -20,6 +20,57 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — the crash is DETERMINISTIC, and X=FE0C9B names the code
+
+Third capture, with X= carrying the V60's pc latched at the instant the
+coprocessor stops retiring. Log: `known_good/uart_crash_stallpc_2026-09-03.txt`.
+
+**THE CRASH POINT IS IDENTICAL EVERY TIME.** Across three independent runs, on
+two different builds:
+
+    capture 1   R=35C5   B=0AD7
+    capture 2   R=35C5   B=0AD6
+    capture 3   R=35C5   B=0AD4
+
+R is the TGP's free-running 16-bit retire count. It freezes at the SAME value in
+all three, and the band count is within three. This is not a race and not a
+timing flake - the coprocessor stops after the same amount of work every time,
+which means the state is reachable in simulation given enough cycles.
+
+**AND THE PC AT THE STALL IS NOT WHERE THE V60 ENDS UP.**
+
+    X=FE0C9B    the V60's pc at the instant the TGP stopped retiring
+    V=FFE59C    where the V60 is pinned afterwards
+
+Two different addresses. FFE59C is the aftermath - the movcu block copy the game
+runs in its error path, and the address the overlay has always shown because
+sampling lands there. **FE0C9B is the instruction that was executing when the
+coprocessor stalled**, and it is the lead this hunt has been missing.
+
+That distinction is exactly what docs/findings.md asked for during an earlier
+hunt at this same address: "The overlay's PC row cannot help - it samples at the
+same point every frame and reads FFE59C blank or not. What is needed is the PC
+at the instant of the teardown, latched on the transition, with a counter."
+
+### Next step for this, when it comes back up the list
+
+Disassemble around FE0C9B in the ROM. MAME's debugger will do it, and since the
+crash is deterministic the same point can be reached under `make m1_frame` with
+a long enough window - the V60 was reproduced stopping at ffe59c after 2.8
+emulated minutes, which is about 13.4 billion cycles.
+
+### Instrument notes, both mistakes worth not repeating
+
+The latch was STICKY at first - "the first stall is the interesting one". Wrong:
+the first stall is at BOOT, when the coprocessor legitimately has nothing to do,
+so the field showed X=FE0027 while the core ran perfectly. Keeping the LATEST
+stall is correct, and safe because after the crash nothing retires again, so the
+crash's value is the last written.
+
+And the 12.5 ms threshold fires on benign idle - at ~20 geometry passes a second
+the TGP can idle 50 ms between commands. That is tolerable only because of the
+non-sticky fix: benign latches are overwritten, and the crash's is final.
+
 ## 2026-09-03 — the "missing 3D bands" are not missing. The geometry is STALE
 
 Ben reports bands not being drawn in busy 3D scenes. Measured on hardware, they
