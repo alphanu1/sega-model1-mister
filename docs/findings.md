@@ -226,6 +226,27 @@ indices 5), two banks. 3,072 a bank is ~+50 M10K, all of the 58 free and the
 sound section's budget. `MISTER_SMALL_VBUF` is the framework's own lever on
 M10K and has never been measured here; a build with it is running.
 
+**PROVEN IN THE BENCH.** Frame 2500 (the tyre change, found by snapshotting
+the attract loop every 250 frames - `build/render/attract_sheet.png`) dumped
+with the corrected active-list choice and run through `tb_m1_raster3d`:
+
+    objects walked            158 of 158, every ROM address matching MAME's walk
+    quads the geometry emits  2,671   (MAME: 5,485 polygons before the backface test)
+    store capacity            2,048   -> 623 quads dropped, the tail of the list
+    object 156 (grandstand)   1,163 polygons -> 397 quads, LAST in the list
+    picture at NQ=2,048       crew, car, tyres; no building, road, wall or stand
+    picture at NQ=4,096       everything, matching MAME's snapshot of the frame
+
+`build/render/frame2500_ours.png` against `frame2500_nq4096.png` and
+`frame2500_mame.png`. NQ is a parameter of m1_raster3d now
+(`make render3d VFLAGS="... -GNQ=4096"`). "dropped 0" in the bench's summary
+is read from the bank that has just been cleared and means nothing.
+
+The cost of the bigger store also lands on the FILL: the worst band of that
+frame goes 112% -> 121% of a slot at 4,096, because every stored quad is
+replayed into every band it touches. The store and the divider are one
+budget, not two.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's

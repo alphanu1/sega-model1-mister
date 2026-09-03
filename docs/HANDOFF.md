@@ -38,12 +38,15 @@ drifted before today.
 
 ### Next, in order
 
-0. **The quad store is too small for the pit scene** - D= on the wire drops
-   thousands of quads a second there and the grandstand is the tail of the
-   list. 3,072 a bank is ~50 M10K. Measure what `MISTER_SMALL_VBUF` frees
-   (build running on par_13), then decide with Ben whether the sound budget
-   or the framework buffer pays for it. Vertex width (12-bit x, 10-bit y)
-   would take ~6 M10K a bank off the same store.
+0. **The quad store is too small for the pit scene, PROVEN** - frame 2500
+   needs 2,671 quads, the store holds 2,048, and the bench renders the whole
+   scene at 4,096 (`-GNQ=4096`) and loses building, road, wall and grandstand
+   at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. Measure what
+   `MISTER_SMALL_VBUF` frees (build on par_13), then decide with Ben: the
+   sound budget, the framework buffer, or a narrower quad record (the 24-bit
+   lit colour and the 32-bit sort key are the fat; coordinates reach +/-31,696
+   after clipping so they stay 16-bit). A bigger store also makes every band
+   replay more quads, so it goes with the divider work, not before it.
 1. **The band fill's divide LATENCY.** Two dividers are in (a207c47) and cut
    fill time 21%, but a band-clipped quad is one segment, so its two slopes
    are its whole divide and the 16-step latency is still 47% of the worst

@@ -237,6 +237,7 @@ int main(int argc, char** argv) {
     long pass_start = 0, pass_ready = 0, last_start = -1;
     int  cadence_hist[16] = {0};
     unsigned worst_fill_frame = 0, last_bands_seen = 0;
+    std::vector<std::pair<unsigned,int>> obj_list, last_pass_objs;
     int  prev_cst = 0; long band_cyc = 0, worst_band_cyc = 0; int band_quads = 0, worst_band_quads = 0;
     long band_fh[32] = {0}, worst_fh[32] = {0}, band_cst_cyc[8] = {0}, worst_cst[8] = {0};
     int  worst_band_idx = -1, worst_band_frame = -1;
@@ -304,6 +305,15 @@ int main(int argc, char** argv) {
                     if (d->dbg_bands != last_bands_seen) {
                         last_bands_seen = d->dbg_bands;
                         if (d->dbg_band_cycles > worst_fill_frame) worst_fill_frame = d->dbg_band_cycles;
+                    }
+                    // Quads per OBJECT in the last complete pass, against MAME's
+                    // polygon count per object: which objects come out empty.
+                    {
+                        int pp = d->rootp->m1_raster3d__DOT__pst & 7;
+                        if (pp == 1 && prev_pst == 0) { obj_list.clear(); }
+                        if (pp == 2 && prev_pst != 2) { obj_list.push_back({(unsigned)d->rootp->m1_raster3d__DOT__obj_poly, 0}); }
+                        if (d->rootp->m1_raster3d__DOT__q_valid && !obj_list.empty()) obj_list.back().second++;
+                        if (pp == 6 && prev_pst != 6) { last_pass_objs = obj_list; }
                     }
                     {
                         int pp = d->rootp->m1_raster3d__DOT__pst & 7;
@@ -383,6 +393,13 @@ int main(int argc, char** argv) {
     printf("\n  fill unit:");
     for (int i = 1; i < 19; i++) if (worst_fh[i] * 100 > worst_band_cyc) printf(" %s %ld", FNAME[i], worst_fh[i]);
     printf("\n");
+    if (getenv("OBJTABLE")) {
+        FILE* ot = fopen(getenv("OBJTABLE"), "w");
+        for (size_t i = 0; i < last_pass_objs.size(); i++)
+            fprintf(ot, "%zu %06x %d\n", i, last_pass_objs[i].first & 0xffffff, last_pass_objs[i].second);
+        fclose(ot);
+        printf("wrote %s: %zu objects of the last pass\n", getenv("OBJTABLE"), last_pass_objs.size());
+    }
     printf("producer cadence, start-to-start in frames:");
     for (int i = 0; i < 16; i++) if (cadence_hist[i]) printf(" %d:%d", i, cadence_hist[i]);
     printf("\n");

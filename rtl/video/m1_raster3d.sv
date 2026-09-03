@@ -80,7 +80,12 @@ module m1_raster3d #(
   // or three, not from six to twelve.
   parameter int unsigned BAND_H = 16,
   parameter int unsigned SCR_W  = 496,
-  parameter int unsigned SCR_H  = 384
+  parameter int unsigned SCR_H  = 384,
+  // Quads a store bank holds. 2,048 is 51 M10K a bank; the attract pit stop
+  // needs 2,671 for its frame 2500 and the grandstand at the end of the list
+  // is what falls off. A parameter so a bench can ask what a bigger store
+  // would draw before the M10K is spent.
+  parameter int unsigned NQ     = 2048
 ) (
   input  logic        clk,            // the 3D clock, 45.714 MHz
   input  logic        rst_n,
@@ -190,7 +195,8 @@ module m1_raster3d #(
   logic [31:0] rlx, rly, rlz;          // as the display list gave it
   logic        light_pending;
   logic        vspec;
-  logic [31:0] obj_tex, obj_poly, obj_size;
+  logic [31:0] obj_tex, obj_size;
+  logic [31:0] obj_poly /* verilator public_flat_rd */;
   logic [31:0] old_z;
 
   // ---------------------------------------------------------------- list walk
@@ -259,7 +265,7 @@ module m1_raster3d #(
   logic        mat_we;
   logic [3:0]  mat_idx;
   logic [31:0] mat_data;
-  logic        q_valid;
+  logic        q_valid /* verilator public_flat_rd */;
   logic signed [31:0] q_x0, q_y0, q_x1, q_y1, q_x2, q_y2, q_x3, q_y3;
   logic [23:0] q_col;
   logic [31:0] q_z;
@@ -393,6 +399,7 @@ module m1_raster3d #(
       // reach it, so the two roles cannot collide by construction.
       wire mine_p = (bank == 1'(k));
       m1_quad_store #(
+        .NQ(NQ), .IW($clog2(NQ)),
         .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H)
       ) u_store (
         .clk(clk), .rst_n(rst_n),
