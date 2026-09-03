@@ -1,37 +1,33 @@
 # KNOWN GOOD — confirmed working on the board
 
-**Commit:** `4bf8434` — rung 7, the shared shift/rotate unit
-**Built:** 2026-09-03, Quartus 17.0, `M1_SEED=7` (4 of 6 seeds closed)
+**Commit:** `284d872` — rung 8, the coprocessor at 2:1
+**Built:** 2026-09-03, Quartus 17.0, `M1_SEED=13` (3 of 3 seeds closed)
 **Confirmed on hardware by Ben, 2026-09-03.**
 
-    Model1.rbf      md5 1eb27a2f0fcb903db247a1d4b11fc4a9
-    ALM             38,755 / 41,910 (92%)
+    Model1.rbf      md5 af8e98446b153c03b82e0f3b0e4f5847
+    ALM             39,022 / 41,910 (93%)
     M10K            495 / 553 (90%)
     DSP             53 / 112 (47%)
-    setup slack     +0.307 ns
+    setup slack     +0.386 ns
     errors          0
 
 Telemetry over /dev/ttyS1, in uart_working_reference.txt:
 
-    F=003A S=000E B=021B P=001B
+    F=003A S=001D B=01C5 P=0030 C=004C R=3C1D
 
-**P non-zero is the pass signature.** Every failed image during the two-day
-black-screen episode showed `P=0000`. F is video frames, NOT game speed - the
-speed metric is frames-per-swap, F/S, where 2.00 is 100% of hardware. This build
-sits near 4.3, i.e. under half speed.
+**THIS BUILD RUNS AT ~97% OF HARDWARE SPEED.** The metric is frames-per-swap,
+F/S, where 2.00 is 100%. S went from 13-14 to 27-29 when the coprocessor moved
+to 2:1, taking F/S from 4.30 to 2.05 - the board had been at ~46%.
 
-**THE TIMING IS HEALTHY NOW, AND IT WAS NOT AN ACCIDENT.** The previous image
-closed at +0.005 with one seed in ten; this one closes at +0.307 with four in
-six. What changed is 120 ALM of congestion: the failing path is
-`ascal|o_hcpt`, a high-fanout counter in the MiSTer framework whose delay is
-largely ROUTING, and routing is what congestion degrades. Per-clock here:
-
-    pll_hdmi (-> ascal|o_hcpt)   +0.307
-    emu|pll general[0]           +0.354   <- ours
-
-Do not read a single build's per-clock margin as a property of the design. An
-earlier placement gave our clock +0.964; the fitter optimises until constraints
-are MET and then stops, so it spends whatever it does not need.
+    F  video frames in the reporting window (58 = ~1 s, NOT game speed)
+    S  display-list swaps: one per completed logic frame
+    B  3D bands presented, free-running
+    P  objects, NON-ZERO IS THE PASS SIGNATURE - every failed image during the
+       two-day black-screen episode showed P=0000
+    C  TGP program counter. 004C is the idle dispatch, where it waits, so
+       sampling once a second usually catches it there
+    R  TGP retire count, free-running 16-bit. It WRAPS between samples here,
+       which is what a busy coprocessor looks like
 
 ## RECOVERING THIS FILE IF IT IS LOST
 
@@ -54,12 +50,11 @@ at 1:1, the geometry pipeline, the band rasterizer, the display-list cap and the
 FP pipelining.
 
 It contains the shared integer ALU (`f216513`), the rotate sharing (`8defa69`),
-the pixel-census timing fix (`075921c`) and the shared shift/rotate unit
-(`4bf8434`) - all now confirmed on hardware.
+the pixel-census timing fix (`075921c`), the shared shift/rotate unit
+(`4bf8434`) and the 2:1 coprocessor (`284d872`) - all confirmed on hardware.
 
-It does **not** contain the 2:1 coprocessor stack. That is extracted from the
-`57ce77e` WIP bundle and staged in the working tree, lint clean, UNCOMMITTED and
-untested on hardware.
+It does **not** contain the data cache. That change breaks the board - `P=0000`,
+no video - and is parked at `be22c31`, reverted.
 
 It does **not** contain the data cache. That change breaks the board - `P=0000`,
 no video - and is parked at `be22c31`, reverted.
