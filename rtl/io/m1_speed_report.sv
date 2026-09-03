@@ -73,6 +73,15 @@ module m1_speed_report #(
   // Parked at microcode 0x004c means starved of commands; anywhere else means it
   // is executing; retires stuck at zero means it never left reset at all. Those
   // are different faults and five builds have been spent guessing between them.
+  // BANDS ACTUALLY PRESENTED, which is the one thing the other counters cannot
+  // distinguish. `bands` above counts completed GEOMETRY PASSES; this counts
+  // ev_present, a band handed to the display. Expected is 24 x the video frame
+  // rate, ~1,380 a second. If N is at rate while B is low, the passes are being
+  // lost and the display is repeating a stale one; if N is short, bands are
+  // genuinely not reaching the screen. Simulation shows 24 on 668 of 669
+  // frames, so whatever Ben sees on the board is not reproduced there and this
+  // is the instrument that says which of the two it is.
+  input  logic [15:0] bands_pres,
   input  logic [15:0] tgp_pc,      // coprocessor program counter
   input  logic [15:0] tgp_retires, // free-running retire count
 
@@ -84,14 +93,14 @@ module m1_speed_report #(
   logic [15:0] period_cnt;
   logic        sel_d;
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
-  logic [15:0] r_tpc, r_tret;
+  logic [15:0] r_tpc, r_tret, r_npres;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       n_frame <= '0; n_swap <= '0; period_cnt <= '0; sel_d <= 1'b0;
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
-      r_tpc <= '0; r_tret <= '0;
+      r_tpc <= '0; r_tret <= '0; r_npres <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -109,6 +118,7 @@ module m1_speed_report #(
           r_pass  <= passes;
           r_tpc   <= tgp_pc;
           r_tret  <= tgp_retires;
+          r_npres <= bands_pres;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -116,8 +126,9 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx\r\n" - 43 bytes.
-  localparam int unsigned NCH = 43;
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx\r\n" - 50 bytes.
+  // 50 bytes a second against 11,520 available, so the channel is not a concern.
+  localparam int unsigned NCH = 50;
 
   logic [5:0]  ci;
   logic        busy;
@@ -179,7 +190,14 @@ module m1_speed_report #(
       6'd38: ch = hexc(r_tret[11:8]);
       6'd39: ch = hexc(r_tret[7:4]);
       6'd40: ch = hexc(r_tret[3:0]);
-      6'd41: ch = 8'h0d;
+      6'd41: ch = " ";
+      6'd42: ch = "N";
+      6'd43: ch = "=";
+      6'd44: ch = hexc(r_npres[15:12]);
+      6'd45: ch = hexc(r_npres[11:8]);
+      6'd46: ch = hexc(r_npres[7:4]);
+      6'd47: ch = hexc(r_npres[3:0]);
+      6'd48: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

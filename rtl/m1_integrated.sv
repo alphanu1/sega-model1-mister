@@ -677,6 +677,7 @@ module m1_integrated (
   logic [23:0] r3_scan_rgb;
   logic        r3_scan_hit;
   logic [15:0] r3_dbg_objects, r3_dbg_quads, r3_dbg_dropped, r3_dbg_frames;
+  logic [15:0] r3_dbg_bands;   // bands PRESENTED, not passes completed
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -720,7 +721,8 @@ module m1_integrated (
     .scan_rgb(r3_scan_rgb), .scan_hit(r3_scan_hit),
     .disp_band(r3_disp_band), .disp_valid(r3_disp_valid),
     .dbg_objects(r3_dbg_objects), .dbg_quads(r3_dbg_quads),
-    .dbg_dropped(r3_dbg_dropped), .dbg_frames(r3_dbg_frames)
+    .dbg_dropped(r3_dbg_dropped), .dbg_frames(r3_dbg_frames),
+    .dbg_bands(r3_dbg_bands)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -849,6 +851,7 @@ module m1_integrated (
     // pc and R= its free-running retire count. Both cross from clk_cpu/clk_3d
     // into clk_sys unsynchronised, which is fine for a counter read once a
     // second - a torn value is one wrong sample, not a wrong conclusion.
+    .bands_pres(r3_dbg_bands),
     .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .tx(uart_tx)
   );
