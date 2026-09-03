@@ -238,6 +238,7 @@ int main(int argc, char** argv) {
     int  cadence_hist[16] = {0};
     unsigned worst_fill_frame = 0, last_bands_seen = 0;
     std::vector<std::pair<unsigned,int>> obj_list, last_pass_objs;
+    int32_t max_coord = 0, min_coord = 0;
     int  prev_cst = 0; long band_cyc = 0, worst_band_cyc = 0; int band_quads = 0, worst_band_quads = 0;
     long band_fh[32] = {0}, worst_fh[32] = {0}, band_cst_cyc[8] = {0}, worst_cst[8] = {0};
     int  worst_band_idx = -1, worst_band_frame = -1;
@@ -313,6 +314,14 @@ int main(int argc, char** argv) {
                         if (pp == 1 && prev_pst == 0) { obj_list.clear(); }
                         if (pp == 2 && prev_pst != 2) { obj_list.push_back({(unsigned)d->rootp->m1_raster3d__DOT__obj_poly, 0}); }
                         if (d->rootp->m1_raster3d__DOT__q_valid && !obj_list.empty()) obj_list.back().second++;
+                        if (d->rootp->m1_raster3d__DOT__q_valid) {
+                            // How wide the stored coordinates need to be, after the clipper.
+                            int32_t c[8] = {(int32_t)d->rootp->m1_raster3d__DOT__q_x0, (int32_t)d->rootp->m1_raster3d__DOT__q_y0,
+                                            (int32_t)d->rootp->m1_raster3d__DOT__q_x1, (int32_t)d->rootp->m1_raster3d__DOT__q_y1,
+                                            (int32_t)d->rootp->m1_raster3d__DOT__q_x2, (int32_t)d->rootp->m1_raster3d__DOT__q_y2,
+                                            (int32_t)d->rootp->m1_raster3d__DOT__q_x3, (int32_t)d->rootp->m1_raster3d__DOT__q_y3};
+                            for (int k = 0; k < 8; k++) { if (c[k] > max_coord) max_coord = c[k]; if (c[k] < min_coord) min_coord = c[k]; }
+                        }
                         if (pp == 6 && prev_pst != 6) { last_pass_objs = obj_list; }
                     }
                     {
@@ -400,6 +409,7 @@ int main(int argc, char** argv) {
         fclose(ot);
         printf("wrote %s: %zu objects of the last pass\n", getenv("OBJTABLE"), last_pass_objs.size());
     }
+    printf("post-clip vertex coordinates: min %d, max %d\n", min_coord, max_coord);
     printf("producer cadence, start-to-start in frames:");
     for (int i = 0; i < 16; i++) if (cadence_hist[i]) printf(" %d:%d", i, cadence_hist[i]);
     printf("\n");

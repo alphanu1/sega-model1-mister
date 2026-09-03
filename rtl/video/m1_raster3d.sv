@@ -81,11 +81,14 @@ module m1_raster3d #(
   parameter int unsigned BAND_H = 16,
   parameter int unsigned SCR_W  = 496,
   parameter int unsigned SCR_H  = 384,
-  // Quads a store bank holds. 2,048 is 51 M10K a bank; the attract pit stop
-  // needs 2,671 for its frame 2500 and the grandstand at the end of the list
-  // is what falls off. A parameter so a bench can ask what a bigger store
-  // would draw before the M10K is spent.
-  parameter int unsigned NQ     = 2048
+  // Quads a store bank holds. The attract pit stop needs 2,671 for its frame
+  // 2500 and at 2,048 the grandstand at the end of the list fell off. With
+  // the store's narrowed, split record (see m1_quad_store) a 4,096-quad bank
+  // is 68 M10K where the old 2,048 was 52 - measured with make quartus
+  // MOD=qs4096 - so both banks cost +32 over the old design. Ben's call,
+  // 2026-09-03: "if there is space make the blocks bigger". A parameter so a
+  // bench can still ask what a smaller store would drop.
+  parameter int unsigned NQ     = 4096
 ) (
   input  logic        clk,            // the 3D clock, 45.714 MHz
   input  logic        rst_n,
@@ -266,7 +269,7 @@ module m1_raster3d #(
   logic [3:0]  mat_idx;
   logic [31:0] mat_data;
   logic        q_valid /* verilator public_flat_rd */;
-  logic signed [31:0] q_x0, q_y0, q_x1, q_y1, q_x2, q_y2, q_x3, q_y3;
+  logic signed [31:0] q_x0 /* verilator public_flat_rd */, q_y0 /* verilator public_flat_rd */, q_x1 /* verilator public_flat_rd */, q_y1 /* verilator public_flat_rd */, q_x2 /* verilator public_flat_rd */, q_y2 /* verilator public_flat_rd */, q_x3 /* verilator public_flat_rd */, q_y3 /* verilator public_flat_rd */;
   logic [23:0] q_col;
   logic [31:0] q_z;
   logic        q_moire;
@@ -386,6 +389,7 @@ module m1_raster3d #(
   logic        bank;                  // the store the PRODUCER is writing
   logic [1:0]  qs_sort_busy_v, qs_replay_busy_v, qs_out_valid_v;
   logic [15:0] qs_count_v [2], qs_dropped_v [2];
+  logic [15:0] qs_oob_v [2] /* verilator public_flat_rd */;   // contract violations, see the store
   logic signed [15:0] qo_x0_v [2], qo_y0_v [2], qo_x1_v [2], qo_y1_v [2];
   logic signed [15:0] qo_x2_v [2], qo_y2_v [2], qo_x3_v [2], qo_y3_v [2];
   logic [23:0] qo_col_v [2];
@@ -420,7 +424,8 @@ module m1_raster3d #(
         .out_x2(qo_x2_v[k]), .out_y2(qo_y2_v[k]),
         .out_x3(qo_x3_v[k]), .out_y3(qo_y3_v[k]),
         .out_col(qo_col_v[k]), .out_moire(qo_moire_v[k]),
-        .dbg_count(qs_count_v[k]), .dbg_dropped(qs_dropped_v[k])
+        .dbg_count(qs_count_v[k]), .dbg_dropped(qs_dropped_v[k]),
+        .dbg_oob(qs_oob_v[k])
       );
     end
   endgenerate

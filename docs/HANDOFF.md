@@ -47,7 +47,12 @@ V60 split pays for. So the quad store's ~22 M10K competes with nothing.
 
 ### Next, in order
 
-0. **The quad store is too small for the pit scene, PROVEN** - frame 2500
+0. **DONE in simulation: the quad store is 4,096 quads** (narrowed record,
+   arrays split at 2,048 deep, +32 M10K for both banks, measured per bank
+   with `make quartus MOD=qs4096 SRCS_qs4096="rtl/video/m1_quad_store.sv
+   build/tmp/qs4096.sv"`). Owed: a full build and the board - D= should stop
+   moving and the grandstand should appear in the pit stop. The old note:
+   the quad store was too small for the pit scene, PROVEN - frame 2500
    needs 2,671 quads, the store holds 2,048, and the bench renders the whole
    scene at 4,096 (`-GNQ=4096`) and loses building, road, wall and grandstand
    at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. `MISTER_SMALL_VBUF`

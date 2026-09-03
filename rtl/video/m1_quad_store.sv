@@ -67,7 +67,23 @@ module m1_quad_store #(
   // The cost is eight passes over the key instead of four, so the sort doubles
   // from 21% of a frame to about 42%. That is affordable and not fitting is not.
   parameter int unsigned RADIX  = 4,
-  parameter int unsigned SCR_H  = 384
+  parameter int unsigned SCR_H  = 384,
+  // VERTICES ARE SCREEN COORDINATES, and the record is sized for that.
+  //
+  // The clipper delivers x in 0..495 and y in 0..383 - measured across the
+  // reference's frames 900, 2500 and 5460 (tb_m1_raster3d prints the range)
+  // - so a vertex is 9+9 bits, not 16+16. With the colour as the RGB565 the
+  // band buffer keeps anyway and the band mask as a 5+5-bit RANGE, a quad is
+  // 18*4 + 27 + 32 + 2*IW bits instead of 231, which is what lets the store
+  // grow from 2,048 quads to 3,072 for a few M10K rather than fifty. The
+  // 2,048 cap dropped the attract pit stop's grandstand: it needs 2,671.
+  //
+  // A coordinate outside that range is a CONTRACT VIOLATION by the geometry,
+  // not a case to store: it is counted in dbg_oob and the quad's stored
+  // vertices are wrong. The band range is still computed from the full
+  // 16-bit inputs, so an off-screen quad lands in no band exactly as before.
+  parameter int unsigned XW     = 9,
+  parameter int unsigned YW     = 9
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -105,7 +121,10 @@ module m1_quad_store #(
   output logic        out_moire,
 
   output logic [15:0] dbg_count,
-  output logic [15:0] dbg_dropped
+  output logic [15:0] dbg_dropped,
+  // Quads with a vertex outside 0..2^XW-1 / 0..2^YW-1, free-running. Zero by
+  // contract; see the parameters.
+  output logic [15:0] dbg_oob /* verilator public_flat_rd */
 );
 
 
@@ -128,17 +147,42 @@ module m1_quad_store #(
   // One vertex per memory gives each a single write port and a single read port,
   // which is a Simple Dual Port M10K and infers cleanly. CLAUDE.md's warning that
   // "block RAM inference is silent when it fails" cost 28,816 ALM once before.
-  (* ramstyle = "M10K" *) logic [31:0] vtx0 [NQ];
-  (* ramstyle = "M10K" *) logic [31:0] vtx1 [NQ];
-  (* ramstyle = "M10K" *) logic [31:0] vtx2 [NQ];
-  (* ramstyle = "M10K" *) logic [31:0] vtx3 [NQ];
-  localparam int unsigned AT_W = NBANDS + 25;   // {band_mask, moire, col}
-  (* ramstyle = "M10K" *) logic [AT_W-1:0] att [NQ];
-  (* ramstyle = "M10K" *) logic [31:0] key [NQ];
+  localparam int unsigned VW = XW + YW;
+  // {band_lo, band_hi, moire, col565}: lo > hi means no band at all.
+  localparam int unsigned AT_W = 2 * BW + 17;
 
+  // SPLIT AT 2,048 DEEP, EXPLICITLY. Quartus maps any array deeper than 2,048
+  // into the 4,096 x 2 block mode, and then a 32-bit key costs 16 blocks
+  // where 2,048 x 32 costs 7 - measured with make quartus MOD=qs3072: 84
+  // blocks for a 3,072-quad store against 37 for 2,048. Two arrays, a
+  // 2,048-deep low half and a (NQ-2048)-deep high half selected by the top
+  // address bit, keep every field at the 2,048-deep packing. Each array is
+  // still read at ONE site (see the note at P_OUT), and the index array's
+  // two readers - the sort and the replay, never active together - share
+  // one read through idx_a_addr.
+  localparam int unsigned NLO = (NQ > 2048) ? 2048 : NQ;
+  localparam int unsigned NHI = (NQ > 2048) ? NQ - 2048 : 1;
+  localparam int unsigned LW  = (NLO > 1) ? $clog2(NLO) : 1;
+  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx0_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx0_hi [NHI];
+  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx1_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx1_hi [NHI];
+  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx2_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx2_hi [NHI];
+  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx3_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx3_hi [NHI];
+  (* ramstyle = "M10K" *) logic [AT_W-1:0] att_lo  [NLO];  (* ramstyle = "M10K" *) logic [AT_W-1:0] att_hi  [NHI];
+  (* ramstyle = "M10K" *) logic [31:0]     key_lo  [NLO];  (* ramstyle = "M10K" *) logic [31:0]     key_hi  [NHI];
   // Two index arrays, ping-ponged by the radix passes.
-  (* ramstyle = "M10K" *) logic [IW-1:0] idx_a [NQ];
-  (* ramstyle = "M10K" *) logic [IW-1:0] idx_b [NQ];
+  (* ramstyle = "M10K" *) logic [IW-1:0]   idx_a_lo [NLO]; (* ramstyle = "M10K" *) logic [IW-1:0]   idx_a_hi [NHI];
+  (* ramstyle = "M10K" *) logic [IW-1:0]   idx_b_lo [NLO]; (* ramstyle = "M10K" *) logic [IW-1:0]   idx_b_hi [NHI];
+
+  // Which half an index lives in, and its address within it.
+  function automatic logic in_hi(input logic [IW-1:0] a);
+    in_hi = (NQ > 2048) && (a >= IW'(NLO));
+  endfunction
+  function automatic [LW-1:0] lo_a(input logic [IW-1:0] a);
+    lo_a = a[LW-1:0];
+  endfunction
+  function automatic [LW-1:0] hi_a(input logic [IW-1:0] a);
+    hi_a = LW'(a - IW'(NLO));
+  endfunction
 
   logic [IW:0]  count;
   assign dbg_count = {{(16-IW-1){1'b0}}, count};
@@ -150,13 +194,17 @@ module m1_quad_store #(
   // Which of the six 64-row bands this quad's rows touch. Computed from the
   // vertex extremes, clamped: a quad above the screen or below it lands in no
   // band and is never replayed.
-  function automatic [NBANDS-1:0] band_mask(input logic signed [15:0] a, b, c, d);
+  // The first and last band the quad's rows touch, as {lo, hi}; lo > hi for a
+  // quad entirely above or below the screen. Computed from the full inputs
+  // BEFORE they are narrowed, so the off-screen cases behave as they always
+  // did. Was a per-band mask; a range is 10 bits where the mask was 24.
+  function automatic [2*BW-1:0] band_range(input logic signed [15:0] a, b, c, d);
     logic signed [15:0] lo, hi2;
     int b0, b1;
     begin
       lo  = a;  if (b < lo)  lo  = b;  if (c < lo)  lo  = c;  if (d < lo)  lo  = d;
       hi2 = a;  if (b > hi2) hi2 = b;  if (c > hi2) hi2 = c;  if (d > hi2) hi2 = d;
-      if (hi2 < 0 || lo > $signed(16'(SCR_H - 1))) band_mask = '0;
+      if (hi2 < 0 || lo > $signed(16'(SCR_H - 1))) band_range = {BW'(1), BW'(0)};
       else begin
         if (lo  < 0)                        lo  = 16'sd0;
         if (hi2 > $signed(16'(SCR_H - 1)))  hi2 = $signed(16'(SCR_H - 1));
@@ -164,11 +212,18 @@ module m1_quad_store #(
         // says nothing about it, so it survives a change of band height silently.
         b0 = int'(lo)  / int'(BAND_H);
         b1 = int'(hi2) / int'(BAND_H);
-        band_mask = '0;
-        for (int k = 0; k < int'(NBANDS); k++)
-          if (k >= b0 && k <= b1) band_mask[k] = 1'b1;
+        band_range = {BW'(b0), BW'(b1)};
       end
     end
+  endfunction
+
+  function automatic [31:0] widen(input logic [VW-1:0] v);
+    widen = {{(16-YW){1'b0}}, v[VW-1:XW], {(16-XW){1'b0}}, v[XW-1:0]};
+  endfunction
+
+  function automatic logic oob(input logic signed [15:0] x, y);
+    oob = (x < 0) || (x > $signed(16'((1 << XW) - 1))) ||
+          (y < 0) || (y > $signed(16'((1 << YW) - 1)));
   endfunction
 
   // Monotonic key, then complemented so that ASCENDING on this key is DESCENDING
@@ -189,18 +244,32 @@ module m1_quad_store #(
   logic [IW-1:0] wi;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      count <= '0; wi <= '0; dbg_dropped <= '0;
+      count <= '0; wi <= '0; dbg_dropped <= '0; dbg_oob <= '0;
     end else if (clear) begin
       count <= '0; wi <= '0; dbg_dropped <= '0;
     end else if (in_valid) begin
+      if (oob(in_x0, in_y0) || oob(in_x1, in_y1) || oob(in_x2, in_y2) || oob(in_x3, in_y3))
+        dbg_oob <= dbg_oob + 16'd1;
       if (has_room) begin
-        vtx0[count[IW-1:0]] <= {in_y0, in_x0};
-        vtx1[count[IW-1:0]] <= {in_y1, in_x1};
-        vtx2[count[IW-1:0]] <= {in_y2, in_x2};
-        vtx3[count[IW-1:0]] <= {in_y3, in_x3};
-        att[count[IW-1:0]] <= {band_mask(in_y0, in_y1, in_y2, in_y3),
-                               in_moire, in_col};
-        key[count[IW-1:0]] <= sort_key(in_z);
+        // RGB565, the same bits the band buffer keeps (m1_raster3d's
+        // span_565), so nothing is lost between here and the screen.
+        if (in_hi(count[IW-1:0])) begin
+          vtx0_hi[hi_a(count[IW-1:0])] <= {in_y0[YW-1:0], in_x0[XW-1:0]};
+          vtx1_hi[hi_a(count[IW-1:0])] <= {in_y1[YW-1:0], in_x1[XW-1:0]};
+          vtx2_hi[hi_a(count[IW-1:0])] <= {in_y2[YW-1:0], in_x2[XW-1:0]};
+          vtx3_hi[hi_a(count[IW-1:0])] <= {in_y3[YW-1:0], in_x3[XW-1:0]};
+          att_hi[hi_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
+                                           in_col[23:19], in_col[15:10], in_col[7:3]};
+          key_hi[hi_a(count[IW-1:0])]  <= sort_key(in_z);
+        end else begin
+          vtx0_lo[lo_a(count[IW-1:0])] <= {in_y0[YW-1:0], in_x0[XW-1:0]};
+          vtx1_lo[lo_a(count[IW-1:0])] <= {in_y1[YW-1:0], in_x1[XW-1:0]};
+          vtx2_lo[lo_a(count[IW-1:0])] <= {in_y2[YW-1:0], in_x2[XW-1:0]};
+          vtx3_lo[lo_a(count[IW-1:0])] <= {in_y3[YW-1:0], in_x3[XW-1:0]};
+          att_lo[lo_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
+                                           in_col[23:19], in_col[15:10], in_col[7:3]};
+          key_lo[lo_a(count[IW-1:0])]  <= sort_key(in_z);
+        end
         count <= count + 1'b1;
       end else if (dbg_dropped != 16'hffff) begin
         dbg_dropped <= dbg_dropped + 16'd1;
@@ -250,12 +319,41 @@ module m1_quad_store #(
   // arrays, and the band mask out of att.
   //
   // The cost is a cycle per access, which this sequencer already had states for.
-  logic [IW-1:0] idx_rd;
+  // idx_a's single read serves the sort (address ri) and the replay (pi);
+  // the two never run at once in one store. idx_rd is the mux of the two
+  // registered reads, which is what the registered mux of two reads was.
+  logic [IW-1:0] idx_a_q, idx_b_q;
   logic [31:0]   key_rd;
+  logic [IW-1:0] idx_a_addr;
+  logic          idx_a_sel_hi, idx_b_sel_hi, key_sel_hi;
+  logic [IW-1:0] idx_a_q_lo, idx_a_q_hi, idx_b_q_lo, idx_b_q_hi;
+  logic [31:0]   key_q_lo, key_q_hi;
   always_ff @(posedge clk) begin
-    idx_rd <= which ? idx_b[ri[IW-1:0]] : idx_a[ri[IW-1:0]];
-    key_rd <= key[cur_idx];
+    // Stage one of the replay holds with the rest of it: pi advances in the
+    // same cycle this read is taken, so a free-running read had moved on to
+    // the next element by the time a hit stalled the pipeline. The sort, in
+    // P_IDLE, reads every cycle as it always did.
+    if (adv || (p_st == P_IDLE)) begin
+      idx_a_q_lo <= idx_a_lo[lo_a(idx_a_addr)];
+      idx_a_q_hi <= idx_a_hi[hi_a(idx_a_addr)];
+      idx_a_sel_hi <= in_hi(idx_a_addr);
+    end
+    idx_b_q_lo <= idx_b_lo[lo_a(ri[IW-1:0])];
+    idx_b_q_hi <= idx_b_hi[hi_a(ri[IW-1:0])];
+    idx_b_sel_hi <= in_hi(ri[IW-1:0]);
+    key_q_lo   <= key_lo[lo_a(cur_idx)];
+    key_q_hi   <= key_hi[hi_a(cur_idx)];
+    key_sel_hi <= in_hi(cur_idx);
+    // The select travels WITH the read. `which` flips at a pass boundary while
+    // the last read of the old pass is still in flight; muxing on the live
+    // bit handed that element to the wrong array and broke the sort order.
+    which_d    <= which;
   end
+  assign idx_a_q = idx_a_sel_hi ? idx_a_q_hi : idx_a_q_lo;
+  assign idx_b_q = idx_b_sel_hi ? idx_b_q_hi : idx_b_q_lo;
+  assign key_rd  = key_sel_hi   ? key_q_hi   : key_q_lo;
+  logic which_d;
+  wire [IW-1:0] idx_rd = which_d ? idx_b_q : idx_a_q;
 
   // ONE ELEMENT PER CYCLE, NOT FIVE.
   //
@@ -300,7 +398,8 @@ module m1_quad_store #(
         // Submission order to start with: a stable sort then keeps it as the
         // tie-break, exactly as quad_t::compare does with the address.
         R_INIT: begin
-          idx_a[ri[IW-1:0]] <= ri[IW-1:0];
+          if (in_hi(ri[IW-1:0])) idx_a_hi[hi_a(ri[IW-1:0])] <= ri[IW-1:0];
+          else                   idx_a_lo[lo_a(ri[IW-1:0])] <= ri[IW-1:0];
           if (ri + 1 >= count) begin ri <= '0; hi <= '0; rst_st <= R_CNT; end
           else                       ri <= ri + 1'b1;
         end
@@ -353,8 +452,13 @@ module m1_quad_store #(
           cur_idx <= idx_rd;
           cidx_d  <= cur_idx;
           if (s2) begin
-            if (which) idx_a[base[digit][IW-1:0]] <= cidx_d;
-            else       idx_b[base[digit][IW-1:0]] <= cidx_d;
+            if (which) begin
+              if (in_hi(base[digit][IW-1:0])) idx_a_hi[hi_a(base[digit][IW-1:0])] <= cidx_d;
+              else                            idx_a_lo[lo_a(base[digit][IW-1:0])] <= cidx_d;
+            end else begin
+              if (in_hi(base[digit][IW-1:0])) idx_b_hi[hi_a(base[digit][IW-1:0])] <= cidx_d;
+              else                            idx_b_lo[lo_a(base[digit][IW-1:0])] <= cidx_d;
+            end
             base[digit] <= base[digit] + 1'b1;
           end
           if (!more && !pipe_busy) rst_st <= R_NEXT;
@@ -400,36 +504,66 @@ module m1_quad_store #(
   pstate_t p_st;
 
   logic [IW:0]   pi;
-  logic [IW-1:0] q;
   logic          v1, v2;
   logic [IW-1:0] q2;
 
-  logic [IW-1:0] ord_idx;
-  logic [AT_W-1:0] att_rd;
+  wire  [IW-1:0]   ord_idx = idx_a_q;      // the shared read, addressed by pi in replay
+  // att_rd IS the registered read: att[ord_idx] presented every cycle lands
+  // here a cycle later, which is exactly when the old `att_rd <= att[ord_idx]`
+  // under adv delivered it; and it holds whenever pi holds.
+  wire  [AT_W-1:0] att_rd;
+  logic [AT_W-1:0] att_q_lo, att_q_hi;
+  logic            att_sel_hi;
+  logic [VW-1:0]   v0_q_lo, v0_q_hi, v1_q_lo, v1_q_hi, v2_q_lo, v2_q_hi, v3_q_lo, v3_q_hi;
+  logic            vtx_sel_hi;
+  assign idx_a_addr = (p_st != P_IDLE) ? pi[IW-1:0] : ri[IW-1:0];
+  assign att_rd = att_sel_hi ? att_q_hi : att_q_lo;
 
   wire v0 = (pi < count);
 
   // Frozen while a quad is being emitted: the vertex reads and the output
   // register are shared, and those are the quads the band exists to draw.
-  wire [NBANDS-1:0] q_band_mask = att_rd[AT_W-1:25];
-  wire              hit = v2 && q_band_mask[replay_band];
+  wire [BW-1:0] q_band_lo = att_rd[AT_W-1 -: BW];
+  wire [BW-1:0] q_band_hi = att_rd[AT_W-1-BW -: BW];
+  wire          hit = v2 && (replay_band >= q_band_lo) && (replay_band <= q_band_hi);
   wire              adv = (p_st == P_RUN) && !hit;
 
   assign replay_busy = (p_st != P_IDLE);
 
+  // The att read by ord_idx and the vertex reads by q, one site each, every
+  // cycle; the consumers above pick the half a cycle later. att used to be
+  // read only under adv; reading every cycle is the same value when q2 and
+  // ord_idx are still, and they are still whenever adv is low.
+  always_ff @(posedge clk) begin
+    // STAGE TWO HOLDS WHILE A QUAD IS WAITING TO GO OUT. ord_idx is already
+    // the NEXT element by the time a hit is seen; a free-running read here
+    // replaced the waiting quad's attributes with the next one's, and every
+    // second quad was skipped. Same gate the old registered read had.
+    if (adv) begin
+      att_q_lo   <= att_lo[lo_a(ord_idx)];
+      att_q_hi   <= att_hi[hi_a(ord_idx)];
+      att_sel_hi <= in_hi(ord_idx);
+    end
+    // Addressed by q2, which is the hit quad's index during the hit cycle
+    // itself, so the vertices are in these registers by the first P_OUT
+    // cycle - when `q <= q2` then `vtx[q]` used to deliver them.
+    v0_q_lo <= vtx0_lo[lo_a(q2)]; v0_q_hi <= vtx0_hi[hi_a(q2)];
+    v1_q_lo <= vtx1_lo[lo_a(q2)]; v1_q_hi <= vtx1_hi[hi_a(q2)];
+    v2_q_lo <= vtx2_lo[lo_a(q2)]; v2_q_hi <= vtx2_hi[hi_a(q2)];
+    v3_q_lo <= vtx3_lo[lo_a(q2)]; v3_q_hi <= vtx3_hi[hi_a(q2)];
+    vtx_sel_hi <= in_hi(q2);
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      p_st <= P_IDLE; pi <= '0; q <= '0;
+      p_st <= P_IDLE; pi <= '0;
       v1 <= 1'b0; v2 <= 1'b0; q2 <= '0;
-      ord_idx <= '0; att_rd <= '0;
       out_valid <= 1'b0;
       out_x0 <= '0; out_y0 <= '0; out_x1 <= '0; out_y1 <= '0;
       out_x2 <= '0; out_y2 <= '0; out_x3 <= '0; out_y3 <= '0;
       out_col <= '0; out_moire <= 1'b0;
     end else begin
       if (adv) begin
-        ord_idx <= idx_a[pi[IW-1:0]];
-        att_rd  <= att[ord_idx];
         q2      <= ord_idx;
         v1      <= v0;
         v2      <= v1;
@@ -447,9 +581,10 @@ module m1_quad_store #(
 
         P_RUN: begin
           if (hit) begin
-            q         <= q2;
-            out_col   <= att_rd[23:0];
-            out_moire <= att_rd[24];
+            // 565 back to 888 with the low bits clear; the band takes the top
+            // bits again, so the round trip is exact.
+            out_col   <= {att_rd[15:11], 3'b000, att_rd[10:5], 2'b00, att_rd[4:0], 3'b000};
+            out_moire <= att_rd[16];
             p_st      <= P_OUT;
           end else if (!v0 && !v1 && !v2) begin
             p_st <= P_IDLE;              // drained
@@ -470,10 +605,15 @@ module m1_quad_store #(
         // A concatenation on the left is one read, split on the way out, and it
         // is bit-identical: the store writes {in_y, in_x}.
         P_OUT: begin
-          {out_y0, out_x0} <= vtx0[q];
-          {out_y1, out_x1} <= vtx1[q];
-          {out_y2, out_x2} <= vtx2[q];
-          {out_y3, out_x3} <= vtx3[q];
+          // Zero-extended: screen coordinates are never negative. Through a
+          // function so each array is read ONCE - slicing vtx0[q] twice in
+          // one statement duplicated every vertex memory (vtx0_rtl_0 and
+          // _rtl_1 in the fit report, 9 blocks where 5 would do), the same
+          // trap the comment above describes.
+          {out_y0, out_x0} <= widen(vtx_sel_hi ? v0_q_hi : v0_q_lo);
+          {out_y1, out_x1} <= widen(vtx_sel_hi ? v1_q_hi : v1_q_lo);
+          {out_y2, out_x2} <= widen(vtx_sel_hi ? v2_q_hi : v2_q_lo);
+          {out_y3, out_x3} <= widen(vtx_sel_hi ? v3_q_hi : v3_q_lo);
           out_valid <= 1'b1;
           if (out_valid && out_ready) begin
             out_valid <= 1'b0;

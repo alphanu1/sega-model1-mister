@@ -132,7 +132,9 @@ static Q mk(int id, float z, bool moire = false) {
     q.x0 = (int16_t)id; q.y0 = 1; q.x1 = (int16_t)(id + 1);
     q.y1 = 2; q.x2 = (int16_t)(id + 3); q.y2 = 3;
     q.x3 = (int16_t)(id + 5); q.y3 = (int16_t)(id % 30);
-    q.col = (uint32_t)(id * 0x010203) & 0xffffff;
+    // Representable in the RGB565 the store keeps: the low 3/2/3 bits of each
+    // channel are what the band buffer drops anyway, so they are not stored.
+    q.col = (uint32_t)(id * 0x010203) & 0xf8fcf8;
     q.z = f2u(z); q.moire = moire; q.seq = id;
     return q;
 }

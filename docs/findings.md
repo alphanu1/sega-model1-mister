@@ -259,6 +259,45 @@ band, and what made bands late was RUNS of them; 21% off every band's fill
 took the runs under the line. Whether the bars are gone to the eye is Ben's
 to confirm.
 
+### THE STORE IS 4,096 QUADS NOW, for +32 M10K - narrowed and split, measured
+
+Three things made the record smaller, each checked exact:
+
+- **Vertices are 9+9 bits, not 16+16.** tb_m1_raster3d now prints the
+  post-clip coordinate range: 0..495 and 0..383 on frames 900, 2500 and
+  5460. The clipper delivers screen coordinates. Anything outside is a
+  contract violation, counted in the store's `dbg_oob`.
+- **Colour is RGB565 in the store.** The band buffer keeps exactly those bits
+  (`span_565` in m1_raster3d), so the 24-bit value was 8 bits of nothing.
+- **The band mask is a band RANGE**, 5+5 bits instead of 24, computed from
+  the full 16-bit inputs before they are narrowed so off-screen quads still
+  land in no band.
+
+And one thing Quartus does that the arithmetic did not predict: **any array
+deeper than 2,048 goes into the 4,096 x 2 block mode**, so a 3,072-deep
+32-bit key cost 16 blocks where 2,048 x 32 costs 7. Every array is now split
+explicitly into a 2,048-deep half and the rest, selected by the top address
+bit. The index array's two readers (sort and replay, never concurrent) share
+one read, which removed a duplicate memory that had been there all along.
+`make quartus MOD=qs<n>` with a wrapper in build/tmp, per bank:
+
+    NQ       old record   narrowed, unsplit   narrowed, split
+    2,048    52           37                  34
+    3,072    -            84                  53
+    4,096    -            84                  68
+
+Two banks at 4,096: 136 blocks against 104 today, **+32 net**, 25 to spare.
+`tb_m1_quad_store` 18,500 checks exact; pictures bit-identical at 2,048 on
+three frames and at 4,096 identical to the earlier 4,096 render (frame 2500:
+149,355 pixels, the whole scene). ALM went 1,046 -> 921 for the store.
+
+Three replay-pipeline mistakes on the way, all caught by the store bench's
+second position: the vertex read must be addressed a cycle early (q2, not
+q); the attribute read is stage two and must hold under the stall gate; and
+so must the index read, because pi advances in the cycle the read is taken.
+A free-running registered read is NOT the same as a gated one when the
+address moves on.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's
