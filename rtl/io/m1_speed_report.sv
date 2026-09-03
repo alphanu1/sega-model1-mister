@@ -246,8 +246,13 @@ module m1_speed_report #(
       if (report_go) begin
         busy <= 1'b1; ci <= '0;
       end else if (busy && !full) begin
-        if (ci == 6'(NCH - 1)) busy <= 1'b0;
-        else                   ci <= ci + 6'd1;
+        // SEVEN BITS HERE TOO. Widening the declaration and the case items was
+        // not enough: 6'(NCH-1) truncated 67 to 3, so every line ended after
+        // "F=00" and restarted. On the wire that looks like UART corruption,
+        // not an arithmetic width - which is exactly what the comment beside
+        // NCH warned about, written while making this same mistake.
+        if (ci == 7'(NCH - 1)) busy <= 1'b0;
+        else                   ci <= ci + 7'd1;
       end
     end
   end
