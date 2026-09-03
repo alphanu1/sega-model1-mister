@@ -714,8 +714,29 @@ module m1_raster3d #(
   // complete, sorted frame. If it has not finished, the consumer simply sweeps
   // the same store again - which is right, and is what the reference does
   // between its 28.8 Hz list updates.
+  // THE WHOLE BLANKING INTERVAL, NOT ITS FIRST CYCLE.
+  //
+  // This used to be `beam_blank && !beam_blank_d` - the RISING EDGE - which is
+  // a one-cycle window out of a blanking period thousands of cycles long. And
+  // the consumer reaches C_IDLE at almost exactly that instant, because it
+  // finishes its last band as the beam leaves the last band, which is what
+  // raises beam_blank. So the handoff was a race between two events that occur
+  // together, won on some frames and lost on others.
+  //
+  // Measured on the board: ~20 completed geometry passes a second against ~29
+  // display-list swaps. A third of the game's frames never became new geometry
+  // and the display repeated a stale pass - which is what "bands not drawn in
+  // busy scenes" looks like from the outside. In simulation the sweep takes
+  // 92.4% of a frame and the consumer is idle 81% of it, so the pipeline was
+  // never short of time; it was short of OPPORTUNITY.
+  //
+  // Swapping later in blanking is no less safe. The requirement is that the
+  // consumer is between sweeps so a bank change cannot tear the picture, and
+  // the beam is not displaying anywhere in this interval. The guard makes it
+  // once per blanking period, which is what the edge was really for.
+  logic swapped_in_blank;
   wire swap_now = (pst == P_READY) && (cst == C_IDLE)
-               && beam_blank && !beam_blank_d;
+               && beam_blank && !swapped_in_blank;
   wire ev_handoff = (cst == C_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
@@ -775,7 +796,7 @@ module m1_raster3d #(
       pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0;
       cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
       ready_band <= '0; clr_seen <= 1'b0;
-      frame_armed <= 1'b0; beam_blank_d <= 1'b0;
+      frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped_in_blank <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       vp_lat <= 1'b0;
       fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
@@ -926,6 +947,10 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
+      // One swap per blanking period. Cleared as soon as the beam is active
+      // again, so the next frame gets its own opportunity.
+      if (!beam_blank)     swapped_in_blank <= 1'b0;
+      else if (swap_now)   swapped_in_blank <= 1'b1;
       if (swap_now) bank <= ~bank;
       // The toggle trails the data by a cycle, so the receiver's two
       // synchroniser flops always land on settled data.
