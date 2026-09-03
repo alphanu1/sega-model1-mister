@@ -36,6 +36,15 @@ drifted before today.
 ### The overruns Ben still sees are LATE BANDS: T= 3-4 a second in attract, 23 at
 ### 158 objects, worst band fill 1.3-1.7 slots (W=). See findings. The fill is next.
 
+### Budget rulings from Ben, 2026-09-03 evening
+
+Sound (M4) is SDRAM-only for storage and is built only if ALM remains after
+the V60 split; it holds NO M10K reservation. The I/O board is going to be the
+real Z80 - tv80 with EPR-14869 and the 315-5338A, reversing D9's HLE - and it
+outranks sound. Its ROM and work RAM go to SDRAM, the 2 KB DPRAM already
+exists, so it needs ~0 M10K and ~2,000 ALM; its constraint is ALM, which the
+V60 split pays for. So the quad store's ~22 M10K competes with nothing.
+
 ### Next, in order
 
 0. **The quad store is too small for the pit scene, PROVEN** - frame 2500
