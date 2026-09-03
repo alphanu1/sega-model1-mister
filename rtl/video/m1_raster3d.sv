@@ -637,7 +637,7 @@ module m1_raster3d #(
   // and the bands behind it catch up immediately, since each of those is then
   // already `>=` the beam. The arm is cleared by that present, so band 0 of the
   // following pass cannot jump in over the middle of this frame.
-  logic frame_armed, beam_blank_d, swapped;
+  logic frame_armed, beam_blank_d, swept;
 
   // BAND 0 GOES UP AT THE TOP OF A FRAME, whichever frame that turns out to be.
   //
@@ -776,7 +776,20 @@ module m1_raster3d #(
   // The consumer restarts on the swap, or at the edge if there was nothing
   // to swap; both can only happen from C_IDLE, so a sweep never restarts
   // twice in a frame.
-  wire swap_now = (pst == P_READY) && (cst == C_IDLE) && !swapped;
+  // THE SWEEP RESTART IS NOT THE BANK SWAP. Tying them meant that on a frame
+  // where the producer was not yet in P_READY - one frame in three, since a
+  // pass takes two - the sweep fell back to waiting for the blanking edge and
+  // band 0 was late again. Measured on the board: T= +58 a second before the
+  // early restart, +10 after, and the residue is exactly those frames.
+  //
+  // So the consumer restarts whenever it is free and the beam is at the last
+  // band or beyond, whether or not there is new geometry to show; if there is
+  // none it sweeps the same bank again, which is what it has always done
+  // between the game's 28.8 Hz list updates. The swap rides along when the
+  // producer happens to be ready.
+  wire late_beam = (beam_ext >= (BW+1)'(NBANDS - 1));
+  wire sweep_go  = (cst == C_IDLE) && late_beam && !swept;
+  wire swap_now  = sweep_go && (pst == P_READY);
   wire ev_handoff = (cst == C_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
@@ -885,7 +898,7 @@ module m1_raster3d #(
       pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0;
       cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
       ready_band <= '0; clr_seen <= 1'b0;
-      frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped <= 1'b0;
+      frame_armed <= 1'b0; beam_blank_d <= 1'b0; swept <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       dbg_pass_cycles <= '0; pass_timer <= '0; dbg_late <= '0;
       dbg_drop_total <= '0; dbg_short <= '0; prev_objs <= '0;
@@ -1041,11 +1054,11 @@ module m1_raster3d #(
 
       beam_blank_d <= beam_blank;
       if (swap_now) bank <= ~bank;
-      // One swap per sweep: set by the swap, cleared when the sweep it fed
-      // starts, so P_READY reached again before the next idle cannot swap
-      // a bank the consumer is about to sweep.
-      if (swap_now)          swapped <= 1'b1;
-      else if (cst != C_IDLE) swapped <= 1'b0;
+      // One sweep per frame: set when a sweep starts, cleared when the beam
+      // leaves the last band, so a sweep that finishes early cannot start
+      // another before the next frame.
+      if (sweep_go)        swept <= 1'b1;
+      else if (!late_beam) swept <= 1'b0;
       // The toggle trails the data by a cycle, so the receiver's two
       // synchroniser flops always land on settled data.
       disp_upd <= 1'b0;
@@ -1145,7 +1158,7 @@ module m1_raster3d #(
       case (cst)
         // Locked to the raster: a sweep starts at the top of a frame and runs
         // to the bottom, so band k is presented as the beam reaches it.
-        C_IDLE: if (swap_now || (beam_blank && !beam_blank_d)) begin
+        C_IDLE: if (sweep_go) begin
           cur_band <= '0;
           cst      <= C_CLR;
         end
