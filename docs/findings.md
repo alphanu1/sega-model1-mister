@@ -97,7 +97,36 @@ quads:
 
 A pass every three frames, each 1.47 frames long. **The defect reproduces in
 simulation.** It always did; the instrument that showed it is a hundred lines
-of bench.
+of bench. The whole 900 M-cycle run, old RTL:
+
+    passes                       292   (303 list swaps)
+    over a frame                 101
+    cadence, start-to-start      1 frame: 39   2 frames: 152   3 frames: 101
+    pass length, tenths of a fr  0: 173 (boot, empty lists)   13-15: 100 (attract)
+    3D ROM port                  492,038 requests, mean wait 255 clk_sys cycles
+
+Every pass over a frame cost three, to the pass. And the last line is the
+next lever: the polygon ROM port waits 255 clk_sys cycles - 150 clk_3d - per
+request on the shared controller. `rom_req` is a level held over a prefetch
+burst, so that is per burst rather than per word, but the unit bench puts a
+one-cycle memory at 0.95 frames and a 24-cycle one at 1.27; the board's memory
+is where the other half-frame comes from.
+
+The same 900 M cycles on the FIXED RTL:
+
+    passes                       329
+    over a frame                 150
+    cadence, start-to-start      2 frames: 300   (1: 19, 3: 2, 4: 4, 5: 1, 0: 3)
+    bands presented per frame    24 on 668 of 669
+    WORST band fill              36,976 cycles, 108% of a band's beam slot
+
+**And on the board, 2026-09-03 evening, seed 7 of ef6adce** (`build/uart_flipfix_seed7.txt`):
+
+    S=001D  B=+1D..+1F  per second      B now equals S; it was 2/3 of it
+    L=11xx..1Axx                        passes of 1.35 to 2.15 frames
+
+The rate is fixed. Ben still sees overruns on the screen, so the rate was not
+the whole picture - see the late-band instrument below.
 
 ### What the game does at a flip, measured, because the fix depends on it
 

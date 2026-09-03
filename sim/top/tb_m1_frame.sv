@@ -1900,7 +1900,8 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
-        $display("FRAME: bands filled = %0d", core.u_raster3d.dbg_bands);
+        $display("FRAME: bands filled = %0d, presented LATE = %0d",
+                 core.u_raster3d.dbg_bands, core.u_raster3d.dbg_late);
         $display("FRAME: 3D passes=%0d  len mean=%0d.%02d fr max=%0d.%02d fr, over a frame=%0d | wait-for-swap mean=%0d.%02d max=%0d.%02d | idle mean=%0d.%02d max=%0d.%02d",
                  pass_n,
                  (pass_n > 0) ? (pass_len_sum / pass_n) / 1390821 : 0,

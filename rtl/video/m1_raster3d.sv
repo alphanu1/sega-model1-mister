@@ -161,6 +161,11 @@ module m1_raster3d #(
   // frame is 818,133 of them, and a pass longer than that is what turns the
   // two-frame cadence into three - see prod_go. Sent to the UART as L=.
   output logic [31:0] dbg_pass_cycles /* verilator public_flat_rd */,
+  // Bands presented LATE: the beam was already past the band's first row when
+  // it went up, so part of it was never drawn. N= counts every presentation,
+  // late or not, and read as "the consumer keeps up" while the board showed
+  // bands missing in busy scenes. Free-running; the UART reads differences.
+  output logic [15:0] dbg_late /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -832,7 +837,7 @@ module m1_raster3d #(
       ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
-      dbg_pass_cycles <= '0; pass_timer <= '0;
+      dbg_pass_cycles <= '0; pass_timer <= '0; dbg_late <= '0;
       vp_lat <= 1'b0;
       fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
       ready_valid <= 1'b0; old_z <= '0;
@@ -1024,6 +1029,10 @@ module m1_raster3d #(
       // read FFFF for the entire window that mattered. A free-running counter
       // sampled once a second only needs successive DIFFERENCES to be right.
       if (ev_present) dbg_bands <= dbg_bands + 16'd1;
+      // Late: band 0 outside blanking (it was armed and caught up mid-frame),
+      // any other band with the beam already below its top row.
+      if (ev_present && ((want_ext == '0) ? !beam_blank : (beam_ext > want_ext)))
+        dbg_late <= dbg_late + 16'd1;
 
       // ---- PRODUCER: list walk, geometry, sort, into store `bank`
       case (pst)
