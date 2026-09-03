@@ -858,8 +858,18 @@ module m1_integrated (
   // (R wraps its 16 bits between one-second samples), so any gap that long
   // is a genuine stall rather than idleness.
   //
-  // Sticky: the first stall is the interesting one. Later ones are the game
-  // already in its error path.
+  // NOT STICKY - THE LATEST STALL WINS, and the first version got this exactly
+  // backwards. It latched the FIRST stall and held it, on the reasoning that
+  // later ones would be the game already in its error path. But the first stall
+  // is at BOOT: during ROM load and before the game issues its first command
+  // the coprocessor legitimately does not retire for long stretches, so the
+  // latch fired immediately and could never update again. Measured on the
+  // board: X=FE0027 while the core was running perfectly.
+  //
+  // Overwriting is safe because the counter saturates at bit 20 and only
+  // re-crosses the threshold after retiring resumes, so each stall EPISODE
+  // latches once. After the crash the TGP never retires again, so the crash's
+  // value is the last one written and survives.
   logic [15:0] tgp_ret_d;
   logic [20:0] tgp_still;
   logic [23:0] dbg_stall_pc;
@@ -873,7 +883,7 @@ module m1_integrated (
         tgp_still <= '0;
       end else if (!tgp_still[20]) begin
         tgp_still <= tgp_still + 21'd1;
-        if (tgp_still == 21'd1_000_000 && !stall_seen) begin
+        if (tgp_still == 21'd1_000_000) begin
           dbg_stall_pc <= dbg_pc;
           stall_seen   <= 1'b1;
         end
