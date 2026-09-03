@@ -401,11 +401,16 @@ M1_SEED="${M1_SEED:-5}"
 # .qsf assignments, so using one is a project decision rather than an edit to
 # the framework, which stays off limits.
 #
-#   MISTER_DISABLE_ALSA      the HPS audio path, ~259 ALM. DO NOT USE. It is
-#                            tempting because the core has no sound yet and it
-#                            changes nothing visible - but M4 needs that path,
-#                            and removing it now buys 259 ALM in exchange for
-#                            having to put it back before sound can work.
+#   MISTER_DISABLE_ALSA      the HPS/Linux audio channel, ~259 ALM plus the IIR
+#                            taps. SAFE FOR US, and an earlier version of this
+#                            note said the opposite - that M4 would need it -
+#                            which was wrong. Checked in sys_top.v: the mixer
+#                            takes core_l/core_r OUTSIDE the ifndef, and the
+#                            i2s/HDMI, analog DAC and S/PDIF outputs are outside
+#                            it too. All three gates (678, 1603, 1619) are the
+#                            Linux-sourced channel and the DDR3 read that feeds
+#                            it. The core's own sound reaches every output
+#                            whether this is set or not.
 #   MISTER_DISABLE_YC        the Y/C composite encoder. Nothing visible on HDMI.
 #   MISTER_DISABLE_ADAPTIVE  ascal's adaptive scanline filter. CHANGES THE PICTURE.
 #   MISTER_DOWNSCALE_NN      ascal's polyphase downscaler -> nearest neighbour.
