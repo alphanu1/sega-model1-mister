@@ -851,7 +851,7 @@ module m1_integrated (
     // pc and R= its free-running retire count. Both cross from clk_cpu/clk_3d
     // into clk_sys unsynchronised, which is fine for a counter read once a
     // second - a torn value is one wrong sample, not a wrong conclusion.
-    .bands_pres(r3_dbg_bands),
+    .bands_pres(r3_dbg_bands), .v60_pc(dbg_pc),
     .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .tx(uart_tx)
   );

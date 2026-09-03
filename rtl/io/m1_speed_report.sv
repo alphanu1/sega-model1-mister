@@ -81,6 +81,14 @@ module m1_speed_report #(
   // genuinely not reaching the screen. Simulation shows 24 on 668 of 669
   // frames, so whatever Ben sees on the board is not reproduced there and this
   // is the instrument that says which of the two it is.
+  // THE V60'S PC, because the crash needs it and the overlay cannot show a
+  // sequence. On 2026-09-03 the five-minute fault was captured for the first
+  // time: video timing alive, V60 swapping display lists at full rate, bands
+  // still presented, and the screen entirely black - 2D as well as 3D. That
+  // cannot be a dead coprocessor, since the tile path never touches the TGP.
+  // Whether the GAME has crashed or the hardware has stopped drawing is one
+  // reading of this value apart.
+  input  logic [23:0] v60_pc,
   input  logic [15:0] bands_pres,
   input  logic [15:0] tgp_pc,      // coprocessor program counter
   input  logic [15:0] tgp_retires, // free-running retire count
@@ -94,13 +102,14 @@ module m1_speed_report #(
   logic        sel_d;
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
+  logic [23:0] r_vpc;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       n_frame <= '0; n_swap <= '0; period_cnt <= '0; sel_d <= 1'b0;
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
-      r_tpc <= '0; r_tret <= '0; r_npres <= '0;
+      r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -119,6 +128,7 @@ module m1_speed_report #(
           r_tpc   <= tgp_pc;
           r_tret  <= tgp_retires;
           r_npres <= bands_pres;
+          r_vpc   <= v60_pc;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -126,9 +136,9 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx\r\n" - 50 bytes.
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx\r\n" - 59 bytes.
   // 50 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 50;
+  localparam int unsigned NCH = 59;
 
   logic [5:0]  ci;
   logic        busy;
@@ -197,7 +207,16 @@ module m1_speed_report #(
       6'd45: ch = hexc(r_npres[11:8]);
       6'd46: ch = hexc(r_npres[7:4]);
       6'd47: ch = hexc(r_npres[3:0]);
-      6'd48: ch = 8'h0d;
+      6'd48: ch = " ";
+      6'd49: ch = "V";
+      6'd50: ch = "=";
+      6'd51: ch = hexc(r_vpc[23:20]);
+      6'd52: ch = hexc(r_vpc[19:16]);
+      6'd53: ch = hexc(r_vpc[15:12]);
+      6'd54: ch = hexc(r_vpc[11:8]);
+      6'd55: ch = hexc(r_vpc[7:4]);
+      6'd56: ch = hexc(r_vpc[3:0]);
+      6'd57: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

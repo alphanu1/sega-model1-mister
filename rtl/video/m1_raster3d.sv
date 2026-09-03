@@ -960,7 +960,12 @@ module m1_raster3d #(
         ready_buf <= fill_buf;   fill_buf  <= ready_buf;
         ready_band <= cur_band;  ready_valid <= 1'b1;
       end
-      if (ev_present && dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 16'd1;
+      // WRAPS, does not saturate. It used to stop at 0xffff, which at 1,380
+      // bands a second made it readable for 47 seconds and useless after that -
+      // found during the 7-minute crash capture on 2026-09-03, where the field
+      // read FFFF for the entire window that mattered. A free-running counter
+      // sampled once a second only needs successive DIFFERENCES to be right.
+      if (ev_present) dbg_bands <= dbg_bands + 16'd1;
 
       // ---- PRODUCER: list walk, geometry, sort, into store `bank`
       case (pst)
