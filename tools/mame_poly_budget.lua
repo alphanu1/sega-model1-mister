@@ -103,12 +103,12 @@ notif = emu.add_machine_frame_notifier(function()
     sum_polys = sum_polys + best_p
     sum_objs  = sum_objs + best_o
     tot_oob   = tot_oob + oob
-    if best_p > peak_polys then peak_polys, peak_objs = best_p, best_o end
+    if best_p > peak_polys then peak_polys, peak_objs, peak_frame = best_p, best_o, frames end
 
     if sampled == 60 then
         print("=== polygon budget, " .. sampled .. " frames sampled")
         print(string.format("  polygon ROM        %d bytes, %d floats", prom.size, PROM_FLOATS))
-        print(string.format("  peak frame         %d polygons in %d objects", peak_polys, peak_objs))
+        print(string.format("  peak frame         %d polygons in %d objects (frame %d - DUMP_FRAME for tools/mame_dump_frame.lua)", peak_polys, peak_objs, peak_frame))
         print(string.format("  mean frame         %.0f polygons in %.0f objects",
               sum_polys / sampled, sum_objs / sampled))
         print(string.format("  bad/absent objects %d", tot_oob))

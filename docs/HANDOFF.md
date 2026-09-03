@@ -38,10 +38,13 @@ drifted before today.
 
 ### Next, in order
 
-1. **The band fill in heavy scenes.** Break the fill unit's time down by state
-   inside the WORST bands on a heavy frame (tb_m1_raster3d, ROM_LAT=0), then
-   pick between a second or pipelined divider and dropping the per-band replay
-   of quads that miss the band. T= and W= on the board are the acceptance test.
+1. **The band fill's divider.** Measured on the reference's peak frame 1020:
+   the two serial radix-4 divides are 49% of fill time, the span walk 31%.
+   Build a pipelined divider or run DIVA and DIVB on two dividers at once
+   (m1_raster_div, m1_raster_fill); tb_m1_raster_fill's 152,025 checks are
+   the correctness gate, T= and W= on the board the acceptance test. The
+   board's attract scenes (92-158 objects) are heavier than frame 1020 (38
+   objects walked), so measure on the board, not only in the bench.
 2. If L sits above two frames in gameplay, the lever is the pass itself, not
    the cadence: the polygon ROM's wait on the shared SDRAM (the bench prints
    the 3D ROM port's mean wait) and the geometry's cycles a quad (findings,

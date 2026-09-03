@@ -236,6 +236,7 @@ int main(int argc, char** argv) {
     int  prev_pst = 0, pass_n = 0, pass_start_frame = 0, pass_ready_frame = 0, pass_start_line = 0;
     long pass_start = 0, pass_ready = 0, last_start = -1;
     int  cadence_hist[16] = {0};
+    unsigned worst_fill_frame = 0, last_bands_seen = 0;
     long hits = 0;
     unsigned bands_prev = 0;
     for (int f = 0; f < TOTAL_FRAMES; f++) {
@@ -276,6 +277,10 @@ int main(int argc, char** argv) {
                     d->frame_start = 0;
                     thist[d->rootp->m1_raster3d__DOT__pst & 7]++;
                     chist[d->rootp->m1_raster3d__DOT__cst & 7]++;
+                    if (d->dbg_bands != last_bands_seen) {
+                        last_bands_seen = d->dbg_bands;
+                        if (d->dbg_band_cycles > worst_fill_frame) worst_fill_frame = d->dbg_band_cycles;
+                    }
                     {
                         int pp = d->rootp->m1_raster3d__DOT__pst & 7;
                         if (prev_pst == 0 && pp == 1) {
@@ -315,9 +320,12 @@ int main(int argc, char** argv) {
         bands_prev = bands_now;
         if (f >= PROLOGUE_FRAMES)
             printf("  frame %2d: %6ld px, %3ld of %d rows, bands %2u of %u,"
-                   " last fill %u of %ld\n",
+                   " last fill %u of %ld, worst fill this frame %u (%.0f%% of a slot), late so far %u\n",
                    f, hits, fr_rows, SH, bands_this, NBANDS,
-                   (unsigned)d->dbg_band_cycles, BAND_TIME);
+                   (unsigned)d->dbg_band_cycles, BAND_TIME,
+                   worst_fill_frame, 100.0 * worst_fill_frame / BAND_TIME,
+                   (unsigned)d->dbg_late);
+        worst_fill_frame = 0;
     }
     int frames_swept = TOTAL_FRAMES;
 

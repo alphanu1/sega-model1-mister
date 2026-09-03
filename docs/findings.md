@@ -141,9 +141,27 @@ A late band shows as a horizontal strip with no 3D: scanout refuses rows the
 presented band does not cover. Three buffers absorb one slow band, not a run
 of them. `tb_m1_frame` at 900 M cycles (attract at ~25 objects) shows ZERO late
 bands and a worst band of 108%, so the bench is not yet in a scene heavy
-enough to see it; the board is. Next: the fill unit's time by state inside the
-worst bands, on a heavy frame - the unit bench puts the span walk at 42% and
-the divider waits at 40% of fill time on frame 900.
+enough to see it; the board is.
+
+**The reference's peak frame, 1020** (5,831 polygons in 41 objects by
+`tools/mame_poly_budget.lua`, which now names the frame; dumped with
+`DUMP_FRAME=1020 tools/mame_run.sh tools/mame_dump_frame.lua`, into
+`build/mamerun/framedump/`), through `tb_m1_raster3d`:
+
+    walked                 38 objects, 1,022 quads after culling and clipping
+    pass                   1.26 frames WITH A ONE-CYCLE ROM (P_OBJW 54%)
+    worst band fill        25,150 cycles, 74% of a slot; no late bands
+    fill unit, by state    DIVAW+DIVBW 49%   FS_WALK 31%   everything else 20%
+                           26,653 divides a side at 15.6 cycles each
+
+So even the reference's heaviest sampled frame does not make a band late in
+the bench, and the board reaches 1.3-1.7 slots in attract at 92-158 objects
+(P=) - scenes heavier than any the 60-frame sample caught. **The divider is
+half the fill.** `m1_raster_div` is radix-4 at 16 cycles and every quad-band
+pays two of them serially (DIVA then DIVB). A pipelined divider, or issuing
+A and B to two dividers at once, takes ~25% off every band; a reciprocal
+table takes nearly the whole 49%. That is the next build, and T= and W= on
+the board are its acceptance test.
 
 ### What the game does at a flip, measured, because the fix depends on it
 
