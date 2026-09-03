@@ -1535,6 +1535,35 @@ end
 
 logic [31:0] worst_band = 0;
 
+// ---------------------------------------------------------------------------
+// WHERE A BAND SWEEP'S TIME ACTUALLY GOES.
+//
+// The consumer state cst is already public, so the whole breakdown comes from
+// sampling it - no RTL change. What this answers:
+//
+//   - the per-sweep TOTAL, measured rather than extrapolated. The first pass at
+//     this took worst-band x 24 and got 857,256 against a 818,133 budget, which
+//     is pessimistic: not every band is the worst one.
+//   - the split, so we know whether the 1,984-cycle clear is the only fat or
+//     whether the paint has its own.
+//   - how MANY sweeps overrun. A systematic 5% deficit and one frame in fifty
+//     going long are different defects, and Ben sees the fault in busy scenes.
+//
+// BUDGET, AND MIND THE CLOCK. This bench samples `clk`, which is 80 MHz, so
+// the per-frame budget here is 80,000,000/57.52 = 1,390,821 cycles. The band
+// module's own dbg_band_cycles counts clk_3d at 47.059 MHz, where a frame is
+// 818,133. Comparing an 80 MHz count against the 47 MHz budget said every
+// sweep was 100% over when they all fit at 92%, and nearly bought a fourth
+// band buffer - 14 M10K - to fix a problem that does not exist.
+// ---------------------------------------------------------------------------
+integer cst_cyc [0:6];              // cycles in each consumer state
+integer sweep_cyc = 0;              // cycles in the sweep currently running
+integer sweeps = 0, sweeps_over = 0;
+integer sweep_max = 0;
+longint unsigned sweep_total = 0;
+integer cst_prev = 0;
+initial for (int i = 0; i < 7; i++) cst_cyc[i] = 0;
+
 // ------------------------------------------------ character fetch latency
 //
 // The unit test models char_ack coming back in 14 cycles, and on that basis
@@ -1658,6 +1687,21 @@ initial begin
         if (core.u_raster3d.dbg_band_cycles > worst_band)
             worst_band <= core.u_raster3d.dbg_band_cycles;
 
+        // The consumer's state histogram, and the per-sweep total. A sweep is
+        // C_IDLE -> ... -> C_IDLE, i.e. all 24 bands.
+        cst_cyc[core.u_raster3d.cst] = cst_cyc[core.u_raster3d.cst] + 1;
+        if (core.u_raster3d.cst != 0) begin
+            sweep_cyc = sweep_cyc + 1;
+        end else if (cst_prev != 0) begin
+            // just returned to C_IDLE: a sweep finished
+            sweeps      = sweeps + 1;
+            sweep_total = sweep_total + sweep_cyc;
+            if (sweep_cyc > sweep_max) sweep_max = sweep_cyc;
+            if (sweep_cyc > 1390821)   sweeps_over = sweeps_over + 1;   // 80 MHz frame
+            sweep_cyc = 0;
+        end
+        cst_prev = core.u_raster3d.cst;
+
         // Progress, because this run is long enough that silence is
         // indistinguishable from a hang.
         if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
@@ -1775,6 +1819,13 @@ initial begin
         $display("FRAME: WORST band was %0d cycles (%0d%% of budget); 24 bands = %0d of %0d in a frame",
                  worst_band, (worst_band * 100) / budget,
                  worst_band * 24, 818133);
+        $display("FRAME: sweeps=%0d  mean=%0d  worst=%0d  budget=1390821 (80 MHz frame)  OVER=%0d (%0d%%)",
+                 sweeps, (sweeps > 0) ? int'(sweep_total / sweeps) : 0,
+                 sweep_max, sweeps_over,
+                 (sweeps > 0) ? (sweeps_over * 100) / sweeps : 0);
+        $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
+                 cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
+                 cst_cyc[4], cst_cyc[5], cst_cyc[6]);
         $display("FRAME: bands filled = %0d", core.u_raster3d.dbg_bands);
     end
     $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",
