@@ -430,13 +430,21 @@ because the two symptoms look alike from the sofa and have nothing in common.
 
 The levers, in the order their evidence supports:
 
-1. **The SDRAM interface has no timing constraints at all** and its read
-   capture phase was found empirically (see the M1 list in CLAUDE.md). A
-   controller that is not closed is not a controller whose latency can be
-   argued about.
+1. **NOT the SDRAM constraints - those exist and are applied.** An earlier
+   version of this entry said the interface was unconstrained, repeating a
+   stale line from CLAUDE.md's to-do list. Ben corrected it, pointing at the
+   Model 2 core. `tools/mister_project.sh` writes a full set into
+   `Model1.sdc`: a generated clock on SDRAM_CLK, input delays of 6.4/1.0 ns
+   on DQ, output delays of 1.5/-0.8 ns on the address, bank, data and control
+   pins, and setup/hold multicycles to the CPU clock - with a critical
+   warning if the generated clock cannot be created, so a build that lost
+   them would say so. The 2026-09-03 builds read it and report SDRAM_CLK_pin
+   at 12.5 ns with paths analysed and met. **Check a claim like this in the
+   staged .sdc, not in a plan.**
 2. **The 3D's polygon-ROM traffic**: 703,087 requests a run at 255 cycles.
    The walker already prefetches a record ahead; whether it can read a whole
-   object in bursts, or cache the record it re-reads, is unmeasured.
+   object in bursts, or cache the record it re-reads, is unmeasured. This is
+   now the FIRST lever, since the constraints are not the problem.
 3. **The V60's own CPI** - 17.71 in the earlier measurement, against the
    reference's 2 M instructions a second.
 
