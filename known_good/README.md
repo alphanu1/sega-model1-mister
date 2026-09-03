@@ -29,6 +29,20 @@ to 2:1, taking F/S from 4.30 to 2.05 - the board had been at ~46%.
     R  TGP retire count, free-running 16-bit. It WRAPS between samples here,
        which is what a busy coprocessor looks like
 
+## FLASHING: COLD-BOOT AFTER A NEW BITSTREAM
+
+scp the .rbf, verify the md5 on both sides, then **power-cycle the MiSTer** -
+not `reboot`. A warm reboot is fine for reloading a core that is already known
+good, but a NEW bitstream can leave the fabric in a state a soft reset does not
+clear.
+
+Measured 2026-09-03: rung 8 came up after a warm reboot with wildly wrong
+colours, a stretched band across the middle of both the 2D and 3D layers, and
+the picture pushed off the bottom - while every telemetry counter read healthy.
+Fetch-deadline misses were ruled out by measurement and it was about to be
+chased as a window-mode rendering bug newly reachable at the higher speed. A
+cold boot fixed it completely.
+
 ## RECOVERING THIS FILE IF IT IS LOST
 
 The .rbf is gitignored, so only this README and the .md5 are in the repository.
