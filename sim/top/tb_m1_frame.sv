@@ -1594,6 +1594,7 @@ end
 // The 3D ROM port's wait, the same way the character fetch is measured:
 // total cycles with rom_req up over the number of requests.
 longint r3rom_wait = 0, r3rom_n = 0;
+integer qmax = 0, qmin = 0, qoff = 0;
 reg     d_r3rom = 0;
 initial for (int i = 0; i < 7; i++) cst_cyc[i] = 0;
 
@@ -1773,6 +1774,27 @@ initial begin
         end
         pst_prev = core.u_raster3d.pst;
         d_r3rom <= core.r3_rom_req;
+        // How far off the screen vertices go, which sizes the store's record.
+        if (core.u_raster3d.q_valid) begin
+            if ($signed(core.u_raster3d.q_x0) > qmax) qmax = $signed(core.u_raster3d.q_x0);
+            if ($signed(core.u_raster3d.q_x1) > qmax) qmax = $signed(core.u_raster3d.q_x1);
+            if ($signed(core.u_raster3d.q_x2) > qmax) qmax = $signed(core.u_raster3d.q_x2);
+            if ($signed(core.u_raster3d.q_x3) > qmax) qmax = $signed(core.u_raster3d.q_x3);
+            if ($signed(core.u_raster3d.q_y0) > qmax) qmax = $signed(core.u_raster3d.q_y0);
+            if ($signed(core.u_raster3d.q_y1) > qmax) qmax = $signed(core.u_raster3d.q_y1);
+            if ($signed(core.u_raster3d.q_y2) > qmax) qmax = $signed(core.u_raster3d.q_y2);
+            if ($signed(core.u_raster3d.q_y3) > qmax) qmax = $signed(core.u_raster3d.q_y3);
+            if ($signed(core.u_raster3d.q_x0) < qmin) qmin = $signed(core.u_raster3d.q_x0);
+            if ($signed(core.u_raster3d.q_x1) < qmin) qmin = $signed(core.u_raster3d.q_x1);
+            if ($signed(core.u_raster3d.q_x2) < qmin) qmin = $signed(core.u_raster3d.q_x2);
+            if ($signed(core.u_raster3d.q_x3) < qmin) qmin = $signed(core.u_raster3d.q_x3);
+            if ($signed(core.u_raster3d.q_y0) < qmin) qmin = $signed(core.u_raster3d.q_y0);
+            if ($signed(core.u_raster3d.q_y1) < qmin) qmin = $signed(core.u_raster3d.q_y1);
+            if ($signed(core.u_raster3d.q_y2) < qmin) qmin = $signed(core.u_raster3d.q_y2);
+            if ($signed(core.u_raster3d.q_y3) < qmin) qmin = $signed(core.u_raster3d.q_y3);
+            if ($signed(core.u_raster3d.q_x0) < 0 || $signed(core.u_raster3d.q_x0) > 495 ||
+                $signed(core.u_raster3d.q_y0) < 0 || $signed(core.u_raster3d.q_y0) > 383) qoff = qoff + 1;
+        end
         if (core.r3_rom_req)            r3rom_wait = r3rom_wait + 1;
         if (core.r3_rom_req && !d_r3rom) r3rom_n   = r3rom_n + 1;
 
@@ -1922,6 +1944,8 @@ initial begin
         for (pass_i = 0; pass_i < 16; pass_i = pass_i + 1)
             if (cadence_hist[pass_i] != 0) $write(" %0d:%0d", pass_i, cadence_hist[pass_i]);
         $write("\n");
+        $display("FRAME: vertex coordinate range over the run: %0d .. %0d; quads with vertex 0 off-screen = %0d",
+                 qmin, qmax, qoff);
         $display("FRAME: 3D ROM port: %0d requests, mean wait %0d clk_sys cycles",
                  r3rom_n, (r3rom_n > 0) ? r3rom_wait / r3rom_n : 0);
     end

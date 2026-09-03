@@ -82,8 +82,14 @@ module m1_quad_store #(
   // not a case to store: it is counted in dbg_oob and the quad's stored
   // vertices are wrong. The band range is still computed from the full
   // 16-bit inputs, so an off-screen quad lands in no band exactly as before.
-  parameter int unsigned XW     = 9,
-  parameter int unsigned YW     = 9
+  // 16 KEEPS THE FULL SIGNED COORDINATE. 9+9 was tried on the reasoning
+  // above and was wrong: the frame bench counts 6,588 vertices outside
+  // 0..511/0..383 in 670 frames of attract, and the board thousands a
+  // second - the three dumped frames simply had none. Saturating them bent
+  // every polygon that leaves the screen. The narrowing stays available as
+  // a parameter for when the true range is measured (the bench prints it).
+  parameter int unsigned XW     = 16,
+  parameter int unsigned YW     = 16
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -217,13 +223,16 @@ module m1_quad_store #(
     end
   endfunction
 
+  localparam bit NARROW = (XW < 16) || (YW < 16);
   function automatic [31:0] widen(input logic [VW-1:0] v);
-    widen = {{(16-YW){1'b0}}, v[VW-1:XW], {(16-XW){1'b0}}, v[XW-1:0]};
+    if (NARROW) widen = {{(16-YW){1'b0}}, v[VW-1:XW], {(16-XW){1'b0}}, v[XW-1:0]};
+    else        widen = v;
   endfunction
 
   function automatic logic oob(input logic signed [15:0] x, y);
-    oob = (x < 0) || (x > $signed(16'((1 << XW) - 1))) ||
-          (y < 0) || (y > $signed(16'((1 << YW) - 1)));
+    if (NARROW) oob = (x < 0) || (x > $signed(16'((1 << XW) - 1))) ||
+                      (y < 0) || (y > $signed(16'((1 << YW) - 1)));
+    else        oob = 1'b0;
   endfunction
 
   // SATURATE, DO NOT TRUNCATE. The clipper's edges round: a vertex on the
@@ -232,10 +241,12 @@ module m1_quad_store #(
   // screen, on the board, on two seeds (2026-09-03). Clamped, it is a pixel
   // off where the clip plane already put it. Still counted in dbg_oob.
   function automatic [XW-1:0] sat_x(input logic signed [15:0] x);
-    sat_x = (x < 0) ? '0 : (x > $signed(16'((1 << XW) - 1))) ? '1 : x[XW-1:0];
+    if (NARROW) sat_x = (x < 0) ? '0 : (x > $signed(16'((1 << XW) - 1))) ? '1 : x[XW-1:0];
+    else        sat_x = x[XW-1:0];
   endfunction
   function automatic [YW-1:0] sat_y(input logic signed [15:0] y);
-    sat_y = (y < 0) ? '0 : (y > $signed(16'((1 << YW) - 1))) ? '1 : y[YW-1:0];
+    if (NARROW) sat_y = (y < 0) ? '0 : (y > $signed(16'((1 << YW) - 1))) ? '1 : y[YW-1:0];
+    else        sat_y = y[YW-1:0];
   endfunction
 
   // Monotonic key, then complemented so that ASCENDING on this key is DESCENDING
