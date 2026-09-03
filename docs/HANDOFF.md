@@ -10,43 +10,24 @@ intermittently (T= 10-26 late bands a second depending on the scene). Its
 md5 is 743f31adce4d116300c7c984a176f142. `known_good/` still holds the older
 a207c47; update it if 37a6e43 proves itself.
 
-### The one thing that is half-done: the divider's reciprocal table
+### The divider's reciprocal table is DONE and measured
 
-`a24f469` is committed, verified and NOT yet built for hardware. It replaces
-the 16-step restoring divide with a 1,024-entry reciprocal table plus one
-correction: **19 cycles a divide down to 4.7**, and the worst band from 121%
-of its beam slot to 79% (frame 2500) and 94% to 60% (frame 5460). That is
-aimed squarely at the remaining top-band drop, because band 0's fill has to
-finish inside vertical blanking. tb_m1_raster_fill is 152,025 checks exact.
+`a24f469` plus `47148b6`'s correction. The 16-step restoring divide is
+replaced by a 1,024-entry reciprocal table and one correction, exact for
+every input (|den| >= 1024 still takes the restoring path):
 
-**DO THIS FIRST, before any build.** The table is being built out of LOGIC:
-the fill unit measures **3,733 ALM and 0 M10K** where it was ~2,400, because
-the table read is gated inside the S_IDLE arm and Quartus will not infer a
-ROM from a gated read with a computed address. Two dividers means two tables.
-The fix is the same one the quad store needed: read it free-running and
-unconditionally, then use the registered value.
+    divide latency          19 cycles -> 4.7
+    worst band, frame 2500  41,136 -> 26,865 cycles   121% -> 79% of a slot
+    worst band, frame 5460  32,025 -> 20,412           94% -> 60%
+    tb_m1_raster_fill       152,025 checks, 0 fails
+    m1_raster_fill alone    2,765 ALM, 8 M10K, 12 DSP  (was ~2,4xx, 0, 2)
 
-    // in m1_raster_div.sv, alongside the other declarations
-    logic [31:0] recip_q;
-    always_ff @(posedge clk) recip_q <= recip[d_abs[9:0]];
+The ROM inference needed the read to be free-running and unconditional; a
+gated read with a computed address built the table out of logic instead,
+3,733 ALM and no M10K. Same trap as the quad store's replay reads.
 
-    // S_IDLE arm: drop `rq <= recip[d_abs[9:0]];`, keep only
-    else if (fast_ok) state <= S_MUL;
-    else              state <= S_RUN;
-
-    // and the multiply reads recip_q instead of rq
-    wire [63:0] mul_full = {32'd0, n_mag} * {32'd0, recip_q};
-
-The divider's operands are held by m1_raster_fill until it takes them, so a
-free-running read is the same value one cycle later. Expect 2 x 4 M10K
-(532 -> ~540 of 553) and the ALM back. Verify with:
-
-    make lint && make test_raster_fill          # must stay 152,025 / 0 fails
-    make quartus MOD=m1_raster_fill             # want M10K 8, ALM back to ~2,4xx
-    make render3d && ./obj_render3d/tb_render3d build/framedump/frame2500
-
-then three seeds of `make rbf` and the board. **Acceptance: T= on the UART.**
-It is 10-26 a second now; the divider should take it toward zero.
+Expect the full core at ~540 of 553 M10K. **Acceptance on the board: T= on
+the UART**, which was 10-26 late bands a second on 37a6e43.
 
 ### And one open question, if the divider does not finish it
 
