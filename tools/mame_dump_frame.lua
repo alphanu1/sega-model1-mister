@@ -61,9 +61,15 @@ local function walk_apply(base)
 end
 
 -- Which buffer is being rendered: listctl bit 6, read back the way the game does.
+-- Bit 6 as read back is only recomputed when MAME renders (set_current_render_list),
+-- so between renders it can lag the game's own bit 3 by a frame in manual mode
+-- and this dumped the buffer the game was WRITING: frame 2270 came out with 3
+-- objects where MAME's own walk found 161. Resolve it the way MAME does.
 local function active_base()
     local c = sp:read_u16(0x680000)
-    return ((c & 0x40) ~= 0) and 0x610000 or 0x600000
+    local sel
+    if (c & 4) ~= 0 then sel = (c & 0x40) ~= 0 else sel = (c & 8) ~= 0 end
+    return sel and 0x610000 or 0x600000
 end
 
 local function w16(f, v) f:write(string.char(v & 0xff, (v >> 8) & 0xff)) end

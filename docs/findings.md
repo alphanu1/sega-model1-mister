@@ -200,6 +200,32 @@ keep the quotient exactly truncated, makes it ~4 cycles. That and merging the
 bookkeeping states roughly halves a heavy band. tb_m1_raster_fill's 152,025
 exact checks are the gate; T= and W= on the board the acceptance test.
 
+### THE MISSING GRANDSTAND IS THE QUAD STORE OVERFLOWING - 2026-09-03, late
+
+Ben's photographs of the attract pit stop show the grandstand absent behind
+the crew, in every frame of that scene, with the crew, car and road drawn.
+Build 9e242f8 (seed 3, `build/uart_vblwait_seed3.txt`) adds D=, quads the
+store could not hold summed over passes, and H=, passes that walked fewer
+than half the previous pass's objects:
+
+    D=  +400 to +10,000 a second, continuously      the store overflows every pass
+    H=  +1 every few seconds                        passes are not short: the walk is complete
+    T=  +2..+3 a second, bursts of +16..+31         late bands, as before
+    W=  up to 0x10B6                                the worst band at 2.0 slots
+
+`m1_quad_store` holds NQ = 2,048 quads a bank and drops everything after that
+- the TAIL of the list, which is where the game puts the grandstand. MAME's
+walk of the pit scene finds 161 objects and 5,582 polygons; after the
+backface test that is well over 2,048. So the stadium is not culled and not
+dropped for a frame; it never fits. H= says the list is walked completely,
+which also rules out a half-written list, and the vblank wait added in
+9e242f8 is therefore belt and braces rather than a fix.
+
+The store is 51 M10K a bank at 2,048 (vertices 26, key 8, attributes 10,
+indices 5), two banks. 3,072 a bank is ~+50 M10K, all of the 58 free and the
+sound section's budget. `MISTER_SMALL_VBUF` is the framework's own lever on
+M10K and has never been measured here; a build with it is running.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's

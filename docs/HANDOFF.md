@@ -38,6 +38,12 @@ drifted before today.
 
 ### Next, in order
 
+0. **The quad store is too small for the pit scene** - D= on the wire drops
+   thousands of quads a second there and the grandstand is the tail of the
+   list. 3,072 a bank is ~50 M10K. Measure what `MISTER_SMALL_VBUF` frees
+   (build running on par_13), then decide with Ben whether the sound budget
+   or the framework buffer pays for it. Vertex width (12-bit x, 10-bit y)
+   would take ~6 M10K a bank off the same store.
 1. **The band fill's divide LATENCY.** Two dividers are in (a207c47) and cut
    fill time 21%, but a band-clipped quad is one segment, so its two slopes
    are its whole divide and the 16-step latency is still 47% of the worst
