@@ -681,6 +681,7 @@ module m1_integrated (
   logic [31:0] r3_dbg_pass_cycles;   // the last geometry pass, in clk_3d cycles
   logic [31:0] r3_dbg_band_cycles;   // the last band fill, in clk_3d cycles
   logic [15:0] r3_dbg_late;          // bands presented after the beam passed them
+  logic [15:0] r3_dbg_drop_total, r3_dbg_short;
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -726,7 +727,8 @@ module m1_integrated (
     .dbg_objects(r3_dbg_objects), .dbg_quads(r3_dbg_quads),
     .dbg_dropped(r3_dbg_dropped), .dbg_frames(r3_dbg_frames),
     .dbg_bands(r3_dbg_bands), .dbg_pass_cycles(r3_dbg_pass_cycles),
-    .dbg_band_cycles(r3_dbg_band_cycles), .dbg_late(r3_dbg_late)
+    .dbg_band_cycles(r3_dbg_band_cycles), .dbg_late(r3_dbg_late),
+    .dbg_drop_total(r3_dbg_drop_total), .dbg_short(r3_dbg_short)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -909,6 +911,7 @@ module m1_integrated (
     .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
     .pass_cycles(r3_dbg_pass_cycles),
     .band_cycles(r3_dbg_band_cycles), .late(r3_dbg_late),
+    .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_short),
     .tx(uart_tx)
   );
 

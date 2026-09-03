@@ -166,6 +166,11 @@ module m1_raster3d #(
   // late or not, and read as "the consumer keeps up" while the board showed
   // bands missing in busy scenes. Free-running; the UART reads differences.
   output logic [15:0] dbg_late /* verilator public_flat_rd */,
+  // Quads the store could not hold, summed over passes, and passes that walked
+  // fewer than half the objects of the pass before - a list read while the
+  // game was still writing it ends early, and that is a missing stadium.
+  output logic [15:0] dbg_drop_total /* verilator public_flat_rd */,
+  output logic [15:0] dbg_short /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -788,9 +793,21 @@ module m1_raster3d #(
   logic [2:0] fs_since_flip;       // frame pulses since the last flip, saturating
   wire  list_flipped = (dl_sel_s2 != dl_sel_q);
   wire  no_flips     = fs_since_flip[2];
-  wire  prod_trig    = list_flipped || (frame_start && no_flips);
+  // AND NOT BEFORE THE VBLANK AFTER THE FLIP. MAME renders the list at the
+  // end of the frame in which the game flipped, so the game has the rest of
+  // that frame to finish whatever it writes after the flip. In attract it
+  // writes nothing (tools/mame_flip_writes.lua, 992 of 994 flips); gameplay
+  // was not measured, and a pass that walked a list still being written
+  // would drop whole objects for a frame - which is what a stadium vanishing
+  // for one frame looks like. fs_since_flip is cleared by the flip and counts
+  // frame pulses after it, so "at least one" is exactly MAME's timing. The
+  // cadence is unchanged: the pulse that satisfies it comes before the swap
+  // that frees the producer, and the level is still true after the swap.
+  wire  prod_trig    = (list_flipped && (fs_since_flip != '0))
+                    || (frame_start && no_flips);
   wire  prod_go      = (pst == P_IDLE) && prod_trig;
   logic [31:0] pass_timer;
+  logic [15:0] prev_objs;
   assign lw_start        = prod_go;
   assign geo_start       = (pst == P_OBJ);
   assign qs_clear        = prod_go;
@@ -838,6 +855,7 @@ module m1_raster3d #(
       frame_armed <= 1'b0; beam_blank_d <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
       dbg_pass_cycles <= '0; pass_timer <= '0; dbg_late <= '0;
+      dbg_drop_total <= '0; dbg_short <= '0; prev_objs <= '0;
       vp_lat <= 1'b0;
       fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
       ready_valid <= 1'b0; old_z <= '0;
@@ -1072,6 +1090,9 @@ module m1_raster3d #(
         P_SORTW: if (!qs_sort_busy) begin
           dbg_frames      <= dbg_frames + 16'd1;
           dbg_pass_cycles <= pass_timer;
+          dbg_drop_total  <= dbg_drop_total + qs_dropped;
+          prev_objs       <= lw_objs;
+          if (lw_objs < {1'b0, prev_objs[15:1]}) dbg_short <= dbg_short + 16'd1;
           pst             <= P_READY;
         end
 

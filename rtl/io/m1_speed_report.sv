@@ -107,6 +107,10 @@ module m1_speed_report #(
   // went up after the beam had started on it. T= is the late count itself.
   input  logic [31:0] band_cycles,
   input  logic [15:0] late,
+  // D= quads dropped by the store, summed over passes; H= passes that walked
+  // fewer than half the previous pass's objects. Both free-running.
+  input  logic [15:0] dropped,
+  input  logic [15:0] short_passes,
 
   output logic tx
 );
@@ -118,7 +122,7 @@ module m1_speed_report #(
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
   logic [23:0] r_vpc, r_spc;
-  logic [15:0] r_plen, r_late, r_wband;
+  logic [15:0] r_plen, r_late, r_wband, r_drop, r_short;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -128,6 +132,7 @@ module m1_speed_report #(
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
+      r_drop <= '0; r_short <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -151,6 +156,7 @@ module m1_speed_report #(
           r_spc   <= stall_pc;
           r_plen  <= pass_cycles[23:8];
           r_late  <= late;
+          r_drop  <= dropped; r_short <= short_passes;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -159,11 +165,11 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx\r\n"
-  // 89 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx\r\n"
+  // 103 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
   // silently repeats its middle.
-  // 89 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 89;
+  // 103 bytes a second against 11,520 available, so the channel is not a concern.
+  localparam int unsigned NCH = 103;
 
   logic [6:0]  ci;
   logic        busy;
@@ -271,7 +277,21 @@ module m1_speed_report #(
       7'd84: ch = hexc(r_wband[11:8]);
       7'd85: ch = hexc(r_wband[7:4]);
       7'd86: ch = hexc(r_wband[3:0]);
-      7'd87: ch = 8'h0d;
+      7'd87: ch = " ";
+      7'd88: ch = "D";
+      7'd89: ch = "=";
+      7'd90: ch = hexc(r_drop[15:12]);
+      7'd91: ch = hexc(r_drop[11:8]);
+      7'd92: ch = hexc(r_drop[7:4]);
+      7'd93: ch = hexc(r_drop[3:0]);
+      7'd94: ch = " ";
+      7'd95: ch = "H";
+      7'd96: ch = "=";
+      7'd97: ch = hexc(r_short[15:12]);
+      7'd98: ch = hexc(r_short[11:8]);
+      7'd99: ch = hexc(r_short[7:4]);
+      7'd100: ch = hexc(r_short[3:0]);
+      7'd101: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end
