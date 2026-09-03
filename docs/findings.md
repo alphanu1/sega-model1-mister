@@ -223,8 +223,11 @@ which also rules out a half-written list, and the vblank wait added in
 
 The store is 51 M10K a bank at 2,048 (vertices 26, key 8, attributes 10,
 indices 5), two banks. 3,072 a bank is ~+50 M10K, all of the 58 free and the
-sound section's budget. `MISTER_SMALL_VBUF` is the framework's own lever on
-M10K and has never been measured here; a build with it is running.
+sound section's budget. `MISTER_SMALL_VBUF` was the framework's supposed lever on
+M10K. **Measured: it frees NOTHING.** 496 of 553 M10K with it and without it
+(par_13 vs par_3 of the same design); it changes the size of the scaler's
+DDR3 frame buffer, not fabric memory. Struck off. The M10K for a bigger
+store comes out of the sound budget or out of the quad record's width.
 
 **PROVEN IN THE BENCH.** Frame 2500 (the tyre change, found by snapshotting
 the attract loop every 250 frames - `build/render/attract_sheet.png`) dumped

@@ -41,9 +41,9 @@ drifted before today.
 0. **The quad store is too small for the pit scene, PROVEN** - frame 2500
    needs 2,671 quads, the store holds 2,048, and the bench renders the whole
    scene at 4,096 (`-GNQ=4096`) and loses building, road, wall and grandstand
-   at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. Measure what
-   `MISTER_SMALL_VBUF` frees (build on par_13), then decide with Ben: the
-   sound budget, the framework buffer, or a narrower quad record (the 24-bit
+   at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. `MISTER_SMALL_VBUF`
+   frees nothing (measured, 496 M10K either way - it sizes a DDR3 buffer).
+   Decide with Ben: the sound budget, or a narrower quad record (the 24-bit
    lit colour and the 32-bit sort key are the fat; coordinates reach +/-31,696
    after clipping so they stay 16-bit). A bigger store also makes every band
    replay more quads, so it goes with the divider work, not before it.
