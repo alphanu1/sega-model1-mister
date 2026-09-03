@@ -441,10 +441,32 @@ The levers, in the order their evidence supports:
    them would say so. The 2026-09-03 builds read it and report SDRAM_CLK_pin
    at 12.5 ns with paths analysed and met. **Check a claim like this in the
    staged .sdc, not in a plan.**
-2. **The 3D's polygon-ROM traffic**: 703,087 requests a run at 255 cycles.
-   The walker already prefetches a record ahead; whether it can read a whole
-   object in bursts, or cache the record it re-reads, is unmeasured. This is
-   now the FIRST lever, since the constraints are not the problem.
+2. **NOT the polygon-ROM latency either - the prefetch already hides it.**
+   Measured with `ROM_LAT` on tb_m1_raster3d, frame 5460:
+
+       ROM_LAT=0    P_OBJW 44.2% of the run
+       ROM_LAT=8    P_OBJW 44.3%     - identical, fully hidden
+       ROM_LAT=32   P_OBJW 58.0%     - now it bites
+
+   So the geometry is ARITHMETIC-bound at any realistic memory latency, and
+   what it is bound on is its own divider: `m1_geo_project` uses `fp_div`,
+   29 cycles and not pipelined, which is 29 of the 32 cycles a point and 94%
+   of the whole geometry stage (see the 2026-08-30 entry). Ben asked whether
+   the divider work helps here and the answer is yes - just not the one that
+   was done. The fill's divider never touches SDRAM or the geometry; the
+   PROJECTION's divide is a separate unit and is the geometry pass's cost.
+
+   Two ways at it, in increasing risk: a second `fp_div` so the two points of
+   a record overlap, which the 2026-08-30 entry already names as "the obvious
+   lever" and halves the stage to ~47%; or a reciprocal table like the fill's,
+   which is harder because this one is IEEE-754 single and is checked
+   bit-exact against MAME (20,037 checks in `m1_geo_project`), so a table
+   needs a Newton step and its own exactness argument.
+
+   That shortens the geometry PASS - L= on the wire, 1.5-2.0 frames in the
+   busy scenes - and so restores the two-frame cadence there. It does NOT
+   reduce the number of ROM reads, so its effect on the V60's frame rate is
+   an open question rather than a promise.
 3. **The V60's own CPI** - 17.71 in the earlier measurement, against the
    reference's 2 M instructions a second.
 
