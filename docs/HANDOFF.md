@@ -1,5 +1,67 @@
 # HANDOFF
 
+## RESUME HERE — 2026-09-03, session ended mid-change
+
+### The board right now
+
+`build/Model1_37a6e43_seed7.rbf` is loaded and is the GOOD build: everything
+draws, the picture is right, and the only fault is the top band dropping
+intermittently (T= 10-26 late bands a second depending on the scene). Its
+md5 is 743f31adce4d116300c7c984a176f142. `known_good/` still holds the older
+a207c47; update it if 37a6e43 proves itself.
+
+### The one thing that is half-done: the divider's reciprocal table
+
+`a24f469` is committed, verified and NOT yet built for hardware. It replaces
+the 16-step restoring divide with a 1,024-entry reciprocal table plus one
+correction: **19 cycles a divide down to 4.7**, and the worst band from 121%
+of its beam slot to 79% (frame 2500) and 94% to 60% (frame 5460). That is
+aimed squarely at the remaining top-band drop, because band 0's fill has to
+finish inside vertical blanking. tb_m1_raster_fill is 152,025 checks exact.
+
+**DO THIS FIRST, before any build.** The table is being built out of LOGIC:
+the fill unit measures **3,733 ALM and 0 M10K** where it was ~2,400, because
+the table read is gated inside the S_IDLE arm and Quartus will not infer a
+ROM from a gated read with a computed address. Two dividers means two tables.
+The fix is the same one the quad store needed: read it free-running and
+unconditionally, then use the registered value.
+
+    // in m1_raster_div.sv, alongside the other declarations
+    logic [31:0] recip_q;
+    always_ff @(posedge clk) recip_q <= recip[d_abs[9:0]];
+
+    // S_IDLE arm: drop `rq <= recip[d_abs[9:0]];`, keep only
+    else if (fast_ok) state <= S_MUL;
+    else              state <= S_RUN;
+
+    // and the multiply reads recip_q instead of rq
+    wire [63:0] mul_full = {32'd0, n_mag} * {32'd0, recip_q};
+
+The divider's operands are held by m1_raster_fill until it takes them, so a
+free-running read is the same value one cycle later. Expect 2 x 4 M10K
+(532 -> ~540 of 553) and the ALM back. Verify with:
+
+    make lint && make test_raster_fill          # must stay 152,025 / 0 fails
+    make quartus MOD=m1_raster_fill             # want M10K 8, ALM back to ~2,4xx
+    make render3d && ./obj_render3d/tb_render3d build/framedump/frame2500
+
+then three seeds of `make rbf` and the board. **Acceptance: T= on the UART.**
+It is 10-26 a second now; the divider should take it toward zero.
+
+### And one open question, if the divider does not finish it
+
+Restarting the sweep earlier so band 0 has more than vertical blanking to
+fill is the obvious fix and it measured FOUR TIMES WORSE on the board (48
+late a second, plus a middle band dropping); reverted in 37a6e43. The likely
+mechanism, worked out afterwards and NOT yet tested: `frame_armed` is set by
+a blanking edge seen while the consumer is mid-sweep, and an early restart
+arms it every frame, so a band 0 that missed blanking is presented mid-frame
+where `in_disp_band` refuses to draw its rows - late and invisible, and the
+rest of the sweep shifts behind it. The experiment is the early restart with
+that arming suppressed. Ben also suggested a fourth band buffer: it is
+affordable now (~16 M10K) but does not address this, because band 0's
+constraint is when its fill may START, not where the result goes.
+
 ## 2026-09-03 — THE 3D LAYER: five defects found and fixed in one session
 
 Every one was confirmed on the DE10-Nano by Ben watching the screen, and each
