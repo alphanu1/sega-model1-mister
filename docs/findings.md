@@ -20,6 +20,93 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — the "missing 3D bands" are not missing. The geometry is STALE
+
+Ben reports bands not being drawn in busy 3D scenes. Measured on hardware, they
+are all being drawn.
+
+    N (bands PRESENTED)        1,392 a second
+    expected, 24 x 57.52 fps   1,380 a second
+
+Every band reaches the screen, every frame. What is short is the geometry behind
+them:
+
+    S (display-list swaps, the V60's logic frames)   ~29 a second
+    B (completed geometry passes)                    ~20 a second
+
+So about a third of the game's display lists never become new geometry, and the
+display repaints the previous pass. On screen that is 3D updating in jerks while
+the 2D moves smoothly - which from the outside looks like bands not being drawn.
+
+### The mechanism
+
+m1_raster3d hands a completed pass over only when three things coincide:
+
+    swap_now = (pst == P_READY) && (cst == C_IDLE) && beam_blank && !beam_blank_d
+
+Producer ready, CONSUMER IDLE, and the beam entering blanking. If the band
+filler is still working when blanking arrives the swap is missed and the pass
+waits a whole frame. Requiring C_IDLE is deliberate - the module's comment says
+so - because swapping mid-sweep would tear the picture at a bank change.
+
+There is no per-band timeout; `band_timer` only measures. Bands are not being
+abandoned, the handoff is being skipped.
+
+### What simulation says, and where it does NOT match the board
+
+Over 647 sweeps of a 900 M-cycle run:
+
+    mean sweep   1,285,088 cycles   92.4% of a frame
+    worst sweep  1,285,761          92.5%
+    bands presented per frame       24 on 668 of 669 frames
+
+    per sweep:  WAIT 1,040,694  81%   idle, waiting for the beam
+                FILLW  137,653  11%
+                CLRW    81,008   6%   the per-band buffer clear
+                FILL     26,638   2%
+
+**The consumer is idle 81% of the time.** It finishes early and waits. In
+simulation the pipeline is healthy and the defect does not reproduce - 24 bands
+on 668 of 669 frames. On the board the geometry rate is a third short. So the
+cause is something sdram_model does not capture, and real memory contention is
+the obvious candidate: the 3D path shares that controller with the CPU, the tile
+fetch and now a coprocessor running at 2:1.
+
+### A WITHDRAWN MEASUREMENT, because it nearly cost 14 M10K
+
+An earlier pass concluded "the band filler does not fit a busy frame - 104% of
+budget" and proposed a fourth band buffer to fix it. That was an 80 MHz cycle
+count compared against a 47 MHz (clk_3d) budget. At 80 MHz a frame is 1,390,821
+cycles, not 818,133, and the sweeps fit at 92%. The fourth buffer would have
+bought nothing and spent a quarter of the M10K that sound needs.
+
+The worst-BAND figure (35,719 against a 34,089 per-band budget) was units-
+correct, but its budget assumed 24 bands must run back to back inside one frame.
+They do not - they are paced by the beam.
+
+### Where to look next
+
+The board, not the bench. Candidates, in order:
+
+1. SDRAM contention - the sweep sits at 92% of a frame in simulation, so a
+   modest real-memory penalty tips it over and the handoff is missed.
+2. The per-band clear, 1,984 cycles and 6% of a sweep. Cheap to remove IF a
+   spare buffer exists to clear ahead; with three buffers all occupied there is
+   no free window, and clearing one while it is displayed is a read-during-write
+   on a dual-clock RAM.
+3. Whether the sweep can start earlier in the frame rather than finish sooner.
+
+### Instrument notes
+
+`dbg_bands` and `dbg_band_cycles` were both UNCONNECTED outputs of m1_raster3d,
+so Verilator optimised them away and nothing could read them. Both are now
+wired: dbg_bands to the UART as N=, dbg_band_cycles to the bench.
+
+N= originally SATURATED at 0xffff rather than wrapping, which at 1,380 bands a
+second made it readable for 47 seconds and useless after. Fixed to wrap. It
+answered the band question before it saturated, which is the only reason this
+entry exists.
+
 ## 2026-09-03 (later) — the crash chain, with the V60's pc on the wire
 
 Second 7-minute capture, this time with V= carrying the V60 program counter.
