@@ -45,6 +45,22 @@ outranks sound. Its ROM and work RAM go to SDRAM, the 2 KB DPRAM already
 exists, so it needs ~0 M10K and ~2,000 ALM; its constraint is ALM, which the
 V60 split pays for. So the quad store's ~22 M10K competes with nothing.
 
+### Where the 3D stands, 2026-09-03 end of session
+
+Confirmed by Ben on the board, in order, each a separate defect:
+
+    bands missing in busy scenes   FIXED  flip-triggered pass (ef6adce)
+    thin bars across the screen    FIXED  two dividers in the fill (a207c47)
+    stadium/large objects missing  FIXED  3,072-quad store (42f950d)
+    cars stretched across screen   FIXED  16-bit vertices, do not narrow
+    top band missing               MOSTLY sweep restart on idle; T= 58 -> 10
+                                          a second, and 43b837f aims at the rest
+
+Open: D= shows the 3,072-quad store still overflows in bursts on the board
+(~1,600 quads over 110 s). The next lever if it matters is the fill's divide
+latency (a 1/dy table, ~4 cycles instead of 19) which would also let the
+band height drop, not a bigger store - M10K is at 532 of 553.
+
 ### Ben's reference picture, 2026-09-03 late
 
 Build aeb91d7 seed 13 (4,096-quad store, 9-bit vertices SATURATED) "looked

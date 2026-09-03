@@ -298,6 +298,35 @@ so must the index read, because pi advances in the cycle the read is taken.
 A free-running registered read is NOT the same as a gated one when the
 address moves on.
 
+### WHERE THE STORE AND THE VERTEX WIDTH LANDED, after three board tests
+
+The 4,096-quad store needed 9-bit vertices to fit, and **9 bits was wrong**:
+
+- Truncated, a vertex the clipper puts at -1 wraps to 511 and the polygon
+  stretches across the screen. On the board that was cars smeared over the
+  whole picture, on two seeds.
+- Saturated, the picture looked right to Ben - but `tb_m1_frame` counts
+  **6,588 vertices outside 0..511/0..383 in 670 frames** and the board
+  counted thousands a second on the wire (H= carried the store's `dbg_oob`).
+  Every one of those is a polygon edge bent at the screen boundary instead
+  of clipped. It looked good because the bend is small at speed.
+- The three dumped frames (900, 2500, 5460) had NO out-of-range vertex,
+  which is why the bench blessed 9 bits. **Three frames is not the range of
+  a coordinate.** The frame bench now prints the range over a whole run.
+
+So vertices are 16 bits again and the store is **3,072 a bank**, the largest
+that fits: ~74 M10K a bank, 532 of 553 in the full core. Frame 2500 needs
+2,671 and draws complete. **D= is not zero at 3,072** - the board's attract
+drops in bursts, ~1,600 quads over a 110 s window - so some scenes still
+exceed it, and the tail of those lists is not drawn. Ben's eye says the
+picture is right, so what is dropped is small or distant; the number is on
+the wire if it ever matters.
+
+What DID pay for the bigger store, all exact: the arrays split at 2,048 deep
+(Quartus's 4,096 x 2 block mode is half the density), colour as the RGB565
+the band buffer keeps anyway, the band mask as a 5+5 range, and one read per
+array.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's
