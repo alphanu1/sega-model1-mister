@@ -20,6 +20,36 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — Virtua Fighter needs no special ROM, and MAME's NOT_WORKING is about MAME
+
+`315-5724.bin`, VF's TGP microcode, is marked `BAD_DUMP` in MAME and `vf` is
+`MACHINE_NOT_WORKING`. That reads as "the dump is broken, VF is blocked".
+
+**It is not.** Ben confirms wangModel1 runs Virtua Fighter from the ordinary ROM
+set with no special or replacement microcode. All three copies on this machine -
+`vf.zip`, `vf.7z` and the loose `~/roms/vf/` - carry sha1
+`8809d93d47593f808faca55161999677ac7a3eb0`, which is byte-identical to the dump
+MAME flags. So the bytes another implementation runs successfully are the bytes
+we already have.
+
+`MACHINE_NOT_WORKING` describes the state of MAME's TGP emulation, not the ROM.
+That matters here because **we implement the MB86233 rather than model it**, so
+VF is worth actually trying rather than treating as blocked.
+
+WHAT THIS COSTS US: MAME cannot be the oracle for VF. There is no reference
+instruction stream, no reference frame to diff, no register census. Verification
+for VF is "does it look right", which is weaker than everything else on this
+project rests on. Virtua Racing stays the reference game.
+
+DECOMPILING wangModel1 WAS CONSIDERED AND REJECTED. It is closed source, and
+writing RTL from its internals would make that RTL arguably a derivative work -
+the same reasoning that makes the s32 V60 import GPL-3.0-or-later however much
+of it is rewritten, and the same policy CLAUDE.md already sets for
+`third_party/geometrizer/`: run it as an external oracle, read it for
+understanding, do not copy or adapt. Black-box observation of which files a
+binary opens is fine; reading its internals is not. In the event it was
+unnecessary - the ROM question was answered by asking.
+
 ## Reasoning has lost to measurement five times
 
 Kept as a table because the pattern is the point, not the individual entries.
