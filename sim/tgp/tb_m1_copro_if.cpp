@@ -84,6 +84,17 @@ struct Dut {
     check(run_until_ack() > 0, "write was never acknowledged");
     idle();
   }
+  // Like wr(), but returns whether the access was acknowledged instead of
+  // asserting. The interlock REFUSES an access rather than dropping it, so
+  // probing it needs a write that is allowed to be refused.
+  bool try_wr(int which, int a1, uint16_t data, int be = 3) {
+    d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
+    d->req = 1; d->we = 1; d->a1 = a1; d->be = be; d->wdata = data;
+    bool ok = run_until_ack(64) > 0;
+    idle();
+    return ok;
+  }
+
   // q is valid with ack.
   uint16_t rd(int which, int a1) {
     d->sel_adr = (which == 0); d->sel_ram = (which == 1); d->sel_fifo = (which == 2);
@@ -444,6 +455,70 @@ int main(int argc, char** argv) {
     }
     printf("  %d of the remaining 15 words came back in order\n", seen);
     check(seen == 15, "queued words were lost or reordered");
+  }
+
+  // -------------------------------------------------------------------------
+  // BOTH FIFOS FULL AT ONCE: IS THERE AN ESCAPE?
+  //
+  // The interlock refuses a V60 write to a full inbound FIFO and refuses a V60
+  // read of an empty outbound one; the TGP stalls on an empty inbound FIFO and
+  // halts on a full outbound one. Each rule on its own is right and matches
+  // gen_fifo.h. Together they describe a state with no exit:
+  //
+  //     fin full   -> the V60 is stalled writing a command
+  //     fout full  -> the TGP is stalled pushing a result
+  //     the TGP cannot drain fin, because it is stuck pushing
+  //     the V60 cannot drain fout, because it is stuck writing
+  //
+  // This module's own header names that shape - "fout fills, the TGP halts,
+  // fin fills, the V60 halts" - and the fix recorded there, both directions
+  // stalling on empty, addresses a DIFFERENT failure: the V60 consuming a
+  // spurious zero. It does not prevent full-on-full.
+  //
+  // Written while chasing the five-minute hardware crash, whose signature is
+  // the TGP's retire count freezing at microcode 0x004C - the command-FIFO
+  // read - while the V60 stops feeding it. This test does not prove that is
+  // the cause. It establishes whether the state is reachable and whether
+  // anything breaks it, which is a precondition for blaming it.
+  printf("test: both FIFOs full at once - is there an escape?\n");
+  {
+    Dut t;
+    int fin_writes = 0;
+    for (int i = 0; i < 64; i++) {
+      if (!t.try_wr(Dut::FIFO, 1, (uint16_t)(0x1000 + i))) break;
+      fin_writes++;
+    }
+    int fout_pushes = 0;
+    for (int i = 0; i < 64 && !t.d->fifo_out_full; i++) {
+      t.d->fifo_out_push = 1; t.d->fifo_out_data = 0x2000 + i;
+      t.tick();
+      fout_pushes++;
+    }
+    t.d->fifo_out_push = 0; t.tick();
+    printf("  filled fin with %d writes, fout with %d pushes\n",
+           fin_writes, fout_pushes);
+    check(fout_pushes > 0, "the outbound FIFO never accepted a push");
+
+    // Both ends now refuse. Let time pass with neither side able to act, which
+    // is exactly the situation on the board: the TGP cannot pop because it is
+    // stalled pushing, and the V60 cannot read because it is stalled writing.
+    for (int i = 0; i < 2000; i++) t.tick();
+
+    bool v60_can_write = t.try_wr(Dut::FIFO, 1, 0xdead);
+    bool tgp_can_push  = !t.d->fifo_out_full;
+    printf("  after 2000 idle cycles: V60 write %s, TGP push %s\n",
+           v60_can_write ? "ACCEPTED" : "refused",
+           tgp_can_push  ? "ACCEPTED" : "refused");
+
+    if (!v60_can_write && !tgp_can_push)
+      printf("  NO ESCAPE: both ends refuse indefinitely with no external event\n");
+
+    // The escape that DOES exist, and the only one: somebody drains. A single
+    // TGP pop frees a slot and releases the V60.
+    t.d->fifo_in_pop = 1; t.tick(); t.d->fifo_in_pop = 0; t.idle();
+    check(t.try_wr(Dut::FIFO, 1, 0xbeef),
+          "a TGP pop did not release the stalled V60 write");
+    printf("  one TGP pop releases the V60, so the interlock itself is sound\n");
   }
 
   printf("m1_copro_if: checks=%ld fails=%ld\n", checks, fails);
