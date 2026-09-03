@@ -31,6 +31,24 @@
 // does not pipeline, so two reciprocals a record is 58 of the 68 on their own.
 // Sharing it changes nothing because there was only ever one.
 //
+// SO THERE ARE NDIV OF THEM NOW, and NDIV is 2. A record projects two points and
+// each needs a reciprocal, and with one divider the second waits 29 cycles for
+// the first: `m1_geo_project` measures 64.1 cycles a record against a 68-cycle
+// budget, 94% of the whole geometry stage, and 29 of the 32 cycles a point are
+// the divide alone. The 2026-08-30 entry in docs/findings.md named a second
+// divider as the obvious lever and this is it. It matters because the geometry
+// pass is 1.5-2.0 frames in the busy scenes on the board (L= on the UART), and
+// a pass over a frame costs three frames rather than two.
+//
+// It is not the polygon ROM: tb_m1_raster3d with ROM_LAT=8 measures the walker's
+// prefetch hiding memory latency completely (P_OBJW 44.3% against 44.2% at one
+// cycle). The geometry is arithmetic-bound and this is the arithmetic.
+//
+// TWO DIVIDERS CAN RETIRE ON THE SAME CYCLE and the pool has one result bus, so
+// each carries a one-deep holding register and the drain is round robin. fp_div
+// is not fixed-latency - the suite reports max_latency=29, so special cases come
+// back early - and staggered issue is therefore not enough to keep them apart.
+//
 // ROUND ROBIN, NOT PRIORITY. At 65% utilisation a fixed priority would almost
 // always be fine, and "almost always" is how a stage that is starved only on the
 // busiest frames gets shipped. The rotating pointer costs a handful of LUTs.
@@ -114,15 +132,27 @@ module m1_fp_pool #(
   wire div_any = |div_req;
 
   // ------------------------------------------------------------- units
-  logic        m_valid, a_valid, d_valid;
-  logic [31:0] m_res, a_res, d_res;
-  logic        d_busy;
+  logic        m_valid, a_valid;
+  logic [31:0] m_res, a_res;
   logic        m_ovf, m_unf, m_inv, a_ovf, a_unf, a_inv;
-  logic        d_ovf, d_unf, d_dz, d_inv;
 
-  logic        div_issue;
-  assign div_issue = div_any && !d_busy && !div_outstanding;
-  logic        div_outstanding;
+  localparam int unsigned NDIV = 2;
+  localparam int unsigned DW   = (NDIV > 1) ? $clog2(NDIV) : 1;
+
+  logic [NDIV-1:0] d_busy, d_valid, div_outstanding;
+  logic [31:0]     d_res [NDIV];
+  logic [NDIV-1:0] d_ovf, d_unf, d_dz, d_inv;
+
+  // A divider may take a new division when it is idle and its previous result
+  // has been handed back.
+  wire [NDIV-1:0] d_free = ~d_busy & ~div_outstanding & ~dh_v;
+  logic [DW-1:0]  d_sel;
+  always_comb begin
+    d_sel = '0;
+    for (int i = int'(NDIV) - 1; i >= 0; i--)
+      if (d_free[i]) d_sel = DW'(i);
+  end
+  wire div_issue = div_any && (|d_free);
 
   fp_mul u_mul (
     .clk(clk), .rst_n(rst_n),
@@ -139,15 +169,22 @@ module m1_fp_pool #(
     .overflow(a_ovf), .underflow(a_unf), .invalid(a_inv)
   );
 
-  fp_div u_div (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(div_issue), .a(div_a[div_win]), .b(div_b[div_win]),
-    .busy(d_busy), .out_valid(d_valid), .result(d_res),
-    .overflow(d_ovf), .underflow(d_unf), .div_by_zero(d_dz), .invalid(d_inv)
-  );
+  genvar gd;
+  generate
+    for (gd = 0; gd < int'(NDIV); gd++) begin : g_div
+      fp_div u_div (
+        .clk(clk), .rst_n(rst_n),
+        .in_valid(div_issue && (d_sel == DW'(gd))),
+        .a(div_a[div_win]), .b(div_b[div_win]),
+        .busy(d_busy[gd]), .out_valid(d_valid[gd]), .result(d_res[gd]),
+        .overflow(d_ovf[gd]), .underflow(d_unf[gd]),
+        .div_by_zero(d_dz[gd]), .invalid(d_inv[gd])
+      );
+    end
+  endgenerate
 
   wire unused_flags = &{1'b0, m_ovf, m_unf, m_inv, a_ovf, a_unf, a_inv,
-                        d_ovf, d_unf, d_dz, d_inv};
+                        |d_ovf, |d_unf, |d_dz, |d_inv};
 
   // ------------------------------------------------------------- grants
   // A grant is combinational and means "accepted this cycle" - the pipelines
@@ -167,11 +204,23 @@ module m1_fp_pool #(
   logic [3:0]    mtag_v;
   logic [CW-1:0] atag [4];
   logic [3:0]    atag_v;
-  logic [CW-1:0] dtag;
+  logic [CW-1:0]   dtag [NDIV];
+  // The holding registers: a result waits here until the shared result bus is
+  // its turn, so two dividers retiring together cannot lose one.
+  logic [NDIV-1:0] dh_v;
+  logic [31:0]     dh_res [NDIV];
+  logic [CW-1:0]   dh_tag [NDIV];
+
+  logic [DW-1:0]   dh_sel;
+  always_comb begin
+    dh_sel = '0;
+    for (int i = int'(NDIV) - 1; i >= 0; i--)
+      if (dh_v[i]) dh_sel = DW'(i);
+  end
 
   assign mul_res = m_res;
   assign add_res = a_res;
-  assign div_res = d_res;
+  assign div_res = dh_res[dh_sel];
 
   always_comb begin
     mul_rsp = '0;
@@ -179,15 +228,19 @@ module m1_fp_pool #(
     div_rsp = '0;
     if (m_valid && mtag_v[3]) mul_rsp[mtag[3]] = 1'b1;
     if (a_valid && atag_v[3]) add_rsp[atag[3]] = 1'b1;
-    if (d_valid && div_outstanding) div_rsp[dtag] = 1'b1;
+    if (|dh_v) div_rsp[dh_tag[dh_sel]] = 1'b1;
   end
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       mul_rr <= '0; add_rr <= '0; div_rr <= '0;
-      mtag_v <= '0; atag_v <= '0; dtag <= '0;
-      div_outstanding <= 1'b0;
+      mtag_v <= '0; atag_v <= '0;
+      div_outstanding <= '0;
+      dh_v <= '0;
       for (int i = 0; i < 4; i++) begin mtag[i] <= '0; atag[i] <= '0; end
+      for (int i = 0; i < int'(NDIV); i++) begin
+        dtag[i] <= '0; dh_res[i] <= '0; dh_tag[i] <= '0;
+      end
     end else begin
       // Shift the tags along with the operands.
       for (int i = 3; i > 0; i--) begin
@@ -204,11 +257,23 @@ module m1_fp_pool #(
       if (add_any) add_rr <= (add_win == CW'(NC-1)) ? '0 : add_win + CW'(1);
 
       if (div_issue) begin
-        dtag            <= div_win;
-        div_outstanding <= 1'b1;
-        div_rr          <= (div_win == CW'(NC-1)) ? '0 : div_win + CW'(1);
-      end else if (d_valid && div_outstanding) begin
-        div_outstanding <= 1'b0;
+        dtag[d_sel]            <= div_win;
+        div_outstanding[d_sel] <= 1'b1;
+        div_rr                 <= (div_win == CW'(NC-1)) ? '0 : div_win + CW'(1);
+      end
+
+      // Capture each divider's result as it retires, and release the one on
+      // the bus this cycle. A divider cannot be reissued until its holding
+      // register is empty (d_free above), so nothing is overwritten.
+      for (int i = 0; i < int'(NDIV); i++) begin
+        if (d_valid[i] && div_outstanding[i]) begin
+          dh_v[i]                <= 1'b1;
+          dh_res[i]              <= d_res[i];
+          dh_tag[i]              <= dtag[i];
+          div_outstanding[i]     <= 1'b0;
+        end else if (dh_v[i] && (dh_sel == DW'(i))) begin
+          dh_v[i]                <= 1'b0;
+        end
       end
     end
   end

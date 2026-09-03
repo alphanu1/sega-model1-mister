@@ -78,6 +78,13 @@ module m1_raster_div #(
   input  logic               clk,
   input  logic               rst_n,
 
+  // The reciprocal table lives outside, in m1_recip_rom, so the fill's two
+  // dividers share one copy through its second read port - 4 M10K instead of
+  // 8. The address is combinational off `den` and the data is expected one
+  // cycle later, which is what a registered ROM read gives.
+  output logic [9:0]         rom_addr,
+  input  logic [31:0]        rom_data,
+
   input  logic               in_valid,
   input  logic signed [31:0] num,
   input  logic signed [31:0] den,
@@ -105,11 +112,6 @@ module m1_raster_div #(
   // the worst band's divide wait was 12,932 cycles for 806 divides, still 16
   // each. In M10K rather than logic: 32,768 bits is 4 blocks against ~700 ALM.
   localparam int unsigned TN = 1024;
-  (* ramstyle = "M10K" *) logic [31:0] recip [TN];
-  initial begin
-    for (int d = 1; d < TN; d++)
-      recip[d] = 32'((({32'd0, 32'h8000_0000} << 1) + longint'(d) - 1) / longint'(d));
-  end
 
   wire [31:0] n_abs = num[31] ? (~num + 32'd1) : num;
   wire [31:0] d_abs = den[31] ? (~den + 32'd1) : den;
@@ -121,8 +123,8 @@ module m1_raster_div #(
   // 1,024 x 32 table out of logic, 3,733 ALM for the fill unit against 2,4xx.
   // The divider's operands are held by m1_raster_fill until it takes them,
   // so a free-running read is the same value one cycle later.
-  logic [31:0] recip_q;
-  always_ff @(posedge clk) recip_q <= recip[d_abs[9:0]];
+  assign rom_addr = d_abs[9:0];
+  wire [31:0] recip_q = rom_data;
 
   logic [31:0] rq;          // the reciprocal, or the quotient under correction
   // 32 x 32 -> the top half is the quotient estimate, and 32 x 11 for the

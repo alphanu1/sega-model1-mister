@@ -168,9 +168,21 @@ module m1_raster_fill (
   logic signed [31:0] div_quo, divb_quo;
   logic               got_a, got_b;   // which slopes have come back this segment
 
+  // ONE TABLE FOR BOTH. See m1_recip_rom.
+  logic [9:0]  rom_a_addr, rom_b_addr;
+  wire [31:0]  rom_a_data, rom_b_data;
+
+  m1_recip_rom u_recip (
+    .clk(clk),
+    .a_addr(rom_a_addr), .a_data(rom_a_data),
+    .b_addr(rom_b_addr), .b_data(rom_b_data)
+  );
+
   m1_raster_div u_div (
     .clk       (clk),
     .rst_n     (rst_n),
+    .rom_addr  (rom_a_addr),
+    .rom_data  (rom_a_data),
     .in_valid  (div_start),
     .num       (div_num),
     .den       (div_den),
@@ -183,6 +195,8 @@ module m1_raster_fill (
   m1_raster_div u_divb (
     .clk       (clk),
     .rst_n     (rst_n),
+    .rom_addr  (rom_b_addr),
+    .rom_data  (rom_b_data),
     .in_valid  (divb_start),
     .num       (divb_num),
     .den       (divb_den),
