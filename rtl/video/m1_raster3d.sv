@@ -179,6 +179,8 @@ module m1_raster3d #(
   // game was still writing it ends early, and that is a missing stadium.
   output logic [15:0] dbg_drop_total /* verilator public_flat_rd */,
   output logic [15:0] dbg_short /* verilator public_flat_rd */,
+  // Vertices the store could not hold in 9+9 bits, both banks summed.
+  output logic [15:0] dbg_oob /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -856,6 +858,7 @@ module m1_raster3d #(
   assign dbg_viewy = vviewy;
 
   assign dbg_objects = lw_objs;
+  assign dbg_oob     = qs_oob_v[0] + qs_oob_v[1];
   assign dbg_quads   = qs_count;
   assign dbg_dropped = qs_dropped;
 
