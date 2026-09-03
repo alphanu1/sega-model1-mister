@@ -43,7 +43,14 @@ drifted before today.
    scene at 4,096 (`-GNQ=4096`) and loses building, road, wall and grandstand
    at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. `MISTER_SMALL_VBUF`
    frees nothing (measured, 496 M10K either way - it sizes a DDR3 buffer).
-   Decide with Ben: the sound budget, or a narrower quad record (the 24-bit
+   The record is 231 bits a quad today (vertices 128, attributes 49 =
+   24-bit band mask + moire + 24-bit colour, key 32, two 11-bit indices) and
+   M10K rounds each array up, which is why 2,048 costs 51 a bank. Narrowed -
+   colour to RGB565 (the band buffer is 565 anyway), the key to 16 bits, the
+   band mask to a 5+5-bit band RANGE - 3,072 quads a bank comes to ~62 blocks
+   against 51, so ~+22 M10K for both banks instead of ~+50. Each narrowing
+   needs its exactness bench (the key decides painter order among close z).
+   Decide with Ben: that, the sound budget, or a narrower quad record (the 24-bit
    lit colour and the 32-bit sort key are the fat; coordinates reach +/-31,696
    after clipping so they stay 16-bit). A bigger store also makes every band
    replay more quads, so it goes with the divider work, not before it.
