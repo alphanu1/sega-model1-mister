@@ -126,7 +126,24 @@ The same 900 M cycles on the FIXED RTL:
     L=11xx..1Axx                        passes of 1.35 to 2.15 frames
 
 The rate is fixed. Ben still sees overruns on the screen, so the rate was not
-the whole picture - see the late-band instrument below.
+the whole picture.
+
+### The overruns that remain are LATE BANDS, and they are the fill, not the pass
+
+Second build (8e5e3d6, seed 7, `build/uart_late_seed7.txt`) adds T= (bands
+presented after the beam had started on them, free-running) and W= (the worst
+band fill in the second, in 16-cycle units; a slot is 0x0853):
+
+    attract, 85-100 objects     T +3..+4 a second     W 0x0B00-0x0E3B  (1.3-1.7 slots)
+    one second at 158 objects   T +23                 W 0x0C54
+
+A late band shows as a horizontal strip with no 3D: scanout refuses rows the
+presented band does not cover. Three buffers absorb one slow band, not a run
+of them. `tb_m1_frame` at 900 M cycles (attract at ~25 objects) shows ZERO late
+bands and a worst band of 108%, so the bench is not yet in a scene heavy
+enough to see it; the board is. Next: the fill unit's time by state inside the
+worst bands, on a heavy frame - the unit bench puts the span walk at 42% and
+the divider waits at 40% of fill time on frame 900.
 
 ### What the game does at a flip, measured, because the fix depends on it
 

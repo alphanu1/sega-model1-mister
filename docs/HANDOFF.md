@@ -32,12 +32,16 @@ Read `docs/findings.md`'s top entry first. The short form:
 `make test` green; the CLAUDE.md block is corrected for three lines that had
 drifted before today.
 
+### DONE on the board the same evening: B = S at 29 a second, L = 1.35-2.15 frames.
+### The overruns Ben still sees are LATE BANDS: T= 3-4 a second in attract, 23 at
+### 158 objects, worst band fill 1.3-1.7 slots (W=). See findings. The fill is next.
+
 ### Next, in order
 
-1. **Flash a closed seed and read the UART.** Expect B to rise from ~19 to
-   match S at ~28, and L to read the pass length: above 0C7C is over a frame,
-   above 18F8 is over two and still costs three frames. Reboot first
-   (memory: mister-reboot-before-core-load); Ben has to be at the screen.
+1. **The band fill in heavy scenes.** Break the fill unit's time down by state
+   inside the WORST bands on a heavy frame (tb_m1_raster3d, ROM_LAT=0), then
+   pick between a second or pipelined divider and dropping the per-band replay
+   of quads that miss the band. T= and W= on the board are the acceptance test.
 2. If L sits above two frames in gameplay, the lever is the pass itself, not
    the cadence: the polygon ROM's wait on the shared SDRAM (the bench prints
    the 3D ROM port's mean wait) and the geometry's cycles a quad (findings,
