@@ -874,9 +874,17 @@ mra:
 	python3 tools/gen_mra.py
 
 ROMZIP ?= $(HOME)/roms/vr.zip
+# Defaults to Virtua Racing; override for any other set:
+#   make verify_mra GAME=vf MRA="mra/Virtua Fighter.mra" ROMZIP=~/roms/vf.zip
+#
+# It was hardcoded to vr, which meant the other NINE .mra files in mra/ had
+# never been checked against the packer at all.
+GAME ?= vr
+MRA  ?= mra/Virtua Racing.mra
+
 verify_mra:
-	@test -f "$(ROMZIP)" || { echo "set ROMZIP=<path to vr.zip>"; exit 1; }
-	python3 tools/verify_mra.py "mra/Virtua Racing.mra" "$(ROMZIP)" vr
+	@test -f "$(ROMZIP)" || { echo "set ROMZIP=<path to the game's zip>"; exit 1; }
+	python3 tools/verify_mra.py "$(MRA)" "$(ROMZIP)" $(GAME)
 
 # The real core: sys_top plus emu, compiled to a .rbf for the DE10-Nano.
 #

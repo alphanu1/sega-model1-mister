@@ -62,6 +62,26 @@
         </interleave>
         <!-- stream 0x580000: 524288 bytes unpopulated -->
         <part repeat="524288">FF</part>
+        <!-- stream 0x600000: 2,359,296 bytes unpopulated.
+
+             VIRTUA FIGHTER HAS NEITHER A COPROCESSOR DATA ROM NOR SINCOS
+             TABLES. Look at its ROM_START in model1.cpp: Virtua Racing defines
+             a "copro_data" region (four ROM_LOAD32_BYTE parts, 2 MB at stream
+             0x600000) and "copro_tables" (256 KB at 0x800000); vf declares
+             neither.
+
+             The polygons still belong at 0x840000. This file used to start
+             them at 0x600000 instead - closing the gap rather than leaving it -
+             which put all 16 MB of model data 2,359,296 bytes low. Nothing
+             would have failed at load time; the rasterizer would simply have
+             read the wrong thing, and on a core whose 3D is still being brought
+             up that is indistinguishable from a rasterizer bug.
+
+             Caught by `make verify_mra GAME=vf MRA="mra/Virtua Fighter.mra"
+             ROMZIP=~/roms/vf.zip`, which reported the length off by exactly
+             0x240000 and the first mismatch at 0x600000. -->
+        <part repeat="2359296">FF</part>
+
         <!-- stream 0x600000: the polygon model ROMs, 16 MB.
              MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,
              each pair 4 MB apart, exactly as the sincos tables above but

@@ -1533,6 +1533,8 @@ always @(posedge clk_cpu) begin
     end
 end
 
+logic [31:0] worst_band = 0;
+
 // ------------------------------------------------ character fetch latency
 //
 // The unit test models char_ack coming back in 14 cycles, and on that basis
@@ -1647,6 +1649,15 @@ initial begin
     while (cycles < RUN_CYCLES && !dbg_halted) begin
         @(posedge clk);
         cycles = cycles + 1;
+        // WORST BAND, NOT LAST BAND. dbg_band_cycles holds the most recent
+        // band's fill time, and the question is whether the filler EVER
+        // overruns its slot in a busy scene - a single frame that misses the
+        // handoff shows the previous geometry again, which is what "bands not
+        // drawn" looks like. Sampling the last one in a quiet window reported
+        // 5% of budget and said nothing about the busy case.
+        if (core.u_raster3d.dbg_band_cycles > worst_band)
+            worst_band <= core.u_raster3d.dbg_band_cycles;
+
         // Progress, because this run is long enough that silence is
         // indistinguishable from a hang.
         if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
@@ -1761,6 +1772,9 @@ initial begin
         budget   = 34089;
         $display("FRAME: last band took %0d clk_3d cycles, budget %0d a band (%0d%% of it)",
                  band_cyc, budget, (band_cyc * 100) / budget);
+        $display("FRAME: WORST band was %0d cycles (%0d%% of budget); 24 bands = %0d of %0d in a frame",
+                 worst_band, (worst_band * 100) / budget,
+                 worst_band * 24, 818133);
         $display("FRAME: bands filled = %0d", core.u_raster3d.dbg_bands);
     end
     $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",

@@ -152,16 +152,29 @@ def pack_stream(zip_path, game):
     with zipfile.ZipFile(zip_path) as zf:
         # copro_data: 2 MB from four ROM_LOAD32_BYTE parts, so byte-interleaved
         # four ways rather than the two-way interleave used above.
-        parts = [load(zf, n) for n in COPRO_DATA[game]]
-        n = len(parts[0])
-        inter = bytearray(n * 4)
-        for i, d in enumerate(parts):
-            inter[i::4] = d
-        stream[0x600000:0x600000+len(inter)] = inter
+        #
+        # NOT EVERY GAME HAS ONE. Virtua Racing and Virtua Formula define a
+        # "copro_data" region; Virtua Fighter does not - look at its ROM_START
+        # in model1.cpp and the region is simply absent. The table lookup used
+        # to raise KeyError on those sets, which reads as a missing ROM rather
+        # than as a set that legitimately has no data ROM. The region stays
+        # zero-filled, which is what the hardware sees when nothing drives it.
+        if game in COPRO_DATA:
+            parts = [load(zf, n) for n in COPRO_DATA[game]]
+            n = len(parts[0])
+            inter = bytearray(n * 4)
+            for i, d in enumerate(parts):
+                inter[i::4] = d
+            stream[0x600000:0x600000+len(inter)] = inter
 
         # copro_tables: 256 KB from two ROM_LOAD32_WORD halves — the first
         # supplies bits 15:0 of each 32-bit entry, the second bits 31:16.
-        lo, hi = (load(zf, n) for n in COPRO_TABLES[game])
+        # Same caveat as copro_data above: a set without sincos tables is a
+        # legitimate set, not a broken one.
+        if game not in COPRO_TABLES:
+            lo = hi = b''
+        else:
+            lo, hi = (load(zf, n) for n in COPRO_TABLES[game])
         t = bytearray(len(lo) * 2)
         t[0::4] = lo[0::2]; t[1::4] = lo[1::2]
         t[2::4] = hi[0::2]; t[3::4] = hi[1::2]
