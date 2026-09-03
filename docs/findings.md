@@ -398,6 +398,51 @@ never entered; `m1_sdram`'s counts moved with an arbitration change before
 today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
 is corrected in this commit.
 
+## 2026-09-03 — THE FPS DIPS ARE THE V60 WAITING ON MEMORY, not the rasterizer
+
+Ben reports the game slowing for about five seconds in one scene. That is the
+GAME's logic rate, which is S= on the wire - display-list swaps a second, 29
+when the game is running at full speed. From `build/uart_revert_seed7.txt`,
+every line where S dips, against what else the core was doing:
+
+    S=10..20    objects 41-58   geometry pass 1.48-2.02 frames
+    S=27..29    objects 0-49    geometry pass 0.07-1.76 frames
+
+So the dips are the busy scenes, and the question is which machine is short
+of time. `tb_m1_frame`, 900 M cycles:
+
+    V60 cycles                 273,793,911
+    stalled on data                40.31%
+    stalled on fetch               10.00%
+    stalled on either              49.67%
+    3D polygon-ROM port        703,087 requests, mean wait 255 clk_sys cycles
+
+**The V60 spends half its life waiting for memory**, and the 3D geometry is
+reading the polygon ROM out of the same SDRAM controller at a 255-cycle mean
+wait. In a heavy scene the geometry reads far more ROM, so the contention
+rises exactly when the game has most to do.
+
+**The band fill is NOT part of this.** It reads the quad store and writes the
+band buffer, both on-chip M10K; it never touches SDRAM. So the reciprocal
+divider - which fixes late bands, a display artefact - cannot help the frame
+rate, and neither can anything else aimed at the consumer. Said plainly
+because the two symptoms look alike from the sofa and have nothing in common.
+
+The levers, in the order their evidence supports:
+
+1. **The SDRAM interface has no timing constraints at all** and its read
+   capture phase was found empirically (see the M1 list in CLAUDE.md). A
+   controller that is not closed is not a controller whose latency can be
+   argued about.
+2. **The 3D's polygon-ROM traffic**: 703,087 requests a run at 255 cycles.
+   The walker already prefetches a record ahead; whether it can read a whole
+   object in bursts, or cache the record it re-reads, is unmeasured.
+3. **The V60's own CPI** - 17.71 in the earlier measurement, against the
+   reference's 2 M instructions a second.
+
+None of this is the 3D layer's display path, which is what the last session
+fixed. It is the next thing, and it is bigger.
+
 ## 2026-09-03 — clear-on-readout for the band buffer DOES NOT SYNTHESISE
 
 The 3D geometry rate is a third short of the display-list rate because the band
