@@ -4657,6 +4657,15 @@ failing build.
 The knob stays available as `M1_QOPT="Aggressive Area" make rbf` with this measurement
 beside it, and the default is unchanged.
 
+**REVERSED SINCE, and the reversal is the current state.** The design later
+failed to fit at all (166,497 combinational nodes against 83,820), so ALM
+became the binding resource and `tools/mister_project.sh` made Aggressive
+Area with register and logic duplication OFF the default; `M1_QSPEED=1` is
+the opt-out. Every build from the 2:1 coprocessor onward, including the
+2026-09-03 known-good, is an aggressive-area build, and its ~1,500 ALM is
+already inside the 39,150 ALM figure. Do not read the verdict above as
+current; read it as the measurement of what the setting costs in slack.
+
 **The general lesson, which cost two 25-minute builds to learn twice:** a module measured
 alone with virtual pins is not the module in context. The V60 reports 20,129 ALM standalone
 and 17,817 in the core; the area setting saves 13% standalone and 2% in place. Standalone
