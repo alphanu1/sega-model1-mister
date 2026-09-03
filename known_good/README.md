@@ -21,7 +21,10 @@ to 2:1, taking F/S from 4.30 to 2.05 - the board had been at ~46%.
 
     F  video frames in the reporting window (58 = ~1 s, NOT game speed)
     S  display-list swaps: one per completed logic frame
-    B  3D bands presented, free-running
+    B  completed 3D GEOMETRY PASSES, free-running - NOT bands, whatever the
+       old comment said. On rung 8 it advances ~20 a second against ~28 swaps,
+       so ~8 logic frames a second finish no new geometry and the display holds
+       the previous pass. That is the "bands not drawn in busy scenes" symptom
     P  objects, NON-ZERO IS THE PASS SIGNATURE - every failed image during the
        two-day black-screen episode showed P=0000
     C  TGP program counter. 004C is the idle dispatch, where it waits, so

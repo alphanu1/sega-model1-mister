@@ -151,8 +151,12 @@ module m1_raster3d #(
   // How long the last band's fill took, and how many bands have been presented.
   // "One band a frame" and "twelve bands a frame" are the same picture in a
   // still and completely different on a screen.
-  output logic [31:0] dbg_band_cycles,
-  output logic [15:0] dbg_bands,
+  // PUBLIC so the bench can read them: both are left unconnected at the top
+  // level, and without this Verilator optimises them away. They are the only
+  // measurement of whether the band filler fits inside a frame, which is what
+  // decides whether a completed geometry pass is handed over or waits.
+  output logic [31:0] dbg_band_cycles /* verilator public_flat_rd */,
+  output logic [15:0] dbg_bands /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two

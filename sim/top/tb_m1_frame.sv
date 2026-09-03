@@ -1742,6 +1742,27 @@ initial begin
     $display("FRAME: 3D layer: objects=%0d quads=%0d dropped=%0d passes=%0d",
              core.r3_dbg_objects, core.r3_dbg_quads,
              core.r3_dbg_dropped, core.r3_dbg_frames);
+    // ---------------------------------------------------------------------
+    // DOES THE BAND FILLER FIT INSIDE A FRAME?
+    //
+    // A completed geometry pass is only handed over when THREE things coincide
+    // (m1_raster3d, `swap_now`): the producer is in P_READY, the consumer is in
+    // C_IDLE, and the beam enters blanking. If the filler is still working when
+    // blanking arrives the swap is MISSED and the pass waits a whole frame, so
+    // the display keeps showing the previous geometry. On hardware that reads
+    // as bands not being drawn in busy scenes.
+    //
+    // The budget: clk_3d is 47.059 MHz and a frame is 1/57.52 s, so 818,133
+    // cycles, over 24 bands = 34,089 cycles a band. Over that and the filler
+    // cannot keep up on a full frame.
+    begin
+        longint unsigned band_cyc, budget;
+        band_cyc = core.u_raster3d.dbg_band_cycles;
+        budget   = 34089;
+        $display("FRAME: last band took %0d clk_3d cycles, budget %0d a band (%0d%% of it)",
+                 band_cyc, budget, (band_cyc * 100) / budget);
+        $display("FRAME: bands filled = %0d", core.u_raster3d.dbg_bands);
+    end
     $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",
              core.u_raster3d.cst, core.u_raster3d.cur_band,
              core.u_raster3d.dbg_bands, core.u_raster3d.fill_buf,

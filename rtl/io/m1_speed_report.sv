@@ -60,7 +60,13 @@ module m1_speed_report #(
 
   input  logic vblank,          // one pulse per video frame
   input  logic list_sel,        // listctl bit 6, the display-list buffer select
-  input  logic [15:0] bands,    // 3D bands presented, free-running
+  // NOT BANDS. This is wired to m1_raster3d's dbg_frames, which increments once
+  // per COMPLETED GEOMETRY PASS - at P_SORTW, after the sort - and says nothing
+  // about how many of the 24 bands were drawn. The old comment claimed bands
+  // and cost a wrong diagnosis: on hardware B advances ~20 a second against ~28
+  // display-list swaps, which is 8 logic frames a second completing no new
+  // geometry, and reading it as "bands" hides that completely.
+  input  logic [15:0] bands,    // completed 3D geometry passes, free-running
   input  logic [15:0] passes,   // 3D geometry passes, free-running
   // THE COPROCESSOR'S OWN STATE, because the board keeps showing a black screen
   // with the 3D layer receiving nothing and the existing fields cannot say why.
