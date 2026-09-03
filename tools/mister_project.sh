@@ -395,6 +395,40 @@ sed -e 's/^source files.qip$/source files.qip/' \
 # anywhere. A marginal miss is a placement outcome, not a design fault - try a
 # seed before changing logic.
 M1_SEED="${M1_SEED:-5}"
+# FRAMEWORK BUILD OPTIONS, off unless asked for.
+#
+# sys/ carries six MISTER_* macros and this project set none of them. They are
+# .qsf assignments, so using one is a project decision rather than an edit to
+# the framework, which stays off limits.
+#
+#   MISTER_DISABLE_ALSA      the HPS audio path, ~259 ALM. DO NOT USE. It is
+#                            tempting because the core has no sound yet and it
+#                            changes nothing visible - but M4 needs that path,
+#                            and removing it now buys 259 ALM in exchange for
+#                            having to put it back before sound can work.
+#   MISTER_DISABLE_YC        the Y/C composite encoder. Nothing visible on HDMI.
+#   MISTER_DISABLE_ADAPTIVE  ascal's adaptive scanline filter. CHANGES THE PICTURE.
+#   MISTER_DOWNSCALE_NN      ascal's polyphase downscaler -> nearest neighbour.
+#                            CHANGES THE PICTURE.
+#   MISTER_SMALL_VBUF        shrinks ascal's video buffer - M10K, which is what
+#                            actually blocks sound.
+#   MISTER_DEBUG_NOHDMI      removes HDMI entirely. Last resort.
+#
+# WHY THEY MATTER BEYOND AREA: the only path that ever fails timing is
+# ascal|o_hcpt, a high-fanout counter in the framework whose delay is largely
+# routing - and routing is what congestion degrades. Seven seeds of the same
+# design spanned 0.60 ns with two closing. Shrinking ascal attacks the cause;
+# reseeding only rolls against it.
+#
+#   M1_MACROS="MISTER_DISABLE_ALSA MISTER_DISABLE_YC" make rbf
+if [ -n "${M1_MACROS:-}" ]; then
+    printf '\n' >> "$stage/Model1.qsf"
+    for m in $M1_MACROS; do
+        printf 'set_global_assignment -name VERILOG_MACRO "%s"\n' "$m" >> "$stage/Model1.qsf"
+        echo "  VERILOG_MACRO = $m"
+    done
+fi
+
 if [ -n "${M1_SEED:-}" ]; then
     # The template's last line has no trailing newline, so append one first or
     # the assignment lands on the end of it and Quartus rejects the file.

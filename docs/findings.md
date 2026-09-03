@@ -20,6 +20,48 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — the five-minute crash is a COPROCESSOR deadlock, caught on the wire
+
+The long-standing "black screen after about five minutes" was characterised for
+the first time, on a 7-minute UART capture from a cold-ish machine (up 1:14).
+Full log in `known_good/uart_crash_2026-09-03.txt`.
+
+The overlay photo of this fault showed every counter frozen, which read as the
+whole core stopping. That is not what happens:
+
+    S=001D B=0A4B P=009D C=004C R=1C94   healthy, TGP retiring
+    S=0007 B=0A5E P=0055 C=004C R=35C5   R FREEZES; swaps collapse 29 -> 7
+    S=0000 B=0A72 P=009D C=004C R=35C5   swaps ZERO - the V60 has stalled
+    S=0000 ...                            four seconds of S=0
+    S=000B B=0AD7 P=0000 C=004C R=35C5   V60 resumes; objects -> 0 for good
+    S=001D B=0B11 P=0000 C=004C R=35C5   full swap rate, no 3D ever again
+
+So: the TGP stops retiring, the V60 stalls COMPLETELY for about four seconds,
+then recovers to full display-list rate with P=0000 - no objects - permanently.
+Video timing (F=003A) never falters throughout.
+
+That is a COPROCESSOR DEADLOCK, not a dead core. The coprocessor FIFOs are 16
+deep and a full one HALTS THE CPU, so the shape that fits is the TGP blocked
+pushing a result into a full output FIFO while the V60 is blocked waiting on the
+coprocessor. The V60 breaks out eventually - a timeout in the game code, or an
+interrupt - and carries on with an empty display list.
+
+WHAT CANNOT BE CLAIMED FROM THIS. At one sample a second the TGP freeze and the
+V60 stall cannot be ordered; they appear in the same line. And `C=004C` is the
+IDLE DISPATCH, so the pc sitting there is equally consistent with "hung" and
+"correctly idle because no commands are arriving" - which is why the frozen
+RETIRE COUNT is the stronger signal, not the pc.
+
+This capture was only possible because 2:1 added C= and R= to the printf
+channel. Before that the coprocessor's state was invisible on hardware and the
+fault looked like a whole-core hang.
+
+INSTRUMENT DEFECT FOUND IN THE SAME RUN: N= saturates. dbg_bands is
+`if (ev_present && dbg_bands != 16'hffff) dbg_bands <= dbg_bands + 1` - it
+SATURATES rather than wraps, so it is only readable for the first ~47 seconds at
+1,380 bands a second. Long enough to answer the band question this time, useless
+for anything longer. Make it wrap.
+
 ## 2026-09-03 — Virtua Fighter needs no special ROM, and MAME's NOT_WORKING is about MAME
 
 `315-5724.bin`, VF's TGP microcode, is marked `BAD_DUMP` in MAME and `vf` is
