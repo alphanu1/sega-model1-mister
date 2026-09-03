@@ -20,6 +20,147 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-03 — THE MISSING 3D IS A THREE-FRAME PASS CADENCE. The producer runs over a frame, and the design then lost a frame on every pass
+
+Fixed in `m1_raster3d`: the geometry pass now starts when the game presents a
+new display list, not on the frame pulse. Built and measured in two benches;
+the board is owed a flash. Everything below is measured.
+
+### The board said which sequencer, and it was read the wrong way round
+
+Three UART counters, from the 2026-09-03 captures, per one-second line:
+
+    S   display-list swaps, the game's logic frames    27-29
+    B   completed geometry passes                      19-20   (2/3 of S)
+    N   bands PRESENTED                                1,392 = 24 x 58, every frame
+
+N is the decisive one. `swap_now` needs three things at the blanking edge:
+P_READY, C_IDLE and the edge. The consumer restarts its sweep on that same edge
+and can only do so from C_IDLE - so 24 bands every frame means the consumer is
+idle at every edge, without exception. **The only term that can be missing is
+P_READY. The producer is late, not the consumer.**
+
+The earlier entry below measured the consumer in exhaustive detail - sweep at
+92.4% of a frame, idle 81% of it - and concluded the pipeline was healthy and
+the defect did not reproduce in simulation. Both figures were right and both
+were about the sequencer that was never late. Nothing had measured the
+producer's pass length.
+
+**WITHDRAWN, and reverted in this change: the "one-cycle swap window" fix
+(fba1219).** It let the swap happen anywhere in blanking instead of on the
+edge. The consumer leaves C_IDLE on the edge and does not return until the
+sweep ends, so "anywhere in blanking while the consumer is idle" is the edge
+cycle and no other: the change was a no-op by construction, and N had already
+proved the race it was written for was not being lost.
+
+### Why a pass over one frame costs three
+
+    frame_start  (vblank_start, line 383 at hcnt = H_VISIBLE, over m1_cdc_pulse)
+    swap         (vcnt reaches 384, two synchroniser flops)   ~470 clk_3d LATER
+
+The producer started only on `frame_start`, and was freed only by the swap,
+which is after it. So:
+
+    pass < 1 frame:   start k, ready k+0.x, swap at the k+1 edge, start k+2
+                      -> 2 frames a pass, equal to the game's list rate. B = S.
+    1 < pass < 2:     start k, ready k+1.x, the k+2 edge swaps it out, and the
+                      next frame_start is k+3 -> 3 frames a pass. B = 2/3 S.
+
+58 frames a second / 3 = 19.3. That is the board's B.
+
+### The pass IS over a frame, measured three ways
+
+`tb_m1_raster3d`, the reference's frame 900 (33 objects, 626 quads), now with
+a `ROM_LAT` knob on the polygon ROM and a per-pass cadence print:
+
+    ROM latency   pass length   cadence (old)   cadence (fixed)
+    1 cycle       0.95 frames   2               2
+    8             0.95          2               2      the prefetch hides it
+    24            1.27          3               2
+    32            1.54          3               2
+    64            2.90          4               -
+    256           11.40         13              -
+
+**0.95 of a frame with a memory that answers in a cycle.** The board's polygon
+ROM is SDRAM shared with the V60 at 2:1, the tile fetch and the coprocessor; it
+does not answer in a cycle.
+
+`tb_m1_frame`, the real memory path, with the producer's pass timed from its
+state (start = P_IDLE->P_WALK, ready = ->P_READY, swap = P_READY->P_IDLE),
+900 M cycles of the old RTL, in the attract scene at 57-58 objects and ~1,650
+quads:
+
+    PASS3D #187 start=f368 len=1.47 fr wait=0.52 fr obj=58 q=1653
+    PASS3D #188 start=f371 len=1.46 fr wait=0.53 fr obj=58 q=1669
+    PASS3D #189 start=f374 len=1.47 fr wait=0.52 fr obj=58 q=1653
+    PASS3D #190 start=f377 len=1.46 fr wait=0.53 fr obj=57 q=1660
+
+A pass every three frames, each 1.47 frames long. **The defect reproduces in
+simulation.** It always did; the instrument that showed it is a hundred lines
+of bench.
+
+### What the game does at a flip, measured, because the fix depends on it
+
+`tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's
+write of listctl bit 3 - manual mode - not a vblank event.
+
+    writes into the NEWLY SELECTED buffer, flip -> next vblank    0 on 992 of 994
+    writes into the SELECTED buffer, flip -> next flip            0 on 992 of 994
+    first write into the OTHER buffer                             one frame after the flip, 992 of 994
+
+The two exceptions are the boot/attract transition. So the buffer the game
+flips TO is finished when it flips and untouched until the next flip; the next
+list is built in the other buffer starting a frame later. The flip's scanline
+was not captured - `screen:vpos()` failed under pcall - so where in the frame
+it lands is not known. (Run made with the device-ROM overlay, as always.)
+
+### The fix
+
+    prod_trig = list_flipped || (frame_start && no flip seen for 4 frames)
+
+where `list_flipped` is the synchronised select differing from the one the
+current pass latched. Starting at the flip is what MAME effectively does
+(`set_current_render_list` at the next render) minus the wait for vblank, and
+it fixes the PHASE as well as the rate: a pass finishes before the game flips
+again and starts rewriting the buffer it read, for any pass up to two frames.
+Restarting on the swap alone was considered and rejected - it locks a two-frame
+cadence to the game's two-frame flips in whichever phase it lands, and the
+wrong phase reads a buffer the V60 is writing for the tail of every pass.
+
+The frame-pulse path is kept for a list that never flips (a bench, or a game
+that single-buffers), held off while flips are arriving so it can never
+pre-empt one by a few cycles.
+
+Unit bench: 189,427 of 190,464 pixels painted, unchanged at every setting.
+
+### Two instruments, and one bench fault
+
+- `L=` on the UART: the last pass's length in units of 256 clk_3d cycles. A
+  frame is 0x0C7C. The board can now say directly whether a pass fits.
+- `tb_m1_frame` prints `PASS3D` per pass and, at the end, pass length and
+  cadence histograms and the 3D ROM port's mean wait.
+- `tb_m1_raster3d` held `frame_start` for the pixel's three clock ticks. The
+  board delivers one, through m1_cdc_pulse. Three counted as three frames and
+  tripped the four-frame fallback early - a bench artefact that looked like a
+  one-frame cadence.
+
+### What this does NOT fix
+
+A pass over TWO frames still costs three, and its tail reads a buffer the game
+has begun rewriting. The board's B fell to 14-18 at 157 objects (the crash
+captures), which is passes of 2-3 frames in busy gameplay. The lever there is
+the pass length itself: the polygon ROM's wait on the shared SDRAM, and the
+geometry's cycles per quad. `L=` measures the first; the bench's ROM-port wait
+measures the second.
+
+### Test suite
+
+`make test` is entirely green. Three lines differ from the block in CLAUDE.md,
+none from this change: `v60_alu` and `v60_shift` were added on 2026-09-02 and
+never entered; `m1_sdram`'s counts moved with an arbitration change before
+today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
+is corrected in this commit.
+
 ## 2026-09-03 — clear-on-readout for the band buffer DOES NOT SYNTHESISE
 
 The 3D geometry rate is a third short of the display-list rate because the band
@@ -64,6 +205,11 @@ build and a mystery.
 The third is the honest next step. Two fixes have already been talked out of on
 this defect - a fourth buffer on a units error, and the FIFO deadlock - and both
 would have been wrong.
+
+**And so would all three of these.** They are about the band fill - the
+consumer - which the board's own N= counter shows keeping up every frame. The
+sequencer that was late is the producer; see the entry at the top of this
+file.
 
 ## 2026-09-03 — the crash is DETERMINISTIC, and X=FE0C9B names the code
 
@@ -167,6 +313,12 @@ on 668 of 669 frames. On the board the geometry rate is a third short. So the
 cause is something sdram_model does not capture, and real memory contention is
 the obvious candidate: the 3D path shares that controller with the CPU, the tile
 fetch and now a coprocessor running at 2:1.
+
+**CORRECTED, later the same day.** Every number above is about the CONSUMER,
+and the consumer was never late - N proves it idle at every edge. The defect
+DOES reproduce in this same bench: the PRODUCER's pass is 1.47 frames in the
+attract scene and runs every three frames. See the entry at the top of this
+file. "Does not reproduce" meant "was not measured".
 
 ### A WITHDRAWN MEASUREMENT, because it nearly cost 14 M10K
 

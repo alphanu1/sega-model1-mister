@@ -112,12 +112,24 @@ int main(int argc, char** argv) {
     // ticks both together hands it a third of its real budget and reports bands
     // missed that the hardware makes comfortably - which is exactly what this
     // one did.
+    // THE POLYGON ROM CAN BE MADE SLOW. On the board it is SDRAM shared with
+    // the V60, the tile fetch and the coprocessor; here it answers in a cycle.
+    // ROM_LAT=<n> makes every word cost n extra cycles, which is how a pass is
+    // pushed past one frame to exercise the producer's cadence - the case the
+    // board is in and this bench, at one word a cycle, never reaches.
+    const int rom_lat = getenv("ROM_LAT") ? atoi(getenv("ROM_LAT")) : 0;
+    int rom_wait = 0;
     auto tick = [&](bool pixel_edge) {
         int dreq = d->dl_req, rreq = d->rom_req, treq = d->tex_req;
         uint32_t taddr = d->tex_addr;
         memories();
         cycles++; d->clk = 0; if (pixel_edge) d->scan_clk = 0; d->eval();
-        d->dl_valid = dreq; d->rom_valid = rreq;
+        int rvalid = 0;
+        if (rreq) {
+            if (rom_wait == 0) { rvalid = 1; rom_wait = rom_lat; }
+            else               { rom_wait--; }
+        }
+        d->dl_valid = dreq; d->rom_valid = rvalid;
         // tgp_ram is READ/WRITE: display-list command 4 fills it. Modelling it
         // read-only would have hidden that the module never wrote it at all.
         if (treq && d->tex_we) tgpram[taddr & 0xfffff] = d->tex_wdata;
@@ -207,8 +219,23 @@ int main(int argc, char** argv) {
     std::vector<uint16_t> real_list = dlist;
     dlist = pro;
 
-    const int PROLOGUE_FRAMES = 3;
-    const int TOTAL_FRAMES    = 14;
+    // THE GAME FLIPS ITS LIST EVERY SECOND FRAME, by hand, at whatever point
+    // in the frame it finishes writing (tools/mame_listctl_rate.lua: 993 of
+    // 996 flips exactly two frames apart). The producer starts on that flip,
+    // so the bench has to make one. FLIP=<n> flips every n frames, FLIP=0
+    // never does and leaves the producer to its frame-pulse fallback - which
+    // waits four frames for a flip first, so the prologue is longer there or
+    // the light banks and colour words are never uploaded and 6.9% of the
+    // picture paints.
+    const int flip_every = getenv("FLIP") ? atoi(getenv("FLIP")) : 2;
+    const int PROLOGUE_FRAMES = flip_every ? 3 : 7;
+    const int TOTAL_FRAMES    = getenv("FRAMES") ? atoi(getenv("FRAMES")) : 14;
+    // The producer's cadence, from its state: start (P_IDLE -> P_WALK), ready
+    // (-> P_READY), swap (P_READY -> P_IDLE). Printed per pass in frames.
+    const long FRAME_CYC = CLK3D_HZ * 100 / 5752;
+    int  prev_pst = 0, pass_n = 0, pass_start_frame = 0, pass_ready_frame = 0, pass_start_line = 0;
+    long pass_start = 0, pass_ready = 0, last_start = -1;
+    int  cadence_hist[16] = {0};
     long hits = 0;
     unsigned bands_prev = 0;
     for (int f = 0; f < TOTAL_FRAMES; f++) {
@@ -235,6 +262,7 @@ int main(int argc, char** argv) {
             for (int x = 0; x < H_TOTAL; x++) {
                 // vblank starts at the first non-visible line: one pulse a frame.
                 d->frame_start = (y == SH && x == 0) ? 1 : 0;
+                if (flip_every && y == SH && x == 0 && (f % flip_every) == 0) d->dl_sel ^= 1;
                 d->scan_x = x; d->scan_y = y;
                 // 2.94 3D cycles per pixel, carried as a fraction so the ratio
                 // is the real one rather than a rounded 3.
@@ -242,8 +270,33 @@ int main(int argc, char** argv) {
                 bool first = true;
                 while (acc >= PIXCLK_HZ) {
                     acc -= PIXCLK_HZ; tick(first); first = false;
+                    // ONE CYCLE, as m1_cdc_pulse delivers it on the board. Held
+                    // for the pixel's three ticks it counted three frames a
+                    // frame and tripped the producer's no-flip fallback.
+                    d->frame_start = 0;
                     thist[d->rootp->m1_raster3d__DOT__pst & 7]++;
                     chist[d->rootp->m1_raster3d__DOT__cst & 7]++;
+                    {
+                        int pp = d->rootp->m1_raster3d__DOT__pst & 7;
+                        if (prev_pst == 0 && pp == 1) {
+                            if (last_start >= 0) {
+                                int cf = (int)((cycles - last_start + FRAME_CYC / 2) / FRAME_CYC);
+                                cadence_hist[cf > 15 ? 15 : cf]++;
+                            }
+                            last_start = cycles;
+                            pass_start = cycles; pass_start_frame = f; pass_start_line = y;
+                        }
+                        if (prev_pst != 6 && pp == 6) {
+                            pass_ready = cycles; pass_ready_frame = f; pass_n++;
+                        }
+                        if (prev_pst == 6 && pp == 0) {
+                            printf("  pass %2d: started frame %2d line %3d, ready after %.2f frames (frame %2d), swapped frame %2d\n",
+                                   pass_n, pass_start_frame, pass_start_line,
+                                   (double)(pass_ready - pass_start) / FRAME_CYC,
+                                   pass_ready_frame, f);
+                        }
+                        prev_pst = pp;
+                    }
                     fhist[d->rootp->m1_raster3d__DOT__u_fill__DOT__state & 31]++;
                 }
                 if (x < SW && y < SH && d->scan_hit) {
@@ -291,6 +344,9 @@ int main(int argc, char** argv) {
                 printf("  %-9s %9ld  %5.1f%%\n", FNAME[i], fhist[i],
                        100.0 * fhist[i] / tot);
     }
+    printf("producer cadence, start-to-start in frames:");
+    for (int i = 0; i < 16; i++) if (cadence_hist[i]) printf(" %d:%d", i, cadence_hist[i]);
+    printf("\n");
     printf("objects %u, quads %u, dropped %u, frames %u\n",
            (unsigned)d->dbg_objects, (unsigned)d->dbg_quads,
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);

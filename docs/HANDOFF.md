@@ -1,5 +1,61 @@
 # HANDOFF
 
+## 2026-09-03 (evening) — the missing 3D was the PRODUCER, fixed in simulation, owed a flash
+
+Read `docs/findings.md`'s top entry first. The short form:
+
+- The board's own counters said which sequencer was late and it was read the
+  wrong way round all day. N= (bands presented) is 24 every frame, so the
+  band consumer is idle at every blanking edge; the swap's only missing term
+  is the producer's P_READY. B= at 2/3 of S= is a pass every THREE frames.
+- The producer started only on the frame pulse and was freed only by the swap,
+  which comes ~470 clk_3d cycles after it. Any pass over one frame therefore
+  lost a whole frame between the two. And the pass is over a frame: 0.95 in
+  the unit bench with a one-cycle ROM, **1.47 in tb_m1_frame's attract scene**,
+  where it ran every three frames - the defect had always reproduced there.
+- Fixed: `m1_raster3d` starts a pass when the game flips its display list
+  (`list_flipped`), with the frame pulse as a fallback after four flipless
+  frames. MAME measured (tools/mame_flip_writes.lua): the buffer flipped to is
+  complete at the flip and untouched until the next one, 992 of 994 flips.
+  Unit bench cadence at 1.27- and 1.54-frame passes: 3 -> 2.
+- The 2026-09-03 afternoon "one-cycle swap window" change was a no-op by
+  construction and is reverted; its reasoning is corrected in findings.
+
+### What is built and where the numbers are
+
+    rtl/video/m1_raster3d.sv      prod_trig; dbg_pass_cycles; swap back on the edge
+    rtl/io/m1_speed_report.sv     L=xxxx, the last pass in 256-cycle units (frame = 0C7C)
+    sim/video/tb_m1_raster3d.cpp  ROM_LAT=<n> FLIP=<n> FRAMES=<n>; per-pass cadence print
+    sim/top/tb_m1_frame.sv        PASS3D lines; pass length / cadence histograms; 3D ROM wait
+    tools/mame_flip_writes.lua    what the game writes around a flip
+
+`make test` green; the CLAUDE.md block is corrected for three lines that had
+drifted before today.
+
+### Next, in order
+
+1. **Flash a closed seed and read the UART.** Expect B to rise from ~19 to
+   match S at ~28, and L to read the pass length: above 0C7C is over a frame,
+   above 18F8 is over two and still costs three frames. Reboot first
+   (memory: mister-reboot-before-core-load); Ben has to be at the screen.
+2. If L sits above two frames in gameplay, the lever is the pass itself, not
+   the cadence: the polygon ROM's wait on the shared SDRAM (the bench prints
+   the 3D ROM port's mean wait) and the geometry's cycles a quad (findings,
+   2026-08-31: 226 a quad after the dataflow rework).
+3. The five-minute crash is unchanged and next: X=FE0C9B is the V60 pc at the
+   instant the coprocessor stops, deterministic across three captures.
+
+### Failure modes this added to the list
+
+- **A counter that says a sequencer is on time is evidence about THAT
+  sequencer.** The sweep and consumer-state figures were exact and about the
+  wrong machine. When two sequencers hand off, measure the one you have not.
+- **"Does not reproduce in simulation" has to name the instrument.** The
+  producer's pass length had never been printed; once it was, the sim showed
+  the board's cadence to the frame.
+- **A bench pulse held for a pixel is three clock cycles.** The board's is
+  one. tb_m1_raster3d's frame_start counted three frames a frame.
+
 ## 2026-09-02 — the V60's area is SELECTION, not operators, and the critical path was a debug counter
 
 Four splits of the V60, each committed on its own so any can be reverted alone,

@@ -96,6 +96,11 @@ module m1_speed_report #(
   input  logic [15:0] bands_pres,
   input  logic [15:0] tgp_pc,      // coprocessor program counter
   input  logic [15:0] tgp_retires, // free-running retire count
+  // How long the last completed geometry pass took, in clk_3d cycles. Sent as
+  // L=, in units of 256 cycles: a frame is 818,133 cycles = 0x0C7C, so a pass
+  // that reads above that has run over a frame - which is the whole question
+  // the field exists to answer on the board. See m1_raster3d.
+  input  logic [31:0] pass_cycles,
 
   output logic tx
 );
@@ -107,6 +112,7 @@ module m1_speed_report #(
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
   logic [23:0] r_vpc, r_spc;
+  logic [15:0] r_plen;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
@@ -114,6 +120,7 @@ module m1_speed_report #(
       n_frame <= '0; n_swap <= '0; period_cnt <= '0; sel_d <= 1'b0;
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
+      r_plen <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -134,6 +141,7 @@ module m1_speed_report #(
           r_npres <= bands_pres;
           r_vpc   <= v60_pc;
           r_spc   <= stall_pc;
+          r_plen  <= pass_cycles[23:8];
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -141,11 +149,11 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx\r\n"
-  // 68 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx\r\n"
+  // 75 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
   // silently repeats its middle.
-  // 50 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 68;
+  // 75 bytes a second against 11,520 available, so the channel is not a concern.
+  localparam int unsigned NCH = 75;
 
   logic [6:0]  ci;
   logic        busy;
@@ -232,7 +240,14 @@ module m1_speed_report #(
       7'd63: ch = hexc(r_spc[11:8]);
       7'd64: ch = hexc(r_spc[7:4]);
       7'd65: ch = hexc(r_spc[3:0]);
-      7'd66: ch = 8'h0d;
+      7'd66: ch = " ";
+      7'd67: ch = "L";
+      7'd68: ch = "=";
+      7'd69: ch = hexc(r_plen[15:12]);
+      7'd70: ch = hexc(r_plen[11:8]);
+      7'd71: ch = hexc(r_plen[7:4]);
+      7'd72: ch = hexc(r_plen[3:0]);
+      7'd73: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

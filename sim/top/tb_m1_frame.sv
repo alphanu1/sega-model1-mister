@@ -1562,6 +1562,39 @@ integer sweeps = 0, sweeps_over = 0;
 integer sweep_max = 0;
 longint unsigned sweep_total = 0;
 integer cst_prev = 0;
+
+// ---------------------------------------------------------------------------
+// THE PRODUCER'S CADENCE, IN FRAMES - which is what B against S measures on
+// the board.
+//
+// A pass is start (P_IDLE -> P_WALK), ready (-> P_READY) and swap (P_READY ->
+// P_IDLE). The consumer restarts at the blanking edge every frame - 24 bands a
+// frame, on the board too - so it is in C_IDLE at every edge and a missed swap
+// can only be the producer NOT being in P_READY at that edge. That happens
+// when a pass runs longer than a frame: it then starts on frame_start of
+// frame k+1, is ready during k+2, swaps at the k+3 edge and restarts at k+4 -
+// three frames a pass against the list's two, which is the board's 20 against
+// 29. Measure how long a pass is and where it sits against the frame.
+// ---------------------------------------------------------------------------
+integer pst_prev = 0;
+longint pass_t0 = 0, pass_t1 = 0, pass_t2 = 0, frame_t0 = 0;
+integer pass_f0 = 0, pass_n = 0, pass_len_over = 0;
+longint pass_len = 0, pass_wait = 0, pass_idle = 0, pass_cad = 0;
+longint pass_len_sum = 0, pass_len_max = 0;
+longint pass_wait_sum = 0, pass_wait_max = 0;
+longint pass_idle_sum = 0, pass_idle_max = 0;
+integer pass_lh = 0, pass_cf = 0, pass_i;
+longint pass_off = 0;
+integer pass_len_hist [0:31];   // tenths of a frame
+integer cadence_hist  [0:15];   // start-to-start, whole frames
+initial begin
+    for (pass_i = 0; pass_i < 32; pass_i = pass_i + 1) pass_len_hist[pass_i] = 0;
+    for (pass_i = 0; pass_i < 16; pass_i = pass_i + 1) cadence_hist[pass_i]  = 0;
+end
+// The 3D ROM port's wait, the same way the character fetch is measured:
+// total cycles with rom_req up over the number of requests.
+longint r3rom_wait = 0, r3rom_n = 0;
+reg     d_r3rom = 0;
 initial for (int i = 0; i < 7; i++) cst_cyc[i] = 0;
 
 // ------------------------------------------------ character fetch latency
@@ -1702,6 +1735,47 @@ initial begin
         end
         cst_prev = core.u_raster3d.cst;
 
+        // ---- the producer's cadence (see the declarations above)
+        if (core.video.vblank_start) frame_t0 = cycles;
+        if (pst_prev == 0 && core.u_raster3d.pst == 1) begin
+            if (pass_n > 0) begin
+                pass_cad = cycles - pass_t0;
+                pass_cf  = (pass_cad + 1390821/2) / 1390821;
+                cadence_hist[(pass_cf > 15) ? 15 : pass_cf] =
+                    cadence_hist[(pass_cf > 15) ? 15 : pass_cf] + 1;
+                pass_idle = cycles - pass_t2;
+                pass_idle_sum = pass_idle_sum + pass_idle;
+                if (pass_idle > pass_idle_max) pass_idle_max = pass_idle;
+            end
+            pass_t0 = cycles; pass_f0 = frames; pass_off = cycles - frame_t0;
+        end
+        if (pst_prev != 6 && core.u_raster3d.pst == 6) begin
+            pass_t1  = cycles;
+            pass_len = cycles - pass_t0;
+            pass_n   = pass_n + 1;
+            pass_len_sum = pass_len_sum + pass_len;
+            if (pass_len > pass_len_max) pass_len_max = pass_len;
+            if (pass_len > 1390821)      pass_len_over = pass_len_over + 1;
+            pass_lh = (pass_len * 10) / 1390821;
+            pass_len_hist[(pass_lh > 31) ? 31 : pass_lh] =
+                pass_len_hist[(pass_lh > 31) ? 31 : pass_lh] + 1;
+        end
+        if (pst_prev == 6 && core.u_raster3d.pst == 0) begin
+            pass_t2   = cycles;
+            pass_wait = cycles - pass_t1;
+            pass_wait_sum = pass_wait_sum + pass_wait;
+            if (pass_wait > pass_wait_max) pass_wait_max = pass_wait;
+            $display("PASS3D #%0d start=f%0d+%0d%% len=%0d.%02d fr wait=%0d.%02d fr obj=%0d q=%0d",
+                     pass_n, pass_f0, (pass_off * 100) / 1390821,
+                     pass_len / 1390821, ((pass_len % 1390821) * 100) / 1390821,
+                     pass_wait / 1390821, ((pass_wait % 1390821) * 100) / 1390821,
+                     core.r3_dbg_objects, core.r3_dbg_quads);
+        end
+        pst_prev = core.u_raster3d.pst;
+        d_r3rom <= core.r3_rom_req;
+        if (core.r3_rom_req)            r3rom_wait = r3rom_wait + 1;
+        if (core.r3_rom_req && !d_r3rom) r3rom_n   = r3rom_n + 1;
+
         // Progress, because this run is long enough that silence is
         // indistinguishable from a hang.
         if (cycles == RUN_CYCLES - 3000000) raw_arm = 1;
@@ -1827,6 +1901,28 @@ initial begin
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
         $display("FRAME: bands filled = %0d", core.u_raster3d.dbg_bands);
+        $display("FRAME: 3D passes=%0d  len mean=%0d.%02d fr max=%0d.%02d fr, over a frame=%0d | wait-for-swap mean=%0d.%02d max=%0d.%02d | idle mean=%0d.%02d max=%0d.%02d",
+                 pass_n,
+                 (pass_n > 0) ? (pass_len_sum / pass_n) / 1390821 : 0,
+                 (pass_n > 0) ? (((pass_len_sum / pass_n) % 1390821) * 100) / 1390821 : 0,
+                 pass_len_max / 1390821, ((pass_len_max % 1390821) * 100) / 1390821,
+                 pass_len_over,
+                 (pass_n > 0) ? (pass_wait_sum / pass_n) / 1390821 : 0,
+                 (pass_n > 0) ? (((pass_wait_sum / pass_n) % 1390821) * 100) / 1390821 : 0,
+                 pass_wait_max / 1390821, ((pass_wait_max % 1390821) * 100) / 1390821,
+                 (pass_n > 1) ? (pass_idle_sum / (pass_n - 1)) / 1390821 : 0,
+                 (pass_n > 1) ? (((pass_idle_sum / (pass_n - 1)) % 1390821) * 100) / 1390821 : 0,
+                 pass_idle_max / 1390821, ((pass_idle_max % 1390821) * 100) / 1390821);
+        $write("FRAME: 3D pass length, tenths of a frame:");
+        for (pass_i = 0; pass_i < 32; pass_i = pass_i + 1)
+            if (pass_len_hist[pass_i] != 0) $write(" %0d:%0d", pass_i, pass_len_hist[pass_i]);
+        $write("\n");
+        $write("FRAME: 3D pass cadence, start-to-start in frames:");
+        for (pass_i = 0; pass_i < 16; pass_i = pass_i + 1)
+            if (cadence_hist[pass_i] != 0) $write(" %0d:%0d", pass_i, cadence_hist[pass_i]);
+        $write("\n");
+        $display("FRAME: 3D ROM port: %0d requests, mean wait %0d clk_sys cycles",
+                 r3rom_n, (r3rom_n > 0) ? r3rom_wait / r3rom_n : 0);
     end
     $display("FRAME: 3D state: st=%0d band=%0d bands=%0d fill=%0d ready=%0d disp=%0d rv=%0b armed=%0b dv=%0b sel=%0b",
              core.u_raster3d.cst, core.u_raster3d.cur_band,

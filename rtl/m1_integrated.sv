@@ -678,6 +678,7 @@ module m1_integrated (
   logic        r3_scan_hit;
   logic [15:0] r3_dbg_objects, r3_dbg_quads, r3_dbg_dropped, r3_dbg_frames;
   logic [15:0] r3_dbg_bands;   // bands PRESENTED, not passes completed
+  logic [31:0] r3_dbg_pass_cycles;   // the last geometry pass, in clk_3d cycles
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -722,7 +723,7 @@ module m1_integrated (
     .disp_band(r3_disp_band), .disp_valid(r3_disp_valid),
     .dbg_objects(r3_dbg_objects), .dbg_quads(r3_dbg_quads),
     .dbg_dropped(r3_dbg_dropped), .dbg_frames(r3_dbg_frames),
-    .dbg_bands(r3_dbg_bands)
+    .dbg_bands(r3_dbg_bands), .dbg_pass_cycles(r3_dbg_pass_cycles)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -903,6 +904,7 @@ module m1_integrated (
     .stall_pc(dbg_stall_pc),
     .bands_pres(r3_dbg_bands), .v60_pc(dbg_pc),
     .tgp_pc(dbg_tgp_pc), .tgp_retires(dbg_tgp_retires),
+    .pass_cycles(r3_dbg_pass_cycles),
     .tx(uart_tx)
   );
 
