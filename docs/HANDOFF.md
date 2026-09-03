@@ -38,13 +38,15 @@ drifted before today.
 
 ### Next, in order
 
-1. **The band fill's divider.** Measured on the reference's peak frame 1020:
-   the two serial radix-4 divides are 49% of fill time, the span walk 31%.
-   Build a pipelined divider or run DIVA and DIVB on two dividers at once
-   (m1_raster_div, m1_raster_fill); tb_m1_raster_fill's 152,025 checks are
-   the correctness gate, T= and W= on the board the acceptance test. The
-   board's attract scenes (92-158 objects) are heavier than frame 1020 (38
-   objects walked), so measure on the board, not only in the bench.
+1. **The band fill's divide LATENCY.** Two dividers are in (a207c47) and cut
+   fill time 21%, but a band-clipped quad is one segment, so its two slopes
+   are its whole divide and the 16-step latency is still 47% of the worst
+   band (frame 5460, findings). Replace m1_raster_div's 16 steps with a 1/dy
+   table and a DSP multiply plus one remainder correction (~4 cycles, exact),
+   then merge the ten single-cycle bookkeeping states a quad. Gate:
+   tb_m1_raster_fill 152,025 checks exact. Acceptance: T= and W= on the
+   board, where heavy bands carry ~2x the quads of any reference frame the
+   bench has. The unit bench prints the worst band's own breakdown.
 2. If L sits above two frames in gameplay, the lever is the pass itself, not
    the cadence: the polygon ROM's wait on the shared SDRAM (the bench prints
    the 3D ROM port's mean wait) and the geometry's cycles a quad (findings,

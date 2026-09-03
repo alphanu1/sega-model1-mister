@@ -83,11 +83,17 @@ local function walk_list(base)
 end
 
 frames, sampled = 0, 0
+SAMPLE_EVERY = tonumber(os.getenv("SAMPLE_EVERY") or "20")
+SAMPLE_UNTIL = tonumber(os.getenv("SAMPLE_UNTIL") or "1600")
+NSAMPLES = math.floor(SAMPLE_UNTIL / SAMPLE_EVERY)
 peak_polys, peak_objs, sum_polys, sum_objs, tot_oob = 0, 0, 0, 0, 0
 
 notif = emu.add_machine_frame_notifier(function()
     frames = frames + 1
-    if frames % 20 ~= 0 or frames > 1600 then return end
+    -- SAMPLE_EVERY / SAMPLE_UNTIL widen the window: the first 1,600 frames
+    -- never reach the attract pit stop, where the stadium is and where the
+    -- board shows its heaviest bands.
+    if frames % SAMPLE_EVERY ~= 0 or frames > SAMPLE_UNTIL then return end
 
     -- The busier of the two buffers: one is being displayed while the other is
     -- filled, and which is which is not reliable from outside.
@@ -105,7 +111,7 @@ notif = emu.add_machine_frame_notifier(function()
     tot_oob   = tot_oob + oob
     if best_p > peak_polys then peak_polys, peak_objs, peak_frame = best_p, best_o, frames end
 
-    if sampled == 60 then
+    if sampled == NSAMPLES then
         print("=== polygon budget, " .. sampled .. " frames sampled")
         print(string.format("  polygon ROM        %d bytes, %d floats", prom.size, PROM_FLOATS))
         print(string.format("  peak frame         %d polygons in %d objects (frame %d - DUMP_FRAME for tools/mame_dump_frame.lua)", peak_polys, peak_objs, peak_frame))

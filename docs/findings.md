@@ -163,6 +163,43 @@ A and B to two dividers at once, takes ~25% off every band; a reciprocal
 table takes nearly the whole 49%. That is the next build, and T= and W= on
 the board are its acceptance test.
 
+**Built (a207c47): a second divider, both slopes issued at once.** Frame 1020
+fill busy cycles 1,690,507 -> 1,332,363, exact (152,025 checks). But the
+WORST band only went 25,150 -> 23,865, and its own breakdown says why:
+
+    band 11 of frame 1020    23,865 cycles, 70% of a slot, 560 quads replayed
+    divider wait             9,519   40%    501 segments x 19 cycles
+    span walk                4,463   19%
+    fixed per-quad states    ~4,900  20%    CLASSIFY, START1/2, LOADX, DIVA,
+                                            DECIDE, FS_ENTER/END, FINAL, DONE
+    the band clear           1,985    8%
+
+42 cycles a quad, and 560 quads in one band because every quad is replayed
+into every band it touches - the stadium and the road touch most of them.
+The board's worst bands run 1.3-1.7 slots, so its pit-stop scene carries
+about twice the quads a band of the reference's frame 1020, which the 60-frame
+sample (frames 20-1600) never reached. The levers, in order of size: the
+divide (radix-8 or -16, or overlapping the next quad's divides with this
+quad's walk), the ten single-cycle states a quad, and a wider clear.
+
+Sampled across the whole attract loop (`SAMPLE_UNTIL=7000`, 350 frames), the
+polygon peak is frame 5460: 6,324 polygons in 45 objects, mean 4,661 in 69.
+Through the bench (`build/framedump/frame5460/`): 1,352 quads walked, worst
+band 26,808 cycles = 79% of a slot with 624 quads replayed, and the divider
+wait is **47%** of it even with two dividers - 663 segments at 19 cycles,
+because a band-clipped quad is almost always ONE segment, so the two slopes
+are a quad's whole divide and parallelism past two buys nothing. The walk is
+2,593 cycles: 4 a quad. So a quad in a heavy band costs ~40 cycles of which
+~19 is one 16-step divide and ~12 are single-cycle bookkeeping states, and the
+board's heavy bands carry ~2x these quads.
+
+**The lever is the divide's LATENCY, not its count.** dy is an integer edge
+height in scanlines and dx a pixel difference, so a 1/dy table (one M10K,
+1,024 entries) and one DSP multiply, with a single remainder correction to
+keep the quotient exactly truncated, makes it ~4 cycles. That and merging the
+bookkeeping states roughly halves a heavy band. tb_m1_raster_fill's 152,025
+exact checks are the gate; T= and W= on the board the acceptance test.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's

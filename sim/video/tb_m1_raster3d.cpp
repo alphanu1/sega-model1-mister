@@ -237,6 +237,9 @@ int main(int argc, char** argv) {
     long pass_start = 0, pass_ready = 0, last_start = -1;
     int  cadence_hist[16] = {0};
     unsigned worst_fill_frame = 0, last_bands_seen = 0;
+    int  prev_cst = 0; long band_cyc = 0, worst_band_cyc = 0; int band_quads = 0, worst_band_quads = 0;
+    long band_fh[32] = {0}, worst_fh[32] = {0}, band_cst_cyc[8] = {0}, worst_cst[8] = {0};
+    int  worst_band_idx = -1, worst_band_frame = -1;
     long hits = 0;
     unsigned bands_prev = 0;
     for (int f = 0; f < TOTAL_FRAMES; f++) {
@@ -277,6 +280,27 @@ int main(int argc, char** argv) {
                     d->frame_start = 0;
                     thist[d->rootp->m1_raster3d__DOT__pst & 7]++;
                     chist[d->rootp->m1_raster3d__DOT__cst & 7]++;
+                    // The WORST band's own breakdown: which fill states, and
+                    // how many quads replayed, in the band that took longest.
+                    {
+                        int cs = d->rootp->m1_raster3d__DOT__cst & 7;
+                        if (cs == 1 && prev_cst != 1) {           // C_CLR: a band begins
+                            memset(band_fh, 0, sizeof band_fh); band_cyc = 0; band_quads = 0; band_cst_cyc[0]=band_cst_cyc[1]=band_cst_cyc[2]=band_cst_cyc[3]=band_cst_cyc[4]=band_cst_cyc[5]=band_cst_cyc[6]=0;
+                        }
+                        if (cs != 0 && cs != 6) {                  // filling, not idle/waiting
+                            band_cyc++;
+                            band_cst_cyc[cs]++;
+                            if (cs == 5) band_fh[d->rootp->m1_raster3d__DOT__u_fill__DOT__state & 31]++;
+                            if (cs == 4 && prev_cst == 5) band_quads++;   // FILLW -> FILL: a quad done
+                        }
+                        if (cs == 6 && prev_cst != 6 && band_cyc > worst_band_cyc) {   // C_WAIT: band done
+                            worst_band_cyc = band_cyc; worst_band_quads = band_quads;
+                            memcpy(worst_fh, band_fh, sizeof band_fh);
+                            memcpy(worst_cst, band_cst_cyc, sizeof band_cst_cyc);
+                            worst_band_idx = d->rootp->m1_raster3d__DOT__cur_band; worst_band_frame = f;
+                        }
+                        prev_cst = cs;
+                    }
                     if (d->dbg_bands != last_bands_seen) {
                         last_bands_seen = d->dbg_bands;
                         if (d->dbg_band_cycles > worst_fill_frame) worst_fill_frame = d->dbg_band_cycles;
@@ -352,6 +376,13 @@ int main(int argc, char** argv) {
                 printf("  %-9s %9ld  %5.1f%%\n", FNAME[i], fhist[i],
                        100.0 * fhist[i] / tot);
     }
+    printf("the WORST band: band %d of frame %d, %ld cycles (%.0f%% of a slot), %d quads replayed into it\n",
+           worst_band_idx, worst_band_frame, worst_band_cyc, 100.0 * worst_band_cyc / BAND_TIME, worst_band_quads);
+    printf("  consumer:");
+    for (int i = 1; i < 6; i++) printf(" %s %ld", CNAME[i], worst_cst[i]);
+    printf("\n  fill unit:");
+    for (int i = 1; i < 19; i++) if (worst_fh[i] * 100 > worst_band_cyc) printf(" %s %ld", FNAME[i], worst_fh[i]);
+    printf("\n");
     printf("producer cadence, start-to-start in frames:");
     for (int i = 0; i < 16; i++) if (cadence_hist[i]) printf(" %d:%d", i, cadence_hist[i]);
     printf("\n");
