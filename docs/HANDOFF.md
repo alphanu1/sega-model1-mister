@@ -1,136 +1,128 @@
 # HANDOFF
 
-## 2026-09-03 (evening) — the missing 3D was the PRODUCER, fixed in simulation, owed a flash
+## 2026-09-03 — THE 3D LAYER: five defects found and fixed in one session
 
-Read `docs/findings.md`'s top entry first. The short form:
+Every one was confirmed on the DE10-Nano by Ben watching the screen, and each
+was a different mechanism. Read `docs/findings.md` from the top for the
+measurements; this is the state of play.
 
-- The board's own counters said which sequencer was late and it was read the
-  wrong way round all day. N= (bands presented) is 24 every frame, so the
-  band consumer is idle at every blanking edge; the swap's only missing term
-  is the producer's P_READY. B= at 2/3 of S= is a pass every THREE frames.
-- The producer started only on the frame pulse and was freed only by the swap,
-  which comes ~470 clk_3d cycles after it. Any pass over one frame therefore
-  lost a whole frame between the two. And the pass is over a frame: 0.95 in
-  the unit bench with a one-cycle ROM, **1.47 in tb_m1_frame's attract scene**,
-  where it ran every three frames - the defect had always reproduced there.
-- Fixed: `m1_raster3d` starts a pass when the game flips its display list
-  (`list_flipped`), with the frame pulse as a fallback after four flipless
-  frames. MAME measured (tools/mame_flip_writes.lua): the buffer flipped to is
-  complete at the flip and untouched until the next one, 992 of 994 flips.
-  Unit bench cadence at 1.27- and 1.54-frame passes: 3 -> 2.
-- The 2026-09-03 afternoon "one-cycle swap window" change was a no-op by
-  construction and is reverted; its reasoning is corrected in findings.
+    symptom on the board              cause                              commit
+    ------------------------------------------------------------------------------
+    3D updates in jerks, bands        the geometry pass ran over a       ef6adce
+    missing in busy scenes            frame and the producer then lost
+                                      a whole frame between the bank
+                                      swap and the next frame pulse -
+                                      three frames a pass against the
+                                      game's two. Starts on the game's
+                                      display-list flip now.
+    thin bars with no 3D across       band fills overrunning their beam  a207c47
+    the screen                        slot in runs; the two edge-slope
+                                      divides were 49% of the fill and
+                                      ran serially. Two dividers.
+    stadium and other large           the quad store held 2,048 and the  42f950d
+    objects absent                    pit scene needs 2,671, so the tail
+                                      of the list was dropped. 3,072 a
+                                      bank, paid for by a narrower record.
+    cars stretched across the         9-bit vertices: the clipper puts   42f950d
+    whole screen                      vertices off-screen and -1 wrapped
+                                      to 511. Back to 16 bits.
+    the top band missing, less        the sweep waited for the blanking  42f950d
+    often than before                 edge; it restarts on the swap now
+                                      (T= 58 -> 10 late bands a second)
 
-### What is built and where the numbers are
+### What is still open on the 3D
 
-    rtl/video/m1_raster3d.sv      prod_trig; dbg_pass_cycles; swap back on the edge
-    rtl/io/m1_speed_report.sv     L=xxxx, the last pass in 256-cycle units (frame = 0C7C)
-    sim/video/tb_m1_raster3d.cpp  ROM_LAT=<n> FLIP=<n> FRAMES=<n>; per-pass cadence print
-    sim/top/tb_m1_frame.sv        PASS3D lines; pass length / cadence histograms; 3D ROM wait
-    tools/mame_flip_writes.lua    what the game writes around a flip
+- **~10 late bands a second**, the top one, intermittently. Restarting the
+  sweep even earlier (at beam band 23, regardless of the producer) made it
+  FOUR TIMES WORSE on the board - 48 a second, plus a middle band dropping -
+  and was reverted (37a6e43). Simulation shows zero late bands either way, so
+  the bench cannot see this: it is real memory contention or beam phase.
+  **The lever with a measurement behind it is the fill's divide latency**: one
+  16-step divide a quad is still 47% of the worst band. A 1/dy table plus a
+  DSP multiply and one correction is ~4 cycles and exact.
+- **The 3,072-quad store still overflows in bursts**, ~1,600 quads over a
+  110 s window on the board (D= on the wire). Ben's eye says nothing visible
+  is missing, so what falls off is small or distant. More depth costs M10K we
+  do not have at 532 of 553; a shorter band would cost none, and follows the
+  divider work.
+- **Whether the "V.R." attract back screens flash** as they should. Not
+  checked yet. Compare against MAME frames ~2250 and ~6250 in
+  `build/render/attract_sheet.png`.
 
-`make test` green; the CLAUDE.md block is corrected for three lines that had
-drifted before today.
+### The telemetry, which is how all of this was measured
 
-### DONE on the board the same evening: B = S at 29 a second, L = 1.35-2.15 frames.
-### The overruns Ben still sees are LATE BANDS: T= 3-4 a second in attract, 23 at
-### 158 objects, worst band fill 1.3-1.7 slots (W=). See findings. The fill is next.
+`rtl/io/m1_speed_report.sv` prints one line a second on `/dev/ttyS1`:
 
-### Budget rulings from Ben, 2026-09-03 evening
+    F  video frames in the window (58 = ~1 s)
+    S  display-list swaps: the game's logic frames, ~29/s
+    B  completed geometry passes. B = S is 100%; it was 2/3 of S before ef6adce
+    P  objects in the last pass. Non-zero is the pass signature
+    C  TGP program counter    R  TGP retire count, free-running
+    N  bands presented, ~1,392/s = 24 x 58
+    V  V60 pc                 X  V60 pc when the coprocessor last stalled
+    L  last geometry pass in 256-cycle units; a frame is 0C7C
+    T  bands presented LATE, free-running - the top-band defect
+    W  worst band fill in the window, 16-cycle units; a slot is 0853
+    D  quads the store could not hold, free-running
+    H  vertices outside the store's range (0 while vertices are 16-bit)
+
+Read it with the board up:
+
+    ssh root@<mister> "stty -F /dev/ttyS1 115200 raw -echo; cat /dev/ttyS1"
+
+Captures from today are in `known_good/` and `build/uart_*.txt`.
+
+### Benches and instruments added today
+
+    sim/video/tb_m1_raster3d.cpp   ROM_LAT / FLIP / FRAMES / OBJTABLE env knobs;
+                                   per-pass cadence, per-frame worst band, and
+                                   the WORST band's own state breakdown
+    sim/top/tb_m1_frame.sv         PASS3D per pass; pass length and cadence
+                                   histograms; 3D ROM port wait; late bands;
+                                   vertex coordinate range over the run
+    tools/mame_flip_writes.lua     what the game writes around a list flip
+    tools/mame_poly_budget.lua     SAMPLE_EVERY / SAMPLE_UNTIL, names its peak frame
+    tools/mame_dump_frame.lua      resolves the active list as MAME does, and exits
+    tools/mame_snap_frames.lua     SNAP_FRAMES="..."
+    quartus wrappers               build/tmp/qs<n>.sv, for measuring the store's
+                                   M10K alone in six seconds
+
+### Resource state, 2026-09-03
+
+    ALM     38,900-39,100 / 41,910   (93%)
+    M10K    532 / 553                (96%)
+    DSP     51 / 112
+    slack   +0.5 ns on a good seed; the only failing path is the framework's
+            ascal|o_hcpt, so a miss is seed luck, not our logic. Five seeds
+            today spanned -0.34 to +0.52 ns.
+
+### Budget rulings from Ben, 2026-09-03
 
 Sound (M4) is SDRAM-only for storage and is built only if ALM remains after
 the V60 split; it holds NO M10K reservation. The I/O board is going to be the
 real Z80 - tv80 with EPR-14869 and the 315-5338A, reversing D9's HLE - and it
 outranks sound. Its ROM and work RAM go to SDRAM, the 2 KB DPRAM already
-exists, so it needs ~0 M10K and ~2,000 ALM; its constraint is ALM, which the
-V60 split pays for. So the quad store's ~22 M10K competes with nothing.
+exists, so it needs ~0 M10K and ~2,000 ALM. Its constraint is ALM, and at 93%
+that means the V60 split has to pay for it first.
 
-### Where the 3D stands, 2026-09-03 end of session
-
-Confirmed by Ben on the board, in order, each a separate defect:
-
-    bands missing in busy scenes   FIXED  flip-triggered pass (ef6adce)
-    thin bars across the screen    FIXED  two dividers in the fill (a207c47)
-    stadium/large objects missing  FIXED  3,072-quad store (42f950d)
-    cars stretched across screen   FIXED  16-bit vertices, do not narrow
-    top band missing               MOSTLY sweep restart on idle; T= 58 -> 10
-                                          a second, and 43b837f aims at the rest
-
-Open: D= shows the 3,072-quad store still overflows in bursts on the board
-(~1,600 quads over 110 s). The next lever if it matters is the fill's divide
-latency (a 1/dy table, ~4 cycles instead of 19) which would also let the
-band height drop, not a bigger store - M10K is at 532 of 553.
-
-### Ben's reference picture, 2026-09-03 late
-
-Build aeb91d7 seed 13 (4,096-quad store, 9-bit vertices SATURATED) "looked
-really good" to Ben on the board - stadium present, no stretched cars, the
-only fault the top band missing every other frame. Kept as
-`build/Model1_aeb91d7_seed13.rbf`. The build after it (42f950d: 16-bit
-vertices, 3,072 quads, sweep restart on idle) is exact against MAME in the
-bench, but Ben's eye on the board is the acceptance test: if it looks worse
-in any way, that is a finding to chase, not a reason to keep 9-bit vertices,
-because the board counts thousands of clamped vertices a second.
-
-### Watch on the next board test, from Ben (2026-09-03)
-
-The "V.R." back screens of the attract sequence - the big blue-and-white
-V.R. behind the red "Virtua Racing" (MAME frames ~2250 and ~6250 on
-`build/render/attract_sheet.png`) - are meant to FLASH. If they still do not
-with the 4,096-quad store on the board, that is a separate defect to fix
-later, most likely in the 2D path or the palette rather than the 3D: note
-what it does instead (steady, wrong colour, wrong rate) and compare against
-MAME's frames around 2250 with `SNAP_FRAMES` on tools/mame_snap_frames.lua.
-
-### Next, in order
-
-0. **DONE in simulation: the quad store is 4,096 quads** (narrowed record,
-   arrays split at 2,048 deep, +32 M10K for both banks, measured per bank
-   with `make quartus MOD=qs4096 SRCS_qs4096="rtl/video/m1_quad_store.sv
-   build/tmp/qs4096.sv"`). Owed: a full build and the board - D= should stop
-   moving and the grandstand should appear in the pit stop. The old note:
-   the quad store was too small for the pit scene, PROVEN - frame 2500
-   needs 2,671 quads, the store holds 2,048, and the bench renders the whole
-   scene at 4,096 (`-GNQ=4096`) and loses building, road, wall and grandstand
-   at 2,048. 3,072 a bank is ~50 M10K; 4,096 is ~100. `MISTER_SMALL_VBUF`
-   frees nothing (measured, 496 M10K either way - it sizes a DDR3 buffer).
-   The record is 231 bits a quad today (vertices 128, attributes 49 =
-   24-bit band mask + moire + 24-bit colour, key 32, two 11-bit indices) and
-   M10K rounds each array up, which is why 2,048 costs 51 a bank. Narrowed -
-   colour to RGB565 (the band buffer is 565 anyway), the key to 16 bits, the
-   band mask to a 5+5-bit band RANGE - 3,072 quads a bank comes to ~62 blocks
-   against 51, so ~+22 M10K for both banks instead of ~+50. Each narrowing
-   needs its exactness bench (the key decides painter order among close z).
-   Decide with Ben: that, the sound budget, or a narrower quad record (the 24-bit
-   lit colour and the 32-bit sort key are the fat; coordinates reach +/-31,696
-   after clipping so they stay 16-bit). A bigger store also makes every band
-   replay more quads, so it goes with the divider work, not before it.
-1. **The band fill's divide LATENCY.** Two dividers are in (a207c47) and cut
-   fill time 21%, but a band-clipped quad is one segment, so its two slopes
-   are its whole divide and the 16-step latency is still 47% of the worst
-   band (frame 5460, findings). Replace m1_raster_div's 16 steps with a 1/dy
-   table and a DSP multiply plus one remainder correction (~4 cycles, exact),
-   then merge the ten single-cycle bookkeeping states a quad. Gate:
-   tb_m1_raster_fill 152,025 checks exact. Acceptance: T= and W= on the
-   board, where heavy bands carry ~2x the quads of any reference frame the
-   bench has. The unit bench prints the worst band's own breakdown.
-2. If L sits above two frames in gameplay, the lever is the pass itself, not
-   the cadence: the polygon ROM's wait on the shared SDRAM (the bench prints
-   the 3D ROM port's mean wait) and the geometry's cycles a quad (findings,
-   2026-08-31: 226 a quad after the dataflow rework).
-3. The five-minute crash is unchanged and next: X=FE0C9B is the V60 pc at the
-   instant the coprocessor stops, deterministic across three captures.
-
-### Failure modes this added to the list
+### Failure modes this session added to the list
 
 - **A counter that says a sequencer is on time is evidence about THAT
-  sequencer.** The sweep and consumer-state figures were exact and about the
-  wrong machine. When two sequencers hand off, measure the one you have not.
+  sequencer.** A full day of consumer measurements was exact and about the
+  machine that was never late.
 - **"Does not reproduce in simulation" has to name the instrument.** The
   producer's pass length had never been printed; once it was, the sim showed
   the board's cadence to the frame.
-- **A bench pulse held for a pixel is three clock cycles.** The board's is
-  one. tb_m1_raster3d's frame_start counted three frames a frame.
+- **Three frames is not the range of a coordinate.** The 9-bit vertex record
+  was blessed by three dumped frames that happened to have nothing
+  off-screen; a whole run has 10,246 quads with a vertex off-screen.
+- **A bench pulse held for a pixel is three clock cycles**, where the board
+  delivers one.
+- **A registered read is not a gated one.** Three replay-pipeline bugs in the
+  quad store came from reading an array every cycle where the code it
+  replaced read it under a stall gate.
+- **Reasoning lost to the board again.** Restarting the sweep earlier is
+  obviously safer and obviously better, and it measured four times worse.
 
 ## 2026-09-02 — the V60's area is SELECTION, not operators, and the critical path was a debug counter
 

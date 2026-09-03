@@ -18,9 +18,9 @@ NetMerc.
 | Milestone | State |
 |---|---|
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
-| M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls; segas24 window/split-scroll mode still owed |
+| M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls, window/split-scroll mode implemented and verified |
 | M2 — geometry pipeline | **in the design and running real microcode on hardware.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built; the four math units and the polygon-list capture are not |
-| M3 — rasterizer and video | fill path built and measured; band buffer, binning, writeback and scanout not built |
+| M3 — rasterizer and video | **the 3D layer runs on hardware**: geometry, sort, binning, band buffers and scanout are built and the picture is right on a DE10-Nano. Five defects found and fixed against the board on 2026-09-03; one intermittent top-band drop is open |
 | M4 — sound | not started — 68000, YM3438 and two MultiPCMs on a separate sound PCB, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
