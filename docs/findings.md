@@ -247,6 +247,15 @@ frame goes 112% -> 121% of a slot at 4,096, because every stored quad is
 replayed into every band it touches. The store and the divider are one
 budget, not two.
 
+**THE TWO DIVIDERS ON THE BOARD (a207c47 seed 3, `build/uart_twodiv_seed3.txt`,
+110 s of attract including the pit stop): T= 0. Not one late band**, against
++2..+3 a second with bursts of +16..+31 on the build before it
+(`uart_vblwait_seed3.txt`, same scenes, same D= and L=). W= still reaches
+0x0F8E - the worst single band at 1.9 slots - but the ring absorbs one slow
+band, and what made bands late was RUNS of them; 21% off every band's fill
+took the runs under the line. Whether the bars are gone to the eye is Ben's
+to confirm.
+
 ### What the game does at a flip, measured, because the fix depends on it
 
 `tools/mame_flip_writes.lua`, 2,000 frames, 994 flips. The flip is the V60's
