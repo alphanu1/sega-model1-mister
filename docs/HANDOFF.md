@@ -45,6 +45,17 @@ outranks sound. Its ROM and work RAM go to SDRAM, the 2 KB DPRAM already
 exists, so it needs ~0 M10K and ~2,000 ALM; its constraint is ALM, which the
 V60 split pays for. So the quad store's ~22 M10K competes with nothing.
 
+### Ben's reference picture, 2026-09-03 late
+
+Build aeb91d7 seed 13 (4,096-quad store, 9-bit vertices SATURATED) "looked
+really good" to Ben on the board - stadium present, no stretched cars, the
+only fault the top band missing every other frame. Kept as
+`build/Model1_aeb91d7_seed13.rbf`. The build after it (42f950d: 16-bit
+vertices, 3,072 quads, sweep restart on idle) is exact against MAME in the
+bench, but Ben's eye on the board is the acceptance test: if it looks worse
+in any way, that is a finding to chase, not a reason to keep 9-bit vertices,
+because the board counts thousands of clamped vertices a second.
+
 ### Watch on the next board test, from Ben (2026-09-03)
 
 The "V.R." back screens of the attract sequence - the big blue-and-white
