@@ -312,7 +312,16 @@ The 4,096-quad store needed 9-bit vertices to fit, and **9 bits was wrong**:
   of clipped. It looked good because the bend is small at speed.
 - The three dumped frames (900, 2500, 5460) had NO out-of-range vertex,
   which is why the bench blessed 9 bits. **Three frames is not the range of
-  a coordinate.** The frame bench now prints the range over a whole run.
+  a coordinate.** The frame bench now prints the range over a whole run:
+
+      vertex coordinates, 670 frames   -104 .. 495
+      quads with vertex 0 off-screen   10,246
+      out-of-range at 16 bits          0
+
+  And the cost of saturating them is measurable in the picture: the same
+  900 M-cycle run paints **68,531,903 non-black pixels with 9-bit saturated
+  vertices against 68,990,178 with 16-bit** - 458,275 pixels different over
+  670 frames, which is the bent edges, about 680 pixels a frame.
 
 So vertices are 16 bits again and the store is **3,072 a bank**, the largest
 that fits: ~74 M10K a bank, 532 of 553 in the full core. Frame 2500 needs
