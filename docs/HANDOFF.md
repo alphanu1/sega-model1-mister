@@ -45,6 +45,16 @@ outranks sound. Its ROM and work RAM go to SDRAM, the 2 KB DPRAM already
 exists, so it needs ~0 M10K and ~2,000 ALM; its constraint is ALM, which the
 V60 split pays for. So the quad store's ~22 M10K competes with nothing.
 
+### Watch on the next board test, from Ben (2026-09-03)
+
+The "V.R." back screens of the attract sequence - the big blue-and-white
+V.R. behind the red "Virtua Racing" (MAME frames ~2250 and ~6250 on
+`build/render/attract_sheet.png`) - are meant to FLASH. If they still do not
+with the 4,096-quad store on the board, that is a separate defect to fix
+later, most likely in the 2D path or the palette rather than the 3D: note
+what it does instead (steady, wrong colour, wrong rate) and compare against
+MAME's frames around 2250 with `SNAP_FRAMES` on tools/mame_snap_frames.lua.
+
 ### Next, in order
 
 0. **DONE in simulation: the quad store is 4,096 quads** (narrowed record,
