@@ -226,6 +226,18 @@ module m1_quad_store #(
           (y < 0) || (y > $signed(16'((1 << YW) - 1)));
   endfunction
 
+  // SATURATE, DO NOT TRUNCATE. The clipper's edges round: a vertex on the
+  // left edge comes out at -1 and one on the right at 496 or so, and a
+  // truncated -1 is 511 - a car at the left edge stretched across the whole
+  // screen, on the board, on two seeds (2026-09-03). Clamped, it is a pixel
+  // off where the clip plane already put it. Still counted in dbg_oob.
+  function automatic [XW-1:0] sat_x(input logic signed [15:0] x);
+    sat_x = (x < 0) ? '0 : (x > $signed(16'((1 << XW) - 1))) ? '1 : x[XW-1:0];
+  endfunction
+  function automatic [YW-1:0] sat_y(input logic signed [15:0] y);
+    sat_y = (y < 0) ? '0 : (y > $signed(16'((1 << YW) - 1))) ? '1 : y[YW-1:0];
+  endfunction
+
   // Monotonic key, then complemented so that ASCENDING on this key is DESCENDING
   // on z - which is the order the painter wants.
   function automatic [31:0] sort_key(input logic [31:0] f);
@@ -254,18 +266,18 @@ module m1_quad_store #(
         // RGB565, the same bits the band buffer keeps (m1_raster3d's
         // span_565), so nothing is lost between here and the screen.
         if (in_hi(count[IW-1:0])) begin
-          vtx0_hi[hi_a(count[IW-1:0])] <= {in_y0[YW-1:0], in_x0[XW-1:0]};
-          vtx1_hi[hi_a(count[IW-1:0])] <= {in_y1[YW-1:0], in_x1[XW-1:0]};
-          vtx2_hi[hi_a(count[IW-1:0])] <= {in_y2[YW-1:0], in_x2[XW-1:0]};
-          vtx3_hi[hi_a(count[IW-1:0])] <= {in_y3[YW-1:0], in_x3[XW-1:0]};
+          vtx0_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y0), sat_x(in_x0)};
+          vtx1_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y1), sat_x(in_x1)};
+          vtx2_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y2), sat_x(in_x2)};
+          vtx3_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y3), sat_x(in_x3)};
           att_hi[hi_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
           key_hi[hi_a(count[IW-1:0])]  <= sort_key(in_z);
         end else begin
-          vtx0_lo[lo_a(count[IW-1:0])] <= {in_y0[YW-1:0], in_x0[XW-1:0]};
-          vtx1_lo[lo_a(count[IW-1:0])] <= {in_y1[YW-1:0], in_x1[XW-1:0]};
-          vtx2_lo[lo_a(count[IW-1:0])] <= {in_y2[YW-1:0], in_x2[XW-1:0]};
-          vtx3_lo[lo_a(count[IW-1:0])] <= {in_y3[YW-1:0], in_x3[XW-1:0]};
+          vtx0_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y0), sat_x(in_x0)};
+          vtx1_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y1), sat_x(in_x1)};
+          vtx2_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y2), sat_x(in_x2)};
+          vtx3_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y3), sat_x(in_x3)};
           att_lo[lo_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
           key_lo[lo_a(count[IW-1:0])]  <= sort_key(in_z);
