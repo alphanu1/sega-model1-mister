@@ -788,3 +788,62 @@ precisely, and one of them is wrong here.
 | VF overdraw exceeds bandwidth | M3 | f2h DDR3 framebuffer before demanding dual SDRAM |
 | MultiPCM has no prior art | M4 | Standalone spike with its own gate |
 | Stale ROM definitions | all | Pull current MAME sets; 315-5711 carried two bit corruptions until recently |
+
+---
+
+## Decoupling the character fetch — the design, 2026-09-05
+
+Agreed with Ben after the SDRAM measurements came back. This is the fix for the
+tile overruns, and it is the N64 controller's shape applied at the requester.
+
+### Why, in numbers
+
+The board says the memory is not the constraint: the tile port is served in
+**18 cycles**, only 2 of them waiting for a grant, while the controller sits
+around 29% busy. Raising the SDRAM clock cannot help, and `m1_tile_fetch`'s own
+header says so independently — closing 6,456 cycles into 3,280 by frequency
+alone would need ~157 MHz.
+
+What binds is **latency times count**. The fetch is strictly serial: `F_CHAR`
+raises `char_req`, stalls for the round trip, and only then does the engine
+emit and walk to the next column. Per column that is roughly 1 + 1 + 18 + 2 =
+22 cycles; 62 columns across 4 layers is about 5,500 against 3,936 available.
+
+Two requests in flight takes the effective latency to about 9 and the line to
+roughly 3,200 — under budget with margin. That is the whole change.
+
+### The shape
+
+`f_char_addr` is combinational off `fx` and the latched tile word, so the
+moment `fx` advances the address for the outstanding request is gone. The
+rewrite therefore needs:
+
+1. **Two SDRAM ports for the character fetch, alternating.** This keeps
+   `m1_sdram`'s single-outstanding-per-port contract intact — the module is
+   verified at 87,893 checks and its request contract is load-bearing — at the
+   cost of NP 7 -> 8 and a wider arbiter.
+2. **The address and tile word latched per port** (`cp_addr[2]`, `cp_tw[2]`),
+   because both move on as soon as the next column is walked.
+3. **In-order completion**, tracked by an issue pointer and a retire pointer,
+   so the emit side still receives columns in order.
+4. **A two-entry output queue** replacing the single `f_have` slot, so the
+   fetch never stalls on `consume`.
+5. The `last_tile`/`last_char` repeat caches keep working against COMPLETED
+   fetches only. A duplicate that is already in flight is simply fetched twice
+   - correct, marginally wasteful, and far simpler than matching against the
+   in-flight set.
+
+Touches `m1_tile_fetch`, `m1_video`, `m1_integrated`, `Model1.sv`, the `NP`
+parameter at every `m1_sdram` instantiation, and four benches.
+
+### How it is verified
+
+`tb_m1_frame` reproduces the fault: **`fetch deadline misses = 9434`** over 90 M
+cycles. That number has to move, and `m1_tile_fetch`'s own 49,116 checks have to
+stay green. Both are cheap to run, so there is no excuse for landing this on
+argument.
+
+### What it does NOT fix
+
+The left-side 3D loss. That is the clip plane — see `docs/findings.md`,
+2026-09-05 — and the two are independent.
