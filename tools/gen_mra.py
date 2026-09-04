@@ -375,6 +375,32 @@ def emit(setname, chunks, cross_checked):
             '    </rom>',
         ]
 
+    # THE I/O BOARD'S FIRMWARE, FROM MAME'S BIOS SET.
+    #
+    # EPR-14869 is a ROM_SYSTEM_BIOS inside model1io.cpp's own set - the same
+    # kind of thing as stvbios or neogeo - and MAME will not start `vr` at all
+    # without it. It is in no game zip: checked by hash, no member of vr.zip
+    # has its contents. So it comes from model1io.zip, which any complete set
+    # has because MAME requires it.
+    #
+    # THE REVISION IS PER GAME, from model1.cpp: vf() and swa() both call
+    # set_default_bios_tag("epr14869b") and everything else takes the default,
+    # epr-14869. model1io.cpp's own comments name them - "Virtua Racing
+    # (837-8950-01)" against "Virtua Fighter (837-8936), Star Wars Arcade".
+    # Daytona's epr-14869c is a third revision and is NOT what a Model 1 board
+    # runs, which is worth stating because it is the copy nearest to hand.
+    iofw = 'epr-14869b.25' if setname.startswith(('vf', 'swa')) else 'epr-14869.25'
+    out += [
+        '',
+        '    <!-- The I/O board Z80 firmware, from MAME\'s model1io BIOS set.',
+        '         REQUIRED: the core runs the real Z80 and there is no',
+        '         behavioural fallback. MAME will not start this game without',
+        '         the same file, so a complete romset already has it. -->',
+        f'    <rom index="2" zip="model1io.zip" md5="none">',
+        f'        <part name="{iofw}"/>',
+        '    </rom>',
+    ]
+
     out += [
         '',
         '    <nvram index="255" size="256"/>',

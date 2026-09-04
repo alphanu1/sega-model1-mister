@@ -128,6 +128,14 @@
         <part name="315-5573.bin"/>
     </rom>
 
+    <!-- The I/O board Z80 firmware, from MAME's model1io BIOS set.
+         REQUIRED: the core runs the real Z80 and there is no
+         behavioural fallback. MAME will not start this game without
+         the same file, so a complete romset already has it. -->
+    <rom index="2" zip="model1io.zip" md5="none">
+        <part name="epr-14869b.25"/>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>
