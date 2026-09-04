@@ -697,6 +697,7 @@ module m1_integrated (
   logic [31:0] r3_dbg_band_cycles;   // the last band fill, in clk_3d cycles
   logic [15:0] r3_dbg_late;          // bands presented after the beam passed them
   logic [15:0] r3_dbg_drop_total, r3_dbg_short, r3_dbg_oob, r3_dbg_late0;
+  logic [15:0] r3_dbg_vx1;      // the 3D frustum's left clip plane, K= on the wire
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -744,7 +745,7 @@ module m1_integrated (
     .dbg_bands(r3_dbg_bands), .dbg_pass_cycles(r3_dbg_pass_cycles),
     .dbg_band_cycles(r3_dbg_band_cycles), .dbg_late(r3_dbg_late),
     .dbg_drop_total(r3_dbg_drop_total), .dbg_short(r3_dbg_short),
-    .dbg_oob(r3_dbg_oob), .dbg_late0(r3_dbg_late0)
+    .dbg_oob(r3_dbg_oob), .dbg_late0(r3_dbg_late0), .dbg_vx1(r3_dbg_vx1)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -960,6 +961,7 @@ module m1_integrated (
     // ever since the vertices went back to 16 bits. It carries the band-0
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
+    .view_x1(r3_dbg_vx1),
     .tx(uart_tx)
   );
 

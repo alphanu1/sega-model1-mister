@@ -111,6 +111,15 @@ module m1_speed_report #(
   // fewer than half the previous pass's objects. Both free-running.
   input  logic [15:0] dropped,
   input  logic [15:0] short_passes,
+  // THE 3D LAYER'S LEFT CLIP PLANE, as a screen coordinate.
+  //
+  // The left half of the 3D vanishes on corners and STAYS gone while the car
+  // is parked, which is the shape of a latched register rather than a
+  // per-frame effect: vx1 becomes the frustum's left plane and everything
+  // left of it is clipped away before it is ever stored, which is also why
+  // the dropped-quad counter reads zero throughout. Simulation cannot answer
+  // this - 700 M cycles never reached gameplay - so it goes on the wire.
+  input  logic [15:0] view_x1,
 
   output logic tx
 );
@@ -122,7 +131,7 @@ module m1_speed_report #(
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
   logic [23:0] r_vpc, r_spc;
-  logic [15:0] r_plen, r_late, r_wband, r_drop, r_short;
+  logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -132,7 +141,7 @@ module m1_speed_report #(
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
-      r_drop <= '0; r_short <= '0;
+      r_drop <= '0; r_short <= '0; r_vx1 <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -157,6 +166,7 @@ module m1_speed_report #(
           r_plen  <= pass_cycles[23:8];
           r_late  <= late;
           r_drop  <= dropped; r_short <= short_passes;
+          r_vx1   <= view_x1;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -165,11 +175,11 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx\r\n"
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx\r\n"
   // 103 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
   // silently repeats its middle.
-  // 103 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 103;
+  // 117 bytes a second against 11,520 available, so the channel is not a concern.
+  localparam int unsigned NCH = 117;
 
   logic [6:0]  ci;
   logic        busy;
@@ -291,7 +301,14 @@ module m1_speed_report #(
       7'd98: ch = hexc(r_short[11:8]);
       7'd99: ch = hexc(r_short[7:4]);
       7'd100: ch = hexc(r_short[3:0]);
-      7'd101: ch = 8'h0d;
+      7'd101: ch = " ";
+      7'd102: ch = "K";
+      7'd103: ch = "=";
+      7'd104: ch = hexc(r_vx1[15:12]);
+      7'd105: ch = hexc(r_vx1[11:8]);
+      7'd106: ch = hexc(r_vx1[7:4]);
+      7'd107: ch = hexc(r_vx1[3:0]);
+      7'd108: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

@@ -194,7 +194,14 @@ module m1_raster3d #(
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
   // renders can agree on every quad and disagree on where each one lands.
-  output logic [31:0] dbg_xc, dbg_yc, dbg_zoomx, dbg_zoomy, dbg_viewx, dbg_viewy
+  output logic [31:0] dbg_xc, dbg_yc, dbg_zoomx, dbg_zoomy, dbg_viewx, dbg_viewy,
+  // The LEFT CLIP PLANE the frustum is using, as a screen coordinate rather
+  // than a float, so it can go on a 16-bit telemetry field. It should read 0
+  // for ever; the left half of the 3D vanishing on the board is the shape of
+  // this having latched something else. Exponent-and-mantissa to integer by
+  // the same shift fp_to_int uses, truncated - a plane at 248.5 and one at
+  // 248 are the same answer for this purpose.
+  output logic [15:0] dbg_vx1
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -913,6 +920,17 @@ module m1_raster3d #(
   assign dbg_viewy = vviewy;
 
   assign dbg_objects = lw_objs;
+  // IEEE-754 single to a small unsigned integer. Negative or huge reads as
+  // 0xffff, which is a value the plane can never legitimately take and so
+  // says "not a sane coordinate" rather than silently looking plausible.
+  wire [7:0]  vx1_exp = vx1[30:23];
+  wire [23:0] vx1_man = {1'b1, vx1[22:0]};
+  wire [7:0]  vx1_sh  = 8'd150 - vx1_exp;          // 127 + 23
+  assign dbg_vx1 = vx1[31]                ? 16'hffff :   // negative
+                   (vx1_exp == 8'd0)      ? 16'd0    :   // zero/denormal
+                   (vx1_exp >  8'd143)    ? 16'hffff :   // >= 65536
+                   (vx1_exp <  8'd127)    ? 16'd0    :   // < 1.0
+                   16'(vx1_man >> vx1_sh[4:0]);
   assign dbg_oob     = qs_oob_v[0] + qs_oob_v[1];
   assign dbg_quads   = qs_count;
   assign dbg_dropped = qs_dropped;
