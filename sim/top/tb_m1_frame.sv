@@ -810,6 +810,13 @@ initial begin
     $readmemh(ROMHEX, rom);
     for (i = 0; i < 2048; i = i + 1) ucode[i] = 32'h0;
     $readmemh("build/rom/vr_tgp_prog.hex", ucode);
+    // The I/O board firmware, as bytes. $readmemh on a byte array wants one
+    // hex byte per line; tools/build_rom_image.py --iofw writes it.
+    for (i = 0; i < 65536; i = i + 1) iofw[i] = 8'hff;
+    $readmemh("build/rom/vr_iofw.hex", iofw);
+    iofw_ok = (iofw[0] !== 8'hff) || (iofw[1] !== 8'hff);
+    if (!iofw_ok)
+        $display("tb_m1_frame: *** no I/O board firmware (build/rom/vr_iofw.hex): the Z80 executes nothing and the V60 waits forever. Run tools/build_rom_image.py with --iofw ***");
     if (ucode[0] === 32'h0)
         $display("tb_m1_frame: *** no TGP microcode — run tools/build_tgp_rom.py ***");
     $display("tb_m1_frame: ROM image read");
@@ -889,6 +896,40 @@ task automatic run_ucode_download;
         ioctl_download <= 1'b0;
         ioctl_index    <= 16'd0;
         $display("download: microcode streamed on index 1");
+        $fflush;
+    end
+endtask
+
+// THE I/O BOARD'S FIRMWARE IS A THIRD DOWNLOAD, ON INDEX 2.
+//
+// EPR-14869, MAME's model1io BIOS set. Without it the Z80 executes an
+// uninitialised array - ones under Verilator, which is a solid RST 38h loop -
+// and the V60 waits forever for a board that never answers. That failure looks
+// exactly like a dead handshake, which is why the bench says out loud whether
+// it found the file.
+//
+// 16 KB is what the Z80 maps; the file is 64 KB and the loader drops the rest.
+reg [7:0] iofw [0:65535];
+integer   iofw_ok = 0;
+task automatic run_iofw_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd2;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 8192; w = w + 1) begin      // 16 KB as 16-bit words
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {iofw[w*2 + 1], iofw[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: I/O board firmware streamed on index 2");
         $fflush;
     end
 endtask
@@ -1677,6 +1718,7 @@ initial begin
     if (DOWNLOAD) begin
         run_download();
         run_ucode_download();
+        if (iofw_ok) run_iofw_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
         // READ THE MICROCODE BACK OUT OF THE COPROCESSOR.

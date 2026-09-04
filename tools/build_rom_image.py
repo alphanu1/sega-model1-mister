@@ -208,6 +208,11 @@ def main():
                          'hex preload deliberately stops before the polygon '
                          'region - 16 MB of it as text is 60 MB - so anything '
                          'that needs the models reads the binary instead.')
+    ap.add_argument('--iofw',
+                    help="the I/O board's EPR-14869, from MAME's model1io BIOS "
+                         "set. It is NOT part of the packed stream - the core "
+                         "loads it on its own download index - so this only "
+                         "writes the hex the simulation benches read.")
     args = ap.parse_args()
 
     stream = pack_stream(args.zip, args.game)
@@ -226,6 +231,19 @@ def main():
         for i in range(words):
             f.write('%04x\n' % (stream[i*2] | (stream[i*2+1] << 8)))
     print(f"{hexp}: {words} words ({len(stream)} bytes packed)")
+
+    if args.iofw:
+        # One hex BYTE per line, which is what $readmemh wants for a byte
+        # array. Its own file rather than part of the packed stream, because
+        # the core loads it on its own download index - the same shape as the
+        # coprocessor microcode.
+        with open(args.iofw, 'rb') as f:
+            fw = f.read()
+        iop = os.path.join(args.out, f'{args.game}_iofw.hex')
+        with open(iop, 'w') as f:
+            for b in fw:
+                f.write('%02x\n' % b)
+        print(f"{iop}: {len(fw)} bytes of I/O board firmware")
 
     if args.bin:
         binp = os.path.join(args.out, f'{args.game}_stream.bin')
