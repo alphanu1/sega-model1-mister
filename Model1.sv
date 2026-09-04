@@ -460,6 +460,8 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   // Rather than guess the correction one twenty-five minute build at a time,
   // the phase is an OSD option. It defaults to CL+2, one cycle earlier than the
   // model needs, which is what the measured shift implies.
+  wire [7:0] sdram_occ, sdram_wait1;
+
   m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
     // OSD order is CL+2, CL+3, CL+4, CL+5 and the selector's own encoding puts
@@ -475,7 +477,11 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
     .wr_be(ldr_wr_be), .wr_ack(ldr_wr_ack),
     .p_req(p_req), .p_we(p_we), .p_addr(p_addr), .p_din(p_din), .p_be(p_be),
     .p_dout(p_dout), .p_ack(p_ack),
-    .dbg_req(), .dbg_grant()
+    .dbg_req(), .dbg_grant(),
+    // The memory's own account of how busy it is, and of how long the tile
+    // fetch waits for it. Both go to the UART, because whether the SDRAM is
+    // the constraint is a hardware question.
+    .dbg_occ(sdram_occ), .dbg_wait1(sdram_wait1)
   );
 
   assign SDRAM_DQ  = sd_dq_oe ? sd_dq_o : 16'bZ;
@@ -533,6 +539,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   wire [15:0] dbg_io_replies;
 
   m1_integrated core (
+    .sdram_occ(sdram_occ), .sdram_wait1(sdram_wait1),
     .clk_sys(clk_sys), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
     .clk_3d(clk_3d),

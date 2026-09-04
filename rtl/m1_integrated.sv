@@ -195,6 +195,12 @@ module m1_integrated (
   output logic [7:0]  dbg_fetches,
   output logic [15:0] dbg_overruns,
 
+  // The SDRAM controller's occupancy and the tile port's wait, both as a
+  // fraction of 0xFF. They are measured in the controller, which lives at the
+  // top level, so they come back down rather than being derived here.
+  input  logic [7:0]  sdram_occ,
+  input  logic [7:0]  sdram_wait1,
+
   // Visible pixels per tilemap, per frame — see m1_video. An alarm for a layer
   // that never reaches the screen, not a proof the composite is right.
   output logic [17:0] dbg_layer_px [4],
@@ -962,6 +968,7 @@ module m1_integrated (
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
+    .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );
 

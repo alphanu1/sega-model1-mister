@@ -139,7 +139,7 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
     .wr_ack(ldr_ack),
     .p_req(p_req), .p_we(p_we), .p_addr(p_addr), .p_din(p_din), .p_be(p_be),
     .p_dout(p_dout), .p_ack(p_ack),
-    .dbg_req(dbg_req_v), .dbg_grant(dbg_grant_v)
+    .dbg_req(dbg_req_v), .dbg_grant(dbg_grant_v), .dbg_occ(), .dbg_wait1()
 );
 
 integer violations_i;

@@ -131,6 +131,12 @@ module m1_speed_report #(
   // clock is the answer or just a plausible story.
   input  logic [15:0] fetch_miss,
 
+  // The memory's own occupancy and the tile port's wait, each 0x00 to 0xFF
+  // over a 13 ms window. These separate the two explanations for a tile
+  // overrun: a saturated controller, or an idle one that arbitrates badly.
+  input  logic [7:0]  mem_occ,
+  input  logic [7:0]  mem_wait,
+
   output logic tx
 );
 
@@ -142,6 +148,7 @@ module m1_speed_report #(
   logic [15:0] r_tpc, r_tret, r_npres;
   logic [23:0] r_vpc, r_spc;
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
+  logic [7:0]  r_occ, r_wait;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -152,6 +159,7 @@ module m1_speed_report #(
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
+      r_occ <= '0; r_wait <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -178,6 +186,8 @@ module m1_speed_report #(
           r_drop  <= dropped; r_short <= short_passes;
           r_vx1   <= view_x1;
           r_miss  <= fetch_miss;
+          r_occ   <= mem_occ;
+          r_wait  <= mem_wait;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -186,11 +196,16 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx\r\n"
-  // 103 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
-  // silently repeats its middle.
-  // 131 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 131;
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx\r\n"
+  // ci must be SEVEN bits: at [5:0] it wraps at 64 and the line silently
+  // repeats its middle.
+  //
+  // NCH is the CR's index plus two, because the default arm of the case emits
+  // LF - so the last named index is the CR and the one after it is the LF.
+  // It had drifted to eight more than that, which cost nothing but printed
+  // seven blank lines after every report. 127 bytes a second against 11,520
+  // available, so the channel is still not a concern.
+  localparam int unsigned NCH = 127;
 
   logic [6:0]  ci;
   logic        busy;
@@ -326,7 +341,17 @@ module m1_speed_report #(
       7'd112: ch = hexc(r_miss[11:8]);
       7'd113: ch = hexc(r_miss[7:4]);
       7'd114: ch = hexc(r_miss[3:0]);
-      7'd115: ch = 8'h0d;
+      7'd115: ch = " ";
+      7'd116: ch = "O";
+      7'd117: ch = "=";
+      7'd118: ch = hexc(r_occ[7:4]);
+      7'd119: ch = hexc(r_occ[3:0]);
+      7'd120: ch = " ";
+      7'd121: ch = "Q";
+      7'd122: ch = "=";
+      7'd123: ch = hexc(r_wait[7:4]);
+      7'd124: ch = hexc(r_wait[3:0]);
+      7'd125: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

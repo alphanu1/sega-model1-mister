@@ -133,6 +133,26 @@ module m1_sdram #(
   output logic [NP-1:0][63:0]  p_dout,
   output logic [NP-1:0]        p_ack,
 
+  // MEMORY OCCUPANCY AND TILE-PORT WAIT, each as a fraction of a fixed window.
+  //
+  // Ben reads the tile overruns as the memory controller being the constraint.
+  // That is a bandwidth claim, and nothing in this design has ever measured
+  // bandwidth ON HARDWARE - bw_monitor exists, but its numbers only reach
+  // simulation, and simulation models memory load differently enough that it
+  // cannot answer this.
+  //
+  // Two very different repairs follow from the two possible answers. A
+  // saturated controller wants a faster clock or a tighter issue pipeline; an
+  // idle one that still misses deadlines wants different arbitration, and the
+  // clock would buy nothing. So measure which it is before building either.
+  //
+  // The window is 2^20 cycles, about 13 ms at 80 MHz, and each output is the
+  // top eight bits of a count within it: 0x00 idle, 0xFF saturated. A ratio
+  // taken this way needs no division and no knowledge of the clock rate.
+  output logic [7:0]           dbg_occ,    // controller not idle
+  output logic [7:0]           dbg_wait1,  // port 1, the tile character fetch,
+                                           // asking and not yet served
+
   // Telemetry taps for bw_monitor. `dbg_req` is the latched pending state
   // rather than the raw input, because demand is "asking and not yet served",
   // which a one-cycle request pulse would not show.
@@ -249,6 +269,8 @@ module m1_sdram #(
     S_RD, S_WR, S_WRRC, S_PRE_REF, S_REFW
   } state_t;
   state_t state;
+
+  logic [19:0] occ_win, occ_cnt, wt_cnt;
 
   // ---------------------------------------------------------------- mailbox
   // Metadata is captured with the request because arbitration may delay a
@@ -808,6 +830,26 @@ module m1_sdram #(
 
           default: state <= S_IDLE;
         endcase
+      end
+    end
+  end
+
+  // The occupancy window. Counted here rather than inside the command process
+  // so the measurement cannot perturb the command timing path.
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      occ_win <= '0; occ_cnt <= '0; wt_cnt <= '0;
+      dbg_occ <= '0; dbg_wait1 <= '0;
+    end else begin
+      occ_win <= occ_win + 1'b1;
+      if (&occ_win) begin
+        dbg_occ   <= occ_cnt[19:12];
+        dbg_wait1 <= wt_cnt[19:12];
+        occ_cnt   <= (state != S_IDLE && state != S_INIT) ? 20'd1 : 20'd0;
+        wt_cnt    <= (NP > 1 && pend[1]) ? 20'd1 : 20'd0;
+      end else begin
+        if (state != S_IDLE && state != S_INIT) occ_cnt <= occ_cnt + 1'b1;
+        if (NP > 1 && pend[1])                  wt_cnt  <= wt_cnt  + 1'b1;
       end
     end
   end

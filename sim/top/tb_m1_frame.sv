@@ -244,7 +244,7 @@ m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
     .wr_be(ldr_wr_be), .wr_ack(ldr_wr_ack),
     .p_req(p_req), .p_we(p_we), .p_addr(p_addr), .p_din(p_din), .p_be(p_be),
     .p_dout(p_dout), .p_ack(p_ack),
-    .dbg_req(), .dbg_grant()
+    .dbg_req(), .dbg_grant(), .dbg_occ(), .dbg_wait1()
 );
 
 // Unwritten memory reads all ones when the ROM has to arrive over ioctl, which
