@@ -2408,17 +2408,39 @@ regions (`M1AUDIO_CPU_REGION`, `M1AUDIO_MPCM1/2_REGION`). `tools/gen_mra.py`
 already documents where they belong in the stream and deliberately omits them
 while the blocks do not exist.
 
-### 6. Understand the 103-cycle character fetch wait
+### 6. The 103-cycle character fetch wait — CLOSED, 2026-09-04. It is 18 cycles
 
-Measured in the whole system, a character fetch waits an average of 103 cycles
-(240 before the line-buffer work reduced the request rate). That is far more
-than a round-robin turn between three active ports should cost, and it is not
-understood.
+This item asked where an unexplained 103-cycle average wait went, and said to
+find out before touching `m1_sdram`. **The time was never going anywhere.**
 
-It is **not** currently a problem — the engine keeps up with room to spare and
-misses no deadlines — so this is an efficiency question, not a bug. It will
-matter when the rasterizer joins the same controller. Find out where the time
-goes before changing `m1_sdram`, which is verified at 80,009 checks.
+`tb_m1_frame` counted from reset, and the first tens of millions of cycles are
+the ROM loader streaming the image into SDRAM through the dedicated write port
+— which sits unconditionally above every read port, deliberately, because game
+logic is held in reset during download. The average described a machine that
+was not running.
+
+Gated on `loader_done`:
+
+| | Ungated | Gated |
+|---|---|---|
+| Wait per fetch | 217 cycles | **18** |
+| Waiting for a grant | 200 | **2** |
+| Being served | 15 | 15 |
+
+Two cycles of arbitration is as good as this controller does, so there is no
+efficiency question here and never was.
+
+**What this closes off.** The tile fetch is served in 18 cycles and still misses
+9,434 deadlines in the run, so the overruns are not memory contention. Neither
+a faster SDRAM clock nor better arbitration can recover time that is not lost
+there. `m1_video.sv`'s own comment beside the overrun counter has the answer: a
+line affords 3,936 core cycles of fetching and **four dense layers need about
+6,456**. That is the engine's emission and per-column cost.
+
+A priority arbiter giving the tile port strict precedence was built and
+**reverted** — it moved the figure by nothing, which is what exposed the
+contaminated measurement in the first place. See `docs/findings.md`,
+2026-09-04.
 
 ## What is owed
 
