@@ -430,12 +430,18 @@ census the bench already prints - it reports tm0..tm3 pixels a frame - and
 compare against MAME on the same frame. The 2D rules are all implemented and
 verified for attract; this is about what gameplay asks for.
 
-### The pedals were digital
+### The pedals were digital, and triggers need TWO axes
 
-Fixed: the right stick's Y axis drives both, up for throttle and down for
-brake, with the buttons still live and the larger winning. A racing game with
-on/off pedals is a different game - you cannot hold a line through a corner
-without partial throttle.
+MiSTer has no dedicated trigger signal: hps_io offers the two sticks, the
+paddles and the spinners, and a trigger reaches a core by the player binding
+it to a stick AXIS in the OSD. The documented racing convention is
+left-stick-down for the accelerator and right-stick-right for the brake, so
+those are the axes the core reads. A first attempt put both pedals on one
+axis, which cannot work - two triggers are two independent inputs.
+
+Magnitude rather than sign, because a trigger bound to an axis may rest at
+either end depending on the pad. Idle 0x01, full 0xff, MAME's
+PORT_MINMAX(1,0xff). The buttons stay live and the larger wins.
 
 ## 2026-09-04 — THE tv80 I/O BOARD BOOTS AND STOPS AT THE EEPROM
 

@@ -188,18 +188,30 @@ module emu
   // racing game with on/off pedals is a different game - you cannot hold a
   // line through a corner without partial throttle.
   //
-  // The RIGHT stick's Y axis carries both, which is what a pad without
-  // separate trigger axes gives you: up is throttle, down is brake, and a
-  // trigger mapped to that axis drives one of them over its full travel.
-  // hps_io delivers it signed, +127 at full up.
+  // TWO SEPARATE AXES, because a pad's triggers are two independent inputs.
   //
-  // Idle is 0x01 and full is 0xff, matching MAME's PORT_MINMAX(1,0xff) - a
-  // pedal resting at 0x00 is a car that will not move, which is measured in
-  // docs/io-board.md and not a guess. The button still gives full travel, so
-  // whichever the player has mapped works and the larger of the two wins.
-  wire signed [7:0] pedal_y = joy0_rstick[15:8];
-  wire [7:0] accel_an = pedal_y > 8'sd0 ? {pedal_y[6:0], 1'b1} : 8'h01;
-  wire [7:0] brake_an = pedal_y < 8'sd0 ? {(~pedal_y[6:0] + 7'd1), 1'b1} : 8'h01;
+  // MiSTer has NO dedicated trigger signal - hps_io offers only the two
+  // sticks, the paddles and the spinners, and a trigger reaches a core by the
+  // player binding it to a stick AXIS in the OSD. The documented racing
+  // convention is left-stick-down for the accelerator and right-stick-right
+  // for the brake, so those are the axes to read; binding LT and RT to them
+  // is then an ordinary OSD mapping. Sharing one axis, which an earlier
+  // version did, cannot work: two triggers need two axes.
+  //
+  // MAGNITUDE, not sign. A trigger bound to an axis may rest at either end
+  // depending on the pad, so any deflection is a press. That makes the left
+  // stick's Y unusable for anything else, which costs nothing - only its X
+  // steers.
+  //
+  // Idle is 0x01 and full 0xff, MAME's PORT_MINMAX(1,0xff): a pedal resting
+  // at 0x00 is a car that will not move, measured in docs/io-board.md. The
+  // buttons stay live and the larger of the two wins.
+  wire signed [7:0] accel_ax = joy0_lstick[15:8];   // left stick Y
+  wire signed [7:0] brake_ax = joy0_rstick[7:0];    // right stick X
+  wire [6:0] accel_mag = accel_ax[7] ? (~accel_ax[6:0] + 7'd1) : accel_ax[6:0];
+  wire [6:0] brake_mag = brake_ax[7] ? (~brake_ax[6:0] + 7'd1) : brake_ax[6:0];
+  wire [7:0] accel_an  = {accel_mag, 1'b1};
+  wire [7:0] brake_an  = {brake_mag, 1'b1};
   wire [7:0] io_accel = io_accel_b ? 8'hff :
                         (accel_an > 8'h01) ? accel_an : 8'h01;
   wire [7:0] io_brake = io_brake_b ? 8'hff :
