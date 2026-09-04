@@ -375,30 +375,6 @@ def emit(setname, chunks, cross_checked):
             '    </rom>',
         ]
 
-    # THE I/O BOARD'S FIRMWARE, ON ITS OWN INDEX.
-    #
-    # EPR-14869 is a DEVICE rom in MAME - model1io.cpp's "iocpu" region - so it
-    # is in no game set: vr.zip has no member with its contents, checked by
-    # hash rather than by name. The board is the same physical PCB in Model 1
-    # cabinets and in early Model 2 ones, which is why the file ships with
-    # daytona93 and why the Model 2 core loads it exactly like this.
-    #
-    # Its own index, not the end of the main stream, for the same reason the
-    # coprocessor microcode has one: index 0 is 25 MB and appending 64 KB to it
-    # would mean streaming the lot to deliver the last 64 KB.
-    #
-    # WITHOUT IT THE Z80 STAYS IN RESET and the behavioural I/O board answers
-    # instead, so a user who has not got the file loses nothing they had.
-    out += [
-        '',
-        '    <!-- The I/O board Z80 firmware. A MAME device rom shared with the',
-        '         early Model 2 boards, so it comes from that set; the core',
-        '         falls back to its behavioural I/O board without it. -->',
-        '    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">',
-        '        <part name="epr-14869.25"/>',
-        '    </rom>',
-    ]
-
     out += [
         '',
         '    <nvram index="255" size="256"/>',
