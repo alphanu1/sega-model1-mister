@@ -171,7 +171,20 @@ static bool isc(int level, const Pt& p) {
 }
 
 static void project(Pt& p);
+// HOW MUCH OF THIS SUITE ACTUALLY REACHES THE CLIPPER.
+//
+// The corpus agrees quad-for-quad with the model, and that proves nothing about
+// clipping unless quads in it cross a plane. Ben sees the road and the scenery
+// vanish from the left of the screen while cars stay - which is precisely the
+// symptom m1_geo_clip's own header describes for geometry that is NOT clipped,
+// so "the clipper agrees" needs to be qualified by how often it was asked.
+//
+// CLAUDE.md's rule, learned the expensive way: when a measurement says the
+// behaviour is correct, check that the instrument could have seen it fail.
+static long clip_edges = 0, clip_calls = 0, clip_split = 0;
+
 static Pt clip_edge(int level, const Pt& p1, const Pt& p2) {
+    clip_edges++;
     float a = (level == 0) ? A_BOTTOM : (level == 1) ? A_TOP
             : (level == 2) ? A_LEFT   : A_RIGHT;
     float v1 = (level >= 2) ? p1.x : p1.y;
@@ -764,6 +777,11 @@ int main(int argc, char** argv) {
         if (!t.got.empty()) { fails++; printf("  FAIL an absurd size drew %zu quads\n", t.got.size()); }
     }
 
+    printf("  clipper: %ld edge vertices created over %ld quads\n",
+           clip_edges, total_quads);
+    if (clip_edges == 0)
+        printf("  WARNING the corpus never crosses a frustum plane, so this "
+               "suite says NOTHING about the clipper\n");
     printf("m1_geometry: checks=%ld fails=%ld quads=%ld\n", checks, fails, total_quads);
     return fails ? 1 : 0;
 }
