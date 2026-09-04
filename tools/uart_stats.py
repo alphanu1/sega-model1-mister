@@ -11,11 +11,11 @@ Usage: tools/uart_stats.py <capture.log>
 """
 import re, sys
 
-FIELDS = "F S B P C R N V X L T W D H K M O Q".split()
+FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G".split()
 LINE = re.compile(r"\b([A-Z])=([0-9A-Fa-f]+)")
 
 # Fields that free-run and are only meaningful as a rate; the rest are levels.
-COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M"}
+COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M", "G", "A", "Z"}
 
 
 def main(path):
@@ -48,6 +48,28 @@ def main(path):
         if vals:
             pc = [100.0 * v / 255 for v in vals]
             print(f"\n{what}: mean {sum(pc)/len(pc):.1f}%  peak {max(pc):.1f}%")
+
+    # The left/right span census, which is the whole point of a capture taken
+    # while the road is missing from one side.
+    la = [r["A"] for r in rows if "A" in r]
+    ra = [r["Z"] for r in rows if "Z" in r]
+    if len(la) > 1 and len(ra) > 1:
+        dl = sum((b - a) % 0x10000 for a, b in zip(la, la[1:]))
+        dr = sum((b - a) % 0x10000 for a, b in zip(ra, ra[1:]))
+        tot = dl + dr
+        if tot:
+            print(f"\nspans: left {100.0*dl/tot:.1f}%  right {100.0*dr/tot:.1f}%"
+                  f"   ({dl} vs {dr} in units of 1024 px)")
+            if dl < dr / 4:
+                print("  -> the LEFT HALF is starved: the spans are never emitted")
+            elif abs(dl - dr) < tot * 0.2:
+                print("  -> both halves are drawn; the loss is after the fill")
+    ga = [r["G"] for r in rows if "G" in r]
+    if len(ga) > 1:
+        dg = sum((b - a) % 0x10000 for a, b in zip(ga, ga[1:]))
+        print(f"\nvertices out of the quad store's 16-bit range: {dg} over the capture")
+        if dg:
+            print("  -> coordinates ARE wrapping, which is the road/scenery symptom")
     return 0
 
 

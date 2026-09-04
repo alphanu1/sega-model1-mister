@@ -218,20 +218,40 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx A=xxxx Z=xxxx G=xxxx\r\n"
-  // ci must be WIDE ENOUGH FOR THE WHOLE LINE, and this has now bitten twice.
-  // At [5:0] it wrapped at 64 and the line repeated its middle; at [6:0] it
-  // wraps at 128, and a 141-byte line made 7'(NCH-1) truncate 140 to 12, so
-  // every report ended after "F=003A S=001D" and restarted. On the wire that
-  // reads as UART corruption rather than as an arithmetic width. EIGHT bits
-  // now, and adding another field past 256 bytes needs nine.
+  // "F=00xxxx S=00xxxx ... G=00xxxx\r\n" - every field is EXACTLY EIGHT bytes:
+  // a letter, '=', six hex digits. 16-bit values simply carry two leading
+  // zeros.
   //
-  // NCH is the CR's index plus two, because the default arm of the case emits
-  // LF - so the last named index is the CR and the one after it is the LF.
-  // It had drifted to eight more than that, which cost nothing but printed
-  // seven blank lines after every report. 127 bytes a second against 11,520
-  // available, so the channel is still not a concern.
-  localparam int unsigned NCH = 148;
+  // WHY UNIFORM, when ragged fields read a little better. The previous version
+  // was one case with 137 arms selected by the character index, and it cost
+  // real area: widening that index from seven bits to eight - forced when the
+  // line passed 128 bytes - took the whole design from 40,160 ALM to 40,978,
+  // because the tool then had to build the mux over a 256-entry space instead
+  // of 128. Eight hundred ALM for a debug channel, on a design at 98%.
+  //
+  // Uniform fields make the index pure bit-slicing: ci[7:3] is the field and
+  // ci[2:0] is the position within it. What is left is a 21-way mux over the
+  // values and a 21-way mux over the letters, neither of which grows when the
+  // index does.
+  //
+  // It also ends the truncation class of bug for good. NCH is computed from
+  // the field count rather than hand-counted, so a new field cannot leave the
+  // terminator behind - which is exactly what put "F=003A S=001D" on the wire
+  // and cost a whole build cycle.
+  // NINE bytes per field: a letter, '=', six hex digits, a space.
+  //
+  // The trailing space is NOT decoration. Five of the field letters - A, B, C,
+  // D and F - are themselves hex digits, so without a separator "S=00001D"
+  // followed by "B=0000B6" reads as a seven-digit value and the rest of the
+  // line shifts. A format that a person cannot read back is not a debug
+  // channel.
+  //
+  // Nine is not a power of two, so the field and position are COUNTERS rather
+  // than slices of the character index. Two small counters cost less than the
+  // divide would and far less than the 137-arm case they replace.
+  localparam int unsigned NF  = 21;             // fields
+  localparam int unsigned FW  = 9;              // bytes per field
+  localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
   logic [7:0]  ci;
   logic        busy;
@@ -246,172 +266,78 @@ module m1_speed_report #(
     hexc = (n < 4'd10) ? (8'h30 + {4'd0, n}) : (8'h41 + {4'd0, n} - 8'd10);
   endfunction
 
-  // The four values, concatenated, so the character index picks a nibble.
-  wire [63:0] vals = {r_frame, r_swap, r_bands, r_pass};
+  logic [4:0] fld;
+  logic [3:0] pos;
+
+  logic [7:0]  f_letter;
+  logic [23:0] f_value;
+  always_comb begin
+    case (fld)
+      5'd0:  begin f_letter = "F"; f_value = {8'd0, r_frame};  end
+      5'd1:  begin f_letter = "S"; f_value = {8'd0, r_swap};   end
+      5'd2:  begin f_letter = "B"; f_value = {8'd0, r_bands};  end
+      5'd3:  begin f_letter = "P"; f_value = {8'd0, r_pass};   end
+      5'd4:  begin f_letter = "C"; f_value = {8'd0, r_tpc};    end
+      5'd5:  begin f_letter = "R"; f_value = {8'd0, r_tret};   end
+      5'd6:  begin f_letter = "N"; f_value = {8'd0, r_npres};  end
+      5'd7:  begin f_letter = "V"; f_value = r_vpc;            end
+      5'd8:  begin f_letter = "X"; f_value = r_spc;            end
+      5'd9:  begin f_letter = "L"; f_value = {8'd0, r_plen};   end
+      5'd10: begin f_letter = "T"; f_value = {8'd0, r_late};   end
+      5'd11: begin f_letter = "W"; f_value = {8'd0, r_wband};  end
+      5'd12: begin f_letter = "D"; f_value = {8'd0, r_drop};   end
+      5'd13: begin f_letter = "H"; f_value = {8'd0, r_short};  end
+      5'd14: begin f_letter = "K"; f_value = {8'd0, r_vx1};    end
+      5'd15: begin f_letter = "M"; f_value = {8'd0, r_miss};   end
+      5'd16: begin f_letter = "O"; f_value = {16'd0, r_occ};   end
+      5'd17: begin f_letter = "Q"; f_value = {16'd0, r_wait};  end
+      5'd18: begin f_letter = "A"; f_value = {8'd0, r_pxl};    end
+      5'd19: begin f_letter = "Z"; f_value = {8'd0, r_pxr};    end
+      default: begin f_letter = "G"; f_value = {8'd0, r_oob};  end
+    endcase
+  end
+
+  // Position 0 is the letter, 1 the '=', 2..7 the six hex digits from the top
+  // down, 8 the separating space.
+  logic [3:0] nib;
+  always_comb begin
+    case (pos)
+      4'd2:    nib = f_value[23:20];
+      4'd3:    nib = f_value[19:16];
+      4'd4:    nib = f_value[15:12];
+      4'd5:    nib = f_value[11:8];
+      4'd6:    nib = f_value[7:4];
+      default: nib = f_value[3:0];
+    endcase
+  end
 
   always_comb begin
-    ch = 8'h20;
-    case (ci)
-      6'd0:  ch = "F";
-      6'd1:  ch = "=";
-      6'd2:  ch = hexc(vals[63:60]);
-      6'd3:  ch = hexc(vals[59:56]);
-      6'd4:  ch = hexc(vals[55:52]);
-      6'd5:  ch = hexc(vals[51:48]);
-      6'd6:  ch = " ";
-      6'd7:  ch = "S";
-      6'd8:  ch = "=";
-      6'd9:  ch = hexc(vals[47:44]);
-      8'd10: ch = hexc(vals[43:40]);
-      8'd11: ch = hexc(vals[39:36]);
-      8'd12: ch = hexc(vals[35:32]);
-      8'd13: ch = " ";
-      8'd14: ch = "B";
-      8'd15: ch = "=";
-      8'd16: ch = hexc(vals[31:28]);
-      8'd17: ch = hexc(vals[27:24]);
-      8'd18: ch = hexc(vals[23:20]);
-      8'd19: ch = hexc(vals[19:16]);
-      8'd20: ch = " ";
-      8'd21: ch = "P";
-      8'd22: ch = "=";
-      8'd23: ch = hexc(vals[15:12]);
-      8'd24: ch = hexc(vals[11:8]);
-      8'd25: ch = hexc(vals[7:4]);
-      8'd26: ch = hexc(vals[3:0]);
-      8'd27: ch = " ";
-      8'd28: ch = "C";
-      8'd29: ch = "=";
-      8'd30: ch = hexc(r_tpc[15:12]);
-      8'd31: ch = hexc(r_tpc[11:8]);
-      8'd32: ch = hexc(r_tpc[7:4]);
-      8'd33: ch = hexc(r_tpc[3:0]);
-      8'd34: ch = " ";
-      8'd35: ch = "R";
-      8'd36: ch = "=";
-      8'd37: ch = hexc(r_tret[15:12]);
-      8'd38: ch = hexc(r_tret[11:8]);
-      8'd39: ch = hexc(r_tret[7:4]);
-      8'd40: ch = hexc(r_tret[3:0]);
-      8'd41: ch = " ";
-      8'd42: ch = "N";
-      8'd43: ch = "=";
-      8'd44: ch = hexc(r_npres[15:12]);
-      8'd45: ch = hexc(r_npres[11:8]);
-      8'd46: ch = hexc(r_npres[7:4]);
-      8'd47: ch = hexc(r_npres[3:0]);
-      8'd48: ch = " ";
-      8'd49: ch = "V";
-      8'd50: ch = "=";
-      8'd51: ch = hexc(r_vpc[23:20]);
-      8'd52: ch = hexc(r_vpc[19:16]);
-      8'd53: ch = hexc(r_vpc[15:12]);
-      8'd54: ch = hexc(r_vpc[11:8]);
-      8'd55: ch = hexc(r_vpc[7:4]);
-      8'd56: ch = hexc(r_vpc[3:0]);
-      8'd57: ch = " ";
-      8'd58: ch = "X";
-      8'd59: ch = "=";
-      8'd60: ch = hexc(r_spc[23:20]);
-      8'd61: ch = hexc(r_spc[19:16]);
-      8'd62: ch = hexc(r_spc[15:12]);
-      8'd63: ch = hexc(r_spc[11:8]);
-      8'd64: ch = hexc(r_spc[7:4]);
-      8'd65: ch = hexc(r_spc[3:0]);
-      8'd66: ch = " ";
-      8'd67: ch = "L";
-      8'd68: ch = "=";
-      8'd69: ch = hexc(r_plen[15:12]);
-      8'd70: ch = hexc(r_plen[11:8]);
-      8'd71: ch = hexc(r_plen[7:4]);
-      8'd72: ch = hexc(r_plen[3:0]);
-      8'd73: ch = " ";
-      8'd74: ch = "T";
-      8'd75: ch = "=";
-      8'd76: ch = hexc(r_late[15:12]);
-      8'd77: ch = hexc(r_late[11:8]);
-      8'd78: ch = hexc(r_late[7:4]);
-      8'd79: ch = hexc(r_late[3:0]);
-      8'd80: ch = " ";
-      8'd81: ch = "W";
-      8'd82: ch = "=";
-      8'd83: ch = hexc(r_wband[15:12]);
-      8'd84: ch = hexc(r_wband[11:8]);
-      8'd85: ch = hexc(r_wband[7:4]);
-      8'd86: ch = hexc(r_wband[3:0]);
-      8'd87: ch = " ";
-      8'd88: ch = "D";
-      8'd89: ch = "=";
-      8'd90: ch = hexc(r_drop[15:12]);
-      8'd91: ch = hexc(r_drop[11:8]);
-      8'd92: ch = hexc(r_drop[7:4]);
-      8'd93: ch = hexc(r_drop[3:0]);
-      8'd94: ch = " ";
-      8'd95: ch = "H";
-      8'd96: ch = "=";
-      8'd97: ch = hexc(r_short[15:12]);
-      8'd98: ch = hexc(r_short[11:8]);
-      8'd99: ch = hexc(r_short[7:4]);
-      8'd100: ch = hexc(r_short[3:0]);
-      8'd101: ch = " ";
-      8'd102: ch = "K";
-      8'd103: ch = "=";
-      8'd104: ch = hexc(r_vx1[15:12]);
-      8'd105: ch = hexc(r_vx1[11:8]);
-      8'd106: ch = hexc(r_vx1[7:4]);
-      8'd107: ch = hexc(r_vx1[3:0]);
-      8'd108: ch = " ";
-      8'd109: ch = "M";
-      8'd110: ch = "=";
-      8'd111: ch = hexc(r_miss[15:12]);
-      8'd112: ch = hexc(r_miss[11:8]);
-      8'd113: ch = hexc(r_miss[7:4]);
-      8'd114: ch = hexc(r_miss[3:0]);
-      8'd115: ch = " ";
-      8'd116: ch = "O";
-      8'd117: ch = "=";
-      8'd118: ch = hexc(r_occ[7:4]);
-      8'd119: ch = hexc(r_occ[3:0]);
-      8'd120: ch = " ";
-      8'd121: ch = "Q";
-      8'd122: ch = "=";
-      8'd123: ch = hexc(r_wait[7:4]);
-      8'd124: ch = hexc(r_wait[3:0]);
-      8'd125: ch = " ";
-      8'd126: ch = "A";
-      8'd127: ch = "=";
-      8'd128: ch = hexc(r_pxl[15:12]);
-      8'd129: ch = hexc(r_pxl[11:8]);
-      8'd130: ch = hexc(r_pxl[7:4]);
-      8'd131: ch = hexc(r_pxl[3:0]);
-      8'd132: ch = " ";
-      8'd133: ch = "Z";
-      8'd134: ch = "=";
-      8'd135: ch = hexc(r_pxr[15:12]);
-      8'd136: ch = hexc(r_pxr[11:8]);
-      8'd137: ch = hexc(r_pxr[7:4]);
-      8'd138: ch = hexc(r_pxr[3:0]);
-      8'd139: ch = " ";
-      8'd140: ch = "G";
-      8'd141: ch = "=";
-      8'd142: ch = hexc(r_oob[15:12]);
-      8'd143: ch = hexc(r_oob[11:8]);
-      8'd144: ch = hexc(r_oob[7:4]);
-      8'd145: ch = hexc(r_oob[3:0]);
-      8'd146: ch = 8'h0d;
-      default: ch = 8'h0a;
-    endcase
+    if (ci >= 8'(NF * FW))
+      ch = (ci == 8'(NF * FW)) ? 8'h0d : 8'h0a;
+    else if (pos == 4'd0) ch = f_letter;
+    else if (pos == 4'd1) ch = "=";
+    else if (pos == 4'd8) ch = " ";
+    else                  ch = hexc(nib);
   end
 
   assign wr = busy && !full;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      busy <= 1'b0; ci <= '0;
+      busy <= 1'b0; ci <= '0; fld <= '0; pos <= '0;
     end else begin
       if (report_go) begin
-        busy <= 1'b1; ci <= '0;
+        busy <= 1'b1; ci <= '0; fld <= '0; pos <= '0;
       end else if (busy && !full) begin
+        // The field and position counters walk in step with ci. They are what
+        // keep the character mux small; ci itself only decides where the line
+        // ends.
+        if (pos == 4'(FW - 1)) begin
+          pos <= '0;
+          fld <= fld + 5'd1;
+        end else begin
+          pos <= pos + 4'd1;
+        end
         // SEVEN BITS HERE TOO. Widening the declaration and the case items was
         // not enough: 6'(NCH-1) truncated 67 to 3, so every line ended after
         // "F=00" and restarted. On the wire that looks like UART corruption,
