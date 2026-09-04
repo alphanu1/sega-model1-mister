@@ -1,51 +1,34 @@
 # KNOWN GOOD — confirmed working on the board
 
-**Commit:** `a207c47` — flip-triggered geometry pass, two dividers in the fill
-**Built:** 2026-09-03, Quartus 17.0, `M1_SEED=3`, MISTER_DISABLE_YC + MISTER_DISABLE_ALSA
-**Confirmed on hardware by Ben, 2026-09-03 evening: "no missing bands".**
+**Commit:** `7074377` — the 3D layer complete: flip-triggered pass, two fill
+dividers, the reciprocal table, the 3,072-quad store, 16-bit vertices, and
+band 0 given the last band's slot
+**Built:** 2026-09-04, Quartus 17.0, `M1_SEED=11`, MISTER_DISABLE_YC + MISTER_DISABLE_ALSA
+**Confirmed on hardware by Ben, 2026-09-04: "looking good. barely any band 0
+overruns, 1 or 2 over a few minutes."**
 
-    Model1.rbf      md5 f2e0be6e039602f968fefd4e0252ec2c
-    ALM             ~38,700 / 41,910 (93%)
-    M10K            496 / 553 (90%)
-    setup slack     +0.183 ns
+    Model1.rbf      md5 79c69a2b7532f08ea9d9cf1eeed54f64
+    ALM             ~39,300 / 41,910 (94%)
+    M10K            536 / 553 (97%)
+    setup slack     +0.325 ns
     errors          0
 
-Telemetry over /dev/ttyS1, in uart_twodiv_seed3.txt (copied from build/):
+Telemetry over /dev/ttyS1, in uart_band0_seed11.txt:
 
-    F=003A S=001B B=+1D P=005F L=16FB T=0000 W=07D2 D=777F H=0003
+    S=0019 P=001C L=1946 T=0452 W=099F   and the rest of the line
 
-    B  now advances one per swap - the geometry pass starts on the game's list
-       flip and no longer loses a frame between the swap and the frame pulse
-    L  pass length, 256-cycle units; 0C7C is a frame. 1.35-2.15 frames here
-    T  bands presented LATE - zero for 110 s; the two dividers did that
-    W  worst band fill in the second, 16-cycle units; a slot is 0853
-    D  quads the 2,048-quad store could not hold, summed - THOUSANDS a second
-       in the attract pit stop; the grandstand is what falls off. Open.
-    H  passes shorter than half the previous one - rare, the walk is complete
+    B  completed geometry passes - equal to S now, was 2/3 of it
+    L  pass length, 256-cycle units; a frame is 0C7C
+    T  bands presented LATE. 10 a second here, and Ben sees band 0 drop only
+       once or twice a minute, so these are OTHER bands and the buffer ring
+       absorbs them. The commit after this splits T into band 0 and the rest
+       so it need not be inferred again.
+    W  worst band fill in the window, 16-cycle units; a slot is 0853
+    D  quads the 3,072-quad store could not hold. Still nonzero in bursts
+    H  was the store's out-of-range vertex count, now the band-0 late count
 
-The previous known-good (`284d872`, rung 8) is superseded; its notes on
-uptime and recovery below still apply.
-
-Telemetry over /dev/ttyS1, in uart_working_reference.txt:
-
-    F=003A S=001D B=01C5 P=0030 C=004C R=3C1D
-
-**THIS BUILD RUNS AT ~97% OF HARDWARE SPEED.** The metric is frames-per-swap,
-F/S, where 2.00 is 100%. S went from 13-14 to 27-29 when the coprocessor moved
-to 2:1, taking F/S from 4.30 to 2.05 - the board had been at ~46%.
-
-    F  video frames in the reporting window (58 = ~1 s, NOT game speed)
-    S  display-list swaps: one per completed logic frame
-    B  completed 3D GEOMETRY PASSES, free-running - NOT bands, whatever the
-       old comment said. On rung 8 it advances ~20 a second against ~28 swaps,
-       so ~8 logic frames a second finish no new geometry and the display holds
-       the previous pass. That is the "bands not drawn in busy scenes" symptom
-    P  objects, NON-ZERO IS THE PASS SIGNATURE - every failed image during the
-       two-day black-screen episode showed P=0000
-    C  TGP program counter. 004C is the idle dispatch, where it waits, so
-       sampling once a second usually catches it there
-    R  TGP retire count, free-running 16-bit. It WRAPS between samples here,
-       which is what a busy coprocessor looks like
+Five defects were found and fixed against the board to get here; see
+docs/HANDOFF.md for the mechanisms and docs/findings.md for the measurements.
 
 ## UPTIME CAN LOOK EXACTLY LIKE AN RTL BUG
 
