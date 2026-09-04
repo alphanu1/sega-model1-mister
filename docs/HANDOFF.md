@@ -96,8 +96,12 @@ against `dbg_wr_stb`'s timing first, on clk_cpu.
 
 **And it does not fit.** Seed 11 of a3bc86f: **41,342 ALM (99%), 546 M10K
 (99%), -0.088 ns**. The board costs ~2,000 ALM in context against the 1,624
-it measures alone, and the design was already at 94%. That is not a seed
-problem and no amount of reseeding fixes it.
+it measures alone, and the design was already at 94%.
+
+**Seed 5 did not fit AT ALL** - `Error (170143): Final fitting attempt was
+unsuccessful` - so this is not the timing lottery in a new hat. At 99% the
+fitter fails outright on some seeds and scrapes through on others, and a
+design that depends on which seed it drew is not a design.
 
 So the V60 split is no longer optional - it is the prerequisite. D9 said the
 LLE would need ~1,700 ALM from `S32_V60_NO_FP`; that lever is spent (the game
