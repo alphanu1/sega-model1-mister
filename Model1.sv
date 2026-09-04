@@ -114,8 +114,15 @@ module emu
   // mismatch there is invisible until someone presses the button.
   wire io_accel_b  = joy0[4];
   wire io_brake_b  = joy0[5];
-  wire io_shift_up = joy0[6];
-  wire io_shift_dn = joy0[7];
+  // THE GEARBOX IS ON THE D-PAD AS WELL AS ON BUTTONS.
+  //
+  // Six face buttons against eight controls - two pedals, two gears and four
+  // view buttons - leaves two unmapped, and the four VR buttons are what a
+  // player actually uses. The d-pad's up and down are free, because steering
+  // takes only left and right, and up/down for gears is what a driving game
+  // does anyway. Both routes are live: whichever the player has mapped works.
+  wire io_shift_up = joy0[6] | joy0[3];   // button, or d-pad up
+  wire io_shift_dn = joy0[7] | joy0[2];   // button, or d-pad down
   wire io_vr1      = joy0[8];
   wire io_vr2      = joy0[9];
   wire io_vr3      = joy0[10];
@@ -163,6 +170,12 @@ module emu
   //
   // The d-pad goes to full lock rather than ramping. That is what a digital
   // steering input does on the cabinet, and a pad has no travel to interpolate.
+  //
+  // THE LEFT ANALOGUE STICK STEERS PROPORTIONALLY, and takes priority only
+  // when the d-pad is idle - a player holding full lock means it. hps_io
+  // delivers the axis as signed, centred at zero, and the wheel wants unsigned
+  // centred at 0x80, so the sign bit is inverted rather than the value offset:
+  // the same conversion, without an adder that could overflow at the extremes.
   wire [7:0] wheel_stick = {~joy0_lstick[7], joy0_lstick[6:0]};
   wire [7:0] io_wheel = io_steer_l ? 8'h00 :
                         io_steer_r ? 8'hff : wheel_stick;

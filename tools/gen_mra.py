@@ -417,13 +417,17 @@ def emit(setname, chunks, cross_checked):
         #   8 VR1          9 VR2        10 VR3       11 VR4
         #  12 start       13 coin       14 service   15 test      16 coin 2
         #
-        # The d-pad steers: bit 0 right, bit 1 left, to full lock, and the
-        # left analogue stick steers proportionally if the pad has one.
-        # Service and test are also on the OSD, so they are named but left
-        # unmapped rather than eating a face button.
+        # STEERING: d-pad left and right go to full lock, and the LEFT
+        # ANALOGUE STICK steers proportionally when the d-pad is idle.
+        #
+        # THE GEARBOX IS ON THE D-PAD's UP AND DOWN as well as on its named
+        # buttons, which is why those two are left unmapped here: six face
+        # buttons against eight controls means two lose out, and the four VR
+        # view buttons are what a player actually reaches for. Service and
+        # test stay named but unmapped too, since both are on the OSD.
         '    <buttons names="Accelerate,Brake,Shift Up,Shift Down,'
         'VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" '
-        'default="A,B,R,L,X,Y,-,-,Start,Select"/>',
+        'default="A,B,-,-,X,Y,L,R,Start,Select"/>',
         '</misterromdescription>',
         '',
     ]
