@@ -456,12 +456,26 @@ It also explains why the drop counter is zero: the quads are not being
 dropped for want of room, they are being CLIPPED AWAY before they are stored,
 which is a different path entirely and counts nowhere.
 
-**The measurement**: m1_raster3d already exposes dbg_xc, dbg_yc, dbg_zoomx,
-dbg_zoomy, dbg_viewx and dbg_viewy, and none of them reach the wire. Putting
-one word of view state on the UART would show a corrupted viewport directly -
-if vx1 reads 248 rather than 0 when the fault is on screen, that is the whole
-answer. The frame bench can also reach gameplay now (FRAME_COIN inserts a
-coin and presses start), so the same values can be watched in simulation.
+**Tried in simulation and INCONCLUSIVE, because the run never reached
+gameplay.** `FRAME_COIN=300000000` inserts a coin and presses start, and over
+700 M cycles the viewport latched 606 times with vx1 never leaving 0 and x2
+steady at 495.0 - but the run finished with 6 quads and no objects, still in
+attract. A viewport that behaves in attract says nothing about one under
+gameplay load, so this neither confirms nor refutes anything.
+
+**What is needed first is a gameplay repro in simulation**, and the coin
+sequence is not enough on its own: two 0.375 s presses of coin then start
+leave the game in attract. Whether it needs more credits, a longer press, a
+different DIP setting, or simply more time after the start is unmeasured -
+`f_ctrl` and the layer census are already printed and would show the state
+change when it works.
+
+**The alternative is the wire**: m1_raster3d exposes dbg_xc, dbg_yc,
+dbg_zoomx, dbg_zoomy, dbg_viewx and dbg_viewy and none of them reach the
+UART. One word of view state there would show a corrupted viewport directly
+on the board, where the fault definitely happens - if vx1 reads 248 rather
+than 0 while the fault is on screen, that is the whole answer. That costs a
+build; the simulation route costs none, which is why it was tried first.
 
 **What would cause it** is the next question and is unmeasured: a walk that
 reads command 3 while the V60 is mid-update would do it, and the pass now

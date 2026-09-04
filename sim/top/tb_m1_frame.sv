@@ -1607,6 +1607,25 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------- THE VIEWPORT, WHICH THE CLIPPER TRUSTS
+//
+// A latched viewport is the hypothesis for the left half of the 3D vanishing:
+// vx1/vx2 become the frustum's left and right planes, so a wrong vx1 clips
+// everything left of it and keeps doing so until the game writes the viewport
+// again. Watch the extremes rather than a snapshot - the fault appears during
+// a busy frame and persists, so what matters is whether the value EVER goes
+// wrong, not what it reads at the end.
+integer vp_n = 0;
+reg [31:0] vp_x1_min = 32'h7fffffff, vp_x1_max = 0;
+reg [31:0] vp_seen [0:7];
+always @(posedge clk_3d) begin
+    if (core.u_raster3d.rst_n && core.u_raster3d.vp_lat) begin
+        vp_n = vp_n + 1;
+        if (core.u_raster3d.vx1 < vp_x1_min) vp_x1_min = core.u_raster3d.vx1;
+        if (core.u_raster3d.vx1 > vp_x1_max) vp_x1_max = core.u_raster3d.vx1;
+    end
+end
+
 // ------------------------------------------------ STARTING A GAME
 //
 // PRESS_IN0 holds ONE value for the whole run, which reaches attract and
@@ -2181,6 +2200,10 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $display("FRAME: viewport latched %0d times; vx1 ranged %08h .. %08h, final xc=%08h yc=%08h x1=%08h x2=%08h",
+                 vp_n, vp_x1_min, vp_x1_max,
+                 core.u_raster3d.vxc, core.u_raster3d.vyc,
+                 core.u_raster3d.vx1, core.u_raster3d.vx2);
         $write("FRAME: shared RAM contents 018..022:");
         for (zrd_i = 24; zrd_i < 35; zrd_i = zrd_i + 1)
             $write(" %03h=%02h", zrd_i, core.main.rams.dpram_lo[zrd_i]);
