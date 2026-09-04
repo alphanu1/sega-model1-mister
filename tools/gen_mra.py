@@ -405,7 +405,25 @@ def emit(setname, chunks, cross_checked):
         '',
         '    <nvram index="255" size="256"/>',
         '',
-        '    <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>',
+        # THE NAMES FOLLOW Model1.sv's joy0 BITS, and the old ones did not.
+        #
+        # MiSTer names buttons from joystick bit 4 upward, bits 0-3 being the
+        # d-pad. Model1.sv wires bit 4 to the accelerator, but this element
+        # called it Start - so every button the OSD offered was mislabelled by
+        # eight positions and the pedals were not offered at all. The core's
+        # order, from Model1.sv:
+        #
+        #   4 accelerate   5 brake       6 shift up   7 shift down
+        #   8 VR1          9 VR2        10 VR3       11 VR4
+        #  12 start       13 coin       14 service   15 test      16 coin 2
+        #
+        # The d-pad steers: bit 0 right, bit 1 left, to full lock, and the
+        # left analogue stick steers proportionally if the pad has one.
+        # Service and test are also on the OSD, so they are named but left
+        # unmapped rather than eating a face button.
+        '    <buttons names="Accelerate,Brake,Shift Up,Shift Down,'
+        'VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" '
+        'default="A,B,R,L,X,Y,-,-,Start,Select"/>',
         '</misterromdescription>',
         '',
     ]
