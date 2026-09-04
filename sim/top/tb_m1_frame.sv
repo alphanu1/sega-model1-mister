@@ -1889,7 +1889,7 @@ initial for (int i = 0; i < 7; i++) cst_cyc[i] = 0;
 // tested is worse than no measurement.
 integer cl_wait = 0, cl_n = 0;
 reg     d_creq = 0;
-always @(posedge clk) begin
+always @(posedge clk) if (loader_done) begin
     d_creq <= char_req;
     if (char_req)            cl_wait = cl_wait + 1;
     if (char_req && !d_creq) cl_n    = cl_n + 1;
@@ -1924,7 +1924,21 @@ end
 // pend[1] is set on the request rising edge and cleared on completion, so it
 // is exactly "the controller has this request and has not finished it".
 integer ph_arb = 0, ph_svc = 0, ph_gap = 0, ph_idlearb = 0;
-always @(posedge clk) begin
+integer st_hist [0:15];
+integer why_ref = 0, why_wr = 0, why_wr_after = 0, why_narb = 0, why_other = 0, why_else = 0;
+integer sti;
+initial for (sti = 0; sti < 16; sti = sti + 1) st_hist[sti] = 0;
+// GATED ON THE ROM LOAD FINISHING, and this is not a detail.
+//
+// Ungated, the averages were 200 cycles of arbitration wait against 15 of
+// service, and 95% of the idle-but-not-granted cycles went to the write port.
+// Every one of those was during the download, when the write port is meant to
+// win and game logic is held in reset. The number described a phase in which
+// the machine is not running, and it produced two confident wrong causes in a
+// row - first the round-robin, then the write port. Giving the tile fetch
+// strict priority changed the figure by nothing at all, which is what exposed
+// it: a fix that cannot move a measurement is usually aimed at the wrong thing.
+always @(posedge clk) if (loader_done) begin
     if (sdram.pend[1] && !sdram.inflight[1]) begin
         ph_arb = ph_arb + 1;
         // Waiting for a turn while the controller has nothing to do. This is
@@ -1932,6 +1946,27 @@ always @(posedge clk) begin
         // pipeline: if it is near zero the port waits because the memory is
         // genuinely busy, and no arbitration change can help.
         if (sdram.state == 4'd1) ph_idlearb = ph_idlearb + 1;   // S_IDLE
+        // WHAT IS ACTUALLY HOLDING IT. Giving the tile port strict priority
+        // changed the 200-cycle wait by nothing at all, so the wait is not
+        // other ports winning the arbitration - it is something else entirely,
+        // and guessing at it twice is enough.
+        st_hist[sdram.state] = st_hist[sdram.state] + 1;
+        if (sdram.state == 4'd1) begin
+            // Idle AND the port is pending: why was it not granted?
+            if (sdram.ref_pend)            why_ref  = why_ref  + 1;
+            else if (sdram.wr_pend)      begin
+                why_wr = why_wr + 1;
+                // Is the ROM loader STILL streaming this late, or has something
+                // else taken over its port? The port's own comment says
+                // starving the readers costs nothing "while it is active,
+                // because game logic is held in reset during download" - an
+                // assumption that is false the moment it is active afterwards.
+                if (loader_done) why_wr_after = why_wr_after + 1;
+            end
+            else if (!sdram.arb_valid)     why_narb = why_narb + 1;
+            else if (sdram.arb_grant != 3'd1) why_other = why_other + 1;
+            else                           why_else = why_else + 1;
+        end
     end else if (sdram.pend[1]) begin
         ph_svc = ph_svc + 1;
     end else if (cl_n > 0) begin
@@ -2368,6 +2403,14 @@ initial begin
         $display("FRAME: char wait split: arb=%0d (%0d/req) service=%0d (%0d/req) gap=%0d (%0d/req), of the arb wait %0d cycles had the controller IDLE",
                  ph_arb, ph_arb / cl_n, ph_svc, ph_svc / cl_n,
                  ph_gap, ph_gap / cl_n, ph_idlearb);
+        $display("FRAME: while the tile port waited, the controller was in state: INIT=%0d IDLE=%0d DISPATCH=%0d PRE_XFER=%0d ACT=%0d RCD=%0d RD=%0d WR=%0d WRRC=%0d PRE_REF=%0d REFW=%0d",
+                 st_hist[0], st_hist[1], st_hist[2], st_hist[3], st_hist[4],
+                 st_hist[5], st_hist[6], st_hist[7], st_hist[8], st_hist[9],
+                 st_hist[10]);
+        $display("FRAME: idle-but-not-granted because: refresh=%0d write=%0d no-arb-decision=%0d granted-elsewhere=%0d other=%0d",
+                 why_ref, why_wr, why_narb, why_other, why_else);
+        $display("FRAME: of those write wins, %0d happened AFTER the ROM load finished",
+                 why_wr_after);
     end
     $display("PROBE: %0d distinct palette words, %0d distinct tile words, %0d distinct palette INDICES",
              npal, ntram, npaddr);

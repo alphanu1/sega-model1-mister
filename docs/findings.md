@@ -20,6 +20,70 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-04 — THE 103-CYCLE CHARACTER FETCH WAIT IS 18 CYCLES. The famous unexplained number was an average taken across the ROM download
+
+`HANDOFF.md` item 6 has recorded since M1 began that a character fetch waits an
+average of **103 cycles**, that this is "far more than a round-robin turn
+between three active ports should cost", and that it is "not understood". It
+said to find out where the time goes before changing `m1_sdram`.
+
+**The time was never going anywhere. The measurement included the ROM load.**
+
+`tb_m1_frame` counted from reset, and for the first tens of millions of cycles
+the loader is streaming the ROM image into SDRAM through the dedicated write
+port - which sits unconditionally above every read port, deliberately, because
+game logic is held in reset during download. Averaging the tile port's wait
+across that phase describes a machine that is not running.
+
+Gated on `loader_done`:
+
+| | Ungated | Gated on the load finishing |
+|---|---|---|
+| Total wait per fetch | 217 cycles | **18** |
+| Waiting for a grant | 200 | **2** |
+| Being served | 15 | 15 |
+| Idle-but-not-granted, write port winning | 95% | **0%** |
+
+Two cycles of arbitration is as good as this controller can do. The wait is the
+transfer itself.
+
+### How the error was caught, which is the transferable part
+
+By a fix that did nothing. The ungated split pointed at round-robin, so the tile
+port was given strict priority over the other six - and the figure moved by
+**nothing at all**, 200 cycles before and 200 after. A change that cannot move
+the number it targets is aimed at the wrong thing, and that is what prompted
+gating the counter rather than trusting it.
+
+The second wrong cause came from the same contaminated data: with priority in
+and nothing changed, a state histogram said 70% of the wait was spent in write
+and write-recovery, and 95% of the idle-with-request-pending cycles went to the
+write port. True, and entirely the download. Counting how many of those
+happened **after** `loader_done` returned zero.
+
+The priority arbiter was **reverted**. It was justified by a contaminated
+measurement, it adds logic to this design's worst timing path, and the clean
+number says arbitration costs two cycles.
+
+### What this rules out
+
+- **The SDRAM is not what causes the tile overruns.** The port is served in 18
+  cycles and still misses 9,434 deadlines in the run. Neither faster memory nor
+  better arbitration can recover time that is not being lost there.
+- **The 133 MHz clock lift is not the fix for this defect either.** Its case now
+  rests on the geometry pass and on nothing else measured.
+
+### Where the overruns actually come from
+
+`m1_video.sv` has said so all along, in the comment beside the overrun counter:
+a line's worth of fetching is 3,936 core cycles and **four dense layers need
+about 6,456**. That is the fetch engine's own emission and per-column cost, not
+memory latency. The repairs are fewer fetches per line or overlapping them -
+wider bursts, or more than one request in flight, which is the one place the
+N64 controller's FIFO-and-`reqprocessed` shape genuinely applies here.
+
+---
+
 ## 2026-09-04 — THE TILE OVERRUNS ARE REAL AND THE SDRAM IS NOT THE CAUSE. The memory has 70% of its cycles free while the tile port misses 2,175 deadlines a second
 
 Ben's reading was that the tile overruns and the 3D dropout together point at
