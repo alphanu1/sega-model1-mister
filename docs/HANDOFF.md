@@ -43,6 +43,46 @@ that arming suppressed. Ben also suggested a fourth band buffer: it is
 affordable now (~16 M10K) but does not address this, because band 0's
 constraint is when its fill may START, not where the result goes.
 
+## 2026-09-04 — THE SDRAM CLOCK IS THE LEVER, and 133 MHz is free arithmetic
+
+Ben's proposal, and it targets the one thing that is measured to hurt: the
+V60 stalls on memory for **49.67% of its cycles**, which is the frame-rate
+dip in busy scenes, and he sees TILE overruns as well as the 3D dropout -
+two different consumers of one controller failing together is a bandwidth
+signature.
+
+**133.33 MHz needs no new VCO.** Every clock here is an integer division of
+the same 800 MHz: 800/10 = 80 for clk_sys and the SDRAM pin, 800/17 = 47.059
+for clk_3d, 800/34 = 23.529 for clk_cpu. **800/6 = 133.33** is the next step
+up and is +67% bandwidth.
+
+**Most of the crossing already exists.** The CPU data port, the coprocessor's
+regions and both 3D masters reach the controller through `m1_cdc_port`, which
+is precisely the asynchronous handshake this needs; retargeting them from
+clk_sys to a 133 MHz domain is a parameter, not a redesign.
+
+**The one that does not is the character fetch.** It runs directly on clk_sys
+into the controller and is the most deadline-sensitive master in the design -
+`dbg_overruns` exists for it. Giving it a crossing costs latency at the same
+moment faster memory returns latency, so that trade has to be measured rather
+than assumed.
+
+### And the board cannot currently see the thing Ben is describing
+
+`dbg_overruns` - the tile fetch's deadline misses - reaches the frame bench
+and NOT the UART. It was on the debug overlay, which is now off. So "we also
+have tile overrun" is an eye observation with no counter behind it, and the
+next telemetry build should carry it: it is the direct measurement of whether
+the 2D is starved, and it decides whether the SDRAM clock is the answer or
+just a plausible story.
+
+### Order of work
+
+    1  put dbg_overruns on the UART, with the clip plane already added
+    2  read both on the board during gameplay
+    3  if the tile misses are real, raise the SDRAM clock to 800/6
+    4  measure the character fetch's crossing cost against what it gains
+
 ## 2026-09-04 — THE tv80 I/O BOARD WORKS
 
 A real Z80 running EPR-14869 answers the V60's boot handshake and the game
