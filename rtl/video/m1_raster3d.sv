@@ -185,6 +185,11 @@ module m1_raster3d #(
   output logic [15:0] dbg_short /* verilator public_flat_rd */,
   // Vertices the store could not hold in 9+9 bits, both banks summed.
   output logic [15:0] dbg_oob /* verilator public_flat_rd */,
+  // Late bands SPLIT BY INDEX: band 0 against every other band. Four
+  // iterations of this defect were spent inferring which band was late from
+  // a single total and from what Ben could see; the two have different
+  // causes and different fixes, so the counter says which.
+  output logic [15:0] dbg_late0 /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -920,7 +925,7 @@ module m1_raster3d #(
       frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped <= 1'b0;
       swept <= 1'b0; early_sweep <= 1'b0;
       dbg_band_cycles <= '0; dbg_bands <= '0; band_timer <= '0;
-      dbg_pass_cycles <= '0; pass_timer <= '0; dbg_late <= '0;
+      dbg_pass_cycles <= '0; pass_timer <= '0; dbg_late <= '0; dbg_late0 <= '0;
       dbg_drop_total <= '0; dbg_short <= '0; prev_objs <= '0;
       vp_lat <= 1'b0;
       fill_buf <= 2'd0; ready_buf <= 2'd1; disp_buf <= 2'd2;
@@ -1123,7 +1128,9 @@ module m1_raster3d #(
       if (ev_present) dbg_bands <= dbg_bands + 16'd1;
       // Late: band 0 outside blanking (it was armed and caught up mid-frame),
       // any other band with the beam already below its top row.
-      if (ev_present && ((want_ext == '0) ? !beam_blank : (beam_ext > want_ext)))
+      if (ev_present && (want_ext == '0) && !beam_blank)
+        dbg_late0 <= dbg_late0 + 16'd1;
+      if (ev_present && (want_ext != '0) && (beam_ext > want_ext))
         dbg_late <= dbg_late + 16'd1;
 
       // ---- PRODUCER: list walk, geometry, sort, into store `bank`
