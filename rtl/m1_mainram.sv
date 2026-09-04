@@ -298,20 +298,28 @@ module m1_mainram (
 
   (* ramstyle = "M10K" *) logic [7:0] dpram_lo [2048];
   (* ramstyle = "M10K" *) logic [7:0] dpram_hi [2048];
-  // A SECOND COPY OF THE LOW BYTES, for the I/O board's read port.
+  // THE I/O BOARD SHARES THE V60'S READ PORT rather than getting a copy.
   //
-  // An M10K has two ports and dpram_lo already uses both - the shared write
-  // and the V60's read - so a third reader has to be a copy. Written from
-  // exactly the same signals in the same cycle, so it cannot drift; the cost
-  // is 2 blocks. The alternative, time-multiplexing the V60's read port, puts
-  // the I/O board in the CPU's path for no benefit.
-  (* ramstyle = "M10K" *) logic [7:0] dpram_io [2048];
+  // An M10K has two ports and dpram_lo uses both - the shared write and the
+  // V60's read - so a third reader needs either a duplicate array or the
+  // existing port on the cycles nobody else wants it. The duplicate was tried
+  // first and cost 2 blocks, which the design cannot spare: adding the Z80
+  // board took memory to 546 of 553 and the framework's scaler path from
+  // +0.325 ns to -2.003, because placement at 99% memory is what lengthens it.
+  //
+  // Sharing is safe here in a way it would not be for a CPU. The Z80 sets the
+  // DPRAM address through the 315-5338A with one command and reads the data
+  // back with a later one, so its address is held for hundreds of cycles and
+  // it does not care which of them answers. The V60 keeps absolute priority
+  // and never waits.
+  wire dp_v60_rd = sel_dpram;
   always_ff @(posedge clk) begin
     if (dp_we)             dpram_lo[dp_waddr]   <= dp_wdata;
-    if (dp_we)             dpram_io[dp_waddr]   <= dp_wdata;
     if (dpram_we && be[1]) dpram_hi[addr[11:1]] <= wdata[15:8];
-    dpram_q  <= {dpram_hi[addr[11:1]], dpram_lo[addr[11:1]]};
-    io_rdata <= dpram_io[io_raddr];
+    dpram_q  <= {dpram_hi[addr[11:1]], dpram_lo[dp_v60_rd ? addr[11:1] : io_raddr]};
+    // Only sampled on a cycle the V60 was not reading, so it is always this
+    // array's answer to io_raddr and never the CPU's word.
+    if (!dp_v60_rd) io_rdata <= dpram_lo[io_raddr];
   end
 
   // ------------------------------------------------- POWER-ON CONTENTS ARE ZERO
@@ -372,7 +380,7 @@ module m1_mainram (
     // now, along with the tile RAM and the palette. Only the DPRAM is still a
     // plain array here.
     for (zi = 0; zi < 2048; zi = zi + 1) begin
-      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0; dpram_io[zi] = 8'd0;
+      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
     end
   end
 
