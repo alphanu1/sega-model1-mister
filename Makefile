@@ -47,7 +47,7 @@ SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
 SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv \
   rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
   rtl/io/m1_rom_loader.sv rtl/io/m1_speed_report.sv rtl/io/m1_uart_tx.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
@@ -102,7 +102,7 @@ SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
-  rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
+  rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv \

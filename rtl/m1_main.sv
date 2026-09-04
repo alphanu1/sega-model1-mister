@@ -71,6 +71,11 @@ module m1_main #(
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
 
+  // The I/O board's Z80 firmware, from the ROM loader's own download index.
+  input  logic        iofw_we,
+  input  logic [12:0] iofw_addr,
+  input  logic [15:0] iofw_data,
+
   // ------------------------------------------------- coprocessor microcode
   // From m1_rom_loader, in the FAST memory domain. The program RAM inside
   // m1_tgp is dual-clock for this reason; the write side finishes before the
@@ -343,6 +348,10 @@ module m1_main #(
   // The I/O board's far side of the DPRAM. Tied off when IOBOARD is 0 so the
   // port cannot float into the RAM.
   logic        io_we, io_ack;
+  // The Z80 I/O board's read side of the shared RAM. Unused by the
+  // behavioural board, which only ever wrote it.
+  logic [10:0] io_raddr;
+  wire  [7:0]  io_rdata;
   logic [10:0] io_addr;
   logic [7:0]  io_din;
 
@@ -361,7 +370,8 @@ module m1_main #(
     .r3d_dl_data(r3d_dl_data),
     .r3d_xlat_addr(r3d_xlat_addr), .r3d_xlat_data(r3d_xlat_data),
     .r3d_pal_addr(r3d_pal_addr), .r3d_pal_data(r3d_pal_data),
-    .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack)
+    .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack),
+    .io_raddr(io_raddr), .io_rdata(io_rdata)
   );
 
   // Counted on the CPU's own write strobe, upstream of the RAM, so a fault
@@ -465,21 +475,50 @@ module m1_main #(
   // ------------------------------------------------------- I/O board
   // Answers the boot handshake through the DPRAM's far side. What it covers
   // and what it deliberately does not is in m1_ioboard.sv's header.
+  // THE REAL BOARD: a Z80 running EPR-14869, not an imitation of it.
+  //
+  // Decision D9 chose a behavioural I/O board on an area budget made of
+  // estimates, and said in its own words that the choice should be revisited
+  // once the real numbers were known. They are, and Ben's call on 2026-09-04
+  // is the Z80. The firmware is a MAME BIOS set, which is what made it
+  // possible: model1io.zip is required to run any Model 1 game in MAME too.
+  //
+  // The inputs come out of `in_bytes` rather than through new ports of their
+  // own. That bus is the fifteen bytes the behavioural board published at
+  // DPRAM 0x00 upward, and its layout is exactly what the Z80 wants: the
+  // three control ports at 0x08-0x0a, the three DIP banks at 0x0b-0x0d, and
+  // the wheel, accelerator and brake at 0x00-0x02 for the ADC channels.
   generate
     if (IOBOARD) begin : g_ioboard
-      m1_ioboard ioboard (
+      m1_ioz80 ioboard (
         .clk(clk), .rst_n(rst_n),
-        .in_bytes(in_bytes),
-        .v60_req(m_req), .v60_we(m_we), .v60_sel_dpram(sel_dpram),
-        .v60_addr(m_addr[11:1]), .v60_wdata(m_wdata[7:0]),
-        .io_we(io_we), .io_addr(io_addr), .io_din(io_din), .io_ack(io_ack),
-        .replies(dbg_io_replies)
+        .fw_we(iofw_we), .fw_addr(iofw_addr), .fw_data(iofw_data),
+        .in0 (in_bytes[8*8  +: 8]),
+        .in1 (in_bytes[9*8  +: 8]),
+        .in2 (in_bytes[10*8 +: 8]),
+        .dsw1(in_bytes[11*8 +: 8]),
+        .dsw2(in_bytes[12*8 +: 8]),
+        .dsw3(in_bytes[13*8 +: 8]),
+        // Busy while the V60 owns the shared write port, which is what the
+        // firmware's status waits are waiting on.
+        .dp_busy(io_we && !io_ack),
+        .adc0(in_bytes[0*8 +: 8]),   // wheel, centre 0x80
+        .adc1(in_bytes[1*8 +: 8]),   // accelerator
+        .adc2(in_bytes[2*8 +: 8]),   // brake
+        .adc3(8'hff),
+        .z_we(io_we), .z_addr(io_addr), .z_wdata(io_din), .z_rdata(io_rdata),
+        .dbg_ee(), .dbg_wrcnt(dbg_io_replies), .dbg_wr_stb(),
+        .dbg_dout(), .dbg_di(), .dbg_rd_end(), .dbg_ra(), .dbg_rdat(),
+        .dbg_m1_n(), .dbg_a(), .dbg_last_wr(), .dbg_pf(),
+        .dbg_pa(), .dbg_seccnt()
       );
+      assign io_raddr = io_addr;
     end else begin : g_no_ioboard
       always_comb begin
         io_we          = 1'b0;
         io_addr        = 11'd0;
         io_din         = 8'd0;
+        io_raddr       = 11'd0;
         dbg_io_replies = 16'd0;
       end
       // io_ack is driven by the RAM; nothing consumes it in this branch.

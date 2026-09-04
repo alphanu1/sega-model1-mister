@@ -43,6 +43,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/bw_monitor.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_glue.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_ioboard.sv
+set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_alu.v
+set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_reg.v
+set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_mcode.v
+set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_core.v
+set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80s.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_ioz80.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_uart_tx.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_speed_report.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/m1_copro_if.sv

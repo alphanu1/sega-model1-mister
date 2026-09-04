@@ -84,6 +84,8 @@ module m1_rom_loader #(
   // Kept as a parameter so the routing is stated rather than buried, and so the
   // testbench can drive both indices.
   parameter logic [15:0] TGP_INDEX     = 16'd1,
+  parameter logic [15:0] IOFW_INDEX    = 16'd2,
+  parameter logic [15:0] IOFW_END      = 16'h4000,   // 16 KB mapped, of 64 KB
   parameter logic [26:0] TGP_PROG_END  = 27'h0_2000,   // 8 KB of microcode
 
   // Write buffer depth, in 16-bit words, and how many in-flight transfers to
@@ -141,6 +143,17 @@ module m1_rom_loader #(
   output logic        tgp_wr,
   output logic [10:0] tgp_addr,
   output logic [31:0] tgp_din,
+
+  // THE I/O BOARD'S Z80 FIRMWARE, on its own index like the microcode above.
+  //
+  // EPR-14869 is 64 KB but the Z80 maps only the first 16 KB - work RAM starts
+  // at 0x4000 - so the rest is accepted and discarded rather than being made
+  // into an address that would wrap onto the code. 16-bit words straight
+  // through: hps_io runs WIDE, so each ioctl_wr already carries two bytes and
+  // the word address is the byte address shifted by one.
+  output logic        iofw_wr,
+  output logic [12:0] iofw_addr,
+  output logic [15:0] iofw_din,
 
   output logic        rom_loaded,
   output logic        overflow,     // buffer was written while full
@@ -212,15 +225,17 @@ module m1_rom_loader #(
   assign ioctl_wait = ioctl_download &
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
-  logic is_sdram, is_tgp;
+  logic is_sdram, is_tgp, is_iofw;
   // Routed by index, not by address. Both streams start at byte 0.
   assign is_sdram = (ioctl_index == ROM_INDEX);
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
+  assign is_iofw  = (ioctl_index == IOFW_INDEX) && (ioctl_addr < 25'(IOFW_END));
 
   logic stream_ok;
   // Either index is a stream we accept; which one decides where it goes.
   assign stream_ok = ioctl_download &&
-                     ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX));
+                     ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX) ||
+                      (ioctl_index == IOFW_INDEX));
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -240,6 +255,7 @@ module m1_rom_loader #(
       req_q <= 1'b0; busy <= 1'b0; ack_d <= 1'b0;
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
+      iofw_wr <= 1'b0; iofw_addr <= '0; iofw_din <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
       sdram_csum <= 24'd0; sdram_words <= 24'd0;
@@ -252,6 +268,7 @@ module m1_rom_loader #(
       // unreachable rather than merely unlikely to matter.
     end else begin
       tgp_wr <= 1'b0;
+      iofw_wr <= 1'b0;
       ack_d  <= sdr_wr_ack;
       sok_d  <= stream_ok;
 
@@ -289,6 +306,10 @@ module m1_rom_loader #(
             ucode_words <= ucode_words + 12'd1;
             ucode_csum  <= ucode_csum ^ ioctl_dout ^ tgp_lo;
           end
+        end else if (is_iofw) begin
+          iofw_addr <= ioctl_addr[13:1];
+          iofw_din  <= ioctl_dout;
+          iofw_wr   <= 1'b1;
         end
       end
 

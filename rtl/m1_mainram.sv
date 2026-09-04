@@ -94,12 +94,17 @@ module m1_mainram (
   input  logic [9:0]  r3d_pal_addr,
   output logic [15:0] r3d_pal_data,
 
-  // I/O board side of the RAM at 0xc00000. Byte-wide, write-only, and it
-  // shares the V60's physical write port — hold io_we until io_ack.
+  // I/O board side of the RAM at 0xc00000. Byte-wide, and it shares the V60's
+  // physical write port — hold io_we until io_ack.
   input  logic        io_we,
   input  logic [10:0] io_addr,
   input  logic [7:0]  io_din,
-  output logic        io_ack
+  output logic        io_ack,
+  // AND A READ PORT, for the Z80 I/O board. The behavioural board only ever
+  // wrote; the firmware reads dpram[addr] back through the 315-5338A's
+  // register 0x0c, so it needs one. Registered, one cycle.
+  input  logic [10:0] io_raddr,
+  output logic [7:0]  io_rdata
 );
 
   logic tram_we, pram_we, dl0_we, dl1_we, cxlat_we, dpram_we;
@@ -293,10 +298,20 @@ module m1_mainram (
 
   (* ramstyle = "M10K" *) logic [7:0] dpram_lo [2048];
   (* ramstyle = "M10K" *) logic [7:0] dpram_hi [2048];
+  // A SECOND COPY OF THE LOW BYTES, for the I/O board's read port.
+  //
+  // An M10K has two ports and dpram_lo already uses both - the shared write
+  // and the V60's read - so a third reader has to be a copy. Written from
+  // exactly the same signals in the same cycle, so it cannot drift; the cost
+  // is 2 blocks. The alternative, time-multiplexing the V60's read port, puts
+  // the I/O board in the CPU's path for no benefit.
+  (* ramstyle = "M10K" *) logic [7:0] dpram_io [2048];
   always_ff @(posedge clk) begin
     if (dp_we)             dpram_lo[dp_waddr]   <= dp_wdata;
+    if (dp_we)             dpram_io[dp_waddr]   <= dp_wdata;
     if (dpram_we && be[1]) dpram_hi[addr[11:1]] <= wdata[15:8];
-    dpram_q <= {dpram_hi[addr[11:1]], dpram_lo[addr[11:1]]};
+    dpram_q  <= {dpram_hi[addr[11:1]], dpram_lo[addr[11:1]]};
+    io_rdata <= dpram_io[io_raddr];
   end
 
   // ------------------------------------------------- POWER-ON CONTENTS ARE ZERO
@@ -357,7 +372,7 @@ module m1_mainram (
     // now, along with the tile RAM and the palette. Only the DPRAM is still a
     // plain array here.
     for (zi = 0; zi < 2048; zi = zi + 1) begin
-      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
+      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0; dpram_io[zi] = 8'd0;
     end
   end
 
