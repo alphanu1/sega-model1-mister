@@ -437,13 +437,24 @@ def emit(setname, chunks, cross_checked):
         #     A B C X Y Z  L R  L1 R1 L2 R2  Select Start
         #     Rup Rdown Rleft Rright   (the right stick as buttons)
         #
-        # So everything a player touches gets a default. The gearbox is ALSO
-        # on the d-pad's up and down in the core, which costs nothing and is
-        # what a driving game does anyway. Service and test stay named but
-        # unmapped, since both are already on the OSD.
+        # THE PEDALS ARE ON L2 AND R2, which is where a driving game puts
+        # them: they are the analogue triggers on a PlayStation-style pad and
+        # MiSTer accepts both as button tokens here. Bound this way they are
+        # digital, full press - MiSTer cannot read a trigger's byte value as a
+        # button. For ANALOGUE travel the core also reads two stick axes,
+        # left-stick-down for the accelerator and right-stick-right for the
+        # brake, which is the documented racing convention and where a player
+        # binds a trigger in the OSD to get its full range. Whichever route is
+        # mapped works, and the larger of the two wins.
+        #
+        # That frees the face buttons for the four VR views, and the gearbox
+        # keeps the shoulders. The gearbox is ALSO on the d-pad's up and down
+        # in the core, which costs nothing and is what a driving game does
+        # anyway. Service and test stay named but unmapped, since both are
+        # already on the OSD.
         '    <buttons names="Accelerate,Brake,Shift Up,Shift Down,'
         'VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" '
-        'default="A,B,R1,L1,X,Y,L,R,Start,Select"/>',
+        'default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>',
         '</misterromdescription>',
         '',
     ]
