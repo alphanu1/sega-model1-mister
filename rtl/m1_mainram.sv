@@ -335,6 +335,14 @@ module m1_mainram (
   // saved nothing - the trap m1_quad_store documents in its own comment.
   // Whatever replaces this has to read the array in exactly one place.
   //
+  // AND THE RIGHT SHAPE IS ALREADY IN THIS TREE: m1_tdp_ram, which exists
+  // because the tile RAM and palette had the same problem and cost 80 blocks
+  // to duplication. It is an explicit altsyncram giving one read/write port
+  // and one read port out of ONE set of blocks - exactly what this needs, the
+  // V60 read/write on port A and the I/O board's read on port B. Its header
+  // also records that Quartus 17.0 will NOT infer the sharing from RTL, which
+  // is why hand-written muxing was never going to work.
+  //
   // Writing `dpram_lo[v60 ? a : b]` in one place and `dpram_lo[b]` in another
   // is two reads of one array as far as synthesis is concerned, and Quartus
   // answers the second by DUPLICATING the memory: dpram_lo_rtl_0 and
