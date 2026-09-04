@@ -1422,6 +1422,24 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------- WHAT THE Z80 WRITES TO THE 315-5338A
+//
+// The DPRAM is behind that chip, not memory-mapped: the firmware sets an
+// address with commands 0x00/0x01, writes with 0x07, or uses the fast-write
+// commands 0x70-0x77. So if the shared RAM never changes, the question is
+// which of those the Z80 is issuing, and this is the only way to see it.
+integer io5338_n = 0;
+reg [3:0] io5338_a [0:63];
+reg [7:0] io5338_d [0:63];
+always @(posedge clk_cpu) begin
+    if (core.main.g_ioboard.ioboard.rst_n
+        && core.main.g_ioboard.ioboard.dbg_wr_stb && io5338_n < 64) begin
+        io5338_a[io5338_n] = core.main.g_ioboard.ioboard.dbg_last_wr[11:8];
+        io5338_d[io5338_n] = core.main.g_ioboard.ioboard.dbg_last_wr[7:0];
+        io5338_n = io5338_n + 1;
+    end
+end
+
 // -------------------------------------------- IS THE Z80 RUNNING AT ALL
 integer z80_cen = 0, z80_miss = 0, z80_rstn = 0;
 reg [15:0] z80_amax = 0;
@@ -2034,6 +2052,10 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $write("FRAME: Z80 writes to the 315-5338A (reg=data), first %0d:", io5338_n);
+        for (zw_i = 0; zw_i < io5338_n; zw_i = zw_i + 1)
+            $write(" %01h=%02h", io5338_a[zw_i], io5338_d[zw_i]);
+        $write("\n");
         $display("FRAME: Z80 cache: cv=%0b ca=%04h req=%0b acks=%0d word=%04h data=%04h sel=%0b hit=%0b",
                  core.main.g_ioboard.ioboard.fw_cv,
                  core.main.g_ioboard.ioboard.fw_ca,

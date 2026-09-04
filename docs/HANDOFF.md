@@ -43,7 +43,69 @@ that arming suppressed. Ben also suggested a fourth band buffer: it is
 affordable now (~16 M10K) but does not address this, because band 0's
 constraint is when its fill may START, not where the result goes.
 
-## 2026-09-04 — THE tv80 I/O BOARD: the ROM path is in, the fit is not
+## 2026-09-04 — THE tv80 I/O BOARD: it BOOTS, and it does not fit
+
+The real Z80 is wired in, runs EPR-14869 out of SDRAM, and executes a
+recognisable boot. It does not yet satisfy the V60's handshake, and at 99%
+ALM it does not fit. Both are stated plainly because either alone would be a
+reason to stop.
+
+### What works
+
+    MRA           index 2 from model1io.zip, revision per game (vf and swa
+                  take epr-14869b, everything else the plain one, read off
+                  model1.cpp's set_default_bios_tag calls)
+    loader        index 2 -> SDRAM at IOFW_BASE = word 0xD00000
+    fetch         SDRAM port 7, through m1_cdc_port, with a one-word cache
+    m1_mainram    a read port on the shared RAM, which the behavioural board
+                  never needed because it only ever wrote
+    inputs        every control has an MRA default; see the buttons entry
+
+The Z80's address trace, which is what a real boot looks like:
+
+    0000 0001 ... 0011  8005  0012 ... 8008  ...  5fff 5ffe  01a7 01a8 01a9
+
+init, the 315-5338A at 0x8005 and 0x8008, the stack at the top of work RAM,
+then a call. It stalls 8.5% of its cycles waiting for SDRAM.
+
+### Two bugs found getting there, both worth not repeating
+
+**The coprocessor's reset bug, again.** m1_ioz80 was wired to the raw rst_n
+while the V60 waits on rom_loaded, so the Z80 left reset, fetched word 0 of a
+firmware that was not there yet, cached the 0xffff unwritten SDRAM returns,
+and executed RST 38h for ever. Identical in shape to `tgp=4/0/004c`, which
+cost a session in August.
+
+**A missing clock crossing that looked like a dead CPU.** m1_main and
+everything in it run on clk_cpu; the SDRAM controller runs on clk_sys.
+Wiring the fetch straight to a controller port could never work - the
+acknowledge is a clk_sys event, sampled at 23.529 MHz - so the request went
+out and nothing came back. The Z80 sat on address 0 for forty million cycles,
+stalled for 39,999,984 of them. Every other crossing in this design already
+goes through m1_cdc_port; this one now does too.
+
+### What is still wrong
+
+**It never writes the shared RAM**, so the V60 waits at fe022c where the
+behavioural board got it to the main loop. The DPRAM sits behind the
+315-5338A - address set by commands 0x00/0x01, written by 0x07 or the fast
+writes 0x70-0x77 - so the next question is which of those the firmware
+issues and what the decode does with them. A probe of `dbg_last_wr` came back
+all zeros, which is more likely to be the probe than the chip; check it
+against `dbg_wr_stb`'s timing first, on clk_cpu.
+
+**And it does not fit.** Seed 11 of a3bc86f: **41,342 ALM (99%), 546 M10K
+(99%), -0.088 ns**. The board costs ~2,000 ALM in context against the 1,624
+it measures alone, and the design was already at 94%. That is not a seed
+problem and no amount of reseeding fixes it.
+
+So the V60 split is no longer optional - it is the prerequisite. D9 said the
+LLE would need ~1,700 ALM from `S32_V60_NO_FP`; that lever is spent (the game
+executes FP), so the area has to come from the split work described in the
+2026-09-02 entry. Until then the behavioural board is what ships, and
+`IOBOARD` in m1_main is the switch.
+
+## 2026-09-04 — THE tv80 I/O BOARD (earlier): the ROM path is in, the fit is not
 
 Ben asked for the real Z80 I/O board, reversing D9's HLE. `rtl/io/m1_ioz80.sv`
 already existed - 488 lines, complete, brought over from the Model 2 work
