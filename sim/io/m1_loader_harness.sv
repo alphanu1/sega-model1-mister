@@ -87,9 +87,7 @@ module m1_loader_harness (
   ,
     // Added with the SDRAM write-side census. Named rather than left out:
     // an omitted pin and a forgotten one look identical in a diff.
-    .sdram_csum(), .sdram_words(),
-    // The I/O board firmware index, unused by this bench.
-    .iofw_wr(), .iofw_addr(), .iofw_din()
+    .sdram_csum(), .sdram_words()
   );
 
   logic [NP-1:0]       p_req, p_we, p_ack;

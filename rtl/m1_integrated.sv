@@ -86,6 +86,12 @@ module m1_integrated (
   // a synchroniser buys nothing a metastable bit would not survive anyway.
   input  logic [119:0] in_bytes,
 
+  // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
+  output logic        iofw_req,
+  output logic [12:0] iofw_word,
+  input  logic        iofw_ack,
+  input  logic [15:0] iofw_din,
+
   // SDRAM data port and instruction fetch
   output logic        sdr_req,
   output logic        sdr_we,
@@ -323,7 +329,9 @@ module m1_integrated (
     .rom_loaded(rom_loaded_sync[1]),
     .in_bytes(in_bytes),
     // The I/O board Z80's firmware, from the loader's own download index.
-    .iofw_we(u_iofw_wr), .iofw_addr(u_iofw_addr), .iofw_data(u_iofw_din),
+    // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.
+    .iofw_req(iofw_req), .iofw_word(iofw_word),
+    .iofw_ack(iofw_ack), .iofw_din(iofw_din),
     // Microcode from the loader, written in the FAST domain into the dual-clock
     // program RAM inside m1_tgp. Complete before the CPU is released, so there
     // is no crossing to handshake.
@@ -372,12 +380,6 @@ module m1_integrated (
   );
 
   logic        u_tgp_wr;
-
-  logic        u_iofw_wr;
-
-  logic [12:0] u_iofw_addr;
-
-  logic [15:0] u_iofw_din;
   logic [10:0] u_tgp_addr;
   logic [31:0] u_tgp_din;
 
@@ -938,7 +940,6 @@ module m1_integrated (
     .sdr_wr_req(ldr_wr_req), .sdr_wr_addr(ldr_wr_addr),
     .sdr_wr_din(ldr_wr_din), .sdr_wr_be(ldr_wr_be), .sdr_wr_ack(ldr_wr_ack),
     .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
-    .iofw_wr(u_iofw_wr), .iofw_addr(u_iofw_addr), .iofw_din(u_iofw_din),
     .ucode_words(dbg_ucode_words), .ucode_csum(dbg_ucode_csum),
     .sdram_csum(dbg_sdram_csum), .sdram_words(dbg_sdram_words),
     .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)

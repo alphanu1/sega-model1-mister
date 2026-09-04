@@ -56,13 +56,24 @@ module m1_ioz80 #(
   input  logic        clk,
   input  logic        rst_n,
 
-  // Firmware load, 16-BIT WIDE. hps_io runs WIDE=1: ioctl_addr advances by 2
-  // and each ioctl_wr carries two bytes. The first byte-wide version stored
-  // only the even bytes -- half a firmware, a rogue Z80, and a boot that hangs
-  // exactly like a cabinet with a corrupt EPROM. fw_addr is the WORD address.
-  input  logic        fw_we,
-  input  logic [12:0] fw_addr,
-  input  logic [15:0] fw_data,
+  // THE FIRMWARE LIVES IN SDRAM, NOT IN BLOCK RAM.
+  //
+  // 16 KB as 8192 x 16 is SIXTEEN M10K - an M10K is 8192 deep at one bit wide,
+  // so a 16-bit word costs one block per bit - and with the work RAM's eight
+  // and a read port on the shared RAM the board wants 26 of the 17 this design
+  // has left. The firmware is the natural thing to move: it is read-only, and
+  // the Z80 is slow enough to wait.
+  //
+  // A ONE-WORD CACHE, because the Z80 reads two bytes out of every word it
+  // fetches. That halves the traffic for a handful of flops, which matters:
+  // the V60 already stalls on memory for half its cycles and that is what
+  // limits the frame rate in busy scenes, so the I/O board must not become a
+  // third heavy reader. If it still shows, a line cache is the next step and
+  // this is the shape it would extend.
+  output logic        fw_req,
+  output logic [12:0] fw_word,   // 16-bit word index inside the 16 KB
+  input  logic        fw_ack,
+  input  logic [15:0] fw_din,
 
   // Cabinet inputs, ACTIVE LOW at rest (0xff = nothing pressed), matching
   // model2.cpp's port definitions: IN0 = {VR3,VR2,VR1,START1,SERVICE,TEST,
@@ -133,7 +144,7 @@ module m1_ioz80 #(
 
   tv80s u_z80 (
     .reset_n(rst_n), .clk(clk), .cen(cen),
-    .wait_n(1'b1), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
+    .wait_n(~fw_miss), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
     .m1_n(dbg_m1_n), .mreq_n(mreq_n), .iorq_n(), .rd_n(rd_n), .wr_n(wr_n),
     .rfsh_n(), .halt_n(), .busak_n(),
     .A(A), .di(di), .dout(dout)
@@ -165,7 +176,8 @@ module m1_ioz80 #(
   // ------------------------------------------------------------ ROM and RAM
   // Registered reads settle within one 48 MHz cycle; the Z80 samples many
   // cycles later under CEN pacing, so no wait states are needed.
-  (* ramstyle = "M10K" *) logic [15:0] fw [8192];
+  // The firmware is NOT here any more - see the fetch below. Only the work RAM
+  // is on chip, and it has to be: it is the Z80's stack.
   (* ramstyle = "M10K" *) logic [7:0] ram [8192];
   // NEGEDGE READS, and this is load-bearing. tv80 drives A on a rising CEN
   // edge and samples data against later rising edges of the same paced clock;
@@ -177,7 +189,6 @@ module m1_ioz80 #(
   logic [15:0] fw_w;
   logic  [7:0] ram_q;
   logic  [7:0] fw_q;
-  logic        fw_a0;
   // ONE EDGE, for the same reason as the work RAM below: a posedge write against
   // a negedge read makes this a dual-clock M10K whose read-during-write Quartus
   // declares UNDEFINED on silicon and Verilator models as defined. The download
@@ -185,12 +196,33 @@ module m1_ioz80 #(
   // but "unlikely" is how the work RAM's version would have been described too,
   // and an undefined array holding the firmware is not worth keeping for the
   // sake of half a cycle.
-  always_ff @(negedge clk) begin
-    if (fw_we) fw[fw_addr] <= fw_data;
-    fw_w  <= fw[A[13:1]];
-    fw_a0 <= A[0];
+  // The fetch, with its one-word cache. `fw_hit` is what lets the Z80 run; a
+  // miss holds wait_n low until the word arrives, which is the whole reason
+  // the core's wait_n is no longer tied high.
+  logic        fw_cv;                 // the cache holds a valid word
+  logic [12:0] fw_ca;                 // and this is its address
+  wire         fw_sel  = mem_rd && (A[15:14] == 2'b00);
+  wire         fw_hit  = fw_cv && (fw_ca == A[13:1]);
+  wire         fw_miss = fw_sel && !fw_hit;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      fw_cv <= 1'b0; fw_ca <= '0; fw_w <= '0; fw_req <= 1'b0;
+    end else begin
+      // Held until acknowledged, not pulsed. Anything talking to this
+      // controller that pulses a request has it missed - the rule is in
+      // CLAUDE.md and it has cost this project two sessions.
+      if (fw_miss && !fw_req && !fw_ack) fw_req <= 1'b1;
+      if (fw_ack) begin
+        fw_req <= 1'b0;
+        fw_w   <= fw_din;
+        fw_ca  <= A[13:1];
+        fw_cv  <= 1'b1;
+      end
+    end
   end
-  assign fw_q = fw_a0 ? fw_w[15:8] : fw_w[7:0];
+  assign fw_word = A[13:1];
+  assign fw_q    = A[0] ? fw_w[15:8] : fw_w[7:0];
   // WRITE ON THE SAME EDGE AS THE READ, AND THAT IS THE POINT.
   //
   // This wrote on posedge while the read below happens on negedge, so Quartus

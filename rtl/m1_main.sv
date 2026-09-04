@@ -71,10 +71,12 @@ module m1_main #(
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
 
-  // The I/O board's Z80 firmware, from the ROM loader's own download index.
-  input  logic        iofw_we,
-  input  logic [12:0] iofw_addr,
-  input  logic [15:0] iofw_data,
+  // The I/O board Z80's firmware fetch, into SDRAM. It is 16 KB of read-only
+  // code and block RAM has no room for it - see m1_ioz80.
+  output logic        iofw_req,
+  output logic [12:0] iofw_word,
+  input  logic        iofw_ack,
+  input  logic [15:0] iofw_din,
 
   // ------------------------------------------------- coprocessor microcode
   // From m1_rom_loader, in the FAST memory domain. The program RAM inside
@@ -492,7 +494,8 @@ module m1_main #(
     if (IOBOARD) begin : g_ioboard
       m1_ioz80 ioboard (
         .clk(clk), .rst_n(rst_n),
-        .fw_we(iofw_we), .fw_addr(iofw_addr), .fw_data(iofw_data),
+        .fw_req(iofw_req), .fw_word(iofw_word),
+        .fw_ack(iofw_ack), .fw_din(iofw_din),
         .in0 (in_bytes[8*8  +: 8]),
         .in1 (in_bytes[9*8  +: 8]),
         .in2 (in_bytes[10*8 +: 8]),
@@ -520,6 +523,8 @@ module m1_main #(
         io_din         = 8'd0;
         io_raddr       = 11'd0;
         dbg_io_replies = 16'd0;
+        iofw_req       = 1'b0;
+        iofw_word      = 13'd0;
       end
       // io_ack is driven by the RAM; nothing consumes it in this branch.
     end

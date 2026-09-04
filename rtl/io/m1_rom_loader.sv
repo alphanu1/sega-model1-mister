@@ -86,6 +86,9 @@ module m1_rom_loader #(
   parameter logic [15:0] TGP_INDEX     = 16'd1,
   parameter logic [15:0] IOFW_INDEX    = 16'd2,
   parameter logic [15:0] IOFW_END      = 16'h4000,   // 16 KB mapped, of 64 KB
+  // Word address. The polygon region ends at word 0xC20000 and the V60's work
+  // RAM begins at 0xF80000, so this sits in the gap between them.
+  parameter logic [24:1] IOFW_BASE     = 24'hD00000,
   parameter logic [26:0] TGP_PROG_END  = 27'h0_2000,   // 8 KB of microcode
 
   // Write buffer depth, in 16-bit words, and how many in-flight transfers to
@@ -144,16 +147,6 @@ module m1_rom_loader #(
   output logic [10:0] tgp_addr,
   output logic [31:0] tgp_din,
 
-  // THE I/O BOARD'S Z80 FIRMWARE, on its own index like the microcode above.
-  //
-  // EPR-14869 is 64 KB but the Z80 maps only the first 16 KB - work RAM starts
-  // at 0x4000 - so the rest is accepted and discarded rather than being made
-  // into an address that would wrap onto the code. 16-bit words straight
-  // through: hps_io runs WIDE, so each ioctl_wr already carries two bytes and
-  // the word address is the byte address shifted by one.
-  output logic        iofw_wr,
-  output logic [12:0] iofw_addr,
-  output logic [15:0] iofw_din,
 
   output logic        rom_loaded,
   output logic        overflow,     // buffer was written while full
@@ -227,7 +220,7 @@ module m1_rom_loader #(
 
   logic is_sdram, is_tgp, is_iofw;
   // Routed by index, not by address. Both streams start at byte 0.
-  assign is_sdram = (ioctl_index == ROM_INDEX);
+  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw;
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
   assign is_iofw  = (ioctl_index == IOFW_INDEX) && (ioctl_addr < 25'(IOFW_END));
 
@@ -255,7 +248,6 @@ module m1_rom_loader #(
       req_q <= 1'b0; busy <= 1'b0; ack_d <= 1'b0;
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
-      iofw_wr <= 1'b0; iofw_addr <= '0; iofw_din <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
       sdram_csum <= 24'd0; sdram_words <= 24'd0;
@@ -268,7 +260,6 @@ module m1_rom_loader #(
       // unreachable rather than merely unlikely to matter.
     end else begin
       tgp_wr <= 1'b0;
-      iofw_wr <= 1'b0;
       ack_d  <= sdr_wr_ack;
       sok_d  <= stream_ok;
 
@@ -278,7 +269,14 @@ module m1_rom_loader #(
           if (fifo_full) begin
             overflow <= 1'b1;
           end else begin
-            fifo_addr[wptr[AW-1:0]] <= ioctl_addr[24:1];
+            // INDEX 2 LANDS AT ITS OWN BASE. The I/O board's firmware goes
+            // to SDRAM like the game image - 16 KB as block RAM is sixteen
+            // M10K and this design has seventeen left - but it is a separate
+            // download starting at byte 0, so it needs an offset rather than
+            // the raw ioctl address. IOFW_BASE is above the polygon region
+            // and below the V60's work RAM.
+            fifo_addr[wptr[AW-1:0]] <= is_iofw ? (IOFW_BASE + 24'(ioctl_addr[24:1]))
+                                               : ioctl_addr[24:1];
             fifo_data[wptr[AW-1:0]] <= ioctl_dout;
             wptr <= wptr + 1'b1;
             // Rotate then XOR, so a reordering does not cancel.
@@ -306,10 +304,6 @@ module m1_rom_loader #(
             ucode_words <= ucode_words + 12'd1;
             ucode_csum  <= ucode_csum ^ ioctl_dout ^ tgp_lo;
           end
-        end else if (is_iofw) begin
-          iofw_addr <= ioctl_addr[13:1];
-          iofw_din  <= ioctl_dout;
-          iofw_wr   <= 1'b1;
         end
       end
 
