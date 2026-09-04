@@ -88,6 +88,13 @@
         <part name="315-5711.bin"/>
     </rom>
 
+    <!-- The I/O board Z80 firmware. A MAME device rom shared with the
+         early Model 2 boards, so it comes from that set; the core
+         falls back to its behavioural I/O board without it. -->
+    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">
+        <part name="epr-14869.25"/>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Start,Coin,Service,Test,-,-" default="A,R,L,Start"/>
