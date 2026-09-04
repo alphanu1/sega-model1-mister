@@ -120,6 +120,16 @@ module m1_speed_report #(
   // the dropped-quad counter reads zero throughout. Simulation cannot answer
   // this - 700 M cycles never reached gameplay - so it goes on the wire.
   input  logic [15:0] view_x1,
+  // THE TILE FETCH'S DEADLINE MISSES, free-running.
+  //
+  // Ben sees the 2D tiles overrun as well as the 3D dropping out, and two
+  // consumers of one memory controller failing together is a bandwidth
+  // signature. This counter has always existed and has never reached the
+  // wire - it was a row on the debug overlay, which is now off - so his
+  // observation has had no number behind it. It is the direct measurement of
+  // whether the 2D is starved, and it decides whether raising the SDRAM
+  // clock is the answer or just a plausible story.
+  input  logic [15:0] fetch_miss,
 
   output logic tx
 );
@@ -131,7 +141,7 @@ module m1_speed_report #(
   logic [15:0] r_frame, r_swap, r_bands, r_pass;
   logic [15:0] r_tpc, r_tret, r_npres;
   logic [23:0] r_vpc, r_spc;
-  logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1;
+  logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -141,7 +151,7 @@ module m1_speed_report #(
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
-      r_drop <= '0; r_short <= '0; r_vx1 <= '0;
+      r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -167,6 +177,7 @@ module m1_speed_report #(
           r_late  <= late;
           r_drop  <= dropped; r_short <= short_passes;
           r_vx1   <= view_x1;
+          r_miss  <= fetch_miss;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -175,11 +186,11 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx\r\n"
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx\r\n"
   // 103 bytes. ci must be SEVEN bits: at [5:0] it wraps at 64 and the line
   // silently repeats its middle.
-  // 117 bytes a second against 11,520 available, so the channel is not a concern.
-  localparam int unsigned NCH = 117;
+  // 131 bytes a second against 11,520 available, so the channel is not a concern.
+  localparam int unsigned NCH = 131;
 
   logic [6:0]  ci;
   logic        busy;
@@ -308,7 +319,14 @@ module m1_speed_report #(
       7'd105: ch = hexc(r_vx1[11:8]);
       7'd106: ch = hexc(r_vx1[7:4]);
       7'd107: ch = hexc(r_vx1[3:0]);
-      7'd108: ch = 8'h0d;
+      7'd108: ch = " ";
+      7'd109: ch = "M";
+      7'd110: ch = "=";
+      7'd111: ch = hexc(r_miss[15:12]);
+      7'd112: ch = hexc(r_miss[11:8]);
+      7'd113: ch = hexc(r_miss[7:4]);
+      7'd114: ch = hexc(r_miss[3:0]);
+      7'd115: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

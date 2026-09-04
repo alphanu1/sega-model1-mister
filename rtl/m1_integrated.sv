@@ -961,7 +961,7 @@ module m1_integrated (
     // ever since the vertices went back to 16 bits. It carries the band-0
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
-    .view_x1(r3_dbg_vx1),
+    .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
     .tx(uart_tx)
   );
 
