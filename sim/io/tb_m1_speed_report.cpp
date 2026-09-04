@@ -113,6 +113,7 @@ int main(int argc, char** argv) {
     dut->quads        = 0xF012;
     dut->hit_l        = 0x0123;
     dut->hit_r        = 0x1234;
+    dut->plane_l      = 0xBF80;   // -1.0f's top half, a plausible plane
     dut->px_left      = 0xCDEF;
     dut->px_right     = 0xDEF0;
     dut->mem_occ      = 0x5A;
@@ -158,7 +159,7 @@ int main(int argc, char** argv) {
         {'D', 0x789A}, {'H', 0x89AB}, {'K', 0x9ABC}, {'M', 0xABCD},
         {'O', 0x5A}, {'Q', 0xA5},
         {'A', 0xCDEF}, {'Z', 0xDEF0}, {'G', 0xBCDE},
-        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234},
+        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;

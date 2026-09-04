@@ -48,6 +48,16 @@ module m1_geometry (
   // High while the frustum planes are mid-recompute. The caller must not hand
   // over an object during it - see m1_geo_planes.
   output logic        planes_wait,
+  // THE LEFT CLIP PLANE ITSELF, raw IEEE-754.
+  //
+  // Ben's photo puts a hard vertical cut at 48% of the screen with 2D behind it
+  // on the left and full 3D on the right. That is where a_left = 0.0 puts the
+  // plane: screen_x = xc + a_left*zoomx + viewx, which for a correct a_left is
+  // x1 = 0 and for a_left = 0 is xc + viewx - about 248 on a 496-wide screen.
+  // a_left is `which == 0`, the FIRST plane computed, so if it is still at its
+  // reset zero then no recompute has ever run and the display list's viewport,
+  // zoom and view-translation commands are not reaching m1_geo_planes at all.
+  output logic [31:0] plane_left,
   input  logic [31:0] in_tex_adr,
   input  logic [31:0] in_poly_adr,
   input  logic [31:0] in_size,
@@ -213,6 +223,7 @@ module m1_geometry (
   logic [5:0]  cl_out_lum;
 
   assign planes_wait = planes_busy;
+  assign plane_left  = a_left;
 
   m1_geo_walk u_walk (
     .clk(clk), .rst_n(rst_n),

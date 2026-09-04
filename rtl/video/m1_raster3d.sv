@@ -228,7 +228,10 @@ module m1_raster3d #(
 
   // Pixels SCANOUT read back as a hit, per screen half, in units of 1024.
   output logic [15:0] dbg_hit_l,
-  output logic [15:0] dbg_hit_r
+  output logic [15:0] dbg_hit_r,
+
+  // The left clip plane's top 16 bits. Zero means it was never computed.
+  output logic [15:0] dbg_plane_l
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -323,6 +326,7 @@ module m1_raster3d #(
 
   // ---------------------------------------------------------------- geometry
   logic        geo_start, geo_busy, geo_done, geo_planes_wait;
+  logic [31:0] geo_plane_left;
   logic [31:0] geo_oldz_out;
   logic        mat_we;
   logic [3:0]  mat_idx;
@@ -392,7 +396,7 @@ module m1_raster3d #(
     .spec_enable(vspec), .frame_odd(frame_odd),
     .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
-    .planes_wait(geo_planes_wait),
+    .planes_wait(geo_planes_wait), .plane_left(geo_plane_left),
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
@@ -1042,6 +1046,7 @@ module m1_raster3d #(
   assign dbg_oob     = qs_oob_v[0] + qs_oob_v[1];
   assign dbg_quads   = qs_count;
   assign dbg_culled  = g_cull_run;
+  assign dbg_plane_l = geo_plane_left[31:16];
   assign dbg_dropped = qs_dropped;
 
   always_ff @(posedge clk or negedge rst_n) begin

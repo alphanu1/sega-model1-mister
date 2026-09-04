@@ -162,6 +162,12 @@ module m1_speed_report #(
   // against A=/Z=, which count the same thing on the WRITE side: if the fill
   // writes the left half and scanout does not read it, the loss is in the band
   // memory rather than anywhere in the geometry.
+  // The 3D frustum's LEFT CLIP PLANE, top 16 bits of the IEEE-754 value.
+  // 0000 means it is still +0.0 - never computed - which puts the plane at
+  // screen x = xc, about the middle of the screen, and cuts every polygon that
+  // crosses it. See m1_geometry.
+  input  logic [15:0] plane_l,
+
   input  logic [15:0] hit_l,
   input  logic [15:0] hit_r,
 
@@ -186,7 +192,7 @@ module m1_speed_report #(
   logic [23:0] r_vpc, r_spc;
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
-  logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr;
+  logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -198,7 +204,7 @@ module m1_speed_report #(
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
-      r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0;
+      r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -234,6 +240,7 @@ module m1_speed_report #(
           r_quads <= quads;
           r_hl    <= hit_l;
           r_hr    <= hit_r;
+          r_pl    <= plane_l;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -273,7 +280,7 @@ module m1_speed_report #(
   // Nine is not a power of two, so the field and position are COUNTERS rather
   // than slices of the character index. Two small counters cost less than the
   // divide would and far less than the 137-arm case they replace.
-  localparam int unsigned NF  = 25;             // fields
+  localparam int unsigned NF  = 26;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -321,7 +328,8 @@ module m1_speed_report #(
       5'd21: begin f_letter = "E"; f_value = {8'd0, r_cull};   end
       5'd22: begin f_letter = "U"; f_value = {8'd0, r_quads}; end
       5'd23: begin f_letter = "I"; f_value = {8'd0, r_hl};    end
-      default: begin f_letter = "J"; f_value = {8'd0, r_hr};  end
+      5'd24: begin f_letter = "J"; f_value = {8'd0, r_hr};    end
+      default: begin f_letter = "Y"; f_value = {8'd0, r_pl};  end
     endcase
   end
 
