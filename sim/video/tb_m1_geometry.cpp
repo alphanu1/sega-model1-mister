@@ -713,6 +713,31 @@ int main(int argc, char** argv) {
             int nobj = 0, bad_obj = 0;
             long rq = 0, rpx = 0, rcol_ok = 0, rcol_bad = 0;
             float oz_m = 0.0f, oz_d = 0.0f;
+            // A YAW SWEEP, because one orientation proves one orientation.
+            //
+            // This test walked real models under a single near-identity matrix,
+            // which is the same trap the clipper's coverage was in: a corpus
+            // that agrees with the model says nothing about a case it never
+            // reaches. On the board the road and the scenery vanish WHEN THE
+            // VIEW TURNS and stay gone while it is held at that angle, so the
+            // orientation is the variable, and it was the one thing held fixed.
+            //
+            // Sixteen yaws around the full circle, each with the same objects
+            // and the same running old_z discipline. If any part of the
+            // pipeline - the facing test's sign, the clipper's planes, the
+            // projection - is wrong for some rotation, it differs from
+            // push_object here rather than on Ben's screen.
+            for (int yaw = 0; yaw < 16; yaw++) {
+            const float th = (float)yaw * 6.2831853f / 16.0f;
+            const float cs = cosf(th), sn = sinf(th);
+            // Column-major as xform_pt reads it: mat[0,3,6] is the first row.
+            mat[0] =  cs; mat[3] = 0.0f; mat[6] =  sn;
+            mat[1] = 0.0f; mat[4] = 1.0f; mat[7] = 0.0f;
+            mat[2] = -sn; mat[5] = 0.0f; mat[8] =  cs;
+            mat[9] = 0.0f; mat[10] = 0.0f; mat[11] = 120.0f;
+            t.set_view();
+            rewind(of);
+            oz_m = 0.0f; oz_d = 0.0f;
             while (fscanf(of, "%x %x %x %x", &cmd, &tex, &poly, &size) == 4) {
                 nobj++;
                 // old_z carries ACROSS objects, as push_object requires, so both
@@ -759,8 +784,10 @@ int main(int argc, char** argv) {
                     if (g.col == e.col) rcol_ok++; else rcol_bad++;
                 }
             }
+            }   // yaw
             fclose(rf); fclose(of);
-            printf("  %d real objects, %d that did not match at all\n", nobj, bad_obj);
+            printf("  %d real objects over 16 yaw angles, %d that did not match at all\n",
+                   nobj, bad_obj);
             printf("  %ld quads, %ld vertex coordinates differing, colour exact on %ld of %ld\n",
                    rq, rpx, rcol_ok, rcol_ok + rcol_bad);
         }
