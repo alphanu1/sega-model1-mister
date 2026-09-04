@@ -821,7 +821,7 @@ m1_frame:
 	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
-	  -GPRESS_IN0=$(FRAME_PRESS) -GTRACE_FRAMES=$(FRAME_TRACE) \
+	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
@@ -867,6 +867,11 @@ FRAME_HOLD_CPU ?= 0
 # A control held down for the whole run, as IN.0 would present it: 0xff none,
 # 0xef START, 0xfe COIN, 0xfb TEST. See docs/io-board.md for the bit order.
 FRAME_PRESS ?= 0xff
+
+# Cycle at which the bench inserts a coin and then presses start, which is how
+# a run reaches GAMEPLAY rather than stopping in attract. 0 never does it.
+# Attract has settled by ~250 M, so 300000000 is a reasonable place.
+FRAME_COIN ?= 0
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to

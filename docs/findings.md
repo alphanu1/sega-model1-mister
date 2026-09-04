@@ -437,10 +437,36 @@ while the car is STATIONARY, which rules out anything transient. Both
 hypotheses so far are dead: the 2D window mode (ruled out because it varies
 with load) and the quad store (ruled out because D= stays at zero).
 
-What is still worth doing is a photograph of the fault while stationary. A
-static repro is the strongest evidence available and can be diffed against
-MAME on the same scene; every hypothesis so far has come from a moving
-picture and a guess.
+### The hypothesis that fits all three observations: a LATCHED VIEWPORT
+
+Ben's photograph plus "it happens more on corners" plus "I am stopped and it
+is still there" only fit one shape: a register that latches a bad value
+during a busy frame and keeps it.
+
+`m1_raster3d` latches the viewport from display-list command 3 - vxc, vyc,
+vx1, vx2, vy1, vy2 - and `m1_geo_clip` turns those into the frustum's left
+and right planes and tests every vertex against them. A wrong vx1 clips
+everything left of it, which is:
+
+    a straight vertical edge      because a clip plane is exactly that
+    worse on corners              because that is when the list is busiest
+    persistent while parked       because nothing rewrites the viewport
+
+It also explains why the drop counter is zero: the quads are not being
+dropped for want of room, they are being CLIPPED AWAY before they are stored,
+which is a different path entirely and counts nowhere.
+
+**The measurement**: m1_raster3d already exposes dbg_xc, dbg_yc, dbg_zoomx,
+dbg_zoomy, dbg_viewx and dbg_viewy, and none of them reach the wire. Putting
+one word of view state on the UART would show a corrupted viewport directly -
+if vx1 reads 248 rather than 0 when the fault is on screen, that is the whole
+answer. The frame bench can also reach gameplay now (FRAME_COIN inserts a
+coin and presses start), so the same values can be watched in simulation.
+
+**What would cause it** is the next question and is unmeasured: a walk that
+reads command 3 while the V60 is mid-update would do it, and the pass now
+starts on the list flip specifically to prevent that - so if this is the
+mechanism, the flip protection is not covering something.
 
 ## 2026-09-04 — GAMEPLAY RUNS, and the left half of the 3D is hidden
 

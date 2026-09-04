@@ -97,6 +97,9 @@ module tb_m1_frame #(
     // low: 0xEF holds START, 0xFE COIN, 0xFB TEST. Whether the menu reacts is
     // the only test of the recovered layout that means anything.
     parameter logic [7:0] PRESS_IN0 = 8'hff,
+    // Cycle at which to insert a coin; start follows automatically. 0 = never,
+    // which is the old behaviour.
+    parameter longint unsigned COIN_AT = 0,
 
     // Emit one line per retired instruction, for tools/v60_trace.sh to diff
     // against MAME's own debugger trace. Off by default: it is a firehose.
@@ -298,7 +301,7 @@ m1_integrated core (
     // overridden. Not uniformly idle-high: the three ADC channels at 0x00-0x02
     // rest at 0x80 (steering centred) and 0x01 (each pedal released).
     .in_bytes({48'hffffffffffff,   // 0x0e..0x09
-               PRESS_IN0,          // 0x08  IN.0
+               in0_now,            // 0x08  IN.0
                40'hffffffffff,     // 0x07..0x03
                8'h01, 8'h01,       // 0x02, 0x01  pedals released
                8'h80}),            // 0x00        steering centred
@@ -1602,6 +1605,30 @@ always @(posedge clk) begin
             z80_first_n = z80_first_n + 1;
         end
     end
+end
+
+// ------------------------------------------------ STARTING A GAME
+//
+// PRESS_IN0 holds ONE value for the whole run, which reaches attract and
+// stops: putting a credit in and starting a race are two different buttons in
+// sequence, and holding the coin for ever just inserts credits. So the coin
+// goes in at COIN_AT, start is pressed a moment later, and both release -
+// which is what a person does and what the firmware's debounce expects.
+//
+// Both are ACTIVE LOW in IN.0: bit 0 coin1, bit 4 start.
+localparam logic [7:0] IN0_IDLE  = 8'hff;
+localparam logic [7:0] IN0_COIN  = 8'hfe;
+localparam logic [7:0] IN0_START = 8'hef;
+logic [7:0] in0_now = IN0_IDLE;
+always @(posedge clk) begin
+    if (!rst_n_sys) in0_now <= PRESS_IN0;
+    else if (COIN_AT != 0) begin
+        // Two presses of about a third of a second each, well clear of any
+        // debounce, with a gap between them.
+        if      (cycles > COIN_AT             && cycles < COIN_AT +  30000000) in0_now <= IN0_COIN;
+        else if (cycles > COIN_AT +  60000000 && cycles < COIN_AT +  90000000) in0_now <= IN0_START;
+        else                                                                   in0_now <= PRESS_IN0;
+    end else in0_now <= PRESS_IN0;
 end
 
 // ---------------------------------------------- BANDS PRESENTED PER FRAME
