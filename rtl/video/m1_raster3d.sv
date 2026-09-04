@@ -201,7 +201,25 @@ module m1_raster3d #(
   // this having latched something else. Exponent-and-mantissa to integer by
   // the same shift fp_to_int uses, truncated - a plane at 248.5 and one at
   // 248 are the same answer for this purpose.
-  output logic [15:0] dbg_vx1
+  output logic [15:0] dbg_vx1,
+
+  // PIXELS EMITTED INTO THE LEFT AND RIGHT HALVES OF THE SCREEN, in units of
+  // 1024, free-running.
+  //
+  // The left half of the 3D drops out on corners and stays gone while the car
+  // is parked, and every counter this design already has says the pipeline is
+  // healthy while it happens: all 24 bands presented, no quads dropped, no
+  // short passes, nothing clipped. So the loss is inside a band that is
+  // present and on time, which is downstream of everything we can see.
+  //
+  // These two split the remaining possibilities in one reading. If both halves
+  // are populated, the spans are being drawn and the loss is in scanout - Ben's
+  // reading, and the tile overruns become the suspect. If the left is starved,
+  // the spans never get emitted and the fault is upstream in geometry or fill.
+  // The split is counted where the fill hands a span over, with the same clamp
+  // the band buffer applies, so it measures what is actually written.
+  output logic [15:0] dbg_px_l,
+  output logic [15:0] dbg_px_r
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -537,6 +555,33 @@ module m1_raster3d #(
       );
     end
   endgenerate
+
+  // The half-screen span census. Clamped exactly as m1_raster_band clamps, so
+  // a span running off either edge contributes only its visible part.
+  localparam int signed HALFX = int'(SCR_W) / 2;
+  wire signed [15:0] sp_x0 = fl_span_x0[15:0];
+  wire signed [15:0] sp_x1 = fl_span_x1[15:0];
+  wire signed [15:0] sp_l  = (sp_x0 < 16'sd0) ? 16'sd0 : sp_x0;
+  wire signed [15:0] sp_r  = (sp_x1 > 16'(SCR_W) - 16'sd1) ? 16'(SCR_W) - 16'sd1
+                                                           : sp_x1;
+  wire               sp_ok = fl_span_valid && fl_span_ready && (sp_r >= sp_l);
+  wire signed [15:0] l_hi  = (sp_r > 16'(HALFX) - 16'sd1) ? 16'(HALFX) - 16'sd1
+                                                          : sp_r;
+  wire signed [15:0] r_lo  = (sp_l < 16'(HALFX)) ? 16'(HALFX) : sp_l;
+  wire [15:0] n_l = (sp_ok && (l_hi >= sp_l)) ? 16'(l_hi - sp_l + 16'sd1) : 16'd0;
+  wire [15:0] n_r = (sp_ok && (sp_r >= r_lo)) ? 16'(sp_r - r_lo + 16'sd1) : 16'd0;
+
+  logic [25:0] acc_l, acc_r;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      acc_l <= '0; acc_r <= '0;
+    end else begin
+      acc_l <= acc_l + 26'(n_l);
+      acc_r <= acc_r + 26'(n_r);
+    end
+  end
+  assign dbg_px_l = acc_l[25:10];
+  assign dbg_px_r = acc_r[25:10];
 
   always_comb begin
     bd_span_valid = '0;

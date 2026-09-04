@@ -134,6 +134,11 @@ module m1_speed_report #(
   // The memory's own occupancy and the tile port's wait, each 0x00 to 0xFF
   // over a 13 ms window. These separate the two explanations for a tile
   // overrun: a saturated controller, or an idle one that arbitrates badly.
+  // Pixels the fill emitted into each half of the screen, in units of 1024
+  // and free-running. A= is the left half, Z= the right. See m1_raster3d.
+  input  logic [15:0] px_left,
+  input  logic [15:0] px_right,
+
   input  logic [7:0]  mem_occ,
   input  logic [7:0]  mem_wait,
 
@@ -149,6 +154,7 @@ module m1_speed_report #(
   logic [23:0] r_vpc, r_spc;
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
+  logic [15:0] r_pxl, r_pxr;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -159,7 +165,7 @@ module m1_speed_report #(
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
-      r_occ <= '0; r_wait <= '0;
+      r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -188,6 +194,8 @@ module m1_speed_report #(
           r_miss  <= fetch_miss;
           r_occ   <= mem_occ;
           r_wait  <= mem_wait;
+          r_pxl   <= px_left;
+          r_pxr   <= px_right;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -196,7 +204,7 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx\r\n"
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx A=xxxx Z=xxxx\r\n"
   // ci must be SEVEN bits: at [5:0] it wraps at 64 and the line silently
   // repeats its middle.
   //
@@ -205,7 +213,7 @@ module m1_speed_report #(
   // It had drifted to eight more than that, which cost nothing but printed
   // seven blank lines after every report. 127 bytes a second against 11,520
   // available, so the channel is still not a concern.
-  localparam int unsigned NCH = 127;
+  localparam int unsigned NCH = 141;
 
   logic [6:0]  ci;
   logic        busy;
@@ -351,7 +359,21 @@ module m1_speed_report #(
       7'd122: ch = "=";
       7'd123: ch = hexc(r_wait[7:4]);
       7'd124: ch = hexc(r_wait[3:0]);
-      7'd125: ch = 8'h0d;
+      7'd125: ch = " ";
+      7'd126: ch = "A";
+      7'd127: ch = "=";
+      7'd128: ch = hexc(r_pxl[15:12]);
+      7'd129: ch = hexc(r_pxl[11:8]);
+      7'd130: ch = hexc(r_pxl[7:4]);
+      7'd131: ch = hexc(r_pxl[3:0]);
+      7'd132: ch = " ";
+      7'd133: ch = "Z";
+      7'd134: ch = "=";
+      7'd135: ch = hexc(r_pxr[15:12]);
+      7'd136: ch = hexc(r_pxr[11:8]);
+      7'd137: ch = hexc(r_pxr[7:4]);
+      7'd138: ch = hexc(r_pxr[3:0]);
+      7'd139: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end

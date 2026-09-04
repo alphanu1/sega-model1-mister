@@ -704,6 +704,7 @@ module m1_integrated (
   logic [15:0] r3_dbg_late;          // bands presented after the beam passed them
   logic [15:0] r3_dbg_drop_total, r3_dbg_short, r3_dbg_oob, r3_dbg_late0;
   logic [15:0] r3_dbg_vx1;      // the 3D frustum's left clip plane, K= on the wire
+  logic [15:0] r3_dbg_px_l, r3_dbg_px_r;   // spans emitted per screen half, A=/Z=
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -751,7 +752,8 @@ module m1_integrated (
     .dbg_bands(r3_dbg_bands), .dbg_pass_cycles(r3_dbg_pass_cycles),
     .dbg_band_cycles(r3_dbg_band_cycles), .dbg_late(r3_dbg_late),
     .dbg_drop_total(r3_dbg_drop_total), .dbg_short(r3_dbg_short),
-    .dbg_oob(r3_dbg_oob), .dbg_late0(r3_dbg_late0), .dbg_vx1(r3_dbg_vx1)
+    .dbg_oob(r3_dbg_oob), .dbg_late0(r3_dbg_late0), .dbg_vx1(r3_dbg_vx1),
+    .dbg_px_l(r3_dbg_px_l), .dbg_px_r(r3_dbg_px_r)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -968,6 +970,7 @@ module m1_integrated (
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
+    .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );
