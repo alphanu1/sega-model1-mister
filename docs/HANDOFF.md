@@ -43,6 +43,64 @@ that arming suppressed. Ben also suggested a fourth band buffer: it is
 affordable now (~16 M10K) but does not address this, because band 0's
 constraint is when its fill may START, not where the result goes.
 
+## 2026-09-04 — THE tv80 I/O BOARD: the ROM path is in, the fit is not
+
+Ben asked for the real Z80 I/O board, reversing D9's HLE. `rtl/io/m1_ioz80.sv`
+already existed - 488 lines, complete, brought over from the Model 2 work
+because it is literally the same physical PCB - and `rtl/cpu/tv80/` is in the
+tree. Neither was wired into anything.
+
+### Done and committed
+
+- **The firmware is in the ROM path.** EPR-14869 is a MAME DEVICE rom
+  (`model1io.cpp`'s iocpu region) and is in NO game set: checked by hash, no
+  member of `vr.zip` has its contents and there is no 64 KB file in it at all.
+  It ships with `daytona93`, which is why the Model 2 core loads it from
+  there, and the MRA now does the same on **index 2**, its own download index
+  like the coprocessor microcode. `make verify_mra` still matches byte for
+  byte. Without the file the Z80 stays in reset and the behavioural board
+  answers, so nobody loses what they have.
+
+### The blocker, measured
+
+`make quartus MOD=m1_ioz80` with the tv80 sources:
+
+    m1_ioz80            1,610 ALM   24 M10K
+      firmware  8192 x 16          16 blocks
+      work RAM  8192 x 8            8 blocks
+    plus a DPRAM read port for the Z80 side, which duplicates
+    dpram_lo (2048 x 8, both M10K ports already used)   ~2 blocks
+                                                        ---
+                                                         26
+
+The core has **2,629 ALM and 17 M10K free**. ALM is fine. Memory is 9 short.
+
+### What I would build, and why
+
+**Firmware in SDRAM with a small instruction cache.** The firmware is 16 KB
+and read-only, so it is the natural thing to move: -16 blocks takes the need
+to 10 and it fits with room. The objection is traffic - the V60 already
+stalls on memory for 49.67% of its cycles and that is what limits the frame
+rate in busy scenes, so a Z80 fetching every opcode from the same controller
+makes the thing Ben notices worse. A 512-byte direct-mapped cache is one
+M10K and a polling loop hits in it almost always, which removes that.
+
+The alternatives are worse. Shrinking the quad store back to 2,048 frees
+plenty and loses the grandstand, which is proven. 2,560 is unmeasured and
+the store already overflows in bursts at 3,072. The V60 split frees ALM, not
+memory.
+
+### The rest of the integration, not yet written
+
+    m1_mainram   a read port on dpram_lo for the Z80 side - it only has a
+                 write port today (io_we/io_addr/io_din/io_ack) and the
+                 firmware reads dpram[addr] through 315-5338A register 0x0c
+    m1_main      m1_ioz80 behind the existing IOBOARD generate, which already
+                 makes the behavioural board optional
+    m1_integrated  loader index 2 -> the Z80's firmware port, cabinet inputs,
+                 ADC channels
+    m1_rom_loader  recognise index 2
+
 ## 2026-09-03 — THE 3D LAYER: five defects found and fixed in one session
 
 Every one was confirmed on the DE10-Nano by Ben watching the screen, and each
