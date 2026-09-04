@@ -20,6 +20,61 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-04 — THE LAYER BLEND ORDER IS THE SAME FOR EVERY MODEL 1 GAME, and the above-HUD 3D pass is NOT implemented
+
+Asked because NetMerc's attract screen draws 3D over the `INSERT COIN` glyphs
+and that looked like a layering fault. Two facts, both read off MAME.
+
+### There is one blend order, not one per game
+
+`model1.cpp:1835` sets `screen_update_model1` once, in the shared machine
+config, and nothing overrides it. Every Model 1 game composites identically
+(`model1_v.cpp:1846-1868`):
+
+```
+fill with pen 0
+tiles 6, 4 opaque, then 2, 0        <- category 0
+tgp_render(RENDER_BELOW_HUD)        <- the 3D
+tiles 7, 5, 3, 1                    <- category 1
+build_overlay_mask()
+tgp_render(RENDER_ABOVE_HUD)        <- command 0x41 only
+apply_overlay_stencil()
+```
+
+`segaic24`'s `draw(layer, ...)` splits its argument as `tpri = layer & 1` and
+map `= layer >> 1`, so those eight calls are FOUR TILEMAPS EACH DRAWN TWICE -
+once for the tiles whose category bit is clear, once for those where it is set.
+Every tilemap therefore has tiles on both sides of the 3D.
+
+**Ours matches.** `m1_tile_mixer` resolves cat1 tiles above the polygon layer
+and the polygon layer above cat0, and `m1_tile_decode` takes the category from
+`tile_word[15]` - which is what `segaic24.cpp:56` reads:
+`tileinfo.category = (val & 0x8000) != 0`.
+
+So a glyph buried under the 3D is a glyph whose category bit is clear, and MAME
+buries it too. Whether NetMerc's attract frame is correct is a question for a
+reference snapshot, not for the mixer.
+
+### The ABOVE-HUD pass is a real gap
+
+MAME renders the 3D **twice**. Objects with command `0x41` are held back and
+drawn after the HUD tilemaps, through a stencil that only lets them through
+"background" HUD pixels. MAME's own comment names the case: **SWA radar blips**.
+
+`m1_listwalk` knows the opcode exists - there is a comment about dispatching on
+it - but nothing in this design separates the two passes, and the mixer has a
+single `poly_valid` input. So a 0x41 object renders BELOW the HUD and is hidden
+by it.
+
+That is the opposite of the NetMerc symptom, so it explains nothing there. It
+will bite **Star Wars Arcade**, which is the game the MAME comment is about, and
+it is now on record rather than being rediscovered from a missing radar.
+
+Not scheduled: it needs a second polygon layer or a per-pixel stencil through
+the mixer, and no game we can currently run needs it.
+
+---
+
 ## 2026-09-04 — THE 103-CYCLE CHARACTER FETCH WAIT IS 18 CYCLES. The famous unexplained number was an average taken across the ROM download
 
 `HANDOFF.md` item 6 has recorded since M1 began that a character fetch waits an
