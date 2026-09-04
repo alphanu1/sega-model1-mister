@@ -50,7 +50,25 @@ module m1_geo_planes (
   input  logic [31:0] div_res,
 
   output logic [31:0] a_left, a_right, a_bottom, a_top,
-  output logic        valid                // a full set has been computed
+  output logic        valid,               // a full set has been computed
+  // A RECOMPUTE IS IN FLIGHT, so the four planes are a mix of old and new.
+  //
+  // The planes are computed ONE AT A TIME - each is two adds and a divide from
+  // the shared FP pool, so a full set takes on the order of a thousand cycles -
+  // and each is written as it finishes. For that whole window a_left may be the
+  // new viewport's while a_right is still the previous one's.
+  //
+  // `valid` was meant to cover this and could not: it is set once, when the
+  // first set completes, and is never cleared, so it says "a set has been
+  // computed at some point" rather than "these are current". It was also wired
+  // to nothing at all in m1_geometry - declared, connected, and never read - so
+  // the clipper has always clipped against whatever the planes happened to hold.
+  //
+  // This one says what the consumer actually needs to know. Gating on it rather
+  // than on `valid` also cannot deadlock: a display list that never sets a
+  // viewport leaves the planes at their reset zeros, which is wrong, but it
+  // does not stall the geometry waiting for a command that never comes.
+  output logic        busy
 );
 
   typedef enum logic [2:0] { S_IDLE, S_S1, S_S1W, S_S2, S_S2W, S_DIV, S_DIVW } st_t;
@@ -78,13 +96,15 @@ module m1_geo_planes (
     endcase
   end
 
+  assign busy = (st != S_IDLE) || recompute;
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= S_IDLE; which <= '0; acc <= '0; valid <= 1'b0;
       a_left <= '0; a_right <= '0; a_bottom <= '0; a_top <= '0;
     end else begin
       case (st)
-        S_IDLE: if (recompute) begin which <= '0; st <= S_S1; end
+        S_IDLE: if (recompute) begin which <= '0; valid <= 1'b0; st <= S_S1; end
         S_S1:   if (add_gnt) st <= S_S1W;
         S_S1W:  if (add_rsp) begin acc <= add_res; st <= S_S2; end
         S_S2:   if (add_gnt) st <= S_S2W;

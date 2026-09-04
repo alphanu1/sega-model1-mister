@@ -45,6 +45,9 @@ module m1_geometry (
 
   // ---- one object
   input  logic        start,
+  // High while the frustum planes are mid-recompute. The caller must not hand
+  // over an object during it - see m1_geo_planes.
+  output logic        planes_wait,
   input  logic [31:0] in_tex_adr,
   input  logic [31:0] in_poly_adr,
   input  logic [31:0] in_size,
@@ -209,6 +212,8 @@ module m1_geometry (
   logic [23:0] cl_out_rgb;
   logic [5:0]  cl_out_lum;
 
+  assign planes_wait = planes_busy;
+
   m1_geo_walk u_walk (
     .clk(clk), .rst_n(rst_n),
     .start(start), .in_tex_adr(in_tex_adr), .in_poly_adr(in_poly_adr),
@@ -291,6 +296,7 @@ module m1_geometry (
   logic [31:0] a_left /* verilator public_flat_rd */, a_right /* verilator public_flat_rd */;
   logic [31:0] a_bottom /* verilator public_flat_rd */, a_top /* verilator public_flat_rd */;
   logic        planes_valid /* verilator public_flat_rd */;
+  logic        planes_busy  /* verilator public_flat_rd */;
 
   m1_geo_planes u_planes (
     .clk(clk), .rst_n(rst_n),
@@ -304,7 +310,8 @@ module m1_geometry (
     .div_req(div_req[6]), .div_a(div_a[6]), .div_b(div_b[6]),
     .div_gnt(div_gnt[6]), .div_rsp(div_rsp[6]), .div_res(div_res),
     .a_left(a_left), .a_right(a_right),
-    .a_bottom(a_bottom), .a_top(a_top), .valid(planes_valid)
+    .a_bottom(a_bottom), .a_top(a_top), .valid(planes_valid),
+    .busy(planes_busy)
   );
 
   m1_geo_clip u_clip (

@@ -318,7 +318,7 @@ module m1_raster3d #(
   fp_from_int u_vp (.i(vp_int), .f(vp_flt));
 
   // ---------------------------------------------------------------- geometry
-  logic        geo_start, geo_busy, geo_done;
+  logic        geo_start, geo_busy, geo_done, geo_planes_wait;
   logic [31:0] geo_oldz_out;
   logic        mat_we;
   logic [3:0]  mat_idx;
@@ -388,6 +388,7 @@ module m1_raster3d #(
     .spec_enable(vspec), .frame_odd(frame_odd),
     .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
+    .planes_wait(geo_planes_wait),
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
@@ -949,7 +950,15 @@ module m1_raster3d #(
   logic [31:0] pass_timer;
   logic [15:0] prev_objs;
   assign lw_start        = prod_go;
-  assign geo_start       = (pst == P_OBJ);
+  // HELD while the frustum planes are recomputing.
+  //
+  // A viewport, zoom or view-translation command sets vp_dirty and the planes
+  // take about a thousand cycles to recompute, one at a time. The object that
+  // follows such a command used to be clipped against a half-updated set - and
+  // only geometry that actually CROSSES a plane can notice, which is why the
+  // road and the scenery vanish from the edge of the screen while cars, which
+  // sit inside the frustum, are untouched.
+  assign geo_start       = (pst == P_OBJ) && !geo_planes_wait;
   assign qs_clear        = prod_go;
   assign qs_sort_start   = (pst == P_SORT);
   assign qs_replay_start = (cst == C_REPLAY);
@@ -1244,7 +1253,7 @@ module m1_raster3d #(
           end
         end
 
-        P_OBJ:  pst <= P_OBJW;
+        P_OBJ:  if (!geo_planes_wait) pst <= P_OBJW;
         P_OBJW: if (geo_done) begin
           old_z <= geo_oldz_out;
           pst   <= P_WALK;
