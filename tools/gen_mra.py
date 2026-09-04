@@ -396,7 +396,13 @@ def emit(setname, chunks, cross_checked):
         '         REQUIRED: the core runs the real Z80 and there is no',
         '         behavioural fallback. MAME will not start this game without',
         '         the same file, so a complete romset already has it. -->',
-        f'    <rom index="2" zip="model1io.zip" md5="none">',
+        # BOTH NAMES. model1io is MAME's own device set and the canonical
+        # place for this file, but it is a BIOS set that many collections
+        # fold into the games that need it - and daytona93.zip carries all
+        # three revisions, which is where it is in practice. Naming both
+        # means no one has to assemble a zip by hand, which is what Ben
+        # objected to and rightly.
+        f'    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">',
         f'        <part name="{iofw}"/>',
         '    </rom>',
     ]
