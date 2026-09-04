@@ -398,6 +398,50 @@ never entered; `m1_sdram`'s counts moved with an arbitration change before
 today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
 is corrected in this commit.
 
+## 2026-09-04 — FFE59C IS NORMAL IN GAMEPLAY, and the crash is ATTRACT-ONLY
+
+Three corrections, all from Ben watching the board while the telemetry ran.
+
+**Gameplay does not crash. Attract does.** Every capture of the five-minute
+freeze until now was taken in attract, and "the core crashes after five
+minutes" was drawn from those. Playing the game it does not happen. Whatever
+corrupts the copier's length is something ATTRACT does, which narrows the
+hunt enormously.
+
+**V=FFE59C is not by itself a crash.** The 2026-09-01 entry has it as "RARE
+in normal running - 3 of 657 samples", measured in attract, and I read a long
+run of it during gameplay as the freeze. It is not: the V60 sat there for
+many consecutive samples while completing 29 display-list swaps a second, at
+full speed. It is a block copy the game performs constantly and a
+once-a-second sample lands in it often. The reliable signature is the TGP's
+retire count FROZEN together with P=0000; the address alone will send the
+next reader after the wrong thing, as it just sent me.
+
+**And the stall pc is not always FE0C9B.** The 2026-09-03 entry calls the
+crash deterministic on three attract captures that agreed. Gameplay gives
+X=FE15FA. Three agreeing captures were evidence that attract reaches the
+state one way, not that the state has one cause.
+
+## 2026-09-04 — THE LEFT-HALF DROPOUT IS NOT THE QUAD STORE EITHER
+
+Measured on the board while Ben played and saw the fault about ten times:
+
+    objects            34-53 normally, 157-161 in the heaviest scenes
+    quads dropped      ZERO, apart from one burst of 287 in two minutes
+    logic frames       29 a second throughout - full speed
+    bands late         3-4 a second
+    worst band fill    45-90% of its slot
+
+So it is not overflow, not starvation and not late bands. It also persists
+while the car is STATIONARY, which rules out anything transient. Both
+hypotheses so far are dead: the 2D window mode (ruled out because it varies
+with load) and the quad store (ruled out because D= stays at zero).
+
+What is still worth doing is a photograph of the fault while stationary. A
+static repro is the strongest evidence available and can be diffed against
+MAME on the same scene; every hypothesis so far has come from a moving
+picture and a guess.
+
 ## 2026-09-04 — GAMEPLAY RUNS, and the left half of the 3D is hidden
 
 With the tv80 I/O board the game reaches actual gameplay for the first time -
