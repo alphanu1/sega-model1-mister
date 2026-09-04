@@ -398,6 +398,45 @@ never entered; `m1_sdram`'s counts moved with an arbitration change before
 today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
 is corrected in this commit.
 
+## 2026-09-04 — GAMEPLAY RUNS, and the left half of the 3D is hidden
+
+With the tv80 I/O board the game reaches actual gameplay for the first time -
+Ben's photograph shows Virtua Racing racing, position, lap time, the minimap,
+the car. Two faults are visible and both are new information, because nothing
+before this ever got past attract.
+
+### The left half of the screen has no 3D
+
+A PERFECTLY VERTICAL boundary at about half the width, roughly x = 248 of
+496. Left of it: flat green below, flat blue above, and the 2D overlay. Right
+of it: road, scenery, everything.
+
+**That shape is the 2D window mode, not a 3D fault.** Dropped quads lose whole
+objects and leave ragged holes; a straight vertical edge at the midpoint is a
+clip or a column split, and `segaic24`'s window mode is exactly a per-pixel
+column split that draws BOTH maps of a pair, one either side. The green and
+blue are tilemap colours. So the likely mechanism is a tilemap drawn OPAQUE
+over the left half, hiding the 3D behind it, rather than the 3D failing to
+draw there.
+
+Attract sets pair 2/3 to mode 1 with a varying split line, which is the
+horizon and works. Gameplay has never been observed, so what it sets is
+unmeasured.
+
+**Next**: `make m1_frame FRAME_PRESS=0xfe` then `0xef` puts a coin in and
+presses start, which is how to reach gameplay in the bench now that the I/O
+board answers. Then read `f_ctrl[0]`/`f_ctrl[1]` and the per-layer pixel
+census the bench already prints - it reports tm0..tm3 pixels a frame - and
+compare against MAME on the same frame. The 2D rules are all implemented and
+verified for attract; this is about what gameplay asks for.
+
+### The pedals were digital
+
+Fixed: the right stick's Y axis drives both, up for throttle and down for
+brake, with the buttons still live and the larger winning. A racing game with
+on/off pedals is a different game - you cannot hold a line through a corner
+without partial throttle.
+
 ## 2026-09-04 — THE tv80 I/O BOARD BOOTS AND STOPS AT THE EEPROM
 
 The Z80 runs EPR-14869 out of SDRAM and gets a long way. It does not reach the

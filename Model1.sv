@@ -180,11 +180,30 @@ module emu
   wire [7:0] io_wheel = io_steer_l ? 8'h00 :
                         io_steer_r ? 8'hff : wheel_stick;
 
-  // Buttons, not axes. hps_io's analog ports are two-axis sticks, so there is
-  // no travel to read from them for a pedal; a button giving full press is
-  // honest about that rather than pretending to be analog.
-  wire [7:0] io_accel = io_accel_b ? 8'hff : 8'h01;
-  wire [7:0] io_brake = io_brake_b ? 8'hff : 8'h01;
+  // PEDALS ARE ANALOGUE NOW, with the buttons still live.
+  //
+  // They used to be buttons only, on the reasoning that hps_io's analog ports
+  // are two-axis sticks with no travel to read for a pedal. That was wrong in
+  // practice: a pad's triggers reach the core through an analog port, and a
+  // racing game with on/off pedals is a different game - you cannot hold a
+  // line through a corner without partial throttle.
+  //
+  // The RIGHT stick's Y axis carries both, which is what a pad without
+  // separate trigger axes gives you: up is throttle, down is brake, and a
+  // trigger mapped to that axis drives one of them over its full travel.
+  // hps_io delivers it signed, +127 at full up.
+  //
+  // Idle is 0x01 and full is 0xff, matching MAME's PORT_MINMAX(1,0xff) - a
+  // pedal resting at 0x00 is a car that will not move, which is measured in
+  // docs/io-board.md and not a guess. The button still gives full travel, so
+  // whichever the player has mapped works and the larger of the two wins.
+  wire signed [7:0] pedal_y = joy0_rstick[15:8];
+  wire [7:0] accel_an = pedal_y > 8'sd0 ? {pedal_y[6:0], 1'b1} : 8'h01;
+  wire [7:0] brake_an = pedal_y < 8'sd0 ? {(~pedal_y[6:0] + 7'd1), 1'b1} : 8'h01;
+  wire [7:0] io_accel = io_accel_b ? 8'hff :
+                        (accel_an > 8'h01) ? accel_an : 8'h01;
+  wire [7:0] io_brake = io_brake_b ? 8'hff :
+                        (brake_an > 8'h01) ? brake_an : 8'h01;
 
   // The fifteen bytes the sweep publishes, DPRAM 0x00 first. The DIP banks read
   // as all-ones — every switch off — until an MRA <switches> element drives
