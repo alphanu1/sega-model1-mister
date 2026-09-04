@@ -420,14 +420,24 @@ def emit(setname, chunks, cross_checked):
         # STEERING: d-pad left and right go to full lock, and the LEFT
         # ANALOGUE STICK steers proportionally when the d-pad is idle.
         #
-        # THE GEARBOX IS ON THE D-PAD's UP AND DOWN as well as on its named
-        # buttons, which is why those two are left unmapped here: six face
-        # buttons against eight controls means two lose out, and the four VR
-        # view buttons are what a player actually reaches for. Service and
-        # test stay named but unmapped too, since both are on the OSD.
+        # THERE IS NO EIGHT-BUTTON LIMIT, which an earlier version of this
+        # assumed and used to justify leaving the gearbox unmapped. hps_io
+        # declares `joystick_0` as 32 bits - "buttons up to 32" in its own
+        # comment - and the MRA default attribute takes far more than the
+        # face buttons. Every token below appears in a working MRA on a real
+        # MiSTer, which is where the list came from; the MiSTer MRA
+        # documentation does not enumerate them:
+        #
+        #     A B C X Y Z  L R  L1 R1 L2 R2  Select Start
+        #     Rup Rdown Rleft Rright   (the right stick as buttons)
+        #
+        # So everything a player touches gets a default. The gearbox is ALSO
+        # on the d-pad's up and down in the core, which costs nothing and is
+        # what a driving game does anyway. Service and test stay named but
+        # unmapped, since both are already on the OSD.
         '    <buttons names="Accelerate,Brake,Shift Up,Shift Down,'
         'VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" '
-        'default="A,B,-,-,X,Y,L,R,Start,Select"/>',
+        'default="A,B,R1,L1,X,Y,L,R,Start,Select"/>',
         '</misterromdescription>',
         '',
     ]
