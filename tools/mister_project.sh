@@ -489,6 +489,29 @@ else
     echo "  register duplication $M1_QDUP, router logic duplication $M1_QDUP"
 fi
 
+# AGGRESSIVE ROUTABILITY, because the failure at 99% is CONGESTION, not capacity.
+#
+# Adding the Z80 I/O board took the design to 41,342 of 41,910 ALM and one seed
+# fitted while another died. The dead one did not run out of logic - it ran out
+# of routing:
+#
+#   Warning (16618): Fitter routing phase terminated due to routing congestion.
+#   Critical Warning (188026): The Fitter failed to successfully route the
+#     design. You may be able get this design to route by ... enabling the
+#     Fitter Aggressive Routability Optimizations logic option.
+#
+# Quartus names its own remedy there and this is it. It biases placement toward
+# routability at some cost in delay, which is the right trade for a design that
+# has area to spare on paper and cannot reach it. A full device CAN fit; what it
+# cannot do is fit with wires that do not exist.
+#
+# M1_QROUTE=NEVER turns it off again for a comparison.
+M1_QROUTE="${M1_QROUTE:-ALWAYS}"
+printf '
+set_global_assignment -name FITTER_AGGRESSIVE_ROUTABILITY_OPTIMIZATION %s
+'     "$M1_QROUTE" >> "$stage/Model1.qsf"
+echo "  aggressive routability = $M1_QROUTE"
+
 cat > "$stage/Model1.qpf" <<'EOF'
 QUARTUS_VERSION = "17.0"
 PROJECT_REVISION = "Model1"
