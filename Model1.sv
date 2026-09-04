@@ -360,11 +360,11 @@ module emu
 
   // EIGHT PORTS NOW: p7 is the I/O board Z80's firmware fetch. Its 16 KB of
   // code is read-only and there is no block RAM left for it - see m1_ioz80.
-  wire [7:0]       p_req, p_we, p_ack;
-  wire [7:0][24:1] p_addr;
-  wire [7:0][15:0] p_din;
-  wire [7:0][1:0]  p_be;
-  wire [7:0][63:0] p_dout;
+  wire [6:0]       p_req, p_we, p_ack;
+  wire [6:0][24:1] p_addr;
+  wire [6:0][15:0] p_din;
+  wire [6:0][1:0]  p_be;
+  wire [6:0][63:0] p_dout;
 
   // The I/O board Z80's firmware fetch, from m1_integrated. IOFW_BASE in
   // m1_rom_loader is where the loader put it, and the two must agree - a
@@ -384,8 +384,9 @@ module emu
   // it against the SDRAM model. Port 4 was tied off; it carries the sweep.
   // p5 bursts the polygon models, p6 carries tgp_ram and is the only port
   // besides p0 that writes - display-list command 4 uploads colour words.
-  assign p_req  = {iofw_req, r3d_tex_req, r3d_rom_req, rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-  assign p_we   = {1'b0,     r3d_tex_we,  1'b0,        1'b0,   1'b0,        1'b0,    1'b0,     sdr_we};
+  // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
+  assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+  assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -397,12 +398,12 @@ module emu
 // p5's address is aligned DOWN to its 4-word burst boundary here, the same way
 // p3's is on the line below - m1_integrated keeps bit 1 to pick which 32-bit half
 // of the burst it wanted.
-assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
-                 r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0}, rb_addr,
+assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+                 IOFW_BASE + {11'd0, iofw_word},
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-  assign p_din  = {16'd0, r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-  assign p_be   = {2'd0,  2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+  assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+  assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
   assign sdr_ack   = p_ack[0];
   assign char_ack  = p_ack[1];
@@ -428,7 +429,7 @@ assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
   // Rather than guess the correction one twenty-five minute build at a time,
   // the phase is an OSD option. It defaults to CL+2, one cycle earlier than the
   // model needs, which is what the measured shift implies.
-  m1_sdram #(.T_REFI(600), .NP(8)) sdram (
+  m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
     // OSD order is CL+2, CL+3, CL+4, CL+5 and the selector's own encoding puts
     // CL+3 at zero, so the two are mapped rather than passed through. The board
@@ -523,7 +524,7 @@ assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
 
     // The I/O board Z80's firmware fetch, on port 7.
     .iofw_req(iofw_req), .iofw_word(iofw_word),
-    .iofw_ack(p_ack[7]), .iofw_din(p_dout[7][15:0]),
+    .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
 
     .char_req(char_req), .char_addr(char_addr),
     .char_data(char_data), .char_ack(char_ack),
@@ -561,7 +562,8 @@ assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
     .dbg_copro_rd_csum(dbg_copro_rd_csum),
     .dbg_rd_a0(dbg_rd_a0), .dbg_rd_a1(dbg_rd_a1),
     .dbg_rd_a2(dbg_rd_a2), .dbg_rd_a3(dbg_rd_a3),
-    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
+    // The read-back sweep has no port now; it fed the overlay's row 4 only.
+    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(64'd0), .rb_ack(1'b0),
     .dbg_rb_csum(dbg_rb_csum), .dbg_rb_csum0(dbg_rb_csum0), .dbg_rb_n(dbg_rb_n),
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_sdram_csum(dbg_sdram_csum), .dbg_sdram_words(dbg_sdram_words),
@@ -576,7 +578,19 @@ assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
   // measured by building both ways rather than estimated, and so a release
   // build can drop it. See docs/debug-overlay.md for the measurement and for
   // what every row means.
-  localparam bit DEBUG_OVERLAY = 1;
+  //
+  // OFF, 2026-09-04. The UART telemetry replaced it: twenty-four rows cannot
+  // show a SEQUENCE, and every defect since the 3D work started has been about
+  // sequence - which band went up when, how long a pass took, what the Z80
+  // fetched. It found four faults nothing else could see and the parameter
+  // keeps it one character away, but it is not worth its area now.
+  //
+  // Turning it off also frees SDRAM PORT 4. The read-back sweep exists only to
+  // feed row 4 of this overlay, and a port is 140 ALM measured (the controller
+  // is 1,067 at seven ports and 1,207 at eight). So the Z80 I/O board takes
+  // that port instead of an eighth being added - Ben's observation, and the
+  // reason the board now costs no port growth at all.
+  localparam bit DEBUG_OVERLAY = 0;
 
   //
   // Six words painted over the top left of the picture, readable off a phone

@@ -185,14 +185,16 @@ localparam logic [24:1] IOFW_BASE = 24'hD00000;
 wire        iofw_req;
 wire [12:0] iofw_word;
 
-wire [7:0]       p_req, p_we, p_ack;
-wire [7:0][24:1] p_addr;
-wire [7:0][15:0] p_din;
-wire [7:0][1:0]  p_be;
-wire [7:0][63:0] p_dout;
+wire [6:0]       p_req, p_we, p_ack;
+wire [6:0][24:1] p_addr;
+wire [6:0][15:0] p_din;
+wire [6:0][1:0]  p_be;
+wire [6:0][63:0] p_dout;
 
-assign p_req  = {iofw_req, r3d_tex_req, r3d_rom_req, rb_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-assign p_we   = {1'b0,     r3d_tex_we,  1'b0,        1'b0,   1'b0,        1'b0,    1'b0,     sdr_we};
+// Port 4 carries the I/O board's firmware fetch, not the read-back sweep -
+// that fed the debug overlay's row 4, which is off. See Model1.sv.
+assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -203,12 +205,12 @@ assign p_we   = {1'b0,     r3d_tex_we,  1'b0,        1'b0,   1'b0,        1'b0, 
 // is; m1_integrated keeps bit 1 to pick which 32-bit half of the burst it
 // wanted. Aligning it any earlier destroys that bit and every odd model word
 // returns the even one's data.
-assign p_addr = {IOFW_BASE + {11'd0, iofw_word},
-                 r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0}, rb_addr,
+assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+                 IOFW_BASE + {11'd0, iofw_word},
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-assign p_din  = {16'd0, r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-assign p_be   = {2'd0,  2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -229,7 +231,7 @@ wire        dq_oe_c, dq_oe_m;
 wire [15:0] v_flags;
 wire        mem_ready;
 
-m1_sdram #(.NP(8), .INIT_NOP(600)) sdram (
+m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .rd_lat_sel(2'd0),   // CL+3: sdram_model presents data on the same edge
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
@@ -306,7 +308,7 @@ m1_integrated core (
     .tgp_mem_dout(p_dout[3]), .tgp_mem_ack(p_ack[3]),
     // The read-back sweep, on the port that was tied off. Same logic the board
     // runs, so the printed value IS the expected value for row 0C.
-    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(p_dout[4]), .rb_ack(p_ack[4]),
+    .rb_req(rb_req), .rb_addr(rb_addr), .rb_dout(64'd0), .rb_ack(1'b0),
     .dbg_rb_csum(f_rb_csum), .dbg_rb_csum0(f_rb_csum0), .dbg_rb_n(f_rb_n),
     .dbg_tgp_retires(f_tgp_retires), .dbg_tgp_pc(f_tgp_pc),
     .dbg_tgp_unimpl(f_tgp_unimpl),
@@ -330,7 +332,7 @@ m1_integrated core (
     .sdr_dout(p_dout[0][15:0]), .sdr_ack(p_ack[0]),
 
     .iofw_req(iofw_req), .iofw_word(iofw_word),
-    .iofw_ack(p_ack[7]), .iofw_din(p_dout[7][15:0]),
+    .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
     .if_req(ifp_req), .if_addr(), .if_sdram_addr(ifp_addr),
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
 
@@ -1469,9 +1471,9 @@ integer fwf_n = 0;
 reg [12:0] fwf_a [0:15];
 reg [15:0] fwf_d [0:15];
 always @(posedge clk) begin
-    if (rst_n_sys && core.iofw_req && p_ack[7] && fwf_n < 16) begin
+    if (rst_n_sys && core.iofw_req && p_ack[4] && fwf_n < 16) begin
         fwf_a[fwf_n] = core.iofw_word;
-        fwf_d[fwf_n] = p_dout[7][15:0];
+        fwf_d[fwf_n] = p_dout[4][15:0];
         fwf_n = fwf_n + 1;
     end
 end
