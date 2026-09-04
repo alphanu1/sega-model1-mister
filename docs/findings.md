@@ -20,6 +20,92 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-04 — THE TILE OVERRUNS ARE REAL AND THE SDRAM IS NOT THE CAUSE. The memory has 70% of its cycles free while the tile port misses 2,175 deadlines a second
+
+Ben's reading was that the tile overruns and the 3D dropout together point at
+the memory controller, and that raising the SDRAM clock to 133 MHz is the fix.
+The overruns are real — his eye was right again. The bandwidth attribution is
+not, and the same capture says so.
+
+### What was measured
+
+Two counters were added to `m1_sdram` and put on the UART, because nothing in
+this project had ever measured memory occupancy on hardware. `bw_monitor` has
+existed for months and its numbers only ever reached simulation.
+
+- `O=` — cycles the controller is not in `S_IDLE`, over a 2^20-cycle window
+  (13 ms at 80 MHz), as a fraction of 0xFF.
+- `Q=` — cycles port 1, the tile character fetch, is pending, same window.
+- `M=` — the tile fetch's deadline misses, free-running. This counter already
+  existed and had never reached the wire: it was a row on the debug overlay,
+  which is off.
+
+148 seconds of gameplay, seed 11 build, `13a584c58a408e942d9f51d98285ec1e`.
+
+| Second | Misses/s | Controller busy | Tile port pending |
+|---|---|---|---|
+| 0-2 | 1-6 | 38-40% | 31% |
+| 3 | 394 | 32% | 40% |
+| 4-12 | **2,165-2,192** | **30-33%** | **37-42%** |
+| 13 on | 10-85 | 18-38% | 11-26% |
+
+At 57.5 Hz and 384 lines that burst is about **10% of every scanline in the
+frame overrunning**, which is more than enough to be the visible 2D corruption.
+
+### The number that settles it
+
+**Busy went DOWN as the misses went UP.** Occupancy fell from 40% to 32% over
+exactly the seconds when misses rose from 1/s to 2,175/s, while the tile port's
+pending time rose from 31% to 42%. A bandwidth wall does the opposite: the
+controller saturates and everything queues behind it. Here the controller did
+LESS work while one port waited LONGER.
+
+The controller has **68 to 70 percent of its cycles idle** throughout. There is
+no shortage of memory cycles to find. A faster clock multiplies capacity that is
+already unused.
+
+### What this means for the 133 MHz plan
+
+It is not the fix for this defect. It may still be worth doing for other
+reasons, but it must not be justified by the tile overruns.
+
+Two other measurements from the same builds bear on it, both from the seed
+reports rather than argued:
+
+- `SDRAM_CLK_pin` has **+9.4 to +11.4 ns of slack against a 12.5 ns period**.
+  The pin paths take about 3 ns, so the physical interface would still hold
+  roughly 4.5 ns of margin at 133 MHz. The interface is not the limit.
+- `clk_sys` closes at **+0.549 ns**, an 11.9 ns critical path. That domain
+  carries the 2D video path and the loader as well as the controller, so it
+  cannot simply be sped up. The memory would need its own domain — which is
+  what Ben proposed — and whether the controller's own logic closes at 7.5 ns
+  is not yet known.
+
+### The prediction that came true
+
+`HANDOFF.md` item 6 has recorded since M1 began that a character fetch waits an
+average of **103 cycles**, that this is "far more than a round-robin turn
+between three active ports should cost", that it is "not understood", and that
+it "will matter when the rasterizer joins the same controller". The rasterizer
+now shares that controller and the wait has become deadline misses. The item
+said to find out where the time goes **before** changing `m1_sdram`. That is
+still the right order, and it is now the blocking question rather than an
+efficiency note.
+
+The shape of the answer is constrained by the data: a port that is pending 40%
+of cycles while the controller is idle 70% of them is spending its time in
+handshake, not in service. A row-hit burst on this controller is six cycles.
+103 is not six.
+
+### What is NOT the cause, measured in the same capture
+
+- **Not the 3D frustum.** `K=` reads `0000` on every one of the 148 samples, so
+  no clipping is discarding the geometry. That was the competing explanation for
+  the left-half dropout and it is struck off.
+- **Not the fetch bandwidth alone.** See above.
+
+---
+
 ## 2026-09-03 — THE MISSING 3D IS A THREE-FRAME PASS CADENCE. The producer runs over a frame, and the design then lost a frame on every pass
 
 Fixed in `m1_raster3d`: the geometry pass now starts when the game presents a
