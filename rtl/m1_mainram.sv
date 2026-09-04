@@ -53,7 +53,9 @@ module m1_mainram (
   input  logic [15:0] wdata,
   input  logic        sel_tileram, sel_palette, sel_dlist0,
   input  logic        sel_dlist1, sel_colxlat, sel_dpram,
-  output logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q, dpram_q,
+  output logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q,
+  // Driven combinationally from the single registered read below.
+  output wire  [15:0] dpram_q,
   // Writes above the 16,384-word cap the two display lists are sized to.
   // Measured zero over 40 s; nonzero means the cap is wrong. See below.
   output logic [15:0] dbg_dl_oob,
@@ -312,15 +314,29 @@ module m1_mainram (
   // back with a later one, so its address is held for hundreds of cycles and
   // it does not care which of them answers. The V60 keeps absolute priority
   // and never waits.
+  // ONE READ SITE, NOT TWO - the same trap m1_quad_store documents.
+  //
+  // Writing `dpram_lo[v60 ? a : b]` in one place and `dpram_lo[b]` in another
+  // is two reads of one array as far as synthesis is concerned, and Quartus
+  // answers the second by DUPLICATING the memory: dpram_lo_rtl_0 and
+  // dpram_lo_rtl_1 in the fit report, which is exactly the 2 blocks this was
+  // meant to save. So the array is read once, at a muxed address, and the two
+  // consumers take their answer from that one registered value.
   wire dp_v60_rd = sel_dpram;
+  logic       dp_lo_q;
+  logic [7:0] dp_lo_d;
+  logic [7:0] dpram_hi_q;
   always_ff @(posedge clk) begin
     if (dp_we)             dpram_lo[dp_waddr]   <= dp_wdata;
     if (dpram_we && be[1]) dpram_hi[addr[11:1]] <= wdata[15:8];
-    dpram_q  <= {dpram_hi[addr[11:1]], dpram_lo[dp_v60_rd ? addr[11:1] : io_raddr]};
-    // Only sampled on a cycle the V60 was not reading, so it is always this
-    // array's answer to io_raddr and never the CPU's word.
-    if (!dp_v60_rd) io_rdata <= dpram_lo[io_raddr];
+    dp_lo_d    <= dpram_lo[dp_v60_rd ? addr[11:1] : io_raddr];
+    dp_lo_q    <= dp_v60_rd;                 // whose answer dp_lo_d carries
+    dpram_hi_q <= dpram_hi[addr[11:1]];
+    // The I/O board's copy updates only on cycles the V60 was not reading, so
+    // it is always this array's answer to io_raddr and never the CPU's word.
+    if (!dp_lo_q) io_rdata <= dp_lo_d;
   end
+  assign dpram_q = {dpram_hi_q, dp_lo_d};
 
   // ------------------------------------------------- POWER-ON CONTENTS ARE ZERO
   //
