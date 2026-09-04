@@ -353,6 +353,15 @@ module m1_main #(
   // The Z80 I/O board's read side of the shared RAM. Unused by the
   // behavioural board, which only ever wrote it.
   logic [10:0] io_raddr;
+  // The DPRAM window as the I/O board sees it: held for a few cycles so a Z80
+  // paced at one clock in six can sample it. clk_cpu is 23.529 MHz and the
+  // real board's Z80 runs at 4 MHz, which is what CEN_DIV(6) gives.
+  logic [5:0] dp_busy_sr;
+  wire        dp_busy_z = |dp_busy_sr;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) dp_busy_sr <= '0;
+    else        dp_busy_sr <= {dp_busy_sr[4:0], (m_req && sel_dpram)};
+  end
   wire  [7:0]  io_rdata;
   logic [10:0] io_addr;
   logic [7:0]  io_din;
@@ -503,7 +512,7 @@ module m1_main #(
       // executed RST 38h forever. One fetch in forty million cycles.
       //
       // rst_cpu is ~rst_n | ~rom_loaded, which is what the V60 uses.
-      m1_ioz80 ioboard (
+      m1_ioz80 #(.CEN_DIV(6)) ioboard (
         .clk(clk), .rst_n(~rst_cpu),
         .fw_req(iofw_req), .fw_word(iofw_word),
         .fw_ack(iofw_ack), .fw_din(iofw_din),
@@ -513,9 +522,19 @@ module m1_main #(
         .dsw1(in_bytes[11*8 +: 8]),
         .dsw2(in_bytes[12*8 +: 8]),
         .dsw3(in_bytes[13*8 +: 8]),
-        // Busy while the V60 owns the shared write port, which is what the
-        // firmware's status waits are waiting on.
-        .dp_busy(io_we && !io_ack),
+        // BUSY MEANS "THE GAME IS IN THE WINDOW", not "my write is pending".
+        //
+        // I had this as `io_we && !io_ack`, which is the Z80's own write
+        // waiting for the shared port - a different signal entirely, and one
+        // the firmware has no use for. The Model 2 core, which runs this same
+        // board and works, feeds its status bit from whether the CPU is inside
+        // the DPRAM block window: the firmware polls it so it does not read a
+        // half-written request, and with the wrong signal it waits on
+        // something that never means what it thinks.
+        //
+        // STRETCHED, because the Z80 samples it through a clock enable of one
+        // in six and a single clk_cpu pulse would be invisible.
+        .dp_busy(dp_busy_z),
         .adc0(in_bytes[0*8 +: 8]),   // wheel, centre 0x80
         .adc1(in_bytes[1*8 +: 8]),   // accelerator
         .adc2(in_bytes[2*8 +: 8]),   // brake

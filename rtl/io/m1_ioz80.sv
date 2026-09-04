@@ -307,12 +307,22 @@ module m1_ioz80 #(
       4'ha: io_q = ser_out;
       4'hb: io_q = cmd_r;
       4'hc: io_q = z_rdata;          // dpram[io_address]
-      // STATUS. Bit 3 stays set -- the firmware's second wait, at 0x82f, waits
-      // for it and a clear bit there would hang the boot. Bit 0 is BUSY, and it
-      // is now REAL: raised while the game is inside the block window, which is
-      // exactly what the MB8421 does and what the firmware's 0x815 loop was
-      // written to wait on.
-      4'hd: io_q = {4'd0, 3'b001, dp_busy};   // 0x08 idle, 0x09 busy
+      // STATUS. CONSTANT 0x08, which is what MAME's 315_5338a.cpp returns:
+      //
+      //     case 0x0d:   // 7654---- unknown, ----3--- transfer finished?
+      //                  // -----21- unknown, -------0 command acknowledged
+      //        data = 0x08;
+      //
+      // Bit 0 is "command acknowledged" and ZERO is the acknowledgement. A
+      // previous version drove it from a real busy signal, on the reasoning
+      // that a dual-port RAM has one - and on Model 1 that DEADLOCKS. The V60
+      // polls the shared RAM continuously while it waits for this board, so a
+      // busy bit derived from the game's accesses is set almost always; the
+      // firmware then waits for an acknowledgement that only arrives when the
+      // game stops polling, and the game only stops when the firmware answers.
+      // Each side waits for the other. Measured: the firmware read this
+      // register 254,982 times in 100 M cycles and never moved on.
+      4'hd: io_q = 8'h08;
       default: ;
     endcase
   end

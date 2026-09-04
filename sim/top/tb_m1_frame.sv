@@ -1424,6 +1424,44 @@ always @(posedge clk) begin
     end
 end
 
+// ------------------------------- WHICH 315-5338A REGISTERS DOES IT READ?
+//
+// The firmware reads the EEPROM over and over and never writes the DPRAM, so
+// it is looping on something. Writes alone cannot say what it is WAITING for;
+// the reads can. Register 0x0c is dpram[addr] and 0x0d is the status the
+// firmware polls, so those two are the ones that matter.
+integer io_rd_n [0:15];
+integer ird_i;
+initial for (ird_i = 0; ird_i < 16; ird_i = ird_i + 1) io_rd_n[ird_i] = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.g_ioboard.ioboard.rst_n
+        && core.main.g_ioboard.ioboard.io_sel
+        && core.main.g_ioboard.ioboard.mem_rd)
+        io_rd_n[core.main.g_ioboard.ioboard.A[3:0]] =
+            io_rd_n[core.main.g_ioboard.ioboard.A[3:0]] + 1;
+end
+
+// ------------------------------- DOES THE EEPROM CONVERSATION COMPLETE?
+//
+// "Stuck at the EEPROM" and "doing a long EEPROM conversation" look the same
+// in a 512-write window: reading all 64 words is ~3,200 register writes. So
+// count the commands the model actually decodes, not the clocks.
+integer ee_reads = 0, ee_writes = 0, ee_erase = 0, ee_ewen_n = 0, ee_cmds = 0;
+reg [2:0] ee_st_d = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.g_ioboard.ioboard.rst_n) begin
+        if (core.main.g_ioboard.ioboard.ee_st != ee_st_d) begin
+            case (core.main.g_ioboard.ioboard.ee_st)
+                3'd1: begin ee_reads  = ee_reads + 1;  ee_cmds = ee_cmds + 1; end
+                3'd2: begin ee_writes = ee_writes + 1; ee_cmds = ee_cmds + 1; end
+                3'd3: begin ee_erase  = ee_erase + 1;  ee_cmds = ee_cmds + 1; end
+                default: ;
+            endcase
+            ee_st_d = core.main.g_ioboard.ioboard.ee_st;
+        end
+    end
+end
+
 // --------------------------------- WHO MOVES FIRST, THE V60 OR THE Z80
 //
 // The Z80 boots and never issues a DPRAM write command; the V60 waits at
@@ -2083,6 +2121,12 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $write("FRAME: 315-5338A register READS (reg:count):");
+        for (ird_i = 0; ird_i < 16; ird_i = ird_i + 1)
+            if (io_rd_n[ird_i] != 0) $write(" %01h:%0d", ird_i, io_rd_n[ird_i]);
+        $write("\n");
+        $display("FRAME: EEPROM commands decoded: %0d READ, %0d WRITE, %0d ERASE/DONE (%0d total)",
+                 ee_reads, ee_writes, ee_erase, ee_cmds);
         $write("FRAME: the V60 wrote the shared RAM %0d times; first:", v60_dp_wr);
         for (zw_i = 0; zw_i < v60_dp_n; zw_i = zw_i + 1)
             $write(" %03h=%02h", v60_dp_first[zw_i], v60_dp_firstd[zw_i]);
