@@ -1895,6 +1895,50 @@ always @(posedge clk) begin
     if (char_req && !d_creq) cl_n    = cl_n + 1;
 end
 
+// ---------------------------------------- where the character wait GOES
+//
+// The average above is 103 cycles and HANDOFF item 6 has said since M1 began
+// that this is far more than a round-robin turn should cost, that it is not
+// understood, and to find out where the time goes BEFORE changing m1_sdram.
+// The board now says it matters: the tile fetch misses deadlines while the
+// controller sits 70% idle, so it is waiting for turns rather than for cycles.
+//
+// Three phases, and each points at a different repair:
+//
+//   ARB      request pending, not yet granted. Contention or arbiter latency.
+//            Fixed by a priority ladder, which is what the GBA and N64
+//            controllers use instead of round-robin.
+//   SERVICE  granted until ack. This is the transfer itself and is bounded by
+//            the burst length; it cannot be much reduced without a wider port.
+//   GAP      ack until the next request rises. The requester's own turnaround.
+//            Fixed by letting the port have more than one request outstanding,
+//            which is what the N64 mux does with its FIFOs and its separate
+//            reqprocessed signal.
+//
+// Counted as totals over the run rather than per request, for the reason the
+// note above gives: one mispaired sample destroyed a mean here once.
+// Measured against the CONTROLLER's own pending latch, not against char_req.
+// char_req stays high across the ack and for however long the requester takes
+// to drop it, so classifying by char_req alone charges the requester's
+// turnaround to arbitration - which inflates arb and points at the wrong fix.
+// pend[1] is set on the request rising edge and cleared on completion, so it
+// is exactly "the controller has this request and has not finished it".
+integer ph_arb = 0, ph_svc = 0, ph_gap = 0, ph_idlearb = 0;
+always @(posedge clk) begin
+    if (sdram.pend[1] && !sdram.inflight[1]) begin
+        ph_arb = ph_arb + 1;
+        // Waiting for a turn while the controller has nothing to do. This is
+        // the number that decides between a priority ladder and a deeper
+        // pipeline: if it is near zero the port waits because the memory is
+        // genuinely busy, and no arbitration change can help.
+        if (sdram.state == 4'd1) ph_idlearb = ph_idlearb + 1;   // S_IDLE
+    end else if (sdram.pend[1]) begin
+        ph_svc = ph_svc + 1;
+    end else if (cl_n > 0) begin
+        ph_gap = ph_gap + 1;
+    end
+end
+
 // -------------------------------------------------------- stall detector
 //
 // A hang here used to be a test that never returned, which says only that
@@ -2316,9 +2360,15 @@ initial begin
                 $write(" %0d:%0d%%", cpi_i, (100*cpi_hist[cpi_i])/cpi_retires);
         $write("\n");
     end
-    if (cl_n > 0)
+    if (cl_n > 0) begin
         $display("FRAME: char fetch wait avg=%0d cycles over %0d fetches (%0d total)",
                  cl_wait / cl_n, cl_n, cl_wait);
+        // Where that wait goes. See the phase counters above for what each one
+        // implies; the largest is the one worth building against.
+        $display("FRAME: char wait split: arb=%0d (%0d/req) service=%0d (%0d/req) gap=%0d (%0d/req), of the arb wait %0d cycles had the controller IDLE",
+                 ph_arb, ph_arb / cl_n, ph_svc, ph_svc / cl_n,
+                 ph_gap, ph_gap / cl_n, ph_idlearb);
+    end
     $display("PROBE: %0d distinct palette words, %0d distinct tile words, %0d distinct palette INDICES",
              npal, ntram, npaddr);
     tv = 0;
