@@ -43,7 +43,65 @@ that arming suppressed. Ben also suggested a fourth band buffer: it is
 affordable now (~16 M10K) but does not address this, because band 0's
 constraint is when its fill may START, not where the result goes.
 
-## 2026-09-04 — THE tv80 I/O BOARD FITS. It stops in the EEPROM.
+## 2026-09-04 — THE tv80 I/O BOARD WORKS
+
+A real Z80 running EPR-14869 answers the V60's boot handshake and the game
+runs. D9's HLE is reversed. Simulation, 400 M cycles:
+
+    V60                pc=fe143d, its main loop, where it sat at fe022c
+    display lists      132 swaps, 2.34 frames apart = 85% of hardware speed
+                       (the behavioural board measured 2.31 - the same)
+    Z80 -> shared RAM  26,957 writes
+    bands              24 a frame, none late
+    SDRAM violations   0
+    make test          53 suites, all pass
+
+### What was actually wrong, and it was never the board
+
+`m1_ioz80` is byte-identical to the Model 2 core's copy of the same physical
+PCB apart from the SDRAM fetch. Diffing against it - Ben's suggestion, and it
+found everything - showed all three faults were in how I wired it.
+
+**The status register deadlocked the two CPUs.** MAME's `315_5338a.cpp`
+returns a CONSTANT 0x08 for register 0x0d, where bit 0 is "command
+acknowledged" and ZERO is the acknowledgement. Driving it from a real busy
+signal looked right, because a dual-port RAM has one:
+
+    the V60 polls the shared RAM while it waits for the board
+    so a busy bit taken from the game's accesses is set almost always
+    so the firmware waits for an acknowledgement that never comes
+    and the game only stops polling once the firmware answers.
+
+Measured before the fix: 254,982 status reads and not one DPRAM access.
+
+**The shared DPRAM read port returned the wrong byte** - the board asked for
+0x1b and got 0x1a's value, while the array itself held 53 45 47 41 correctly.
+The port is not contended (the V60 holds it 32% of cycles) and the cause is
+NOT understood; it is a duplicate array again, 2 M10K, with the evidence in
+the comment. What not to repeat is there too: the first attempt left two read
+expressions on the array, so Quartus duplicated it anyway and saved nothing.
+
+**The Z80 ran at 1.96 MHz.** CEN_DIV(12) off clk_cpu, where Model 2 gets
+4 MHz from a 48 MHz clock. CEN_DIV(6) here.
+
+### Two dead ends worth not re-walking
+
+The EEPROM is NOT a blocker and its contents do not matter. 93c45.bin holds
+"SEGA" as little-endian words, which made it a compelling suspect; preloading
+it changes nothing, and the firmware ERASES and REWRITES all 64 words at boot
+(64 reads, 64 writes, 65 erases). Model 2 runs with a blank device.
+
+The firmware was never "stuck in the EEPROM" either. It was polling the
+status register between EEPROM passes, and the EEPROM traffic was the visible
+part of a wait for something else.
+
+### Still owed
+
+A hardware test. The build was fitting when this was written; the last
+measured figures with the Z80 were 40,178 ALM (96%), 544 M10K, +0.260 ns, and
+the duplicate array puts memory back to 546.
+
+## 2026-09-04 (earlier) — THE tv80 I/O BOARD FITS. It stops in the EEPROM.
 
 **It fits and closes timing**: seed 13 of 4a08221, **+0.260 ns, 40,178 ALM
 (96%), 544 M10K (98%), 0 errors**. Ben was right that a nearly-full device
