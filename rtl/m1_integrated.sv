@@ -970,7 +970,7 @@ module m1_integrated (
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
-    .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r),
+    .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(r3_dbg_oob),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );

@@ -229,7 +229,18 @@ module m1_raster3d #(
   // Everything the display list sets that the geometry needs. Latched as the
   // walk goes, so an object command uses whatever was most recently set - which
   // is what tgp_render does, and why the walk cannot be reordered.
-  logic [31:0] vxc, vyc, vzoomx, vzoomy, vviewx, vviewy;
+  // Public to the bench: the clipper's plane ratios are computed FROM these,
+  // and tb_m1_geometry currently verifies m1_geo_clip against one fixed set of
+  // them that was chosen when the bench was written. The game sets them per
+  // object and changes them hard on corners, which is where Ben sees the road
+  // and the scenery vanish. A clipper proved exact for parameters the game
+  // never uses is not proof about the game.
+  logic [31:0] vxc /* verilator public_flat_rd */;
+  logic [31:0] vyc /* verilator public_flat_rd */;
+  logic [31:0] vzoomx /* verilator public_flat_rd */;
+  logic [31:0] vzoomy /* verilator public_flat_rd */;
+  logic [31:0] vviewx /* verilator public_flat_rd */;
+  logic [31:0] vviewy /* verilator public_flat_rd */;
   logic [31:0] vlx, vly, vlz;          // NORMALIZED, as MAME stores it
   logic [31:0] rlx, rly, rlz;          // as the display list gave it
   logic        light_pending;
@@ -284,7 +295,10 @@ module m1_raster3d #(
   // The viewport RECTANGLE, which command 3 carries. Until the frustum clipper
   // arrived nothing consumed it - the fill clips to the band, so the screen
   // extents never reached anything.
-  logic [31:0] vx1, vx2, vy1, vy2;
+  logic [31:0] vx1 /* verilator public_flat_rd */;
+  logic [31:0] vx2 /* verilator public_flat_rd */;
+  logic [31:0] vy1 /* verilator public_flat_rd */;
+  logic [31:0] vy2 /* verilator public_flat_rd */;
   logic        vp_dirty;
 
   // Indices 1..6 are xc, yc, x1, y2, x2, y1 - model1_v.cpp:1502-1507. The x

@@ -1618,11 +1618,46 @@ end
 integer vp_n = 0;
 reg [31:0] vp_x1_min = 32'h7fffffff, vp_x1_max = 0;
 reg [31:0] vp_seen [0:7];
+reg [31:0] vp_lo [0:8];
+reg [31:0] vp_hi [0:8];
+integer vpi;
+initial for (vpi = 0; vpi < 9; vpi = vpi + 1) begin
+    vp_lo[vpi] = 32'hffffffff; vp_hi[vpi] = 0;
+end
 always @(posedge clk_3d) begin
     if (core.u_raster3d.rst_n && core.u_raster3d.vp_lat) begin
         vp_n = vp_n + 1;
         if (core.u_raster3d.vx1 < vp_x1_min) vp_x1_min = core.u_raster3d.vx1;
         if (core.u_raster3d.vx1 > vp_x1_max) vp_x1_max = core.u_raster3d.vx1;
+        // EVERY parameter the clip planes are built from, not just vx1.
+        //
+        //   a_left = (x1 - xc - viewx) / zoomx
+        //
+        // so a plane is wrong if any of four values is, and tb_m1_geometry
+        // pins all of them to one set chosen when it was written. Ben sees the
+        // road and the scenery drop off the left while cars stay, which is the
+        // documented symptom of geometry reaching the rasteriser UNCLIPPED -
+        // large polygons wrap their 16-bit screen coordinates, small ones never
+        // notice. If the game's real values are outside what the bench uses,
+        // the clipper is verified for a case the game does not run.
+        if (core.u_raster3d.vxc    < vp_lo[0]) vp_lo[0] = core.u_raster3d.vxc;
+        if (core.u_raster3d.vxc    > vp_hi[0]) vp_hi[0] = core.u_raster3d.vxc;
+        if (core.u_raster3d.vyc    < vp_lo[1]) vp_lo[1] = core.u_raster3d.vyc;
+        if (core.u_raster3d.vyc    > vp_hi[1]) vp_hi[1] = core.u_raster3d.vyc;
+        if (core.u_raster3d.vzoomx < vp_lo[2]) vp_lo[2] = core.u_raster3d.vzoomx;
+        if (core.u_raster3d.vzoomx > vp_hi[2]) vp_hi[2] = core.u_raster3d.vzoomx;
+        if (core.u_raster3d.vzoomy < vp_lo[3]) vp_lo[3] = core.u_raster3d.vzoomy;
+        if (core.u_raster3d.vzoomy > vp_hi[3]) vp_hi[3] = core.u_raster3d.vzoomy;
+        if (core.u_raster3d.vviewx < vp_lo[4]) vp_lo[4] = core.u_raster3d.vviewx;
+        if (core.u_raster3d.vviewx > vp_hi[4]) vp_hi[4] = core.u_raster3d.vviewx;
+        if (core.u_raster3d.vviewy < vp_lo[5]) vp_lo[5] = core.u_raster3d.vviewy;
+        if (core.u_raster3d.vviewy > vp_hi[5]) vp_hi[5] = core.u_raster3d.vviewy;
+        if (core.u_raster3d.vx2    < vp_lo[6]) vp_lo[6] = core.u_raster3d.vx2;
+        if (core.u_raster3d.vx2    > vp_hi[6]) vp_hi[6] = core.u_raster3d.vx2;
+        if (core.u_raster3d.vy1    < vp_lo[7]) vp_lo[7] = core.u_raster3d.vy1;
+        if (core.u_raster3d.vy1    > vp_hi[7]) vp_hi[7] = core.u_raster3d.vy1;
+        if (core.u_raster3d.vy2    < vp_lo[8]) vp_lo[8] = core.u_raster3d.vy2;
+        if (core.u_raster3d.vy2    > vp_hi[8]) vp_hi[8] = core.u_raster3d.vy2;
     end
 end
 
@@ -2283,6 +2318,16 @@ initial begin
                  vp_n, vp_x1_min, vp_x1_max,
                  core.u_raster3d.vxc, core.u_raster3d.vyc,
                  core.u_raster3d.vx1, core.u_raster3d.vx2);
+        $display("FRAME: clip-plane inputs over the run (IEEE-754 hex, min .. max)");
+        $display("   xc    %08h .. %08h", vp_lo[0], vp_hi[0]);
+        $display("   yc    %08h .. %08h", vp_lo[1], vp_hi[1]);
+        $display("   zoomx %08h .. %08h", vp_lo[2], vp_hi[2]);
+        $display("   zoomy %08h .. %08h", vp_lo[3], vp_hi[3]);
+        $display("   viewx %08h .. %08h", vp_lo[4], vp_hi[4]);
+        $display("   viewy %08h .. %08h", vp_lo[5], vp_hi[5]);
+        $display("   x2    %08h .. %08h", vp_lo[6], vp_hi[6]);
+        $display("   y1    %08h .. %08h", vp_lo[7], vp_hi[7]);
+        $display("   y2    %08h .. %08h", vp_lo[8], vp_hi[8]);
         $write("FRAME: shared RAM contents 018..022:");
         for (zrd_i = 24; zrd_i < 35; zrd_i = zrd_i + 1)
             $write(" %03h=%02h", zrd_i, core.main.rams.dpram_lo[zrd_i]);

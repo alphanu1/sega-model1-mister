@@ -136,6 +136,19 @@ module m1_speed_report #(
   // overrun: a saturated controller, or an idle one that arbitrates badly.
   // Pixels the fill emitted into each half of the screen, in units of 1024
   // and free-running. A= is the left half, Z= the right. See m1_raster3d.
+  // VERTICES THE QUAD STORE COULD NOT REPRESENT, free-running.
+  //
+  // The store keeps SIXTEEN BIT screen coordinates, and m1_geo_clip's header
+  // says what happens when one does not fit: a road vertex projecting to
+  // x = 100,000 truncates to -31,072 and the quad is drawn as a slab on the
+  // opposite side of the screen. Objects that fit on screen never notice; the
+  // road, which runs to the horizon and off both sides, always does.
+  //
+  // Ben sees exactly that - the road and the scenery gone from the left of the
+  // screen while the cars stay. The counter that would confirm it has existed
+  // all along and has never left the chip. G= is it.
+  input  logic [15:0] vert_oob,
+
   input  logic [15:0] px_left,
   input  logic [15:0] px_right,
 
@@ -154,7 +167,7 @@ module m1_speed_report #(
   logic [23:0] r_vpc, r_spc;
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
-  logic [15:0] r_pxl, r_pxr;
+  logic [15:0] r_pxl, r_pxr, r_oob;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -165,7 +178,7 @@ module m1_speed_report #(
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
-      r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0;
+      r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -196,6 +209,7 @@ module m1_speed_report #(
           r_wait  <= mem_wait;
           r_pxl   <= px_left;
           r_pxr   <= px_right;
+          r_oob   <= vert_oob;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -204,7 +218,7 @@ module m1_speed_report #(
   end
 
   // ------------------------------------------------------------- formatter
-  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx A=xxxx Z=xxxx\r\n"
+  // "F=xxxx S=xxxx B=xxxx P=xxxx C=xxxx R=xxxx N=xxxx V=xxxxxx X=xxxxxx L=xxxx T=xxxx W=xxxx D=xxxx H=xxxx K=xxxx M=xxxx O=xx Q=xx A=xxxx Z=xxxx G=xxxx\r\n"
   // ci must be WIDE ENOUGH FOR THE WHOLE LINE, and this has now bitten twice.
   // At [5:0] it wrapped at 64 and the line repeated its middle; at [6:0] it
   // wraps at 128, and a 141-byte line made 7'(NCH-1) truncate 140 to 12, so
@@ -217,7 +231,7 @@ module m1_speed_report #(
   // It had drifted to eight more than that, which cost nothing but printed
   // seven blank lines after every report. 127 bytes a second against 11,520
   // available, so the channel is still not a concern.
-  localparam int unsigned NCH = 141;
+  localparam int unsigned NCH = 148;
 
   logic [7:0]  ci;
   logic        busy;
@@ -377,7 +391,14 @@ module m1_speed_report #(
       8'd136: ch = hexc(r_pxr[11:8]);
       8'd137: ch = hexc(r_pxr[7:4]);
       8'd138: ch = hexc(r_pxr[3:0]);
-      8'd139: ch = 8'h0d;
+      8'd139: ch = " ";
+      8'd140: ch = "G";
+      8'd141: ch = "=";
+      8'd142: ch = hexc(r_oob[15:12]);
+      8'd143: ch = hexc(r_oob[11:8]);
+      8'd144: ch = hexc(r_oob[7:4]);
+      8'd145: ch = hexc(r_oob[3:0]);
+      8'd146: ch = 8'h0d;
       default: ch = 8'h0a;
     endcase
   end
