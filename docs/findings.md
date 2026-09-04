@@ -398,6 +398,49 @@ never entered; `m1_sdram`'s counts moved with an arbitration change before
 today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
 is corrected in this commit.
 
+## 2026-09-04 — THE tv80 I/O BOARD BOOTS AND STOPS AT THE EEPROM
+
+The Z80 runs EPR-14869 out of SDRAM and gets a long way. It does not reach the
+shared RAM, and the reason is not the DPRAM path at all.
+
+### What each side actually does, measured
+
+**The V60 moves first, and it writes a signature.** `tb_m1_frame` counting its
+writes into the shared RAM:
+
+    01a=53  01b=45  01c=47  01d=41      "SEGA"
+    020=01                              then the flag at 0x20
+
+Three times each, which is the CPU retrying. So the V60 is not waiting for
+permission to start - it has placed its request and is waiting at fe022c for
+an answer.
+
+**The Z80 never answers, because it never gets that far.** Every write it
+makes into the 315-5338A's registers, in order:
+
+    5=00  8=5e  0=40 0=c0 0=60 0=e0 0=60 0=e0 0=40 0=c0 0=40 0=c0 ...
+
+Register 8 is the direction register; register 0 is port A. After setting
+direction it toggles ONE BIT of port A for ever - 0x40 against 0xc0 - with a
+second bit moving occasionally. That is a bit-banged serial clock, and port A
+is where this board's **93C45 EEPROM** hangs. The firmware is stuck in its
+EEPROM conversation and has not begun the DPRAM one.
+
+### Two things to check next, in this order
+
+1. **The EEPROM has no contents.** `m1_ioz80` initialises its 64 x 16 array to
+   0xffff, and `93c45.bin` - 128 bytes - is sitting in vr.zip unused. A blank
+   EEPROM is a plausible reason for a firmware to loop: it may be waiting for
+   a signature it wrote at the factory. Loading it is cheap and falsifiable.
+2. **The EEPROM state machine itself.** If the contents are not the problem
+   then the model is: `ee_st` and `ee_do` are what to watch, and MAME's
+   `eeprom_serial_93cxx_device` is the oracle.
+
+An earlier probe of `dbg_last_wr` read all zeros and I suspected the probe.
+It was honest: that signal only updates on a DPRAM write COMMAND, and there
+have not been any. The probe that answered the question watches `aw_l`/`dw_l`
+on `wr_stb`, which is every register write.
+
 ## 2026-09-03 — THE FPS DIPS ARE THE V60 WAITING ON MEMORY, not the rasterizer
 
 Ben reports the game slowing for about five seconds in one scene. That is the

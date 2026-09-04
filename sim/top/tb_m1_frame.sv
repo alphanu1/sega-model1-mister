@@ -1424,6 +1424,28 @@ always @(posedge clk) begin
     end
 end
 
+// --------------------------------- WHO MOVES FIRST, THE V60 OR THE Z80
+//
+// The Z80 boots and never issues a DPRAM write command; the V60 waits at
+// fe022c. If the V60 is waiting for the board and the board is waiting for the
+// V60 then nothing is broken in either - they are deadlocked, and the
+// behavioural board only worked because it answered unprompted. So count what
+// the V60 puts INTO the shared RAM, which is the request the firmware reads.
+integer v60_dp_wr = 0;
+reg [10:0] v60_dp_first [0:15];
+reg  [7:0] v60_dp_firstd [0:15];
+integer v60_dp_n = 0;
+always @(posedge clk_cpu) begin
+    if (rst_n_cpu && core.main.sel_dpram && core.main.m_req && core.main.m_we) begin
+        v60_dp_wr = v60_dp_wr + 1;
+        if (v60_dp_n < 16) begin
+            v60_dp_first[v60_dp_n]  = core.main.m_addr[11:1];
+            v60_dp_firstd[v60_dp_n] = core.main.m_wdata[7:0];
+            v60_dp_n = v60_dp_n + 1;
+        end
+    end
+end
+
 // ------------------------------- WHAT THE Z80 WRITES TO THE 315-5338A
 //
 // The DPRAM is behind that chip, not memory-mapped: the firmware sets an
@@ -1433,11 +1455,18 @@ end
 integer io5338_n = 0;
 reg [3:0] io5338_a [0:63];
 reg [7:0] io5338_d [0:63];
+// dbg_last_wr only updates on a DPRAM write COMMAND, so probing it answers
+// "did the firmware write the DPRAM" and nothing else - it read all zeros,
+// which was the honest answer and not a broken probe. What is wanted is every
+// write into the 315-5338A's register file, taken from the latched address
+// and data the module itself decodes from.
 always @(posedge clk_cpu) begin
     if (core.main.g_ioboard.ioboard.rst_n
-        && core.main.g_ioboard.ioboard.dbg_wr_stb && io5338_n < 64) begin
-        io5338_a[io5338_n] = core.main.g_ioboard.ioboard.dbg_last_wr[11:8];
-        io5338_d[io5338_n] = core.main.g_ioboard.ioboard.dbg_last_wr[7:0];
+        && core.main.g_ioboard.ioboard.wr_stb
+        && core.main.g_ioboard.ioboard.aw_l[15:4] == 12'h800
+        && io5338_n < 64) begin
+        io5338_a[io5338_n] = core.main.g_ioboard.ioboard.aw_l[3:0];
+        io5338_d[io5338_n] = core.main.g_ioboard.ioboard.dw_l;
         io5338_n = io5338_n + 1;
     end
 end
@@ -2054,6 +2083,10 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $write("FRAME: the V60 wrote the shared RAM %0d times; first:", v60_dp_wr);
+        for (zw_i = 0; zw_i < v60_dp_n; zw_i = zw_i + 1)
+            $write(" %03h=%02h", v60_dp_first[zw_i], v60_dp_firstd[zw_i]);
+        $write("\n");
         $write("FRAME: Z80 writes to the 315-5338A (reg=data), first %0d:", io5338_n);
         for (zw_i = 0; zw_i < io5338_n; zw_i = zw_i + 1)
             $write(" %01h=%02h", io5338_a[zw_i], io5338_d[zw_i]);
