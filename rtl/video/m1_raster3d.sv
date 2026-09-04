@@ -219,7 +219,12 @@ module m1_raster3d #(
   // The split is counted where the fill hands a span over, with the same clamp
   // the band buffer applies, so it measures what is actually written.
   output logic [15:0] dbg_px_l,
-  output logic [15:0] dbg_px_r
+  output logic [15:0] dbg_px_r,
+
+  // Backface culls over the whole run. See m1_geo_walk: g_cull was wired up
+  // and then went nowhere, which is why the facing test has never been
+  // observable on the board.
+  output logic [15:0] dbg_culled
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -323,7 +328,7 @@ module m1_raster3d #(
   logic [23:0] q_col;
   logic [31:0] q_z;
   logic        q_moire;
-  logic [15:0] g_rec, g_qds, g_cull, g_nolink;
+  logic [15:0] g_rec, g_qds, g_cull, g_nolink, g_cull_run;
 
   // ---------------------------------------------------------- tgp_ram writes
   //
@@ -396,7 +401,7 @@ module m1_raster3d #(
     .q_x2(q_x2), .q_y2(q_y2), .q_x3(q_x3), .q_y3(q_y3),
     .q_col(q_col), .q_z(q_z), .q_moire(q_moire),
     .dbg_records(g_rec), .dbg_quads(g_qds),
-    .dbg_culled(g_cull), .dbg_nolink(g_nolink),
+    .dbg_culled(g_cull), .dbg_nolink(g_nolink), .dbg_culled_run(g_cull_run),
     .ext_nrm_valid(nrm_valid), .ext_nrm_ready(nrm_ready),
     .ext_nrm_x(rlx), .ext_nrm_y(rly), .ext_nrm_z(rlz),
     .ext_nrm_out_valid(nrm_out_valid),
@@ -992,6 +997,7 @@ module m1_raster3d #(
                    16'(vx1_man >> vx1_sh[4:0]);
   assign dbg_oob     = qs_oob_v[0] + qs_oob_v[1];
   assign dbg_quads   = qs_count;
+  assign dbg_culled  = g_cull_run;
   assign dbg_dropped = qs_dropped;
 
   always_ff @(posedge clk or negedge rst_n) begin

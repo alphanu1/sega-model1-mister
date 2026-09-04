@@ -140,7 +140,20 @@ module m1_geo_walk (
   output logic [15:0] dbg_records,
   output logic [15:0] dbg_quads,
   output logic [15:0] dbg_culled,
-  output logic [15:0] dbg_nolink
+  output logic [15:0] dbg_nolink,
+
+  // BACKFACE CULLS, FREE-RUNNING ACROSS THE WHOLE PASS.
+  //
+  // dbg_culled above is cleared per object, so sampling it once a second reads
+  // whatever the last object happened to do. That is useless for the question
+  // being asked on the board: the road and the scenery vanish while the cars
+  // stay, which is what a facing test with the wrong sign does to single-sided
+  // geometry. A ground plane culled wrongly disappears completely; a closed
+  // object like a car always has faces pointing at the eye, so it never does.
+  //
+  // This one never clears, so its RATE is meaningful and a spike lines up with
+  // the moment the road goes.
+  output logic [15:0] dbg_culled_run
 );
 
   // ---------------------------------------------------------------- state
@@ -398,6 +411,7 @@ module m1_geo_walk (
       q_x2 <= '0; q_y2 <= '0; q_x3 <= '0; q_y3 <= '0;
       done <= 1'b0;
       dbg_records <= '0; dbg_quads <= '0; dbg_culled <= '0; dbg_nolink <= '0;
+      dbg_culled_run <= '0;
     end else begin
       // q_valid is NOT cleared here: it is a held handshake and W_EMITW owns
       // it. Clearing it every cycle made it a one-cycle pulse, which a consumer
@@ -444,6 +458,9 @@ module m1_geo_walk (
           culled     <= dt_out_positive;   // `view_determinant(...) > 0` culls
           if (dt_out_positive && dbg_culled != 16'hffff)
             dbg_culled <= dbg_culled + 16'd1;
+          // Wraps rather than saturating: the rate is what matters, and a
+          // counter that stops reads as "it went away" when it did not.
+          if (dt_out_positive) dbg_culled_run <= dbg_culled_run + 16'd1;
         end
         if (nm_out_valid && nm_iss && !nm_col) begin
           nvx <= nm_out_x; nvy <= nm_out_y; nvz <= nm_out_z;

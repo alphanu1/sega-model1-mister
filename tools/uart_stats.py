@@ -11,11 +11,11 @@ Usage: tools/uart_stats.py <capture.log>
 """
 import re, sys
 
-FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G".split()
+FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G E U".split()
 LINE = re.compile(r"\b([A-Z])=([0-9A-Fa-f]+)")
 
 # Fields that free-run and are only meaningful as a rate; the rest are levels.
-COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M", "G", "A", "Z"}
+COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M", "G", "A", "Z", "E"}
 
 
 def main(path):
@@ -64,6 +64,20 @@ def main(path):
                 print("  -> the LEFT HALF is starved: the spans are never emitted")
             elif abs(dl - dr) < tot * 0.2:
                 print("  -> both halves are drawn; the loss is after the fill")
+    # The geometry funnel. A facing test with the wrong sign takes single-sided
+    # geometry - the road, the ground, the scenery - and leaves closed objects
+    # like cars untouched, which is the shape of what Ben sees.
+    ea = [r["E"] for r in rows if "E" in r]
+    ua = [r["U"] for r in rows if "U" in r]
+    if len(ea) > 1:
+        de = [(b - a) % 0x10000 for a, b in zip(ea, ea[1:])]
+        print(f"\nbackface culls: mean {sum(de)/len(de):.0f}/s  "
+              f"min {min(de)}  max {max(de)}")
+        if max(de) > 3 * (sum(de) / len(de) + 1):
+            print("  -> the cull rate SPIKES; watch whether it lines up with the loss")
+    if ua:
+        print(f"quads in the store: min {min(ua)}  max {max(ua)}  last {ua[-1]}")
+
     ga = [r["G"] for r in rows if "G" in r]
     if len(ga) > 1:
         dg = sum((b - a) % 0x10000 for a, b in zip(ga, ga[1:]))

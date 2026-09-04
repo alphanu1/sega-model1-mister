@@ -87,6 +87,7 @@ module m1_geometry (
   output logic        q_moire,
 
   output logic [15:0] dbg_records, dbg_quads, dbg_culled, dbg_nolink,
+  output logic [15:0] dbg_culled_run,
 
   // A NORMALIZE SERVICE, for the caller's light vector.
   //
@@ -248,7 +249,8 @@ module m1_geometry (
     .q_x2(w_x2), .q_y2(w_y2), .q_x3(w_x3), .q_y3(w_y3),
     .q_col(w_col), .q_z(w_z), .q_moire(w_moire),
     .dbg_records(dbg_records), .dbg_quads(dbg_quads),
-    .dbg_culled(dbg_culled), .dbg_nolink(dbg_nolink)
+    .dbg_culled(dbg_culled), .dbg_nolink(dbg_nolink),
+    .dbg_culled_run(dbg_culled_run)
   );
 
   // ---------------------------------------------------------------- stages
