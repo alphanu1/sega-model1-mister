@@ -143,8 +143,16 @@ module m1_ioz80 #(
   logic        mreq_n, rd_n, wr_n;
 
   tv80s u_z80 (
-    .reset_n(rst_n), .clk(clk), .cen(cen),
-    .wait_n(~fw_miss), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
+    // STALLED BY ITS CLOCK ENABLE, NOT BY wait_n.
+    //
+    // wait_n was tried first and the Z80 fetched word 0 twice and stopped:
+    // tv80 samples wait_n inside a memory cycle against its own paced clock,
+    // and a combinational ~miss is not stable there. Holding `cen` low is the
+    // blunt instrument and the right one - the core simply does not advance,
+    // which is exactly what a CPU waiting on memory does, and it needs no
+    // assumption about which T-state samples what.
+    .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss),
+    .wait_n(1'b1), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
     .m1_n(dbg_m1_n), .mreq_n(mreq_n), .iorq_n(), .rd_n(rd_n), .wr_n(wr_n),
     .rfsh_n(), .halt_n(), .busak_n(),
     .A(A), .di(di), .dout(dout)

@@ -330,8 +330,8 @@ module m1_integrated (
     .in_bytes(in_bytes),
     // The I/O board Z80's firmware, from the loader's own download index.
     // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.
-    .iofw_req(iofw_req), .iofw_word(iofw_word),
-    .iofw_ack(iofw_ack), .iofw_din(iofw_din),
+    .iofw_req(m_iofw_req), .iofw_word(m_iofw_word),
+    .iofw_ack(m_iofw_ack), .iofw_din(iofw_dout_cpu),
     // Microcode from the loader, written in the FAST domain into the dual-clock
     // program RAM inside m1_tgp. Complete before the CPU is released, so there
     // is no crossing to handshake.
@@ -667,6 +667,11 @@ module m1_integrated (
   // this design already uses to carry a pulse across a domain, and a pulse is
   // exactly what must not be sampled directly.
   logic frame_start_3d;
+  // The I/O board Z80's firmware fetch, CPU side and the crossed address.
+  localparam logic [24:1] IOFW_BASE = 24'hD00000;
+  logic        m_iofw_req, m_iofw_ack;
+  logic [12:0] m_iofw_word;
+  wire  [24:1] iofw_addr_sys;
   m1_cdc_pulse u_frame_pulse (
     .a_clk(clk_sys), .a_rst_n(rst_n_sys), .a_pulse(vblank_irq_sys),
     .b_clk(clk_3d),  .b_rst_n(rst_n_3d),  .b_pulse(frame_start_3d)
@@ -838,6 +843,32 @@ module m1_integrated (
     .b_din(r3d_tex_din), .b_be(),
     .b_dout(r3d_tex_dout), .b_ack(r3d_tex_ack)
   );
+
+  // THE I/O BOARD'S FIRMWARE FETCH CROSSES CLOCK DOMAINS TOO.
+  //
+  // m1_main and everything in it run on clk_cpu; the SDRAM controller and its
+  // ports run on clk_sys. Wiring the Z80's fetch straight to a controller port
+  // looked right and could never work: the acknowledge is a clk_sys event and
+  // the module sampling it is clocked at 23.529 MHz, so it saw the request go
+  // out and the answer never come back. The Z80 sat on address 0 for forty
+  // million cycles with its cache empty - stalled 39,999,984 of them - and
+  // that reads exactly like a broken CPU rather than a missing synchroniser.
+  //
+  // Everything else that crosses here already goes through this module; this
+  // one now does too. Read-only, so the write side is tied off.
+  logic [15:0] iofw_dout_cpu;
+  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_iofw_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
+    .a_req(m_iofw_req), .a_we(1'b0),
+    .a_addr(IOFW_BASE + {11'd0, m_iofw_word}),
+    .a_din(16'd0), .a_be(2'b11),
+    .a_dout(iofw_dout_cpu), .a_ack(m_iofw_ack), .a_busy(),
+    .b_clk(clk_sys), .b_rst_n(rst_n_sys),
+    .b_req(iofw_req), .b_we(), .b_addr(iofw_addr_sys),
+    .b_din(), .b_be(),
+    .b_dout(iofw_din), .b_ack(iofw_ack)
+  );
+  assign iofw_word = iofw_addr_sys[13:1];
 
   // ------------------------------------------------------------- fast domain
   m1_video video (

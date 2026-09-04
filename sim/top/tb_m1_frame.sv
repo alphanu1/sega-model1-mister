@@ -1422,6 +1422,68 @@ always @(posedge clk) begin
     end
 end
 
+// -------------------------------------------- IS THE Z80 RUNNING AT ALL
+integer z80_cen = 0, z80_miss = 0, z80_rstn = 0;
+reg [15:0] z80_amax = 0;
+reg [15:0] z80_atrace [0:31];
+integer z80_at_n = 0;
+reg [15:0] z80_aprev = 16'hffff;
+always @(posedge clk) begin
+    if (core.main.g_ioboard.ioboard.rst_n) begin
+        z80_rstn = z80_rstn + 1;
+        if (core.main.g_ioboard.ioboard.cen) z80_cen = z80_cen + 1;
+        if (core.main.g_ioboard.ioboard.fw_miss) z80_miss = z80_miss + 1;
+        if (core.main.g_ioboard.ioboard.dbg_a > z80_amax) z80_amax = core.main.g_ioboard.ioboard.dbg_a;
+        if (core.main.g_ioboard.ioboard.dbg_a != z80_aprev && z80_at_n < 32) begin
+            z80_atrace[z80_at_n] = core.main.g_ioboard.ioboard.dbg_a;
+            z80_at_n = z80_at_n + 1;
+            z80_aprev = core.main.g_ioboard.ioboard.dbg_a;
+        end
+    end
+end
+
+// ------------------------------- DID THE FIRMWARE REACH SDRAM, AND IS IT READ
+//
+// Two different failures look identical from outside: the loader putting the
+// firmware somewhere else, and the fetch path returning the wrong words. So
+// check the memory directly and watch the first fetches.
+integer fwf_n = 0;
+reg [12:0] fwf_a [0:15];
+reg [15:0] fwf_d [0:15];
+always @(posedge clk) begin
+    if (rst_n_sys && core.iofw_req && p_ack[7] && fwf_n < 16) begin
+        fwf_a[fwf_n] = core.iofw_word;
+        fwf_d[fwf_n] = p_dout[7][15:0];
+        fwf_n = fwf_n + 1;
+    end
+end
+
+// ------------------------------------------- WHAT THE Z80 I/O BOARD WRITES
+//
+// The V60 sits at fe022c for 400 M cycles with the real board in, where the
+// behavioural one got it to the main loop, so the Z80 runs but does not
+// satisfy the handshake. The V60 waits on the status flag at 0xc00040, which
+// is DPRAM byte 0x20, and the only way to tell "wrote the wrong thing" from
+// "wrote nothing" is to watch the writes.
+integer z80_wr_n = 0;
+integer z80_seen [0:2047];
+integer zw_i;
+reg [10:0] z80_first [0:31];
+reg  [7:0] z80_firstd [0:31];
+integer z80_first_n = 0;
+initial for (zw_i = 0; zw_i < 2048; zw_i = zw_i + 1) z80_seen[zw_i] = 0;
+always @(posedge clk) begin
+    if (rst_n_sys && core.main.io_we && core.main.io_ack) begin
+        z80_wr_n = z80_wr_n + 1;
+        z80_seen[core.main.io_addr] = z80_seen[core.main.io_addr] + 1;
+        if (z80_first_n < 32) begin
+            z80_first[z80_first_n]  = core.main.io_addr;
+            z80_firstd[z80_first_n] = core.main.io_din;
+            z80_first_n = z80_first_n + 1;
+        end
+    end
+end
+
 // ---------------------------------------------- BANDS PRESENTED PER FRAME
 //
 // The average is not the question. 24 bands a pass and a pass every two frames
@@ -1972,6 +2034,36 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $display("FRAME: Z80 cache: cv=%0b ca=%04h req=%0b acks=%0d word=%04h data=%04h sel=%0b hit=%0b",
+                 core.main.g_ioboard.ioboard.fw_cv,
+                 core.main.g_ioboard.ioboard.fw_ca,
+                 core.main.g_ioboard.ioboard.fw_req,
+                 fwf_n,
+                 core.main.g_ioboard.ioboard.fw_word,
+                 core.main.g_ioboard.ioboard.fw_w,
+                 core.main.g_ioboard.ioboard.fw_sel,
+                 core.main.g_ioboard.ioboard.fw_hit);
+        $display("FRAME: Z80 out of reset for %0d cycles, %0d cen ticks, %0d stalled on a fetch miss, highest address %04h",
+                 z80_rstn, z80_cen, z80_miss, z80_amax);
+        $write("FRAME: Z80 address trace:");
+        for (zw_i = 0; zw_i < z80_at_n; zw_i = zw_i + 1) $write(" %04h", z80_atrace[zw_i]);
+        $write("\n");
+        $write("FRAME: firmware in SDRAM at D00000:");
+        for (zw_i = 0; zw_i < 8; zw_i = zw_i + 1)
+            $write(" %04h", device.mem[24'hD00000 + zw_i[23:0]]);
+        $write("   (expect f3ed 3156 6000 21fd)\n");
+        $write("FRAME: first firmware fetches:");
+        for (zw_i = 0; zw_i < fwf_n; zw_i = zw_i + 1)
+            $write(" [%04h]=%04h", fwf_a[zw_i], fwf_d[zw_i]);
+        $write("\n");
+        $write("FRAME: Z80 wrote the shared RAM %0d times; first 32:", z80_wr_n);
+        for (zw_i = 0; zw_i < z80_first_n; zw_i = zw_i + 1)
+            $write(" %03h=%02h", z80_first[zw_i], z80_firstd[zw_i]);
+        $write("\n");
+        $write("FRAME: Z80 write counts by address (non-zero):");
+        for (zw_i = 0; zw_i < 2048; zw_i = zw_i + 1)
+            if (z80_seen[zw_i] != 0) $write(" %03h:%0d", zw_i, z80_seen[zw_i]);
+        $write("\n");
         $display("FRAME: bands filled = %0d, presented LATE = %0d, vertices out of the store's range = %0d",
                  core.u_raster3d.dbg_bands, core.u_raster3d.dbg_late, core.u_raster3d.dbg_oob);
         $display("FRAME: 3D passes=%0d  len mean=%0d.%02d fr max=%0d.%02d fr, over a frame=%0d | wait-for-swap mean=%0d.%02d max=%0d.%02d | idle mean=%0d.%02d max=%0d.%02d",

@@ -492,8 +492,19 @@ module m1_main #(
   // the wheel, accelerator and brake at 0x00-0x02 for the ADC channels.
   generate
     if (IOBOARD) begin : g_ioboard
+      // HELD UNTIL THE FIRMWARE IS IN MEMORY, not merely until reset lifts.
+      //
+      // This is the coprocessor's bug again, exactly. The TGP was wired to the
+      // raw rst_n while the V60 waited on rom_loaded, so it executed its
+      // program RAM while the HPS was still streaming into it, blocked, and
+      // never recovered - `tgp=4/0/004c` for a whole session. The Z80 did the
+      // same thing here: it left reset, fetched word 0 of a firmware that was
+      // not there yet, cached the 0xffff that unwritten SDRAM returns, and
+      // executed RST 38h forever. One fetch in forty million cycles.
+      //
+      // rst_cpu is ~rst_n | ~rom_loaded, which is what the V60 uses.
       m1_ioz80 ioboard (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(~rst_cpu),
         .fw_req(iofw_req), .fw_word(iofw_word),
         .fw_ack(iofw_ack), .fw_din(iofw_din),
         .in0 (in_bytes[8*8  +: 8]),
