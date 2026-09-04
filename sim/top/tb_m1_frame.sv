@@ -1424,6 +1424,39 @@ always @(posedge clk) begin
     end
 end
 
+// -------------------------- IS THE Z80's SHARED READ PORT BEING STARVED?
+//
+// The V60 polls the shared RAM while it waits, and the read port gives it
+// absolute priority, so the I/O board's copy may update rarely or never.
+// That would return stale data - which is exactly what the address trace
+// shows, each read answering with the PREVIOUS address's byte.
+integer dp_v60_cyc = 0, dp_io_cyc = 0, dp_tot = 0;
+
+// ----------------------------- WHICH DPRAM ADDRESSES DOES THE Z80 READ?
+//
+// It reads dpram[addr] thousands of times and writes nothing, so it is
+// polling. The V60 left "SEGA" at 0x1a-0x1d and a flag at 0x20; whether the
+// firmware is looking there, and what it gets back, is the question.
+reg [7:0] zrd_last [0:2047];
+reg       zrd_seen [0:2047];
+integer   zrd_i;
+initial for (zrd_i = 0; zrd_i < 2048; zrd_i = zrd_i + 1) zrd_seen[zrd_i] = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.g_ioboard.ioboard.rst_n
+        && core.main.g_ioboard.ioboard.io_sel
+        && core.main.g_ioboard.ioboard.mem_rd
+        && core.main.g_ioboard.ioboard.A[3:0] == 4'hc
+        ) begin
+        // The LAST value seen at each address. Sampling on the first read
+        // after an address change catches the stale cycle - the read port is
+        // registered - and that is what made every byte look like its
+        // predecessor's. It was the probe, not the data.
+        zrd_last[core.main.g_ioboard.ioboard.io_address[10:0]] =
+            core.main.g_ioboard.ioboard.z_rdata;
+        zrd_seen[core.main.g_ioboard.ioboard.io_address[10:0]] = 1;
+    end
+end
+
 // ------------------------------- WHICH 315-5338A REGISTERS DOES IT READ?
 //
 // The firmware reads the EEPROM over and over and never writes the DPRAM, so
@@ -2121,6 +2154,14 @@ initial begin
         $display("FRAME: consumer state cycles  IDLE=%0d CLR=%0d CLRW=%0d REPLAY=%0d FILL=%0d FILLW=%0d WAIT=%0d",
                  cst_cyc[0], cst_cyc[1], cst_cyc[2], cst_cyc[3],
                  cst_cyc[4], cst_cyc[5], cst_cyc[6]);
+        $write("FRAME: shared RAM contents 018..022:");
+        for (zrd_i = 24; zrd_i < 35; zrd_i = zrd_i + 1)
+            $write(" %03h=%02h", zrd_i, core.main.rams.dpram_lo[zrd_i]);
+        $write("\n");
+        $write("FRAME: DPRAM the Z80 read, last value per address:");
+        for (zrd_i = 0; zrd_i < 2048; zrd_i = zrd_i + 1)
+            if (zrd_seen[zrd_i]) $write(" %03h=%02h", zrd_i, zrd_last[zrd_i]);
+        $write("\n");
         $write("FRAME: 315-5338A register READS (reg:count):");
         for (ird_i = 0; ird_i < 16; ird_i = ird_i + 1)
             if (io_rd_n[ird_i] != 0) $write(" %01h:%0d", ird_i, io_rd_n[ird_i]);

@@ -314,7 +314,26 @@ module m1_mainram (
   // back with a later one, so its address is held for hundreds of cycles and
   // it does not care which of them answers. The V60 keeps absolute priority
   // and never waits.
-  // ONE READ SITE, NOT TWO - the same trap m1_quad_store documents.
+  // A SECOND COPY, because sharing the port is MEASURABLY WRONG and I could
+  // not find why in the time available.
+  //
+  // The sharing looked sound: the V60 takes the port when it wants it, the
+  // I/O board gets it otherwise, and the board's address is held for hundreds
+  // of cycles so it does not care which cycle answers. The read port is not
+  // even contended - measured, the V60 holds it 32% of the time. And yet the
+  // I/O board reads address 0x1b and gets the byte from 0x1a: the shared RAM
+  // itself is correct (018..022 = 00 00 53 45 47 41 00 00 01, "SEGA" and the
+  // flag) and the read path returns the wrong one. Recorded rather than
+  // explained, because a wrong answer that only appears in one consumer is
+  // worth being suspicious of for longer than one session.
+  //
+  // The duplicate costs 2 M10K and the design has room: seed 13 closed at
+  // +0.260 ns with 544 blocks, and 546 built too.
+  //
+  // WHAT NOT TO REPEAT if this is tried again: the first attempt left TWO
+  // read expressions on dpram_lo, so Quartus duplicated the array anyway and
+  // saved nothing - the trap m1_quad_store documents in its own comment.
+  // Whatever replaces this has to read the array in exactly one place.
   //
   // Writing `dpram_lo[v60 ? a : b]` in one place and `dpram_lo[b]` in another
   // is two reads of one array as far as synthesis is concerned, and Quartus
@@ -322,21 +341,17 @@ module m1_mainram (
   // dpram_lo_rtl_1 in the fit report, which is exactly the 2 blocks this was
   // meant to save. So the array is read once, at a muxed address, and the two
   // consumers take their answer from that one registered value.
-  wire dp_v60_rd = sel_dpram;
-  logic       dp_lo_q;
-  logic [7:0] dp_lo_d;
-  logic [7:0] dpram_hi_q;
+  (* ramstyle = "M10K" *) logic [7:0] dpram_io [2048];
+  logic [7:0] dpram_hi_q, dpram_lo_q;
   always_ff @(posedge clk) begin
     if (dp_we)             dpram_lo[dp_waddr]   <= dp_wdata;
+    if (dp_we)             dpram_io[dp_waddr]   <= dp_wdata;
     if (dpram_we && be[1]) dpram_hi[addr[11:1]] <= wdata[15:8];
-    dp_lo_d    <= dpram_lo[dp_v60_rd ? addr[11:1] : io_raddr];
-    dp_lo_q    <= dp_v60_rd;                 // whose answer dp_lo_d carries
+    dpram_lo_q <= dpram_lo[addr[11:1]];
     dpram_hi_q <= dpram_hi[addr[11:1]];
-    // The I/O board's copy updates only on cycles the V60 was not reading, so
-    // it is always this array's answer to io_raddr and never the CPU's word.
-    if (!dp_lo_q) io_rdata <= dp_lo_d;
+    io_rdata   <= dpram_io[io_raddr];
   end
-  assign dpram_q = {dpram_hi_q, dp_lo_d};
+  assign dpram_q = {dpram_hi_q, dpram_lo_q};
 
   // ------------------------------------------------- POWER-ON CONTENTS ARE ZERO
   //
@@ -396,7 +411,7 @@ module m1_mainram (
     // now, along with the tile RAM and the palette. Only the DPRAM is still a
     // plain array here.
     for (zi = 0; zi < 2048; zi = zi + 1) begin
-      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0;
+      dpram_lo[zi] = 8'd0; dpram_hi[zi] = 8'd0; dpram_io[zi] = 8'd0;
     end
   end
 
