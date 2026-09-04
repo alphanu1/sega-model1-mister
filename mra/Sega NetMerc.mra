@@ -55,7 +55,26 @@
         <part repeat="1048576">FF</part>
         <!-- stream 0x580000: 524288 bytes unpopulated -->
         <part repeat="524288">FF</part>
-        <!-- stream 0x600000: the polygon model ROMs, 12 MB.
+        <!-- stream 0x600000: the coprocessor's data ROM,
+             2 MB of ZEROS. MAME marks this region ROMREGION_ERASE00 with
+             IC39-IC42 unpopulated, so the sockets are empty - but the space
+             is not optional: the polygon ROM sits at a fixed offset behind
+             it, and omitting the region put the models 2.25 MB early. -->
+        <part repeat="2097152">00</part>
+        <!-- stream 0x800000: the sincos tables, 256 KB.
+             MAME's copro_tables, from MODEL1_CPU_BOARD. COPRO_TBL_BASE in
+             m1_integrated.sv. ROM_LOAD32_WORD x2 is a two-way 16-bit
+             interleave into the same 32-bit words.
+
+             MAME's other_data — opr-14744..14747, the 1/x and 1/sqrt
+             tables — is deliberately absent: this design computes those in
+             fp_div rather than reading them, so there is no port for them
+             and the files are not in the ROM set. -->
+        <interleave output="32">
+            <part name="opr14742.bin" map="0021"/>
+            <part name="opr14743.bin" map="2100"/>
+        </interleave>
+        <!-- stream 0x840000: the polygon model ROMs, 12 MB.
              MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,
              each pair 4 MB apart, exactly as the sincos tables above but
              3 times over.

@@ -62,6 +62,14 @@ PACK = [
 COPRO_DATA = {                       # ROM_LOAD32_BYTE x4, 2 MB
     'vr':       ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
     'vformula': ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
+    # swa and wingwar populate IC39-IC42 as vr does. netmerc's region is
+    # ROMREGION_ERASE00 with "IC39-IC42 unpopulated", and vf has no copro_data
+    # region at all - both still need the SPACE, because the polygon ROM sits at
+    # a fixed stream offset after it. Skipping the region entirely, which is what
+    # this table did for every game but vr, put the polygons 2.25 MB early and
+    # the 3D read whatever happened to be there.
+    'swa':      ['mpr-16472.39', 'mpr-16473.40', 'mpr-16474.41', 'mpr-16475.42'],
+    'wingwar':  ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
 }
 # The polygon model ROMs: the 3D geometry, and by a long way the largest region.
 # ROM_LOAD32_WORD in PAIRS - each pair is the low and high 16 bits of a 32-bit
@@ -91,9 +99,23 @@ POLYGONS = {
 }
 POLY_OFF = 0x840000          # immediately after copro_tables
 
+# Sets whose coprocessor data ROM is EMPTY but whose space is still required.
+# netmerc's region is ROMREGION_ERASE00 - "IC39-IC42 unpopulated" - and vf has no
+# such region at all. Both still need the 2 MB reserved, because the polygon ROM
+# sits at a fixed stream offset behind it. Zeros, not 0xFF, because that is what
+# ERASE00 means and what the coprocessor would read off an unpopulated socket.
+COPRO_DATA_ZERO = {'vf', 'netmerc'}
+
 COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
     'vr':       ['opr14742.bin', 'opr14743.bin'],
     'vformula': ['opr14742.bin', 'opr14743.bin'],
+    # opr14742/opr14743 are MODEL1_CPU_BOARD ROMs, not per-set ones, which is
+    # why no game's ROM_START lists them - and they are present in every game's
+    # zip. Every set gets them.
+    'swa':      ['opr14742.bin', 'opr14743.bin'],
+    'vf':       ['opr14742.bin', 'opr14743.bin'],
+    'wingwar':  ['opr14742.bin', 'opr14743.bin'],
+    'netmerc':  ['opr14742.bin', 'opr14743.bin'],
 }
 # THE TGP MICROCODE, on its own download index.
 #
@@ -236,6 +258,9 @@ def build_chunks(loads, setname=None):
     if setname in COPRO_DATA:
         chunks.append(('quad', COPRO_DATA[setname]))
         total = COPRO_TBL_OFF
+    elif setname in COPRO_DATA_ZERO:
+        chunks.append(('pad0', COPRO_TBL_OFF - total))
+        total = COPRO_TBL_OFF
     if setname in COPRO_TABLES:
         if total != COPRO_TBL_OFF:
             warnings.append(f"tables would land at 0x{total:x}, not 0x{COPRO_TBL_OFF:x}")
@@ -293,7 +318,15 @@ def emit(setname, chunks, cross_checked):
 
     off = 0
     for c in chunks:
-        if c[0] == 'pad':
+        if c[0] == 'pad0':
+            out.append(f'        <!-- stream 0x{off:06x}: the coprocessor\'s data ROM,')
+            out.append('             2 MB of ZEROS. MAME marks this region ROMREGION_ERASE00 with')
+            out.append('             IC39-IC42 unpopulated, so the sockets are empty - but the space')
+            out.append('             is not optional: the polygon ROM sits at a fixed offset behind')
+            out.append('             it, and omitting the region put the models 2.25 MB early. -->')
+            out.append(f'        <part repeat="{c[1]}">00</part>')
+            off += c[1]
+        elif c[0] == 'pad':
             out.append(f'        <!-- stream 0x{off:06x}: {c[1]} bytes unpopulated -->')
             out.append(f'        <part repeat="{c[1]}">FF</part>')
             off += c[1]

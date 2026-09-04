@@ -54,6 +54,14 @@ SETS = {
 COPRO_DATA = {
     'vr':       ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
     'vformula': ['mpr-14898.39', 'mpr-14899.40', 'mpr-14900.41', 'mpr-14901.42'],
+    # swa and wingwar populate IC39-IC42 as vr does. netmerc's region is
+    # ROMREGION_ERASE00 with "IC39-IC42 unpopulated", and vf has no copro_data
+    # region at all - both still need the SPACE, because the polygon ROM sits at
+    # a fixed stream offset after it. Skipping the region entirely, which is what
+    # this table did for every game but vr, put the polygons 2.25 MB early and
+    # the 3D read whatever happened to be there.
+    'swa':      ['mpr-16472.39', 'mpr-16473.40', 'mpr-16474.41', 'mpr-16475.42'],
+    'wingwar':  ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
 }
 # THE POLYGON MODEL ROMS - the 3D geometry, and the largest region by far.
 #
@@ -91,9 +99,18 @@ POLYGONS = {
 }
 POLY_OFF = 0x840000          # immediately after copro_tables
 
+COPRO_DATA_ZERO = {'vf', 'netmerc'}
+
 COPRO_TABLES = {
     'vr':       ['opr14742.bin', 'opr14743.bin'],
     'vformula': ['opr14742.bin', 'opr14743.bin'],
+    # opr14742/opr14743 are MODEL1_CPU_BOARD ROMs, not per-set ones, which is
+    # why no game's ROM_START lists them - and they are present in every game's
+    # zip. Every set gets them.
+    'swa':      ['opr14742.bin', 'opr14743.bin'],
+    'vf':       ['opr14742.bin', 'opr14743.bin'],
+    'wingwar':  ['opr14742.bin', 'opr14743.bin'],
+    'netmerc':  ['opr14742.bin', 'opr14743.bin'],
 }
 
 
@@ -159,7 +176,18 @@ def pack_stream(zip_path, game):
         # to raise KeyError on those sets, which reads as a missing ROM rather
         # than as a set that legitimately has no data ROM. The region stays
         # zero-filled, which is what the hardware sees when nothing drives it.
-        if game in COPRO_DATA:
+        if game in COPRO_DATA_ZERO:
+            # Empty sockets, but the SPACE is required: the polygon ROM sits at
+            # a fixed offset behind this region, and leaving it out put the
+            # models 2.25 MB early for every set but vr and vformula.
+            #
+            # Zeros, not the buffer's 0xFF. MAME marks the region
+            # ROMREGION_ERASE00, and the comment above claimed the region "stays
+            # zero-filled" while the buffer was filled with 0xFF - so the claim
+            # and the code disagreed, and the MRA and this packer would have
+            # disagreed too the moment either set was built.
+            stream[0x600000:0x800000] = b'\x00' * 0x200000
+        elif game in COPRO_DATA:
             parts = [load(zf, n) for n in COPRO_DATA[game]]
             n = len(parts[0])
             inter = bytearray(n * 4)

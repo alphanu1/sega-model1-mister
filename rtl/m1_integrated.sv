@@ -706,6 +706,7 @@ module m1_integrated (
   logic [15:0] r3_dbg_vx1;      // the 3D frustum's left clip plane, K= on the wire
   logic [15:0] r3_dbg_px_l, r3_dbg_px_r;   // spans emitted per screen half, A=/Z=
   logic [15:0] r3_dbg_culled;              // backface culls over the run, E=
+  logic [15:0] r3_dbg_hit_l, r3_dbg_hit_r; // scanout hits per screen half, I=/J=
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -755,7 +756,8 @@ module m1_integrated (
     .dbg_drop_total(r3_dbg_drop_total), .dbg_short(r3_dbg_short),
     .dbg_oob(r3_dbg_oob), .dbg_late0(r3_dbg_late0), .dbg_vx1(r3_dbg_vx1),
     .dbg_px_l(r3_dbg_px_l), .dbg_px_r(r3_dbg_px_r),
-    .dbg_culled(r3_dbg_culled)
+    .dbg_culled(r3_dbg_culled),
+    .dbg_hit_l(r3_dbg_hit_l), .dbg_hit_r(r3_dbg_hit_r)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -974,6 +976,7 @@ module m1_integrated (
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
     .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(r3_dbg_oob),
     .culled(r3_dbg_culled), .quads(r3_dbg_quads),
+    .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );

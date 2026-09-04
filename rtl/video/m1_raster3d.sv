@@ -224,7 +224,11 @@ module m1_raster3d #(
   // Backface culls over the whole run. See m1_geo_walk: g_cull was wired up
   // and then went nowhere, which is why the facing test has never been
   // observable on the board.
-  output logic [15:0] dbg_culled
+  output logic [15:0] dbg_culled,
+
+  // Pixels SCANOUT read back as a hit, per screen half, in units of 1024.
+  output logic [15:0] dbg_hit_l,
+  output logic [15:0] dbg_hit_r
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -613,6 +617,29 @@ module m1_raster3d #(
   // that buffer actually covers.
   wire [15:0] rd_col_sel = bd_rd_col[disp_buf_s2];
   wire        rd_hit_sel = bd_rd_hit[disp_buf_s2];
+
+  // WHAT SCANOUT ACTUALLY READS BACK, by screen half, in units of 1024 pixels.
+  //
+  // The board says the fill emits 44.7% of its pixels into the left half while
+  // the left 40-45% of the screen is blank. Those cannot both be true unless
+  // the pixels are written to the band buffer and then not read back, so this
+  // measures the read side of that: a hit is a pixel scanout found and put on
+  // screen.
+  //
+  // Between this and A=/Z= the write and the read are counted with the same
+  // units at the same split, which localises the loss to one side of the band
+  // memory rather than to "somewhere in the 3D".
+  logic [25:0] hit_l, hit_r;
+  always_ff @(posedge scan_clk or negedge rst_n) begin
+    if (!rst_n) begin
+      hit_l <= '0; hit_r <= '0;
+    end else if (rd_hit_sel && disp_valid_s2) begin
+      if (scan_x < 10'(SCR_W / 2)) hit_l <= hit_l + 26'd1;
+      else                         hit_r <= hit_r + 26'd1;
+    end
+  end
+  assign dbg_hit_l = hit_l[25:10];
+  assign dbg_hit_r = hit_r[25:10];
 
   // A MULTI-BIT CROSSING NEEDS A HANDSHAKE, AND "IT ONLY EVER INCREMENTS" IS
   // NOT ONE.

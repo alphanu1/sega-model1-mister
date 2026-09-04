@@ -11,11 +11,11 @@ Usage: tools/uart_stats.py <capture.log>
 """
 import re, sys
 
-FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G E U".split()
+FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G E U I J".split()
 LINE = re.compile(r"\b([A-Z])=([0-9A-Fa-f]+)")
 
 # Fields that free-run and are only meaningful as a rate; the rest are levels.
-COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M", "G", "A", "Z", "E"}
+COUNTERS = {"F", "S", "B", "P", "C", "R", "N", "T", "D", "H", "M", "G", "A", "Z", "E", "I", "J"}
 
 
 def main(path):
@@ -77,6 +77,21 @@ def main(path):
             print("  -> the cull rate SPIKES; watch whether it lines up with the loss")
     if ua:
         print(f"quads in the store: min {min(ua)}  max {max(ua)}  last {ua[-1]}")
+
+    # The write side against the READ side, same units, same split. If the fill
+    # writes the left half and scanout does not read it back, the loss is inside
+    # the band memory and nowhere else.
+    ia = [r["I"] for r in rows if "I" in r]
+    ja = [r["J"] for r in rows if "J" in r]
+    if len(ia) > 1 and len(ja) > 1:
+        di = sum((b - a) % 0x10000 for a, b in zip(ia, ia[1:]))
+        dj = sum((b - a) % 0x10000 for a, b in zip(ja, ja[1:]))
+        t = di + dj
+        if t:
+            print(f"\nscanout hits: left {100.0*di/t:.1f}%  right {100.0*dj/t:.1f}%"
+                  f"   ({di} vs {dj})")
+            if di < dj / 4:
+                print("  -> the band memory is NOT giving back what the fill wrote")
 
     ga = [r["G"] for r in rows if "G" in r]
     if len(ga) > 1:
