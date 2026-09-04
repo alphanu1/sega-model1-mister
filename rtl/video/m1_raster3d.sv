@@ -633,7 +633,15 @@ module m1_raster3d #(
   always_ff @(posedge scan_clk or negedge rst_n) begin
     if (!rst_n) begin
       hit_l <= '0; hit_r <= '0;
-    end else if (rd_hit_sel && disp_valid_s2) begin
+    // GATED ON THE ACTIVE WINDOW, and the first version was not.
+    //
+    // scan_x is the raw horizontal counter and runs to H_TOTAL-1 = 655, well
+    // past the 496 visible pixels. Counting every cycle where the buffer
+    // returns a hit therefore charged 160 blanking cycles a line - 24% of the
+    // line - to the right half, because they all fail `scan_x < SCR_W/2`. The
+    // read side came out more right-biased than the write side and the bias was
+    // the instrument's, not the design's.
+    end else if (rd_hit_sel && disp_valid_s2 && (scan_x < 10'(SCR_W))) begin
       if (scan_x < 10'(SCR_W / 2)) hit_l <= hit_l + 26'd1;
       else                         hit_r <= hit_r + 26'd1;
     end
