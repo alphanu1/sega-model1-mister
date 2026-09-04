@@ -426,15 +426,38 @@ second bit moving occasionally. That is a bit-banged serial clock, and port A
 is where this board's **93C45 EEPROM** hangs. The firmware is stuck in its
 EEPROM conversation and has not begun the DPRAM one.
 
-### Two things to check next, in this order
+### The contents are NOT the problem, tested
 
-1. **The EEPROM has no contents.** `m1_ioz80` initialises its 64 x 16 array to
-   0xffff, and `93c45.bin` - 128 bytes - is sitting in vr.zip unused. A blank
-   EEPROM is a plausible reason for a firmware to loop: it may be waiting for
-   a signature it wrote at the factory. Loading it is cheap and falsifiable.
-2. **The EEPROM state machine itself.** If the contents are not the problem
-   then the model is: `ee_st` and `ee_do` are what to watch, and MAME's
-   `eeprom_serial_93cxx_device` is the oracle.
+`93c45.bin` is 128 bytes in vr.zip and read as little-endian words its first
+two are 0x5345 0x4741 - "SEGA", the same signature the V60 writes into the
+shared RAM, which made it a very good suspect. Preloaded into the model
+(`build/rom/vr_ee_le.hex`, simulation only for now) the behaviour is
+**identical**. `ee[0]` reads back 5345, so the file loaded; the firmware
+still never reaches the DPRAM.
+
+### What the conversation actually looks like
+
+The pin decode is confirmed against the RTL - port A bit 7 is the clock, bit
+6 chip select, bit 5 data in - so the first command the firmware issues reads
+as start(1), opcode(10)=READ, address 000000: a read of word 0, the
+signature. Sensible, and what a boot check would do.
+
+But over 512 register writes the model ends with `cs=0`, `st=EE_CMD` and
+**`ee_addr` latched at 63** - all ones - and the trace beyond the first
+command is six clocks of DI=0 followed by a long unbroken run of DI=1. All
+ones decodes as start(1), opcode(11)=ERASE, address 111111.
+
+So either the firmware is erasing and rewriting the device because it did not
+like the read, or the model mis-frames the command and the firmware is
+reacting to nonsense. Those are different bugs and the next measurement
+separates them: **count how many times `ee_st` enters EE_READ and what
+`ee_out` was loaded with**. If it never enters EE_READ the framing is wrong;
+if it does, compare the 16 bits shifted out against ee[0] = 0x5345.
+
+MAME's `eeprom_serial_93cxx_device` is the oracle for the framing, and the
+one thing to check first there is the START BIT and dummy-bit convention -
+93C45 and 93C46 differ in address width, and this model shifts nine bits
+before decoding.
 
 An earlier probe of `dbg_last_wr` read all zeros and I suspected the probe.
 It was honest: that signal only updates on a DPRAM write COMMAND, and there

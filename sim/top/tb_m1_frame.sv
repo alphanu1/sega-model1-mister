@@ -1453,8 +1453,8 @@ end
 // commands 0x70-0x77. So if the shared RAM never changes, the question is
 // which of those the Z80 is issuing, and this is the only way to see it.
 integer io5338_n = 0;
-reg [3:0] io5338_a [0:63];
-reg [7:0] io5338_d [0:63];
+reg [3:0] io5338_a [0:511];
+reg [7:0] io5338_d [0:511];
 // dbg_last_wr only updates on a DPRAM write COMMAND, so probing it answers
 // "did the firmware write the DPRAM" and nothing else - it read all zeros,
 // which was the honest answer and not a broken probe. What is wanted is every
@@ -1464,7 +1464,7 @@ always @(posedge clk_cpu) begin
     if (core.main.g_ioboard.ioboard.rst_n
         && core.main.g_ioboard.ioboard.wr_stb
         && core.main.g_ioboard.ioboard.aw_l[15:4] == 12'h800
-        && io5338_n < 64) begin
+        && io5338_n < 512) begin
         io5338_a[io5338_n] = core.main.g_ioboard.ioboard.aw_l[3:0];
         io5338_d[io5338_n] = core.main.g_ioboard.ioboard.dw_l;
         io5338_n = io5338_n + 1;
@@ -2087,8 +2087,19 @@ initial begin
         for (zw_i = 0; zw_i < v60_dp_n; zw_i = zw_i + 1)
             $write(" %03h=%02h", v60_dp_first[zw_i], v60_dp_firstd[zw_i]);
         $write("\n");
-        $write("FRAME: Z80 writes to the 315-5338A (reg=data), first %0d:", io5338_n);
-        for (zw_i = 0; zw_i < io5338_n; zw_i = zw_i + 1)
+        $display("FRAME: Z80 made %0d writes to the 315-5338A; EEPROM state cs=%0b clk=%0b di=%0b do=%0b st=%0d ewen=%0b",
+                 io5338_n,
+                 core.main.g_ioboard.ioboard.dbg_ee[7],
+                 core.main.g_ioboard.ioboard.dbg_ee[6],
+                 core.main.g_ioboard.ioboard.dbg_ee[5],
+                 core.main.g_ioboard.ioboard.dbg_ee[4],
+                 core.main.g_ioboard.ioboard.dbg_ee[3:1],
+                 core.main.g_ioboard.ioboard.dbg_ee[0]);
+        $display("FRAME: EEPROM word 0 = %04h (want 5345 = \"SE\"), addr latched %0d",
+                 core.main.g_ioboard.ioboard.ee[0],
+                 core.main.g_ioboard.ioboard.ee_addr);
+        $write("FRAME: 315-5338A writes 64..127:");
+        for (zw_i = 64; zw_i < io5338_n && zw_i < 128; zw_i = zw_i + 1)
             $write(" %01h=%02h", io5338_a[zw_i], io5338_d[zw_i]);
         $write("\n");
         $display("FRAME: Z80 cache: cv=%0b ca=%04h req=%0b acks=%0d word=%04h data=%04h sel=%0b hit=%0b",

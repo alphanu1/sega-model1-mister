@@ -43,7 +43,33 @@ that arming suppressed. Ben also suggested a fourth band buffer: it is
 affordable now (~16 M10K) but does not address this, because band 0's
 constraint is when its fill may START, not where the result goes.
 
-## 2026-09-04 — THE tv80 I/O BOARD: it BOOTS, and it does not fit
+## 2026-09-04 — THE tv80 I/O BOARD FITS. It stops in the EEPROM.
+
+**It fits and closes timing**: seed 13 of 4a08221, **+0.260 ns, 40,178 ALM
+(96%), 544 M10K (98%), 0 errors**. Ben was right that a nearly-full device
+can still fit; three separate mistakes of mine were in the way.
+
+    the fitter failed on ROUTING, not capacity, and Quartus names its own
+      remedy in the line after the failure - FITTER_AGGRESSIVE_ROUTABILITY_
+      OPTIMIZATION. I read 99% ALM as the cause and never read that far.
+    the debug overlay's read-back sweep owns an SDRAM port. Turning the
+      overlay off frees it, so the Z80 takes port 4 rather than an eighth
+      being added - a port is 140 ALM measured. Ben's observation.
+    a "shared" DPRAM read port that still had TWO read expressions on the
+      array, so Quartus duplicated it anyway. Fixing that took the failing
+      path from -2.003 ns to -0.075 and gave back the 2 blocks.
+
+    41,342 ALM / one seed unfittable  ->  40,178 / +0.260 over seven seeds
+
+**On the board it draws a blue screen**, exactly as simulation predicted: the
+V60 pinned at FE022C, S=0000 swaps, P=0000 objects. The working 3D build is
+back on the MiSTer (known_good, md5 79c69a2b...). The tv80 image is kept as
+`build/Model1_4a08221_seed13_tv80.rbf`.
+
+**Where it stops is the EEPROM, not the DPRAM** - see findings for the full
+trace and the next measurement.
+
+## 2026-09-04 (earlier) — THE tv80 I/O BOARD: it BOOTS, and it does not fit
 
 The real Z80 is wired in, runs EPR-14869 out of SDRAM, and executes a
 recognisable boot. It does not yet satisfy the V60's handshake, and at 99%

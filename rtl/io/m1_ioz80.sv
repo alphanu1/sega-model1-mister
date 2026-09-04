@@ -391,6 +391,14 @@ module m1_ioz80 #(
   wire ee_di  = port_out[0][5];
   logic ee_clk_d;
   initial for (int i = 0; i < 64; i++) ee[i] = 16'hffff;
+`ifdef VERILATOR
+  // THE EEPROM HAS CONTENTS AND THEY MATTER. 93c45.bin is 128 bytes sitting in
+  // vr.zip, and read as little-endian words its first two are 0x5345 0x4741 -
+  // "SEGA", the same signature the V60 writes into the shared RAM. A firmware
+  // that checks it against a blank device would loop exactly where this one
+  // does. Simulation only for now; hardware needs a load path.
+  initial $readmemh("build/rom/vr_ee_le.hex", ee);
+`endif
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       ee_do <= 1'b1; ee_sh <= 9'd0; ee_nbits <= 4'd0; ee_out <= 17'd0;
