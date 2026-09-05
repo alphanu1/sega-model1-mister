@@ -20,6 +20,58 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-05 — A SECOND FP DIVIDER BUYS NOTHING. Projection is serial per VERTEX, not short of dividers
+
+Built and measured tonight, then reverted. Recorded because "add a second
+divider" is the obvious read of the profile and it is wrong.
+
+### The profile that suggests it
+
+`tb_m1_geometry`: 488 cycles a quad against a budget of 83, and inside the
+record `project` is outstanding **90.9%** of the time and the **sole cause
+36.8%**. Nothing else is close - `xform`, `normalize` and `determinant` are
+never the sole cause at all. So divide throughput looks like the lever.
+
+### The measurement that refutes it
+
+Two `fp_div` units in `m1_fp_pool`, issued round-robin from whichever is free
+and retired in whatever order they finish:
+
+| | cycles per quad |
+|---|---|
+| One divider | **488.2** |
+| Two dividers | **493.9** |
+
+Slightly WORSE, for the area of a second divider. The suite stayed green at
+44,752 checks, so it is not broken - it is unused.
+
+### Why
+
+`m1_geo_project` computes **one reciprocal per vertex** - `div_a = ONE`,
+`div_b = rz`, then two multiplies - and `in_ready = (rst_st == R_IDLE)`. It
+accepts one vertex at a time and is busy for the whole 29 cycles. **There is
+never more than one divide outstanding**, so a second unit has nothing to do.
+
+That is the same shape as the tile fetch: latency times count, serialised. Not
+a shortage of units.
+
+### What would actually work
+
+Let projection accept a second vertex while the first's reciprocal is in
+flight. Then both dividers are used and the per-vertex cost roughly halves.
+From the profile that is worth about **18%** - Virtua Fighter's geometry pass
+1.55 frames -> about 1.28 - which helps the judder without curing it.
+
+It is a pipelining change to a module verified at 20,037 checks, and the two-
+port character fetch earlier the same evening shows what rushing that class of
+change costs: both benches green, and the 2D broken on hardware.
+
+**The pool's one-cycle grant mask stays regardless.** It is correct on its own
+terms and it is the prerequisite that makes any second divider work at all -
+see the entry above on why the 2026-09-04 attempt failed.
+
+---
+
 ## 2026-09-05 — THE LEFT-SIDE 3D: WHAT IT IS NOT. Six candidate causes eliminated by measurement, and the remaining stage named
 
 Ben's symptom, refined over the session: in gameplay the **left 40-48% of the
