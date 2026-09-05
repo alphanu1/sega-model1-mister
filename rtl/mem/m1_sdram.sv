@@ -176,10 +176,7 @@ module m1_sdram #(
   // path for the display list's uploads - so it stays single.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
-      // p7 is the tile engine's second character port and bursts exactly as p1
-      // does - it fetches the same shaped data, just on the other half of the
-      // overlap.
-      1, 2, 3, 5, 7: blen = 4'd4;
+      1, 2, 3, 5: blen = 4'd4;
       default:    blen = 4'd1;
     endcase
   endfunction

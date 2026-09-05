@@ -65,13 +65,10 @@ module m1_video #(
   input  logic [15:0] tram_data,
 
   // Character RAM, external. Two consecutive words per request.
-  // TWO character-fetch ports, so two fetches are in flight. See the note in
-  // m1_tile_fetch: the SDRAM controller is single-outstanding per port, so
-  // overlapping the round trip means two ports rather than a relaxed contract.
-  output logic [1:0]       char_req,
-  output logic [1:0][17:0] char_addr,
-  input  logic [1:0][31:0] char_data,
-  input  logic [1:0]       char_ack,
+  output logic        char_req,
+  output logic [17:0] char_addr,
+  input  logic [31:0] char_data,
+  input  logic        char_ack,
 
   // Palette RAM, on chip. The V60 owns the other port.
   output logic [11:0] pal_addr,
@@ -153,10 +150,6 @@ module m1_video #(
   // maximum and reads identically to a layer covering a small window. It did,
   // and the saturated value was quoted as evidence for a frame.
   output logic [17:0] dbg_layer_px [4],
-  // Pixels where the 3D was ready and a category-1 tile beat it, per screen
-  // half, in units of 4. See the counter for why this exists.
-  output logic [15:0] dbg_poly_lost_l,
-  output logic [15:0] dbg_poly_lost_r,
 
   // The window/split-scroll control register for each PAIR, latched as the
   // renderer reads it. dbg_layer_px says a layer covered the screen; this says
@@ -821,34 +814,6 @@ module m1_video #(
   assign pal_addr = mixed;
 
   logic       poly_won;
-
-  // THE 3D WAS READY AND THE MIXER THREW IT AWAY, counted per screen half.
-  //
-  // Every other counter now says the 3D reaches scanout intact: the fill emits
-  // 44.7% of its pixels into the left half, the band memory hands back 46.3%,
-  // nothing is dropped, clipped or out of range, and the frustum's left plane
-  // sits at screen x = 0 where it belongs. Yet the left 48% of the picture
-  // carries no 3D.
-  //
-  // The only stage left is this one. `poly_won` requires that NO category-1
-  // tile is in front, and pair 2/3 is drawn in window mode as a per-pixel
-  // VERTICAL COLUMN SPLIT whose column comes from tile RAM - which is exactly
-  // the shape of a hard vertical boundary partway across the screen.
-  //
-  // If the left count is large and the right is small, a tilemap is covering
-  // the 3D and the fault is the category bit or the window split, not the
-  // renderer.
-  logic [17:0] plost_l, plost_r;
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      plost_l <= '0; plost_r <= '0;
-    end else if (ce_pix && visible && poly_hit && !poly_won) begin
-      if (hcnt < 10'd248) plost_l <= plost_l + 18'd1;
-      else                plost_r <= plost_r + 18'd1;
-    end
-  end
-  assign dbg_poly_lost_l = plost_l[17:2];
-  assign dbg_poly_lost_r = plost_r[17:2];
   logic [7:0] pr_t, pg_t, pb_t;
   m1_palette pal (.entry(pal_data), .r(pr_t), .g(pg_t), .b(pb_t));
 

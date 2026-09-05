@@ -121,11 +121,10 @@ module m1_integrated (
   input  logic        if_ack,
 
   // Character RAM fetch, for the tilemap
-  // Two character-fetch ports - see m1_tile_fetch.
-  output logic [1:0]       char_req,
-  output logic [1:0][17:0] char_addr,
-  input  logic [1:0][31:0] char_data,
-  input  logic [1:0]       char_ack,
+  output logic        char_req,
+  output logic [17:0] char_addr,
+  input  logic [31:0] char_data,
+  input  logic        char_ack,
 
   // ROM download
   input  logic        ioctl_download,
@@ -709,7 +708,6 @@ module m1_integrated (
   logic [15:0] r3_dbg_culled;              // backface culls over the run, E=
   logic [15:0] r3_dbg_hit_l, r3_dbg_hit_r; // scanout hits per screen half, I=/J=
   logic [15:0] r3_dbg_plane_l;             // the left clip plane, Y=
-  logic [15:0] v_plost_l, v_plost_r;       // 3D beaten by a tile, K=/G=
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -899,7 +897,6 @@ module m1_integrated (
     .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_hb(vid_hb), .vid_vb(vid_vb),
     .vblank_irq(vblank_irq_sys), .dbg_fetches(dbg_fetches),
     .dbg_overruns(dbg_overruns), .dbg_layer_px(dbg_layer_px),
-    .dbg_poly_lost_l(v_plost_l), .dbg_poly_lost_r(v_plost_r),
     .dbg_ctrl(dbg_ctrl), .dbg_layer_have(dbg_layer_have),
     .poly_rgb(r3_scan_rgb), .poly_hit(r3_scan_hit),
     .vid_hpos(vid_hpos), .vid_vpos(vid_vpos)
@@ -978,8 +975,8 @@ module m1_integrated (
     // ever since the vertices went back to 16 bits. It carries the band-0
     // late count now; T= is every OTHER band.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
-    .view_x1(v_plost_l), .fetch_miss(dbg_overruns),
-    .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(v_plost_r),
+    .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
+    .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(r3_dbg_oob),
     .culled(r3_dbg_culled), .quads(r3_dbg_quads),
     .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]),
     .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r), .plane_l(r3_dbg_plane_l),

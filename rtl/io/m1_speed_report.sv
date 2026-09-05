@@ -119,13 +119,7 @@ module m1_speed_report #(
   // left of it is clipped away before it is ever stored, which is also why
   // the dropped-quad counter reads zero throughout. Simulation cannot answer
   // this - 700 M cycles never reached gameplay - so it goes on the wire.
-  // REPURPOSED. K= was the viewport rectangle's left edge and G= the count of
-  // vertices outside the quad store's range; both read zero on every capture
-  // and the questions they were asked are answered - the viewport is 0 as it
-  // should be, and nothing overflows. They now carry the pixels where the 3D
-  // was ready and a category-1 tile beat it, left half and right, which is the
-  // only stage of the pipeline still unmeasured.
-  input  logic [15:0] view_x1,      // K= : 3D beaten by a tile, LEFT half
+  input  logic [15:0] view_x1,
   // THE TILE FETCH'S DEADLINE MISSES, free-running.
   //
   // Ben sees the 2D tiles overrun as well as the 3D dropping out, and two
@@ -153,7 +147,7 @@ module m1_speed_report #(
   // Ben sees exactly that - the road and the scenery gone from the left of the
   // screen while the cars stay. The counter that would confirm it has existed
   // all along and has never left the chip. G= is it.
-  input  logic [15:0] vert_oob,   // G= : 3D beaten by a tile, RIGHT half
+  input  logic [15:0] vert_oob,
 
   // THE GEOMETRY FUNNEL'S TWO MISSING NUMBERS.
   //
