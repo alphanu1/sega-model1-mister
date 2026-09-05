@@ -164,8 +164,10 @@ wire [15:0] sdr_din;
 wire  [1:0] sdr_be;
 wire        ifp_req;
 wire [24:1] ifp_addr;
-wire        char_req;
-wire [17:0] char_addr;
+// Two character ports, as Model1.sv wires them: p7 is the second, so two
+// fetches are in flight and the engine stops paying the round trip serially.
+wire  [1:0]       char_req;
+wire  [1:0][17:0] char_addr;
 
 // SEVEN PORTS, NOT FIVE, AND THE SAME SEVEN Model1.sv HAS.
 //
@@ -188,16 +190,16 @@ localparam logic [24:1] IOFW_BASE = 24'hD00000;
 wire        iofw_req;
 wire [12:0] iofw_word;
 
-wire [6:0]       p_req, p_we, p_ack;
-wire [6:0][24:1] p_addr;
-wire [6:0][15:0] p_din;
-wire [6:0][1:0]  p_be;
-wire [6:0][63:0] p_dout;
+wire [7:0]       p_req, p_we, p_ack;
+wire [7:0][24:1] p_addr;
+wire [7:0][15:0] p_din;
+wire [7:0][1:0]  p_be;
+wire [7:0][63:0] p_dout;
 
 // Port 4 carries the I/O board's firmware fetch, not the read-back sweep -
 // that fed the debug overlay's row 4, which is off. See Model1.sv.
-assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+assign p_req  = {char_req[1], r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req[0], sdr_req};
+assign p_we   = {1'b0,        r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,        sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -208,12 +210,13 @@ assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,
 // is; m1_integrated keeps bit 1 to pick which 32-bit half of the burst it
 // wanted. Aligning it any earlier destroys that bit and every odd model word
 // returns the even one's data.
-assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+assign p_addr = {24'hFA8000 + {6'd0, char_addr[1]},
+                 r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
                  IOFW_BASE + {11'd0, iofw_word},
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
-                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 24'hFA8000 + {6'd0, char_addr[0]}, sdr_addr};
+assign p_din  = {16'd0, r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+assign p_be   = {2'd0,  2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -234,7 +237,7 @@ wire        dq_oe_c, dq_oe_m;
 wire [15:0] v_flags;
 wire        mem_ready;
 
-m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
+m1_sdram #(.NP(8), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .rd_lat_sel(2'd0),   // CL+3: sdram_model presents data on the same edge
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
@@ -340,7 +343,8 @@ m1_integrated core (
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
 
     .char_req(char_req), .char_addr(char_addr),
-    .char_data(p_dout[1][31:0]), .char_ack(p_ack[1]),
+    .char_data({p_dout[7][31:0], p_dout[1][31:0]}),
+    .char_ack({p_ack[7], p_ack[1]}),
 
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_wr(ioctl_wr),
     .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout), .ioctl_wait(ioctl_wait),
@@ -1925,9 +1929,10 @@ initial for (int i = 0; i < 7; i++) cst_cyc[i] = 0;
 integer cl_wait = 0, cl_n = 0;
 reg     d_creq = 0;
 always @(posedge clk) if (loader_done) begin
-    d_creq <= char_req;
-    if (char_req)            cl_wait = cl_wait + 1;
-    if (char_req && !d_creq) cl_n    = cl_n + 1;
+    if (miss_at_load < 0) miss_at_load = dbg_overruns;
+    d_creq <= |char_req;
+    if (|char_req)            cl_wait = cl_wait + 1;
+    if (|char_req && !d_creq) cl_n    = cl_n + 1;
 end
 
 // ---------------------------------------- where the character wait GOES
@@ -1958,6 +1963,10 @@ end
 // turnaround to arbitration - which inflates arb and points at the wrong fix.
 // pend[1] is set on the request rising edge and cleared on completion, so it
 // is exactly "the controller has this request and has not finished it".
+// Deadline misses AFTER the ROM load, because dbg_overruns free-runs from reset
+// and the loader's write port outranks every reader by design. The same window
+// error made the character-fetch wait read 217 cycles when it is 18.
+integer miss_at_load = -1;
 integer ph_arb = 0, ph_svc = 0, ph_gap = 0, ph_idlearb = 0;
 integer st_hist [0:15];
 integer why_ref = 0, why_wr = 0, why_wr_after = 0, why_narb = 0, why_other = 0, why_else = 0;
@@ -2440,6 +2449,9 @@ initial begin
                 $write(" %0d:%0d%%", cpi_i, (100*cpi_hist[cpi_i])/cpi_retires);
         $write("\n");
     end
+    if (miss_at_load >= 0)
+        $display("FRAME: deadline misses DURING the load = %0d, after it = %0d",
+                 miss_at_load, dbg_overruns - miss_at_load);
     if (cl_n > 0) begin
         $display("FRAME: char fetch wait avg=%0d cycles over %0d fetches (%0d total)",
                  cl_wait / cl_n, cl_n, cl_wait);

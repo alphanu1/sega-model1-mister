@@ -60,8 +60,11 @@ struct Fetch {
   uint8_t  lb_tr[512], lb_pr[512], lb_mk[512];
   bool     lb_written[512];
 
-  // Character port model with latency.
-  int lat = 0, lat_cnt = 0;
+  // TWO character ports, each modelled independently with its own latency
+  // counter, because the engine now keeps a fetch in flight on one while the
+  // other retires. A single shared counter would serialise them in the model
+  // and hide exactly the overlap this is meant to test.
+  int lat = 0, lat_cnt[2] = {0, 0};
   long tw_pulses = 0;
 
   Fetch() {
@@ -77,14 +80,32 @@ struct Fetch {
     // Tile RAM: combinational address, data available next cycle.
     d->tram_data = tile_ram[d->tram_addr & 0x7fff];
 
-    // Character RAM: two consecutive words, acked after `lat` cycles.
-    if (d->char_req) {
-      if (lat_cnt >= lat) {
-        uint32_t a = d->char_addr & 0x3ffff;
-        d->char_data = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
-        d->char_ack = 1;
-      } else { lat_cnt++; d->char_ack = 0; }
-    } else { lat_cnt = 0; d->char_ack = 0; }
+    // Character RAM: two consecutive words per port, acked after `lat` cycles.
+    //
+    // char_addr and char_data are PACKED arrays on the RTL side, so Verilator
+    // presents each as one wide word rather than a C array - port 1 lives in
+    // the upper bits. Indexing them like arrays compiles against the wrong
+    // type and is how this bench first failed to build.
+    uint8_t  acks = 0;
+    uint64_t dat  = d->char_data;
+    for (int pt = 0; pt < 2; pt++) {
+      if ((d->char_req >> pt) & 1) {
+        if (lat_cnt[pt] >= lat) {
+          uint32_t a = (uint32_t)((d->char_addr >> (18 * pt)) & 0x3ffff);
+          uint64_t w = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16)
+                     | char_ram[a];
+          dat &= ~((uint64_t)0xffffffffULL << (32 * pt));
+          dat |=  (w & 0xffffffffULL) << (32 * pt);
+          acks |= (1 << pt);
+        } else {
+          lat_cnt[pt]++;
+        }
+      } else {
+        lat_cnt[pt] = 0;
+      }
+    }
+    d->char_data = dat;
+    d->char_ack  = acks;
 
     d->clk = 0; d->eval();
     d->clk = 1; d->eval();
@@ -281,9 +302,17 @@ int main(int argc, char** argv) {
     verify(f, 11, 0, 0, 0, "repeated");
     printf("  %ld cycles, %u char fetches for %d columns\n",
            c, (unsigned)f.d->fetches, COLUMNS);
+    // TWO, not one, and by design. The engine keeps two requests in flight and
+    // the repeat cache matches COMPLETED fetches only, so the first two columns
+    // are both issued before either retires and the second misses the cache.
+    // One extra fetch a line is the price of covering the round trip; matching
+    // against the in-flight set as well would cost more than it saves.
+    //
+    // The property that matters is unchanged and still tested: 62 columns of
+    // one tile must not become 62 fetches.
     checks++;
-    if (f.d->fetches != 1) {
-      printf("  FAIL a uniform line should fetch once, got %u\n",
+    if (f.d->fetches > 2) {
+      printf("  FAIL a uniform line should fetch at most twice, got %u\n",
              (unsigned)f.d->fetches);
       fails++;
     }

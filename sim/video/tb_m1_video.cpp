@@ -261,19 +261,39 @@ int main(int argc, char** argv) {
   d->clk = 0; d->rst_n = 0; d->ce_pix = 0; d->tile_mask = TILE_MASK;
   d->tram_data = 0; d->char_data = 0; d->char_ack = 0; d->pal_data = 0;
 
-  int cediv = 0, lat_cnt = 0;
+  int cediv = 0, lat_cnt[2] = {0, 0};
   const int CE_DIV = 6;            // 96 MHz core / 6 = 16 MHz dot clock
   const int CHAR_LAT = 14;         // measured SDRAM burst latency
 
   auto tick = [&]() {
     d->tram_data = tile_ram[d->tram_addr & 0x7fff];
-    if (d->char_req) {
-      if (lat_cnt >= CHAR_LAT) {
-        uint32_t a = d->char_addr & 0x3ffff;
-        d->char_data = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
-        d->char_ack = 1;
-      } else { lat_cnt++; d->char_ack = 0; }
-    } else { lat_cnt = 0; d->char_ack = 0; }
+    // TWO character ports, each with its own latency counter - the engine keeps
+    // a fetch in flight on one while the other retires, and a shared counter
+    // would serialise them in the model. char_addr and char_data are PACKED on
+    // the RTL side, so Verilator presents each as one wide word with port 1 in
+    // the upper bits rather than as a C array.
+    {
+      uint8_t  acks = 0;
+      uint64_t dat  = d->char_data;
+      for (int pt = 0; pt < 2; pt++) {
+        if ((d->char_req >> pt) & 1) {
+          if (lat_cnt[pt] >= CHAR_LAT) {
+            uint32_t a = (uint32_t)((d->char_addr >> (18 * pt)) & 0x3ffff);
+            uint64_t w = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16)
+                       | char_ram[a];
+            dat &= ~((uint64_t)0xffffffffULL << (32 * pt));
+            dat |=  (w & 0xffffffffULL) << (32 * pt);
+            acks |= (1 << pt);
+          } else {
+            lat_cnt[pt]++;
+          }
+        } else {
+          lat_cnt[pt] = 0;
+        }
+      }
+      d->char_data = dat;
+      d->char_ack  = acks;
+    }
 
     d->ce_pix = (cediv == 0);
     d->clk = 0; d->eval();

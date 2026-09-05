@@ -129,11 +129,14 @@ module m1_tile_fetch #(
   output logic [14:0] tram_addr,
   input  logic [15:0] tram_data,
 
-  // Character RAM, external. Word address; two consecutive words per request.
-  output logic        char_req,
-  output logic [17:0] char_addr,
-  input  logic [31:0] char_data,      // {word1, word0}
-  input  logic        char_ack,
+  // Character RAM, external, on TWO SDRAM ports so two fetches can be in
+  // flight. See the note beside the fetch state machine: the controller's
+  // contract is single-outstanding per port, so overlapping means two ports
+  // rather than a relaxed controller.
+  output logic [1:0]        char_req,
+  output logic [1:0][17:0]  char_addr,
+  input  logic [1:0][31:0]  char_data,    // {word1, word0} each
+  input  logic [1:0]        char_ack,
 
   // Line buffer write port: FOUR PIXELS PER CYCLE.
   //
@@ -192,15 +195,41 @@ module m1_tile_fetch #(
   // the whole point is that they advance independently; a single sequencer
   // that has to be in one place at a time is what made this serial.
   //
-  // The hand-off is a single-entry buffer. `f_have` says the fetch side has a
-  // column ready; the emit side takes it at a tile boundary and the fetch side
-  // moves to the next. The fetch side never rewrites the buffer in the same
-  // cycle the emit side reads it — it goes to F_CHECK first, and only F_TILE
-  // writes — so no interlock beyond the flag is needed.
+  // TWO CHARACTER FETCHES IN FLIGHT, AND WHY.
+  //
+  // The header above says this engine is latency-bound and that the clock
+  // cannot fix it. Measured on the board since: the SDRAM serves this port in
+  // 18 cycles, only 2 of them waiting for a grant, while the controller idles
+  // around 29%. So the memory is not the constraint - what binds is LATENCY
+  // TIMES COUNT, because the walk was strictly serial and paid the full round
+  // trip once per column, 248 times a line.
+  //
+  // The hand-off is now a TWO-ENTRY QUEUE and the character fetch alternates
+  // between two SDRAM ports, so one request is in flight while another is
+  // being retired. `m1_sdram`'s contract is one transaction per request rising
+  // edge and single-outstanding PER PORT - it is verified at 87,893 checks and
+  // that contract is load-bearing - so two in flight means two ports, not a
+  // relaxed controller.
+  //
+  // What that buys: a column cost about 1 + 1 + 18 + 2 cycles serially, so 62
+  // columns across 4 layers came to roughly 5,500 against the 3,936 a line
+  // affords. Overlapping halves the effective latency and brings it under.
+  //
+  // THE ADDRESS MUST BE LATCHED PER PORT. `f_char_addr` is combinational off
+  // `fx` and the walk's tile word, and both move on as soon as the next column
+  // is walked, so an outstanding request whose address is still being read off
+  // the walk would follow the walk. `cp_addr`/`cp_tw` hold each request's own.
+  //
+  // Retire is IN ORDER, by a pointer that alternates the same way the issue
+  // pointer does, because the emit side must receive columns in sequence.
+  //
+  // The `last_tile`/`last_char` repeat caches match against COMPLETED fetches
+  // only. A character already in flight is simply fetched again - correct, and
+  // far simpler than matching against the in-flight set.
   // ------------------------------------------------------------------------
 
   typedef enum logic [2:0] {
-    F_IDLE, F_CHECK, F_TILE, F_CHAR, F_FULL
+    F_IDLE, F_CHECK, F_TILE, F_ISSUE, F_NEXT
   } fstate_t;
   typedef enum logic [1:0] {
     E_IDLE, E_WAIT, E_EMIT, E_DONE
@@ -212,12 +241,59 @@ module m1_tile_fetch #(
   // Fetch side: fx is the screen position of the FIRST pixel of the column
   // being fetched.
   logic [9:0]  fx;
-  logic [15:0] tw_f;
-  logic [31:0] ch_f;
-  logic        f_have;
+  // The tile word of the column being WALKED, which feeds dec_f's address
+  // arithmetic. Distinct from the queue head, which is the column being
+  // emitted - the two are no longer the same column.
+  logic [15:0] tw_w;
   logic [14:0] last_tile;
   logic [17:0] last_char;
+  logic [31:0] last_ch_d;      // the cached character's data
   logic        tile_valid, char_valid;
+
+  // In flight, one slot per SDRAM port.
+  logic [17:0] cp_addr [2];
+  logic [15:0] cp_tw   [2];
+  logic [1:0]  cp_busy;
+  // COMPLETION IS LATCHED PER PORT, AND RETIRE IS SEPARATE FROM IT.
+  //
+  // The two ports are independent SDRAM masters and the arbiter may grant them
+  // in EITHER order, so port 1's request can come back before port 0's even
+  // though it was issued second. `char_ack` is held only two cycles, so an ack
+  // that arrives while the retire pointer is watching the other port would
+  // simply be missed - and the port then waits for ever.
+  //
+  // That is this project's oldest recorded trap, "acknowledges must be held,
+  // not pulsed", and the first version of this engine walked straight into it:
+  // the frame bench went from 9,434 deadline misses to 36,867.
+  //
+  // So each port captures its own completion the cycle it happens, and the
+  // in-order retire below reads the latched flags rather than the wires.
+  logic [1:0]       cp_done;
+  logic [1:0][31:0] cp_data;
+  logic        cp_iss;         // port to issue the next request on
+  logic        cp_ret;         // port whose request retires next
+
+  // The hand-off queue, two deep.
+  logic [15:0] q_tw [2];
+  logic [31:0] q_ch [2];
+  logic        q_wr, q_rd;
+  logic [1:0]  q_n;
+
+  wire [15:0] tw_f  = q_tw[q_rd];
+  wire [31:0] ch_f  = q_ch[q_rd];
+  wire        f_have = (q_n != 2'd0);
+  // Total columns owed to the emit side: queued plus in flight. Two is the
+  // target depth; a third would buy nothing, because two already covers the
+  // round trip.
+  wire [2:0]  n_out = {1'b0, q_n} + 3'(cp_busy[0]) + 3'(cp_busy[1]);
+  wire        can_issue = (n_out < 3'd2);
+
+  // EXACTLY ONE PUSH PER CYCLE. A retiring fetch and a repeat-cache hit can
+  // both want to enqueue on the same edge, and they would write the same slot,
+  // so the retire wins and the cache hit simply holds in F_ISSUE for a cycle.
+  wire ret_now   = cp_busy[cp_ret] && cp_done[cp_ret];
+  wire cache_hit = (fst == F_ISSUE) && can_issue && !ret_now
+                && char_valid && (f_char_addr == last_char);
 
   // Emit side: sx is the first pixel of the group being written, and rem is
   // how many pixels of the current tile are still to come. A group is the
@@ -255,7 +331,7 @@ module m1_tile_fetch #(
   m1_tile_decode dec_f (
     .x(fx[8:0]), .y(map_y), .layer(layer),
     .hscr(hscr), .vscr(vscr),
-    .tile_word(tw_f),
+    .tile_word(tw_w),
     .char_w0(16'd0), .char_w1(16'd0),
     .tile_mask(tile_mask),
     .tile_addr(f_tile_addr), .char_addr(f_char_addr),
@@ -293,8 +369,10 @@ module m1_tile_fetch #(
     end
   endgenerate
 
-  assign tram_addr = f_tile_addr;
-  assign char_addr = f_char_addr;
+  assign tram_addr    = f_tile_addr;
+  // Each port presents its OWN latched address, held from issue until ack.
+  assign char_addr[0] = cp_addr[0];
+  assign char_addr[1] = cp_addr[1];
   assign busy      = (est != E_IDLE) || (fst != F_IDLE);
 
   // Where the emit side is inside its tile, and where the fetch side is inside
@@ -323,11 +401,16 @@ module m1_tile_fetch #(
   // ------------------------------------------------------------- fetch side
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      fst <= F_IDLE; fx <= '0; tw_f <= '0; ch_f <= '0; f_have <= 1'b0;
+      fst <= F_IDLE; fx <= '0; tw_w <= '0;
+      cp_busy <= '0; cp_done <= '0; cp_iss <= 1'b0; cp_ret <= 1'b0;
+      cp_data[0] <= '0; cp_data[1] <= '0;
+      cp_addr[0] <= '0; cp_addr[1] <= '0; cp_tw[0] <= '0; cp_tw[1] <= '0;
+      q_wr <= 1'b0; q_rd <= 1'b0; q_n <= '0; last_ch_d <= '0;
+      q_tw[0] <= '0; q_tw[1] <= '0; q_ch[0] <= '0; q_ch[1] <= '0;
       tw_nonblank <= 1'b0;
       last_tile <= '0; last_char <= '0;
       tile_valid <= 1'b0; char_valid <= 1'b0;
-      char_req <= 1'b0; fetches <= '0;
+      char_req <= '0; fetches <= '0;
     end else if (start) begin
       tw_nonblank <= 1'b0;
       // Neither retained value survives a scanline. tile_valid especially: a
@@ -336,11 +419,17 @@ module m1_tile_fetch #(
       // previous line's word.
       fst        <= F_CHECK;
       fx         <= '0;
-      f_have     <= 1'b0;
       tile_valid <= 1'b0;
       char_valid <= 1'b0;
-      char_req   <= 1'b0;
       fetches    <= '0;
+      // The queue and both in-flight slots are dropped with the line. A
+      // request still in the memory when the line ends would retire into the
+      // NEXT line's queue and hand the emit side a column from the wrong row,
+      // so cp_busy is cleared and its ack ignored - see ret_now, which is
+      // gated on cp_busy.
+      cp_busy    <= '0; cp_done <= '0; cp_iss <= 1'b0; cp_ret <= 1'b0;
+      char_req   <= '0;
+      q_wr       <= 1'b0; q_rd <= 1'b0; q_n <= '0;
     end else begin
       tw_nonblank <= 1'b0;   // one-cycle pulse; see the port comment
       case (fst)
@@ -349,56 +438,102 @@ module m1_tile_fetch #(
         F_CHECK: begin
           // f_tile_addr is combinational off fx. Refetch only when the tile
           // actually changed.
-          if (tile_valid && (f_tile_addr == last_tile)) fst <= F_CHAR;
+          if (tile_valid && (f_tile_addr == last_tile)) fst <= F_ISSUE;
           else                                          fst <= F_TILE;
         end
 
         F_TILE: begin
-          tw_f       <= tram_data;
+          tw_w       <= tram_data;
           last_tile  <= f_tile_addr;
           tile_valid <= 1'b1;
-          fst        <= F_CHAR;
+          fst        <= F_ISSUE;
           // Same rule the MAME script and the frame testbench use: non-zero, and
           // not tile 0x20, which is the space character.
           tw_nonblank <= (tram_data != 16'h0000)
                       && ((tram_data & 16'h3fff) != 16'h0020);
         end
 
-        F_CHAR: begin
-          // f_char_addr is valid now the tile word is latched.
-          if (char_valid && (f_char_addr == last_char)) begin
-            // ch_f already holds this character; nothing to ask for.
-            f_have <= 1'b1;
-            fst    <= F_FULL;
-          end else if (!char_req) begin
-            char_req <= 1'b1;
-          end else if (char_ack) begin
-            char_req   <= 1'b0;
-            ch_f       <= char_data;
-            last_char  <= f_char_addr;
-            char_valid <= 1'b1;
-            fetches    <= fetches + 8'd1;
-            f_have     <= 1'b1;
-            fst        <= F_FULL;
+        // ISSUE, THEN WALK ON - the wait now happens elsewhere.
+        //
+        // This state used to be F_CHAR and it stalled here for the whole memory
+        // round trip. Now it either satisfies the column from the repeat cache
+        // or hands a request to a free port, and then moves to the next column
+        // immediately. Retiring is the always_ff block below, running in
+        // parallel, so the second request goes out while the first is still in
+        // the memory.
+        F_ISSUE: begin
+          if (!can_issue) begin
+            // Two columns already owed to the emit side. Hold here rather than
+            // running further ahead: a deeper queue buys nothing once the round
+            // trip is covered, and it would need more storage per entry.
+          end else if (cache_hit) begin
+            // The repeat cache already holds this character - no memory needed.
+            q_tw[q_wr] <= tw_w;
+            q_ch[q_wr] <= last_ch_d;
+            q_wr       <= ~q_wr;
+            fst        <= F_NEXT;
+          end else if (!ret_now && !cp_busy[cp_iss]) begin
+            cp_addr[cp_iss] <= f_char_addr;
+            cp_tw[cp_iss]   <= tw_w;
+            cp_busy[cp_iss] <= 1'b1;
+            char_req[cp_iss] <= 1'b1;
+            cp_iss          <= ~cp_iss;
+            fst             <= F_NEXT;
           end
         end
 
-        F_FULL: begin
-          if (consume) begin
-            f_have <= 1'b0;
-            // Stop once the whole line has been fetched; the emit side has
-            // everything it will ask for.
-            if ((fx + 10'(f_step)) >= 10'(COLUMNS * 8)) begin
-              fst <= F_IDLE;
-            end else begin
-              fx  <= fx + 10'(f_step);
-              fst <= F_CHECK;
-            end
+        // Walk to the next column, or stop. Nothing waits here: the emit side
+        // drains the queue at its own pace and in-flight requests retire on
+        // their own.
+        F_NEXT: begin
+          if ((fx + 10'(f_step)) >= 10'(COLUMNS * 8)) begin
+            fst <= F_IDLE;
+          end else begin
+            fx  <= fx + 10'(f_step);
+            fst <= F_CHECK;
           end
         end
 
         default: fst <= F_IDLE;
       endcase
+
+      // RETIRE, in parallel with the walk. This is what makes the engine
+      // overlap: the walk above has already issued the next request by the time
+      // this one comes back.
+      //
+      // In order, by a pointer that alternates the same way the issue pointer
+      // does, because the emit side must receive columns in sequence.
+      // CAPTURE, in whatever order the arbiter chooses. Both ports may complete
+      // in the same cycle, so this is a loop rather than a mux.
+      for (int pt = 0; pt < 2; pt++) begin
+        if (cp_busy[pt] && char_ack[pt] && !cp_done[pt]) begin
+          cp_done[pt]  <= 1'b1;
+          cp_data[pt]  <= char_data[pt];
+          char_req[pt] <= 1'b0;      // one transaction per rising edge
+        end
+      end
+
+      // RETIRE, in order, from the latched flags. This is what makes the engine
+      // overlap: the walk above has already issued the next request by the time
+      // this one is handed over.
+      if (ret_now) begin
+        q_tw[q_wr]       <= cp_tw[cp_ret];
+        q_ch[q_wr]       <= cp_data[cp_ret];
+        q_wr             <= ~q_wr;
+        cp_busy[cp_ret]  <= 1'b0;
+        cp_done[cp_ret]  <= 1'b0;
+        cp_ret           <= ~cp_ret;
+        // The repeat cache tracks COMPLETED fetches only - see the note above.
+        last_char        <= cp_addr[cp_ret];
+        last_ch_d        <= cp_data[cp_ret];
+        char_valid       <= 1'b1;
+        fetches          <= fetches + 8'd1;
+      end
+
+      // One push at most, and one pop at most, so the count moves by one.
+      if ((ret_now || cache_hit) && !consume)      q_n <= q_n + 2'd1;
+      else if (consume && !(ret_now || cache_hit)) q_n <= q_n - 2'd1;
+      if (consume) q_rd <= ~q_rd;
     end
   end
 
