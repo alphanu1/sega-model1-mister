@@ -981,6 +981,7 @@ module m1_integrated (
     .view_x1(v_plost_l), .fetch_miss(dbg_overruns),
     .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(v_plost_r),
     .culled(r3_dbg_culled), .quads(r3_dbg_quads),
+    .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]),
     .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r), .plane_l(r3_dbg_plane_l),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
