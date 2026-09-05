@@ -20,6 +20,67 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-05 — THE DISPLAY LIST BUFFERS CANNOT BE SHRUNK, and MAME runs all five games
+
+Two results from the same evening, and the first would have broken a game.
+
+### MAME runs every Model 1 game here
+
+`vf` and `netmerc` are marked `MACHINE_NOT_WORKING` and both run correctly -
+Virtua Fighter plays its attract demo, NetMerc reaches its title screen. The
+flag is a curation stance about `BAD_DUMP` microcode, not a statement that the
+machine fails. **Taking it at face value cost an hour of reading disassembly
+while an instruction-level oracle sat unused.** Test the claim.
+
+Virtua Racing stopped running here for an unrelated reason: `vr.zip` was
+replaced on 2026-08-30 with a SPLIT set, and split sets need the BIOS ROMs as
+separate archives. `vr_old.zip` is a merged set and still contains them.
+`model1io.zip`, `m1comm.zip`, `model1io2.zip` and `hd44780.zip` were rebuilt
+from files already present in `vr_old.zip`, `vf.zip` and `netmerc.zip`; the CRCs
+match MAME's. All five games now run.
+
+### The display list buffers are NOT spare memory
+
+`m1_mainram` gives each of the two display list buffers the architectural
+32,768 words, about **104 M10K of 553**, and `mame_dl_extent.lua` exists to
+find how much is really used. Across all five games:
+
+| Game | Highest word touched | of 32,768 |
+|---|---|---|
+| Virtua Racing | 16,383 | 50% |
+| Virtua Fighter | 16,383 | 50% |
+| NetMerc | 21,095 | 64% |
+| Star Wars | 30,783 | 94% |
+| **Wing War** | **32,767** | **100%** |
+
+**Wing War uses every word of both buffers.** The region is not reducible.
+
+Measuring only the two games that are easy to test would have said "halve it" -
+VR and VF both stop at exactly half - and that would have broken Star Wars and
+Wing War silently, in games nobody runs often enough to notice quickly.
+
+`CLAUDE.md` described this region as "the one place a data cache could come
+from". It is not, and that line needs correcting.
+
+### What it was wanted for, and what that means
+
+Virtua Fighter saturates the quad store at 3,072 and discards **8,072 quads a
+capture**. The store costs 211 bits a quad across two banks - 128 of them the
+four 16-bit vertex pairs - so 3,072 -> 4,096 needs about **42 M10K**, and
+holding a peak frame of 4,798 quads needs about **72**. Seven are free.
+
+The sort key is the only obviously fat field at 32 bits, and it cannot shrink:
+it is a monotonic transform of the float z and MAME compares floats, so
+truncating it reorders quads whose depths differ in the low mantissa.
+
+So the store cannot be made big enough on this device. What remains is spilling
+overflow to SDRAM - the controller is 26% busy, but band replay reads each quad
+24 times, so it is roughly 75 MB/s of new traffic - or dropping SMARTER, since
+the store currently keeps the first 3,072 quads and discards the rest
+regardless of size or depth.
+
+---
+
 ## 2026-09-05 — A SECOND FP DIVIDER BUYS NOTHING. Projection is serial per VERTEX, not short of dividers
 
 Built and measured tonight, then reverted. Recorded because "add a second
