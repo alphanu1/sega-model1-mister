@@ -687,6 +687,25 @@ module mb86233_core (
       S_RETIRE: begin
         seq_valid     = 1'b1;
         seq_is_rep    = d_repgrp & (d_fsub == 3'd2);
+        // REP WITH A REGISTER COUNT MUST DRIVE THE REGISTER-FILE ADDRESS.
+        //
+        // MAME is `u8 r = opcode & 0x8000 ? read_reg(opcode) : opcode`, and
+        // read_reg masks the index to `opcode & 0x3f`. The count register is
+        // therefore named by the opcode's low six bits - 0x34, which is RPC, in
+        // every use of it seen so far.
+        //
+        // This read the count from rf_rd_addr's DEFAULT OF ZERO, which is b0.
+        // The immediate form was right and the register form silently used the
+        // wrong register, so a `rep` whose count comes from RPC repeated
+        // whatever happened to be in b0 instead.
+        //
+        // What that costs is not a wrong number of iterations. The repeated
+        // instruction is usually a TRANSFER, and a transfer that runs too many
+        // times waits on an input FIFO that will never fill - so the
+        // coprocessor parks on the loop body for ever, its command FIFO backs
+        // up, and a full command FIFO halts the V60. On hardware that is a
+        // frozen first frame.
+        if (seq_is_rep && d_repreg) rf_rd_addr = d_repimm[5:0];
         seq_rep_count = d_repreg ? rf_rd_data[7:0] : d_repimm;
         // brul/bsul TAKE THEIR TARGET FROM A REGISTER OR FROM DATA MEMORY, not
         // from the immediate field. This was `seq_branch_val = d_bdata` for every

@@ -221,6 +221,21 @@ static uint32_t enc_clr0(bool a, bool b, bool d) {
   return (0x0fu << 26) | (a ? 4u : 0) | (b ? 8u : 0) | (d ? 0x10u : 0);
 }   // rep group, sub 0, no clears
 
+// rep: type 0x0f, sub-op 2. Bit 15 picks where the count comes from - clear
+// takes the opcode's low byte as an immediate, set names a REGISTER by the
+// opcode's low six bits, which read_reg masks to 0x3f.
+//
+// THE REGISTER FORM WAS NEVER GENERATED, and that is how the core shipped
+// reading the count from register 0 - b0 - instead of the one the opcode names.
+// The reference in mb86233_ref.cpp had it right all along, so the lockstep
+// would have caught it the first time it emitted one.
+static uint32_t enc_rep_imm(uint8_t n) {
+  return (0x0fu << 26) | (2u << 17) | n;
+}
+static uint32_t enc_rep_reg(uint8_t reg) {
+  return (0x0fu << 26) | (2u << 17) | 0x8000u | (reg & 0x3f);
+}
+
 static long fails = 0, checks = 0;
 static void ck(const char* what, uint32_t got, uint32_t exp) {
   checks++;
@@ -452,13 +467,27 @@ int main(int argc, char** argv) {
       // A short program of forms with no memory traffic, so the comparison is
       // about sequencing and the ALU rather than the untested transfer paths.
       for (int i = 0; i < 24; i++) {
-        uint32_t pick = rnd() % 7;
+        // EIGHT NOW, NOT SEVEN. The eighth is `rep`, in both its forms.
+        //
+        // Without it the mix never emitted a register-sourced repeat, and the
+        // core read that count from register 0 instead of the one the opcode
+        // names for as long as the core has existed. The reference had it right,
+        // so this generator was the only thing standing between the bug and the
+        // lockstep.
+        uint32_t pick = rnd() % 8;
         uint32_t w;
         switch (pick) {
           case 0: w = enc_ldi(rnd() % 0x20, rnd() & 0xffffff); break;
           case 1: w = enc_lipl(rnd() & 3, rnd() & 0xffffff); break;
           case 2: w = enc_stm(rnd() & 0xffff); break;
           case 3: w = enc_clr0(rnd()&1, rnd()&1, rnd()&1); break;
+          case 7:
+            // Small counts only: the repeat block re-executes the NEXT
+            // instruction, and a 200-deep loop inside a 40-instruction trial
+            // would spend the whole trial in one place and test less, not more.
+            if (rnd() & 1) w = enc_rep_imm((uint8_t)(1 + rnd() % 4));
+            else           w = enc_rep_reg((uint8_t)(0x34));   // RPC, as VF uses
+            break;
           case 4: {
             // Integer/logical ALU ops only. The FP ops carry the documented
             // NaN-payload and denormal divergences — the RTL emits a canonical
