@@ -107,11 +107,37 @@ module m1_fp_pool #(
 
   wire [CW-1:0] mul_win = rr_pick(mul_req, mul_rr);
   wire [CW-1:0] add_win = rr_pick(add_req, add_rr);
-  wire [CW-1:0] div_win = rr_pick(div_req, div_rr);
+  // A CLIENT IS MASKED FOR ONE CYCLE AFTER ITS GRANT.
+  //
+  // Grants here are combinational, and a client's "I have been granted" flag is
+  // necessarily REGISTERED - it cannot see the grant until the next edge - so
+  // its request is still asserted on the grant cycle itself. With a single
+  // divider that costs nothing, because the divider is then busy for up to 29
+  // cycles and the stale request cannot win again. The moment a SECOND divider
+  // exists the other one is free, the stale request wins immediately, and every
+  // division is issued twice.
+  //
+  // That is exactly what happened when a second divider was tried on
+  // 2026-09-04: it made the board worse and was reverted, and the cause was
+  // read as the extra divider rather than as this hazard. It is not the
+  // client's bug to fix either - gating m1_geo_project's div_req on div_gnt
+  // closes a combinational loop through the arbiter.
+  //
+  // Masking here costs NC flops and no throughput: clients are single
+  // outstanding, so none of them can legitimately want a grant on two
+  // consecutive cycles.
+  logic [NC-1:0] div_gnt_d;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) div_gnt_d <= '0;
+    else        div_gnt_d <= div_gnt;
+  end
+  wire [NC-1:0] div_elig = div_req & ~div_gnt_d;
+
+  wire [CW-1:0] div_win = rr_pick(div_elig, div_rr);
 
   wire mul_any = |mul_req;
   wire add_any = |add_req;
-  wire div_any = |div_req;
+  wire div_any = |div_elig;
 
   // ------------------------------------------------------------- units
   logic        m_valid, a_valid, d_valid;
