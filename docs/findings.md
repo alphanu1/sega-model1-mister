@@ -20,6 +20,48 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-05 — A QUAD TOUCHES 1.11 BANDS, SO BINNING IS THE CURE FOR THE DROPPED QUADS
+
+Measured on real models out of the polygon ROM, 15,688 quads across 16 yaw
+angles: **17,364 band touches, 1.11 a quad.** The guess going in was three.
+
+### Why the number decides the architecture
+
+The band renderer replays EVERY quad for EVERY one of the 24 bands and filters
+on `band_range`. That is why the store has to hold a whole frame, and why
+Virtua Fighter saturates it at 3,072 and discards **8,072 quads a capture**.
+
+The store cannot grow: 211 bits a quad across two banks, so 3,072 -> 4,096 needs
+about 42 M10K and a peak frame of 4,798 quads needs about 72. Seven are free,
+and the display list buffers - the only large pool - turned out to be fully used
+by Wing War. The sort key, the one fat field, cannot shrink because it is a
+monotonic transform of the float z and MAME compares floats.
+
+**Binning by band removes the problem instead of enlarging it.** Each quad is
+written once per band it touches; each band reads only its own list. At 1.11
+touches a quad a peak frame is ~5,300 entries, ~144 KB written and ~144 KB read
+per frame, about **17 MB/s** against a 160 MB/s peak that currently sits 26%
+busy. Three times fatter geometry than this bench's viewport would still be
+~50 MB/s.
+
+| | today | binned |
+|---|---|---|
+| Quad capacity | 3,072, hard | unlimited |
+| On-chip store | a whole frame | one band |
+| Band replay | every quad x 24 | own list x 1 |
+| SDRAM | none | ~17 MB/s |
+
+So it is not a trade. It removes the capacity limit, collapses the 24x replay to
+1x, and RETURNS M10K rather than spending it.
+
+**Caveat on the number.** 1.11 is real geometry under the bench's viewport, not
+the game's camera. A road running to the horizon is a taller quad than anything
+here. The board can measure it directly - `m1_quad_store` now counts band
+touches and quads seen - and that should be read before the redesign is
+committed to.
+
+---
+
 ## 2026-09-05 — THE DISPLAY LIST BUFFERS CANNOT BE SHRUNK, and MAME runs all five games
 
 Two results from the same evening, and the first would have broken a game.

@@ -357,6 +357,7 @@ static long whist[32];
 // the question - the question is which one is STILL OUTSTANDING when nothing
 // else is. Those are the cycles that would disappear if that stage were free.
 static long wout[6], wonly[6];
+static long pj_recip = 0, pj_scale = 0, pj_hold = 0, pj_idle = 0;
 static const char* ONAME[6] = { "xform", "project", "determinant",
                                 "normalize", "colour", "tgp_ram" };
 
@@ -413,6 +414,24 @@ struct Dut {
                 int n = 0;
                 for (int i = 0; i < 6; i++) if (o[i]) { wout[i]++; n++; }
                 if (n == 1) for (int i = 0; i < 6; i++) if (o[i]) wonly[i]++;
+
+                // WHERE PROJECTION'S OWN TIME GOES, split by its two stages.
+                //
+                // "project is outstanding 90.9% and the sole cause 36.8%" was
+                // read as "short of dividers", and a second divider measured
+                // WORSE - it is never used, because the reciprocal stage takes
+                // one vertex at a time. So decompose it rather than guess a
+                // third time: R_BUSY is waiting on the divide, S_* is the
+                // dependent multiply/add chain, and both idle means projection
+                // is waiting to be HANDED a vertex.
+                {
+                    int rs = r->m1_geometry__DOT__u_project__DOT__rst_st;
+                    int ss = r->m1_geometry__DOT__u_project__DOT__sst;
+                    if (rs == 1)      pj_recip++;      // R_BUSY: in the divide
+                    else if (rs == 2) pj_hold++;       // R_FULL: waiting to hand over
+                    if (ss != 0)      pj_scale++;      // the mul/add chain
+                    if (rs == 0 && ss == 0) pj_idle++; // nothing to do
+                }
             }
         }
         d->rom_valid = rom_ans; d->rom_data = rom_ans ? prom[PA(addr)] : 0;
@@ -655,6 +674,10 @@ int main(int argc, char** argv) {
             if (whist[i] > busy / 100)
                 printf("  %-8s %6ld cycles  %5.1f%%\n",
                        WNAME[i], whist[i], 100.0 * whist[i] / busy);
+        printf("  inside projection: recip %ld (%.1f%%)  scale %ld (%.1f%%)  "
+               "handover %ld (%.1f%%)  idle %ld (%.1f%%)\n",
+               pj_recip, 100.0 * pj_recip / busy, pj_scale, 100.0 * pj_scale / busy,
+               pj_hold,  100.0 * pj_hold  / busy, pj_idle,  100.0 * pj_idle  / busy);
         printf("  inside the record, outstanding / sole cause:\n");
         for (int i = 0; i < 6; i++)
             printf("    %-12s %6ld  %5.1f%%   alone %6ld  %5.1f%%\n",
@@ -712,6 +735,7 @@ int main(int argc, char** argv) {
             unsigned cmd, tex, poly, size;
             int nobj = 0, bad_obj = 0;
             long rq = 0, rpx = 0, rcol_ok = 0, rcol_bad = 0;
+            std::vector<Quad> bt_quads;
             float oz_m = 0.0f, oz_d = 0.0f;
             // A YAW SWEEP, because one orientation proves one orientation.
             //
@@ -760,6 +784,7 @@ int main(int argc, char** argv) {
                 }
                 for (size_t k = 0; k < exp.size(); k++) {
                     const Quad& e = exp[k]; const Quad& g = t.got[k];
+                    bt_quads.push_back(g);
                     rq++;
                     checks++;
                     for (int v = 0; v < 4; v++) {
@@ -786,6 +811,38 @@ int main(int argc, char** argv) {
             }
             }   // yaw
             fclose(rf); fclose(of);
+            // BAND TOUCHES PER QUAD, on real models from the polygon ROM.
+            //
+            // The band renderer replays every quad for every one of the 24
+            // bands, which is why the store must hold a whole frame and why
+            // Virtua Fighter discards 8,072 quads against a 3,072 capacity.
+            // Binning per band instead stores and re-reads total band-TOUCHES
+            // rather than quads, so this ratio is what decides whether that
+            // cure is affordable in SDRAM. "About three" was a guess.
+            //
+            // CAVEAT: these are real models under this bench's viewport, not
+            // the game's. The shape of the geometry is real; the vertical
+            // spread depends on a camera the bench chose.
+            {
+                const int BANDH = 16, SCRH = 384;
+                long touches = 0, counted = 0, offscr = 0;
+                for (const Quad& q : bt_quads) {
+                    int lo = q.y[0], hi = q.y[0];
+                    for (int v = 1; v < 4; v++) {
+                        if (q.y[v] < lo) lo = q.y[v];
+                        if (q.y[v] > hi) hi = q.y[v];
+                    }
+                    if (hi < 0 || lo > SCRH - 1) { offscr++; continue; }
+                    if (lo < 0) lo = 0;
+                    if (hi > SCRH - 1) hi = SCRH - 1;
+                    touches += (hi / BANDH) - (lo / BANDH) + 1;
+                    counted++;
+                }
+                if (counted)
+                    printf("  band touches: %ld over %ld on-screen quads = %.2f a quad"
+                           " (%ld off screen)\n",
+                           touches, counted, (double)touches / counted, offscr);
+            }
             printf("  %d real objects over 16 yaw angles, %d that did not match at all\n",
                    nobj, bad_obj);
             printf("  %ld quads, %ld vertex coordinates differing, colour exact on %ld of %ld\n",

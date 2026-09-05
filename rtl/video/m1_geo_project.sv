@@ -88,7 +88,7 @@ module m1_geo_project (
 
   // ------------------------------------------------------------ reciprocal
   typedef enum logic [1:0] { R_IDLE, R_BUSY, R_FULL } rstate_t;
-  rstate_t rst_st;
+  rstate_t rst_st /* verilator public_flat_rd */;
 
   logic [31:0] rx, ry, rz, recip;
   logic        r_behind;
@@ -114,7 +114,7 @@ module m1_geo_project (
 
   // ------------------------------------------------------------ scale stage
   typedef enum logic [2:0] { S_IDLE, S_M0, S_M1, S_A0, S_A1, S_OUT } sstate_t;
-  sstate_t sst;
+  sstate_t sst /* verilator public_flat_rd */;
 
   logic [31:0] sx_f, sy_f, sxx, syy, sr, sx_in, sy_in;
   logic        s_behind;

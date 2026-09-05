@@ -263,6 +263,35 @@ module m1_quad_store #(
     sort_key = ~(v[31] ? ~v : (v | 32'h80000000));
   endfunction
 
+  // HOW MANY BANDS DOES A QUAD ACTUALLY TOUCH?
+  //
+  // The band renderer replays EVERY quad for EVERY one of the 24 bands and
+  // filters on this range, which is why the store must hold a whole frame and
+  // why Virtua Fighter discards 8,072 quads a capture against a 3,072 capacity.
+  //
+  // Binning by band instead - each quad written once per band it touches, each
+  // band reading only its own list - removes the capacity limit and collapses
+  // the 24x replay to 1x. Whether that is affordable in SDRAM depends entirely
+  // on this number: total band-touches, not quads, is what would be stored and
+  // re-read. Three per quad was a guess and the design should not rest on it.
+  //
+  // Counted here rather than in a bench because it is a property of the real
+  // display lists, and free-running because the rate is what matters.
+  logic [31:0] dbg_band_touches /* verilator public_flat_rd */;
+  logic [31:0] dbg_quads_seen   /* verilator public_flat_rd */;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_band_touches <= '0; dbg_quads_seen <= '0;
+    end else if (in_valid && has_room) begin
+      automatic logic [2*BW-1:0] br = band_range(in_y0, in_y1, in_y2, in_y3);
+      automatic logic [BW-1:0]   bl = br[2*BW-1:BW];
+      automatic logic [BW-1:0]   bh = br[BW-1:0];
+      dbg_quads_seen <= dbg_quads_seen + 32'd1;
+      if (bh >= bl) dbg_band_touches <= dbg_band_touches
+                                      + 32'(bh - bl) + 32'd1;
+    end
+  end
+
   // ---------------------------------------------------------------- write
   logic [IW-1:0] wi;
   always_ff @(posedge clk or negedge rst_n) begin
