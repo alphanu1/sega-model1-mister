@@ -1,5 +1,80 @@
 # HANDOFF
 
+## 2026-09-05 (late) — WHERE TO PICK UP
+
+**Board state:** `0887e7b8e02a71c9e32ff8db9177066b` flashed, from `d9c6818`.
+Archived at `build/known_good/`. VR, VF and NetMerc all confirmed running on it.
+
+### The one big piece of work: BIN QUADS BY BAND
+
+This is the cure for both the dropped quads AND part of the speed problem, and
+it is costed. See `findings.md`, 2026-09-05, "A quad touches 1.11 bands".
+
+Today the band renderer replays EVERY quad for EVERY one of the 24 bands, so
+the store must hold a whole frame - and Virtua Fighter saturates it at 3,072
+and discards 8,072 quads a capture. The store cannot grow: a peak frame needs
+~72 M10K and seven are free.
+
+Binning removes the problem instead. Each quad is written once per band it
+touches, each band reads only its own list:
+
+| | today | binned |
+|---|---|---|
+| Quad capacity | 3,072, hard | unlimited |
+| On-chip store | a whole frame | one band |
+| Band replay | every quad x 24 | own list x 1 |
+| SDRAM | none | ~17 MB/s of 160, which sits 26% busy |
+
+**Read the board's band-touch figure first.** `m1_quad_store` now counts band
+touches and quads seen; 1.11 is from the bench's viewport and the game's camera
+may be fatter. Even 3x still fits.
+
+### Smaller, known, and NOT worth doing
+
+- **A second FP divider.** Measured: 488.2 -> 493.9 cycles a quad. Worse.
+  Projection takes one vertex at a time so a second unit is never used. Making
+  it dual-issue is worth ~6%, not the 18% first estimated.
+- **Shrinking the display list buffers.** Measured across all five games:
+  Wing War uses every word of both, Star Wars 94%. VR and VF both stop at
+  exactly half, which would have made this look safe. It is not.
+
+### The two open visible defects
+
+1. **VR's left-side cut.** Eight causes eliminated by measurement (see
+   findings). The mixer is the last unexamined stage and `K=`/`G=` were built
+   for it but have NOT been read on a healthy build. **Do that first.** VF and
+   NetMerc both draw balanced left/right, so it is VR-specific.
+2. **NetMerc's 3D over the attract glyphs.** `h=0000` on both VF and NetMerc,
+   so the unimplemented above-HUD pass (command 0x41) is NOT the cause. `K=2`
+   says the mixer is not discarding the 3D either.
+
+### Tooling that changed today
+
+**MAME runs all five Model 1 games here.** `vf` and `netmerc` are marked
+`MACHINE_NOT_WORKING` and both run correctly - that flag is curation about
+`BAD_DUMP` microcode. VR needed `model1io.zip`/`m1comm.zip` rebuilt because
+`vr.zip` was replaced with a SPLIT set in August; the ROMs were in `vr_old.zip`
+all along. `model1io2.zip` and `hd44780.zip` came out of `netmerc.zip` for Wing
+War.
+
+That gives instruction-level oracles for every game - `tgp_trace GAME=<set>`
+now works for all five, and `build_tgp_rom.py` knows all five microcodes.
+
+### Rules this session paid for
+
+- **Disassemble the ROM and read it.** VF's freeze took fifteen minutes because
+  the hardware named an address and the microcode could be read there. The 3D
+  defect took hours of hypothesise-build-measure. Now a rule in `CLAUDE.md`.
+- **Test the claim before accepting it.** `MACHINE_NOT_WORKING` cost an hour of
+  reading disassembly while a working oracle sat unused.
+- **Measure before designing.** "About three bands a quad" was 1.11, and the
+  guess would have made a good design look marginal.
+- **Four parallel Quartus builds, not six.** Six exhausts 31 GB and the fitter
+  dies mid-place with "ended unexpectedly".
+- **Archive the flashed .rbf.** A rollback cost a 25-minute rebuild because
+  every worktree had overwritten its output.
+
+
 ## 2026-09-05 — WHERE TO PICK UP
 
 **The board is mid-rollback.** The last flashed build broke the 2D and was
