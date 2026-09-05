@@ -184,6 +184,12 @@ module m1_speed_report #(
   //
   // Lowercase because every capital is already a field. The two cases are
   // distinct names, not the same one.
+  // Objects the display list marks command 0x41, "drawn above the HUD". MAME
+  // renders those in a SECOND pass through a stencil; we render one pass and
+  // no stencil, so they are drawn like ordinary geometry. h= says whether a
+  // game emits any - the flag that detects them has never been read.
+  input  logic [15:0] hud_obj,     // h=
+
   input  logic [15:0] ctrl_hi,     // w= : pair 2/3
   input  logic [15:0] ctrl_lo,     // v= : pair 0/1
 
@@ -212,7 +218,7 @@ module m1_speed_report #(
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
-  logic [15:0] r_ch, r_cl;
+  logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
   logic        report_go;
 
@@ -225,7 +231,7 @@ module m1_speed_report #(
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
-      r_ch <= '0; r_cl <= '0;
+      r_ch <= '0; r_cl <= '0; r_ho <= '0;
       report_go <= 1'b0;
     end else begin
       report_go <= 1'b0;
@@ -264,6 +270,7 @@ module m1_speed_report #(
           r_pl    <= plane_l;
           r_ch    <= ctrl_hi;
           r_cl    <= ctrl_lo;
+          r_ho    <= hud_obj;
           r_wband <= wband_max[19:4]; wband_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
@@ -303,11 +310,16 @@ module m1_speed_report #(
   // Nine is not a power of two, so the field and position are COUNTERS rather
   // than slices of the character index. Two small counters cost less than the
   // divide would and far less than the 137-arm case they replace.
-  localparam int unsigned NF  = 28;             // fields
+  // NINE BITS OF ci, AND THIS HAS NOW BITTEN THREE TIMES - at six, at seven,
+  // and at eight the moment a 29th field took the line past 256 bytes. The
+  // first two reached the board and read as UART corruption. The third was
+  // caught by tb_m1_speed_report before it could be built, which is what that
+  // bench exists for. Good to 511 bytes now.
+  localparam int unsigned NF  = 29;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
-  logic [7:0]  ci;
+  logic [8:0]  ci;
   logic        busy;
   logic [7:0]  ch;
   logic        wr;
@@ -354,7 +366,8 @@ module m1_speed_report #(
       5'd24: begin f_letter = "J"; f_value = {8'd0, r_hr};    end
       5'd25: begin f_letter = "Y"; f_value = {8'd0, r_pl};    end
       5'd26: begin f_letter = "w"; f_value = {8'd0, r_ch};    end
-      default: begin f_letter = "v"; f_value = {8'd0, r_cl};  end
+      5'd27: begin f_letter = "v"; f_value = {8'd0, r_cl};    end
+      default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end
 
@@ -373,8 +386,8 @@ module m1_speed_report #(
   end
 
   always_comb begin
-    if (ci >= 8'(NF * FW))
-      ch = (ci == 8'(NF * FW)) ? 8'h0d : 8'h0a;
+    if (ci >= 9'(NF * FW))
+      ch = (ci == 9'(NF * FW)) ? 8'h0d : 8'h0a;
     else if (pos == 4'd0) ch = f_letter;
     else if (pos == 4'd1) ch = "=";
     else if (pos == 4'd8) ch = " ";
@@ -404,8 +417,8 @@ module m1_speed_report #(
         // "F=00" and restarted. On the wire that looks like UART corruption,
         // not an arithmetic width - which is exactly what the comment beside
         // NCH warned about, written while making this same mistake.
-        if (ci == 8'(NCH - 1)) busy <= 1'b0;
-        else                   ci <= ci + 8'd1;
+        if (ci == 9'(NCH - 1)) busy <= 1'b0;
+        else                   ci <= ci + 9'd1;
       end
     end
   end

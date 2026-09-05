@@ -759,7 +759,7 @@ module m1_integrated (
     .dbg_px_l(r3_dbg_px_l), .dbg_px_r(r3_dbg_px_r),
     .dbg_culled(r3_dbg_culled),
     .dbg_hit_l(r3_dbg_hit_l), .dbg_hit_r(r3_dbg_hit_r),
-    .dbg_plane_l(r3_dbg_plane_l)
+    .dbg_plane_l(r3_dbg_plane_l), .dbg_hud_obj(r3_dbg_hudobj)
   );
 
   // The display list's data comes back from m1_main's second port.
@@ -978,7 +978,7 @@ module m1_integrated (
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
     .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(r3_dbg_oob),
     .culled(r3_dbg_culled), .quads(r3_dbg_quads),
-    .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]),
+    .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]), .hud_obj(r3_dbg_hudobj),
     .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r), .plane_l(r3_dbg_plane_l),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)

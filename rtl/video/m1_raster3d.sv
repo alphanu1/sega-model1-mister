@@ -231,7 +231,10 @@ module m1_raster3d #(
   output logic [15:0] dbg_hit_r,
 
   // The left clip plane's top 16 bits. Zero means it was never computed.
-  output logic [15:0] dbg_plane_l
+  output logic [15:0] dbg_plane_l,
+
+  // Objects with command 0x41 - "drawn above the HUD" - free-running.
+  output logic [15:0] dbg_hud_obj
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -1052,7 +1055,7 @@ module m1_raster3d #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0;
-      cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0;
+      cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0; dbg_hud_obj <= '0;
       ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped <= 1'b0;
       swept <= 1'b0; early_sweep <= 1'b0;
@@ -1280,6 +1283,18 @@ module m1_raster3d #(
         P_WALK: begin
           if (lw_ev_valid && (lw_ev_kind == 8'h01 || lw_ev_kind == 8'h41)) begin
             obj_hud <= (lw_ev_kind == 8'h41);
+            // COUNT THE ABOVE-HUD OBJECTS, because obj_hud has never been read.
+            //
+            // MAME renders the 3D TWICE: commands 0x01 and 0x02 below the HUD
+            // tilemaps, then command 0x41 ABOVE them through a stencil that only
+            // lets those objects through "background" HUD pixels
+            // (model1_v.cpp:1859-1869). We render one pass and no stencil, so a
+            // 0x41 object is drawn exactly like ordinary geometry.
+            //
+            // Ben sees a 3D layer sitting on top of NetMerc's attract glyphs.
+            // Whether that is this gap depends on whether NetMerc emits 0x41 at
+            // all, and nothing has ever reported it.
+            if (lw_ev_kind == 8'h41) dbg_hud_obj <= dbg_hud_obj + 16'd1;
             case (lw_ev_idx)
               16'd0: obj_tex  <= lw_ev_data;
               16'd1: obj_poly <= lw_ev_data;

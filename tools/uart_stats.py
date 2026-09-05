@@ -11,7 +11,7 @@ Usage: tools/uart_stats.py <capture.log>
 """
 import re, sys
 
-FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G E U I J Y w v".split()
+FIELDS = "F S B P C R N V X L T W D H K M O Q A Z G E U I J Y w v h".split()
 LINE = re.compile(r"\b([A-Za-z])=([0-9A-Fa-f]+)")
 
 # Fields that free-run and are only meaningful as a rate; the rest are levels.

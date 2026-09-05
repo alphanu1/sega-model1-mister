@@ -116,6 +116,7 @@ int main(int argc, char** argv) {
     dut->plane_l      = 0xBF80;   // -1.0f's top half, a plausible plane
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
+    dut->hud_obj      = 0x0042;
     dut->px_left      = 0xCDEF;
     dut->px_right     = 0xDEF0;
     dut->mem_occ      = 0x5A;
@@ -161,7 +162,7 @@ int main(int argc, char** argv) {
         {'D', 0x789A}, {'H', 0x89AB}, {'K', 0x9ABC}, {'M', 0xABCD},
         {'O', 0x5A}, {'Q', 0xA5},
         {'A', 0xCDEF}, {'Z', 0xDEF0}, {'G', 0xBCDE},
-        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011},
+        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011}, {'h', 0x0042},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;
