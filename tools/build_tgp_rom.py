@@ -34,6 +34,39 @@ REGIONS = {
         'tables': [('opr14742.bin', 0x446a1085, 0x20000),
                    ('opr14743.bin', 0xe8953554, 0x20000)],
     },
+    # The other four sets. Their microcode is a different program from vr's and
+    # reaches instructions vr never executes - a register-sourced `rep` among
+    # them, which hung Virtua Fighter until 2026-09-05. So being able to extract
+    # them is what lets `make tgp_trace GAME=<set>` check our coprocessor against
+    # MAME's on each game's own microcode rather than only on vr's.
+    #
+    # MAME marks 315-5711 and 315-5724 BAD_DUMP. They run anyway - MAME plays
+    # Virtua Fighter's attract mode correctly on 315-5724 with a real MB86233 -
+    # so the CRCs below are the dumps as shipped, not a claim that they are
+    # right.
+    #
+    # copro_tables is a MODEL1_CPU_BOARD region, not a per-set one, which is why
+    # no game's ROM_START lists it and why every set carries the same two files.
+    'vf': {
+        'prog':   [('315-5724.bin', 0x4b4f330e, 0x2000)],
+        'tables': [('opr14742.bin', 0x446a1085, 0x20000),
+                   ('opr14743.bin', 0xe8953554, 0x20000)],
+    },
+    'netmerc': {
+        'prog':   [('315-5711.bin', 0x6a21f304, 0x2000)],
+        'tables': [('opr14742.bin', 0x446a1085, 0x20000),
+                   ('opr14743.bin', 0xe8953554, 0x20000)],
+    },
+    'swa': {
+        'prog':   [('315-5711.bin', 0x6a21f304, 0x2000)],
+        'tables': [('opr14742.bin', 0x446a1085, 0x20000),
+                   ('opr14743.bin', 0xe8953554, 0x20000)],
+    },
+    'wingwar': {
+        'prog':   [('315-5711.bin', 0x6a21f304, 0x2000)],
+        'tables': [('opr14742.bin', 0x446a1085, 0x20000),
+                   ('opr14743.bin', 0xe8953554, 0x20000)],
+    },
 }
 
 
