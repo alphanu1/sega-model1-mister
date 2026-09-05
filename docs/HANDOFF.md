@@ -1,5 +1,56 @@
 # HANDOFF
 
+## 2026-09-05 — WHERE TO PICK UP
+
+**The board is mid-rollback.** The last flashed build broke the 2D and was
+reverted; six seeds are rebuilding `871e938`. **Flash a clean seed and confirm
+the picture is back before anything else.**
+
+**Keep a copy of the last known-good `.rbf`.** Restoring one cost a 25-minute
+rebuild tonight because every worktree's output had been overwritten. That is
+avoidable and it will happen again otherwise.
+
+### The three live threads
+
+1. **The left-side 3D.** Eight candidate causes eliminated by measurement - see
+   `findings.md`, 2026-09-05. The mixer is the only stage left, and `K=`/`G=`
+   count pixels where the 3D was ready and a tile beat it, per screen half.
+   **They have not been read on a healthy build.** Read them first.
+
+   Also unconfirmed: `w=0000 v=0000` on 99 samples - both tilemap pair control
+   words zero during play. If that holds, no window mode is configured at all.
+
+2. **3D speed.** `project` is outstanding 90.9% of the time and the sole cause
+   36.8%; the geometry costs 488 cycles a quad against a budget of 83. Divide
+   throughput is the only lever worth pulling, and the pool's grant mask -
+   landed tonight, a no-op today - is the prerequisite that makes a second
+   divider work. DSPs are 61 of 112, so the arithmetic has somewhere to go.
+
+3. **Tile overruns.** The two-port fetch is designed, written up in
+   `m1-m4-plan.md`, measured at 1,614 -> 568 cycles a layer, built, and
+   REVERTED because it broke the 2D on hardware while every bench passed.
+   **Do not retry it until there is a way to see the failure off the board.**
+   `tb_m1_frame` reproduces zero tile deadline misses once the ROM load is
+   excluded, so it is blind to this by construction.
+
+### Rules this session paid for
+
+- **MAME is the oracle for what the REFERENCE does, not for what OUR core
+  does.** A 2,000-frame attract census in emulation is twice removed from "what
+  is our V60 writing mid-race", and ours diverges from MAME's at instruction
+  197,251. Ben's correction, and it was right.
+- **Check the WINDOW of a measurement before believing it.** The famous
+  103-cycle character-fetch wait was 18; the rest was the ROM download inside
+  the average. The same error made the read-side pixel census look right-biased
+  when the bias was horizontal blanking counted as "right half".
+- **A fix that cannot move the number it targets is aimed at the wrong thing.**
+  Giving the tile port strict priority changed the wait by nothing, and that is
+  what exposed the contaminated measurement rather than any amount of rereading.
+- **Counters that never reach the wire are not instrumentation.** Five were
+  found wired up and going nowhere in one day: `dbg_overruns`, `g_cull`,
+  `planes_valid`, `dbg_layer_px`, `dbg_ctrl`.
+
+
 ## RESUME HERE — 2026-09-03, session ended mid-change
 
 ### The board right now

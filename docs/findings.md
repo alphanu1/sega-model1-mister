@@ -20,6 +20,158 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-05 — THE LEFT-SIDE 3D: WHAT IT IS NOT. Six candidate causes eliminated by measurement, and the remaining stage named
+
+Ben's symptom, refined over the session: in gameplay the **left 40-48% of the
+screen carries no 3D**. The road and the scenery are gone there; **cars on the
+same side are drawn normally**. It gets worse on corners and persists while
+parked at an angle. He believes it has always been the case.
+
+Everything below is measured on the board unless it says otherwise.
+
+### Eliminated
+
+| Cause | How it was eliminated |
+|---|---|
+| SDRAM contention | tile port served in **18 cycles**, 2 waiting; controller ~29% busy |
+| Coordinate wrapping in the quad store | `G=0` on every sample of every capture |
+| Spans never reaching the left | `A=` — the fill emits **44.7%** of its pixels into the left half |
+| The band memory losing them | `I=` — scanout reads back **46.3%** on the left. Write and read agree |
+| Culling, clipping, projection | 16-yaw sweep vs `push_object`: 15,688 quads, **zero** differing |
+| Over-culling | cull rate identical in the good and bad states, ~32,000/s both |
+| The frustum's left plane | `Y=BF62` ~ -0.88. With x1=0, xc~248, zoomx~281 that puts the plane at screen x = **0**, where it belongs |
+| Tile overruns causing it | an overrun repeats a 2D scanline and never touches the band buffer; misses ranged 0 to 2,175/s while the cut stayed put |
+
+### What is left
+
+The **mixer**. `poly_won` requires that no category-1 tile is in front of the
+3D, which is correct - it is MAME's draw order, tiles 6/4/2/0 below and 7/5/3/1
+above, and `m1_tile_decode` takes the category from `tile_word[15]` exactly as
+`segaic24.cpp:56` does. So if a category-1 tile covers the left half, our mixer
+is CORRECTLY suppressing the 3D and the fault is upstream of it.
+
+`K=` and `G=` were repurposed to count pixels where the 3D was ready and a tile
+beat it, per screen half. **Not yet read on a healthy build.**
+
+### One reading that arrived and needs confirming
+
+`w=0000 v=0000` on all 99 samples of the last capture - both tilemap pair
+control words zero during play. If that holds, no window mode is configured at
+all, the column-split theory is moot, and it raises a different question about
+the 2D. The capture came from the build that was rolled back, so it is
+suggestive rather than established.
+
+### The hypotheses that were WRONG, and why they looked right
+
+- **`a_left = 0`.** The arithmetic was sound: the left plane lands at
+  `xc + a_left*zoomx + viewx`, which for a correct `a_left` is `x1 = 0` and for
+  zero is `xc + viewx` ~ 248 - 48% of a 496-wide screen, exactly Ben's boundary.
+  It also explained why near objects survive, since the test `p.x < p.z*a_left`
+  scales with distance. `a_left` is the FIRST plane computed, so zero would have
+  meant no recompute had ever run. The board said `BF62`. Right reasoning,
+  wrong premise, and only hardware could say which.
+- **Backface culling.** Fitted "large flat single-sided things vanish, closed
+  objects do not" perfectly. Killed by an identical cull rate in both states and
+  by the yaw sweep.
+- **The left half being starved of spans.** `A=`/`Z=` were built to test it and
+  answered 44.7%, which is not starvation. That counter was aimed at Ben's FIRST
+  description - "the whole left side" - and his later detail, cars fine and road
+  gone, changed the question underneath it.
+
+---
+
+## 2026-09-05 — THE TWO-PORT CHARACTER FETCH BROKE THE 2D, AND BOTH BENCHES PASSED
+
+Reverted the same evening it was built. Recorded because the change is right in
+principle, the measured win is real, and the next attempt needs to know what
+caught it and what did not.
+
+### What was built
+
+The tile engine is latency-bound: strictly serial, `F_CHAR` raising `char_req`
+and stalling for the whole round trip, once per column, 248 times a line. The
+fix was two SDRAM ports alternating with a two-entry hand-off queue, keeping
+`m1_sdram`'s single-outstanding-per-port contract intact rather than relaxing a
+module verified at 87,893 checks.
+
+**In the unit bench it worked**: 1,614 -> 568 cycles per layer per line, so four
+dense layers cost ~2,270 against the 3,936 a scanline affords. That is the
+number `m1_tile_fetch`'s own header predicted for this change.
+
+### What happened on the board
+
+A flashing yellow rectangle, sky and ground missing. `M=` saturated at `0xFFFF`
+- the tile fetch missing deadlines continuously - and `Q=` at zero.
+
+### What passed anyway
+
+- `m1_tile_fetch`: 49,116 checks green
+- `m1_video`: 380,929 pixels compared, green
+- `tb_m1_frame`: no regression
+
+A unit bench that models two ports with independent latency counters cannot show
+what two REAL SDRAM masters do to each other through a shared arbiter, a shared
+open row and a refresh cycle. And `tb_m1_frame` reproduces **zero** tile
+deadline misses once the ROM load is excluded - all 9,434 of its misses happen
+during the download - so the bench that should have caught it does not
+reproduce the fault at all.
+
+**Before this is tried again, build a way to see the failure off the board.**
+
+### It also walked into the oldest trap first
+
+The two ports are independent masters and the arbiter may grant them in either
+order, so port 1 can return before port 0. `char_ack` is held only two cycles,
+so an out-of-order ack arriving while the retire pointer watched the other port
+was lost. The frame bench went 9,434 -> 36,867 misses and that one it DID catch.
+Fixed by latching each port's completion the cycle it happens. *Acknowledges
+must be held, not pulsed* - recorded twice before, three times now.
+
+---
+
+## 2026-09-05 — WHY THE SECOND FP DIVIDER FAILED, AND WHAT ACTUALLY LIMITS 3D SPEED
+
+### The profile
+
+`tb_m1_geometry`: **488 cycles a quad against a budget of 83**, and a peak frame
+of 4,798 quads would need **286% of a frame**. Inside the record:
+
+| Stage | Outstanding | Sole cause |
+|---|---|---|
+| **project** | **90.9%** | **36.8%** |
+| tgp_ram | 22.9% | 0.1% |
+| xform | 21.4% | 0.0% |
+| normalize | 11.3% | 0.0% |
+| colour | 10.3% | 1.4% |
+| determinant | 2.1% | 0.0% |
+
+Projection is the bottleneck and nothing else is close. `xform`, `normalize` and
+`determinant` are NEVER the sole cause, so speeding them up buys nothing.
+Projection is the perspective divide - eight divides a quad - so **divide
+throughput is the only lever on 3D speed worth pulling**.
+
+### Why the second divider made things worse, and it was not the divider
+
+Grants in `m1_fp_pool` are combinational. A client's "I have been granted" flag
+is necessarily REGISTERED - it cannot see the grant until the next edge - so its
+request is still asserted during the grant cycle itself.
+
+With one divider that costs nothing: the divider is busy for up to 29 cycles
+afterwards and the stale request cannot win again. **The moment a second divider
+exists the other one is free, the stale request wins immediately, and every
+division is issued twice.**
+
+It is not the client's bug either: gating `m1_geo_project`'s `div_req` on
+`div_gnt` closes a combinational loop through the arbiter - request feeds the
+winner pick feeds the grant.
+
+**Fixed in the pool**: a client is masked for one cycle after being granted. NC
+flops, no throughput lost because clients are single-outstanding. This changes
+nothing today and that is the point - it is the prerequisite that lets the
+second divider land.
+
+---
+
 ## 2026-09-04 — THE LAYER BLEND ORDER IS THE SAME FOR EVERY MODEL 1 GAME, and the above-HUD 3D pass is NOT implemented
 
 Asked because NetMerc's attract screen draws 3D over the `INSERT COIN` glyphs
