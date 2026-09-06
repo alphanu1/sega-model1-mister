@@ -331,15 +331,32 @@ module m1_tile_fetch #(
   //
   // One entry per column per layer: 62 x 4. Written when a fetch completes,
   // read when the wanted row is the one the previous line already brought back.
+  // THE READ IS REGISTERED, and that is not a style choice.
+  //
+  // Reading these arrays combinationally - `cc_addr[cc_i]` inside a wire -
+  // forces Quartus to build them out of flip-flops with a 248-way mux instead
+  // of block RAM. That cost +1,300 ALM and took the design to 99%, measured.
+  // cc_i is stable across F_CHECK, F_TILE and F_CHAR, so a free-running
+  // registered read is available in time and infers M10K.
   localparam int unsigned CC_N = COLUMNS * 4;
-  logic [17:0] cc_addr [CC_N];
-  logic [31:0] cc_data [CC_N];
-  logic        cc_valid [CC_N];
+  (* ramstyle = "M10K" *) logic [17:0] cc_addr [CC_N];
+  (* ramstyle = "M10K" *) logic [31:0] cc_data [CC_N];
+  logic        cc_valid [CC_N];      // stays in flops: a RAM cannot be reset
 
   // fx is the screen position of the column being fetched, eight pixels a
   // column, so fx[8:3] is the column index.
   wire [$clog2(CC_N)-1:0] cc_i = ($clog2(CC_N))'({layer, fx[8:3]});
-  wire cc_hit = cc_valid[cc_i] && (cc_addr[cc_i] + 18'd2 == f_char_addr);
+
+  logic [17:0] cc_addr_q;
+  logic [31:0] cc_data_q;
+  logic        cc_valid_q;
+  always_ff @(posedge clk) begin
+    cc_addr_q  <= cc_addr[cc_i];
+    cc_data_q  <= cc_data[cc_i];
+    cc_valid_q <= cc_valid[cc_i];
+  end
+
+  wire cc_hit = cc_valid_q && (cc_addr_q + 18'd2 == f_char_addr);
 
   logic consume;
   assign consume = (est == E_WAIT) && f_have;
@@ -409,7 +426,7 @@ module m1_tile_fetch #(
             // THE PREVIOUS SCANLINE ALREADY FETCHED THIS ROW. Its burst brought
             // back four words - this row and the next - and the upper half was
             // kept. No memory access at all, so the whole round trip is saved.
-            ch_f            <= cc_data[cc_i];
+            ch_f            <= cc_data_q;
             last_char       <= f_char_addr;
             char_valid      <= 1'b1;
             cc_valid[cc_i]  <= 1'b0;   // consumed; the next line needs a fetch
