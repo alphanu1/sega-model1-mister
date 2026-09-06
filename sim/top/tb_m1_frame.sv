@@ -2320,32 +2320,6 @@ initial begin
                  vp_n, vp_x1_min, vp_x1_max,
                  core.u_raster3d.vxc, core.u_raster3d.vyc,
                  core.u_raster3d.vx1, core.u_raster3d.vx2);
-        // BAND TOUCHES PER QUAD, the number the binning redesign rests on.
-        //
-        // The band renderer replays every quad for every one of the 24 bands.
-        // Bin per band instead and what SDRAM holds and re-reads is total
-        // band-TOUCHES, not quads - so this ratio decides whether the cure is
-        // affordable. Three per quad was a guess and a redesign should not rest
-        // on one.
-        begin
-            automatic longint bt =
-                64'(core.u_raster3d.g_store[0].u_store.dbg_band_touches)
-              + 64'(core.u_raster3d.g_store[1].u_store.dbg_band_touches);
-            automatic longint qs =
-                64'(core.u_raster3d.g_store[0].u_store.dbg_quads_seen)
-              + 64'(core.u_raster3d.g_store[1].u_store.dbg_quads_seen);
-            if (qs > 0)
-                $display("FRAME: band touches %0d over %0d quads = %0d.%02d a quad",
-                         bt, qs, bt / qs, ((bt * 100) / qs) % 100);
-        end
-        // TRUE data-bus utilisation against the controller's "not idle" figure.
-        begin
-            automatic longint dc = 64'(sdram.dbg_data_cyc);
-            automatic longint tc = 64'(sdram.dbg_tot_cyc);
-            if (tc > 0)
-                $display("FRAME: SDRAM data cycles %0d of %0d = %0d.%02d%% of the bus (peak 160 MB/s -> %0d MB/s)",
-                         dc, tc, (dc*100)/tc, ((dc*10000)/tc)%100, (dc*160)/tc);
-        end
         $display("FRAME: clip-plane inputs over the run (IEEE-754 hex, min .. max)");
         $display("   xc    %08h .. %08h", vp_lo[0], vp_hi[0]);
         $display("   yc    %08h .. %08h", vp_lo[1], vp_hi[1]);
