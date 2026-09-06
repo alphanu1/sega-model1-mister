@@ -380,28 +380,39 @@ module emu
   wire        ifp_req;
   wire [24:1] ifp_addr;
 
-  // TWO character-fetch ports. The tile engine was latency-bound - it paid the
-  // full 18-cycle round trip once per column, 248 times a line - and the SDRAM
-  // controller is single-outstanding per port, so overlapping means a second
-  // port rather than a relaxed contract. p7 is the second one.
-  wire  [1:0]       char_req, char_ack;
-  wire  [1:0][17:0] char_addr;
-  wire  [1:0][31:0] char_data;
+  // ONE character port, and char_data is SIXTY-FOUR bits.
+  //
+  // The tile engine is latency-bound: it paid the full ~18-cycle round trip
+  // once per column, 248 times a line.
+  //
+  // A second port was tried on 2026-09-05 to overlap the round trip; it broke
+  // the 2D on hardware and was reverted. What replaced it costs no port at all:
+  // the burst already returns four words - the row this scanline needs and the
+  // same tile's next row - and only the lower half was ever read. The engine
+  // now keeps the upper half for the next scanline. See m1_tile_fetch.
+  wire        char_req, char_ack;
+  wire [17:0] char_addr;
+  wire [63:0] char_data;
 
   wire        ldr_wr_req, ldr_wr_ack;
   wire [24:1] ldr_wr_addr;
   wire [15:0] ldr_wr_din;
   wire  [1:0] ldr_wr_be;
 
-  // EIGHT PORTS NOW: p7 is the I/O board Z80's firmware fetch. Its 16 KB of
-  // code is read-only and there is no block RAM left for it - see m1_ioz80.
-  // p7 is the tile engine's SECOND character port, so two character fetches
-  // can be in flight at once.
-  wire [7:0]       p_req, p_we, p_ack;
-  wire [7:0][24:1] p_addr;
-  wire [7:0][15:0] p_din;
-  wire [7:0][1:0]  p_be;
-  wire [7:0][63:0] p_dout;
+  // SEVEN PORTS. p4 is the I/O board Z80's firmware fetch - its 16 KB of code is
+  // read-only and there is no block RAM left for it, see m1_ioz80.
+  //
+  // An eighth was added on 2026-09-05 for a second character fetch and reverted
+  // when it broke the 2D. That revert MISSED THIS FILE - it was not in the
+  // revert commit - so several flashed builds carried a dead p7 whose requester
+  // no longer existed. It was harmless only by luck: the width truncation
+  // happened to select p_dout[1][31:0] and p_ack[1], which is what the single
+  // port wanted anyway. It still cost arbiter and mux area in every build.
+  wire [6:0]       p_req, p_we, p_ack;
+  wire [6:0][24:1] p_addr;
+  wire [6:0][15:0] p_din;
+  wire [6:0][1:0]  p_be;
+  wire [6:0][63:0] p_dout;
 
   // The I/O board Z80's firmware fetch, from m1_integrated. IOFW_BASE in
   // m1_rom_loader is where the loader put it, and the two must agree - a
@@ -422,8 +433,8 @@ module emu
   // p5 bursts the polygon models, p6 carries tgp_ram and is the only port
   // besides p0 that writes - display-list command 4 uploads colour words.
   // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
-  assign p_req  = {char_req[1], r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req[0], sdr_req};
-  assign p_we   = {1'b0,         r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,        sdr_we};
+  assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+  assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -435,17 +446,17 @@ module emu
 // p5's address is aligned DOWN to its 4-word burst boundary here, the same way
 // p3's is on the line below - m1_integrated keeps bit 1 to pick which 32-bit half
 // of the burst it wanted.
-assign p_addr = {24'hFA8000 + {6'd0, char_addr[1]},
-                 r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
                  IOFW_BASE + {11'd0, iofw_word},
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
-                 24'hFA8000 + {6'd0, char_addr[0]}, sdr_addr};
-  assign p_din  = {16'd0, r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-  assign p_be   = {2'd0,  2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
+  assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+  assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
   assign sdr_ack   = p_ack[0];
-  assign char_ack  = {p_ack[7],           p_ack[1]};
-  assign char_data = {p_dout[7][31:0], p_dout[1][31:0]};
+  assign char_ack  = p_ack[1];
+  // ALL SIXTY-FOUR BITS of the burst, not just the low half.
+  assign char_data = p_dout[1];
 
   wire        sd_dq_oe;
   wire [15:0] sd_dq_o;
@@ -469,7 +480,7 @@ assign p_addr = {24'hFA8000 + {6'd0, char_addr[1]},
   // model needs, which is what the measured shift implies.
   wire [7:0] sdram_occ, sdram_wait1;
 
-  m1_sdram #(.NP(8), .T_REFI(600)) sdram (
+  m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
     // OSD order is CL+2, CL+3, CL+4, CL+5 and the selector's own encoding puts
     // CL+3 at zero, so the two are mapped rather than passed through. The board
