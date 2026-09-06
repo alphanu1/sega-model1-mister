@@ -2655,8 +2655,10 @@ below. These are the reserve, in order of value:
 - **Line buffers to MLAB: 12 M10K for ~480 ALM.** They use 17% of each block.
   The only good MLAB candidate — MLAB is 32 words deep, so everything else is
   too deep to qualify.
-- Tile RAM to SDRAM is the wrong candidate: read every scanline, on a bus that
-  already has an unexplained 103-cycle character-fetch wait.
+- Tile RAM to SDRAM is the wrong candidate: read every scanline, on a bus the
+  character fetch already shares. (The "unexplained 103-cycle wait" that used to
+  be cited here was an artefact - the average included the ROM download. It is
+  18 cycles, 2 of them arbitration. Closed 2026-09-04.)
 
 ### Sound, sized from MAME rather than guessed
 

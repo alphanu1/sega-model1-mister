@@ -1507,6 +1507,23 @@ instruction stream, no reference frame to diff, no register census. Verification
 for VF is "does it look right", which is weaker than everything else on this
 project rests on. Virtua Racing stays the reference game.
 
+**^^^ WITHDRAWN 2026-09-05. MAME RUNS VIRTUA FIGHTER.** It plays the attract
+demo correctly, on a real emulated MB86233 at 40 MHz - `MB86233(config,
+m_tgp_copro, 40_MHz_XTAL)` with program, data, IO and register-file maps, not
+high-level emulation. It executes the microcode word our coprocessor hung on,
+`0x04B0`, 116 times in a 20-second window and carries on. The same is true of
+NetMerc.
+
+The paragraph above reasoned correctly from the `MACHINE_NOT_WORKING` flag and
+never tested it. That cost an hour of reading disassembly while a full
+instruction-level oracle sat unused: `tgp_trace GAME=vf` produces 30 M
+instructions of reference stream, and MAME snapshots give reference frames.
+
+The flag means MAME's authors decline to call a game "working" on a `BAD_DUMP`
+microcode. It is a curation stance, not a statement that the machine fails.
+**Test the claim.** Kept visible because reasoning from a status flag felt like
+evidence and was not.
+
 DECOMPILING wangModel1 WAS CONSIDERED AND REJECTED. It is closed source, and
 writing RTL from its internals would make that RTL arguably a derivative work -
 the same reasoning that makes the s32 V60 import GPL-3.0-or-later however much
@@ -6570,8 +6587,10 @@ it. **The 27.9 is the whole prize**: it is 116 cycles of the 80 MHz domain for a
 needs about 9 after an activate, so roughly a factor of thirteen is not the memory.
 
 Candidates, in the order worth measuring: arbitration against the tile-fetch engine, which
-reads SDRAM continuously and would queue the CPU behind it (`docs/HANDOFF.md` already carries
-an unexplained 103-cycle character fetch wait); the two CDC crossings; and per-access
+reads SDRAM continuously and would queue the CPU behind it (`docs/HANDOFF.md` carried an
+"unexplained 103-cycle character fetch wait" here, WITHDRAWN 2026-09-04: the
+average included the ROM download, and the real figure is 18 cycles with 2 of
+them arbitration); the two CDC crossings; and per-access
 activate/precharge sequencing with no open-row reuse.
 
 ### The SDRAM controller is innocent: 8.7 cycles of ~116 — 2026-08-30
