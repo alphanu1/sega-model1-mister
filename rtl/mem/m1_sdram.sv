@@ -272,6 +272,28 @@ module m1_sdram #(
 
   logic [19:0] occ_win, occ_cnt, wt_cnt;
 
+  // TRUE DATA-BUS UTILISATION, which is NOT what dbg_occ measures.
+  //
+  // dbg_occ counts cycles the controller is not in S_IDLE, and that includes
+  // dispatch, activate, tRCD, precharge and refresh - overhead states where the
+  // DQ pins carry nothing. A CAS command is the only thing that moves a word,
+  // so counting those against elapsed cycles gives the fraction of the 16-bit
+  // bus's 160 MB/s that is actually being used.
+  //
+  // Ben's question, and it is the right one: if ports starve while the bus is
+  // "26% busy", either the bus is not really 26% used or the starvation is not
+  // bandwidth. These two counters separate those.
+  logic [31:0] dbg_data_cyc /* verilator public_flat_rd */;
+  logic [31:0] dbg_tot_cyc  /* verilator public_flat_rd */;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_data_cyc <= '0; dbg_tot_cyc <= '0;
+    end else begin
+      dbg_tot_cyc <= dbg_tot_cyc + 32'd1;
+      if (cmd == C_READ || cmd == C_WRITE) dbg_data_cyc <= dbg_data_cyc + 32'd1;
+    end
+  end
+
   // ---------------------------------------------------------------- mailbox
   // Metadata is captured with the request because arbitration may delay a
   // port long after the producer moved on to its next address.

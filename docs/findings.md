@@ -20,6 +20,57 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-06 — THE SDRAM BUS IS 95% IDLE. "26% busy" was overhead, not data
+
+Ben's challenge: ports starve while the bus reads 26% busy, and 26% of
+160 MB/s is nowhere near the ceiling - so either the figure is wrong or the
+setup is. He was right that the figure was wrong.
+
+### The measurement
+
+`dbg_occ`, which is what `O=` reports on the wire, counts cycles the controller
+is **not in S_IDLE**. That includes dispatch, activate, tRCD, precharge and
+refresh - overhead states in which the DQ pins carry nothing. It is not data.
+
+A CAS command is the only thing that moves a word, so counting those against
+elapsed cycles gives true bus utilisation:
+
+```
+SDRAM data cycles 6,420,000 of 120,957,803 = 5.30% -> 8 MB/s of 160 MB/s
+```
+
+**The bus is 95% idle.** Of the 26% the old metric reported, only about a fifth
+was data.
+
+### What it settles, both ways
+
+**The setup IS inefficient.** A four-word burst costs six controller cycles for
+four data cycles on a row hit, and eight to ten on a row miss. Bank interleaving
+- activating one bank while another streams - would tighten that, and the
+controller does not do it.
+
+**And it does not matter.** At 5% utilisation there is no shortage to relieve.
+The tile engine starves because it is SINGLE-OUTSTANDING: it issues one fetch,
+waits about 18 cycles for the data, then starts the next. Its rate is set by
+round-trip LATENCY, not by the bus. Give it the whole 160 MB/s and it fetches at
+exactly the same speed.
+
+That is the third time this session a bandwidth explanation has been offered for
+a latency problem - after the SDRAM clock lift and the priority arbiter - and
+the third time the measurement has refused it.
+
+### What follows
+
+The two-port character fetch was aimed correctly. It measured 1,614 -> 568
+cycles a layer in the unit bench and broke the 2D on hardware for a reason never
+diagnosed. **That is the thread to pull**, not the memory controller.
+
+`O=` on the telemetry line should be changed to report data cycles rather than
+non-idle cycles. As it stands it overstates bus use by about five times and it
+has misled this project's reasoning more than once.
+
+---
+
 ## 2026-09-05 — A QUAD TOUCHES 1.11 BANDS, SO BINNING IS THE CURE FOR THE DROPPED QUADS
 
 Measured on real models out of the polygon ROM, 15,688 quads across 16 yaw
