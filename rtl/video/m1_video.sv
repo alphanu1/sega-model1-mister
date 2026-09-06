@@ -67,7 +67,9 @@ module m1_video #(
   // Character RAM, external. Two consecutive words per request.
   output logic        char_req,
   output logic [17:0] char_addr,
-  input  logic [31:0] char_data,
+  // 64 bits: the burst returns four words and the tile engine keeps the upper
+  // half for the next scanline. See m1_tile_fetch.
+  input  logic [63:0] char_data,
   input  logic        char_ack,
 
   // Palette RAM, on chip. The V60 owns the other port.

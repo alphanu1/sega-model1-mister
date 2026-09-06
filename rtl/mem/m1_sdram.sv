@@ -283,9 +283,13 @@ module m1_sdram #(
   // Ben's question, and it is the right one: if ports starve while the bus is
   // "26% busy", either the bus is not really 26% used or the starvation is not
   // bandwidth. These two counters separate those.
+  //
+  // SYNCHRONOUS reset, like the rest of this module - see the note above
+  // cap_depth. Mixing the two disciplines on one reset net is what verilator's
+  // SYNCASYNCNET flags, and it is a real smell rather than a nuisance.
   logic [31:0] dbg_data_cyc /* verilator public_flat_rd */;
   logic [31:0] dbg_tot_cyc  /* verilator public_flat_rd */;
-  always_ff @(posedge clk or negedge rst_n) begin
+  always_ff @(posedge clk) begin
     if (!rst_n) begin
       dbg_data_cyc <= '0; dbg_tot_cyc <= '0;
     end else begin

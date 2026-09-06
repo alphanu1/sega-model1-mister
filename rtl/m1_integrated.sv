@@ -123,7 +123,8 @@ module m1_integrated (
   // Character RAM fetch, for the tilemap
   output logic        char_req,
   output logic [17:0] char_addr,
-  input  logic [31:0] char_data,
+  // 64 bits - see m1_tile_fetch's next-scanline cache.
+  input  logic [63:0] char_data,
   input  logic        char_ack,
 
   // ROM download

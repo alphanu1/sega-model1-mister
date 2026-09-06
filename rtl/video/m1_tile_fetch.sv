@@ -132,7 +132,14 @@ module m1_tile_fetch #(
   // Character RAM, external. Word address; two consecutive words per request.
   output logic        char_req,
   output logic [17:0] char_addr,
-  input  logic [31:0] char_data,      // {word1, word0}
+  // SIXTY-FOUR BITS, because the burst already returns four words and half of
+  // them were being discarded.
+  //
+  // char_addr points at the first of the TWO words holding an 8-pixel row, and
+  // port 1 bursts FOUR. So words 2 and 3 are the same tile's NEXT row - which
+  // is the next scanline - and `char_data[31:0]` was all the engine ever read.
+  // Keeping the upper half halves the number of fetches a layer needs.
+  input  logic [63:0] char_data,      // {word3, word2, word1, word0}
   input  logic        char_ack,
 
   // Line buffer write port: FOUR PIXELS PER CYCLE.
@@ -310,6 +317,30 @@ module m1_tile_fetch #(
   logic [3:0] f_step;
   assign f_step = 4'd8 - {1'b0, f_off};
 
+  // ------------------------------------------------- next-scanline cache
+  //
+  // Every fetch returns four words: the row this scanline needs and the SAME
+  // TILE'S NEXT ROW, which is what the next scanline needs. Keeping the second
+  // half turns two fetches into one for every pair of scanlines.
+  //
+  // Keyed on the ADDRESS, not on a row-parity rule. Parity alone assumes the
+  // column still maps to the same tile on the next line, and hscr can change
+  // between lines - VR's changes on 1,344 frames of 2,000. Storing the address
+  // that was fetched and requiring `want == cached + 2` is exact, costs 18 bits
+  // an entry, and cannot be wrong.
+  //
+  // One entry per column per layer: 62 x 4. Written when a fetch completes,
+  // read when the wanted row is the one the previous line already brought back.
+  localparam int unsigned CC_N = COLUMNS * 4;
+  logic [17:0] cc_addr [CC_N];
+  logic [31:0] cc_data [CC_N];
+  logic        cc_valid [CC_N];
+
+  // fx is the screen position of the column being fetched, eight pixels a
+  // column, so fx[8:3] is the column index.
+  wire [$clog2(CC_N)-1:0] cc_i = ($clog2(CC_N))'({layer, fx[8:3]});
+  wire cc_hit = cc_valid[cc_i] && (cc_addr[cc_i] + 18'd2 == f_char_addr);
+
   logic consume;
   assign consume = (est == E_WAIT) && f_have;
 
@@ -328,6 +359,10 @@ module m1_tile_fetch #(
       last_tile <= '0; last_char <= '0;
       tile_valid <= 1'b0; char_valid <= 1'b0;
       char_req <= 1'b0; fetches <= '0;
+      // The cache DELIBERATELY survives `start`: its whole purpose is to carry
+      // a row from one scanline to the next. Only reset clears it, and a stale
+      // entry cannot be used anyway because cc_hit compares the address.
+      for (int c = 0; c < CC_N; c++) cc_valid[c] <= 1'b0;
     end else if (start) begin
       tw_nonblank <= 1'b0;
       // Neither retained value survives a scanline. tile_valid especially: a
@@ -370,16 +405,31 @@ module m1_tile_fetch #(
             // ch_f already holds this character; nothing to ask for.
             f_have <= 1'b1;
             fst    <= F_FULL;
+          end else if (cc_hit) begin
+            // THE PREVIOUS SCANLINE ALREADY FETCHED THIS ROW. Its burst brought
+            // back four words - this row and the next - and the upper half was
+            // kept. No memory access at all, so the whole round trip is saved.
+            ch_f            <= cc_data[cc_i];
+            last_char       <= f_char_addr;
+            char_valid      <= 1'b1;
+            cc_valid[cc_i]  <= 1'b0;   // consumed; the next line needs a fetch
+            f_have          <= 1'b1;
+            fst             <= F_FULL;
           end else if (!char_req) begin
             char_req <= 1'b1;
           end else if (char_ack) begin
             char_req   <= 1'b0;
-            ch_f       <= char_data;
+            ch_f       <= char_data[31:0];
             last_char  <= f_char_addr;
             char_valid <= 1'b1;
             fetches    <= fetches + 8'd1;
             f_have     <= 1'b1;
             fst        <= F_FULL;
+            // Keep the half that used to be thrown away: words 2 and 3 are the
+            // same tile's next row, which is what the next scanline asks for.
+            cc_addr[cc_i]  <= f_char_addr;
+            cc_data[cc_i]  <= char_data[63:32];
+            cc_valid[cc_i] <= 1'b1;
           end
         end
 
