@@ -20,6 +20,68 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE NEXT-SCANLINE CACHE BREAKS ALTERNATE SCANLINES, and no bench reproduces it
+
+Second attempt at the tile engine's latency, second revert. Recorded because the
+idea is sound, the measurement was real, and the failure is invisible in
+simulation - which is now a pattern with this module rather than bad luck.
+
+### What was built
+
+`char_addr` points at the first of the TWO words holding an 8-pixel row and
+port 1 bursts FOUR, so words 2 and 3 are the same tile's next row - exactly what
+the next scanline needs - and `Model1.sv` read only `p_dout[1][31:0]`. The
+engine kept the upper half in a 62 x 4 cache, keyed on the fetched ADDRESS so a
+mid-frame `hscr` change could not produce a false hit.
+
+Measured in the unit bench: **1,614 -> 1,182 cycles a layer per line.**
+
+### What happened on hardware
+
+**Every other scanline missing** - Ben's description: "almost like you would see
+on 240p on a CRT". That is the cached lines specifically: even lines fetch and
+draw, odd lines take the cached row and get nothing usable.
+
+### What passed anyway
+
+- `m1_tile_fetch`: 49,116 checks
+- `m1_video`: **380,929 pixels over three full frames**, character memory filled
+  with random data so a wrong row cannot match by accident
+- the full suite, 54 harnesses
+
+And then, trying to reproduce it, the video bench was given **variable latency
+(8-40 cycles) and a two-cycle held ack**, matching what the real port does
+against six other masters instead of a fixed 14 and a one-cycle ack. **It still
+passed.** So the difference between bench and board is not the memory timing,
+and it is not the data pattern.
+
+### The other cost, and it is the same shape as last time
+
+The first version read `cc_addr[cc_i]` combinationally. An asynchronous array
+read makes Quartus build the memory out of flip-flops with a 248-way mux instead
+of block RAM: **+1,300 ALM, 99% of the device, and one seed reported
+`Error (11802): Can't fit design in device`.** Registering the read fixed the
+inference - the arrays became `altsyncram` - but the design still sat at 98.2%
+and only one seed in four closed timing.
+
+### What this says
+
+Two attempts, both green in every bench, both broken on the board:
+
+| Attempt | Bench said | Board said |
+|---|---|---|
+| Two SDRAM ports | 1,614 -> 568 | yellow rectangle, no sky or ground |
+| Next-scanline cache | 1,614 -> 1,182 | every other scanline missing |
+
+**Do not attempt a third without a bench that reproduces a failure first.** The
+right next step is not another fix; it is finding what the benches do not model.
+`tb_m1_video` renders full frames against a reference with random character data
+and variable memory timing, and it is still blind to both faults - so something
+structural about the real system is absent from it, and that is the thing to
+find.
+
+---
+
 ## 2026-09-06 — THE SDRAM BUS IS 95% IDLE. "26% busy" was overhead, not data
 
 Ben's challenge: ports starve while the bus reads 26% busy, and 26% of

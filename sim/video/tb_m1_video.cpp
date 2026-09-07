@@ -269,16 +269,8 @@ int main(int argc, char** argv) {
     d->tram_data = tile_ram[d->tram_addr & 0x7fff];
     if (d->char_req) {
       if (lat_cnt >= CHAR_LAT) {
-        // FOUR WORDS, as the SDRAM port bursts. Words 0-1 are the row asked
-        // for; words 2-3 are the same tile's next row, which the engine keeps
-        // for the next scanline. Returning only the low half makes every
-        // cached row read as zero - 178,241 pixel failures when this was
-        // missed.
         uint32_t a = d->char_addr & 0x3ffff;
-        uint64_t w0 = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
-        uint64_t w1 = ((uint32_t)char_ram[(a + 3) & 0x3ffff] << 16)
-                    | char_ram[(a + 2) & 0x3ffff];
-        d->char_data = (w1 << 32) | w0;
+        d->char_data = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
         d->char_ack = 1;
       } else { lat_cnt++; d->char_ack = 0; }
     } else { lat_cnt = 0; d->char_ack = 0; }

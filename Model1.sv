@@ -380,19 +380,15 @@ module emu
   wire        ifp_req;
   wire [24:1] ifp_addr;
 
-  // ONE character port, and char_data is SIXTY-FOUR bits.
-  //
-  // The tile engine is latency-bound: it paid the full ~18-cycle round trip
-  // once per column, 248 times a line.
-  //
-  // A second port was tried on 2026-09-05 to overlap the round trip; it broke
-  // the 2D on hardware and was reverted. What replaced it costs no port at all:
-  // the burst already returns four words - the row this scanline needs and the
-  // same tile's next row - and only the lower half was ever read. The engine
-  // now keeps the upper half for the next scanline. See m1_tile_fetch.
+  // ONE character port. The tile engine is latency-bound - it pays the full
+  // ~18-cycle round trip once per column, 248 times a line - and TWO attempts
+  // to fix that have now been reverted after breaking the 2D on hardware while
+  // every bench stayed green: a second SDRAM port (2026-09-05) and a
+  // next-scanline cache built from the discarded half of each burst
+  // (2026-09-07). See docs/findings.md before trying a third.
   wire        char_req, char_ack;
   wire [17:0] char_addr;
-  wire [63:0] char_data;
+  wire [31:0] char_data;
 
   wire        ldr_wr_req, ldr_wr_ack;
   wire [24:1] ldr_wr_addr;
@@ -455,8 +451,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
 
   assign sdr_ack   = p_ack[0];
   assign char_ack  = p_ack[1];
-  // ALL SIXTY-FOUR BITS of the burst, not just the low half.
-  assign char_data = p_dout[1];
+  assign char_data = p_dout[1][31:0];
 
   wire        sd_dq_oe;
   wire [15:0] sd_dq_o;

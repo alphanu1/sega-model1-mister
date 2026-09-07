@@ -340,9 +340,7 @@ m1_integrated core (
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
 
     .char_req(char_req), .char_addr(char_addr),
-    // ALL SIXTY-FOUR BITS: the engine keeps the upper half for the next
-    // scanline. See m1_tile_fetch's next-scanline cache.
-    .char_data(p_dout[1]), .char_ack(p_ack[1]),
+    .char_data(p_dout[1][31:0]), .char_ack(p_ack[1]),
 
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index), .ioctl_wr(ioctl_wr),
     .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout), .ioctl_wait(ioctl_wait),

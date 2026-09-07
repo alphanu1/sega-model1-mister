@@ -80,15 +80,8 @@ struct Fetch {
     // Character RAM: two consecutive words, acked after `lat` cycles.
     if (d->char_req) {
       if (lat_cnt >= lat) {
-        // FOUR WORDS, as the SDRAM port bursts. Words 0-1 are the row asked
-        // for; words 2-3 are the same tile's next row, which the engine keeps
-        // for the next scanline. Returning only the low half made the cached
-        // rows read as zero.
         uint32_t a = d->char_addr & 0x3ffff;
-        uint64_t w0 = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
-        uint64_t w1 = ((uint32_t)char_ram[(a + 3) & 0x3ffff] << 16)
-                    | char_ram[(a + 2) & 0x3ffff];
-        d->char_data = (w1 << 32) | w0;
+        d->char_data = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
         d->char_ack = 1;
       } else { lat_cnt++; d->char_ack = 0; }
     } else { lat_cnt = 0; d->char_ack = 0; }
