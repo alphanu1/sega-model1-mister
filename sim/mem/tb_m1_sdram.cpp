@@ -45,7 +45,16 @@ static const int NP = 7;
 // 1, 2 and 3 for some time - a model that disagrees with the thing it models,
 // which passes only because the disagreement was never exercised. p5 is added
 // here at the same time as in the RTL rather than after.
-static int burst_of(int p) { return (p == 1 || p == 2 || p == 3 || p == 5) ? 4 : 1; }
+//
+// AND IT CAUGHT THE NEXT ONE. p1 went to length 2 in the RTL and this line was
+// left at 4; the suite failed immediately with 3,494 mismatches rather than
+// letting a half-length burst reach hardware, where it would have presented as
+// corrupt tile characters. p1 is 2 because the tile engine consumes exactly
+// two 16-bit words per column - see the note on blen() in m1_sdram.sv.
+static int burst_of(int p) {
+  if (p == 1) return 2;
+  return (p == 2 || p == 3 || p == 5) ? 4 : 1;
+}
 
 struct Harness {
   Vm1_sdram_harness* d;

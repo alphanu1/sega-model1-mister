@@ -172,19 +172,42 @@ module m1_sdram #(
   // p2 is polygon/TGP data, both of which are consumed in runs, so they burst.
   // The rest are single-word random access.
   //
+  // LENGTH 2 IS AVAILABLE NOW, and p1 uses it. It was not before: the capture
+  // below assembled every non-single burst as {dq_r, cap[2], cap[1], cap[0]},
+  // which hardcodes the last word at the TOP, so a length of 2 would have put
+  // word 1 in bits [63:48] and read bits [31:16] from a stale slot. The
+  // assembly is indexed on the last word's own tag now, so 2 and 3 are as
+  // correct as 1 and 4.
+  //
+  // p1 IS THE TILE CHARACTER FETCH AND IT ONLY EVER USED HALF OF ITS BURST.
+  // `char_data` is `p_dout[1][31:0]` - words 0 and 1 - while the port bursted
+  // four, so two CAS commands per column fetched words that were thrown away,
+  // and the ack waited for them. `char_addr` is
+  // {tile_num,4'b0000} + {14'd0,map_y[2:0],1'b0} (m1_tile_decode.sv:131), and
+  // both terms have bit 0 clear, so the address is ALWAYS 2-word aligned and a
+  // length-2 burst returns exactly the two words the engine wants. The
+  // delivered value is bit-identical: length 4 assembles [31:0] as
+  // {cap[1], cap[0]} and length 2 assembles it as {dq_r, cap[0]}, both being
+  // {word1, word0}.
+  //
+  // Worth 2 cycles of latency per column - the last CAS moves from +3 to +1 -
+  // and it halves this port's bus occupancy. The tile engine pays that round
+  // trip 248 times a line against a 3,936-cycle budget, so it is the port where
+  // the cycles are.
+  //
   // p3 is the coprocessor's read-only regions — copro_data and the math tables.
-  // A coprocessor fetch is one 32-bit word, so it needs TWO 16-bit words, and
-  // only 1 and 4 are available: the capture below assembles the non-single case
-  // from cap[2], cap[1], cap[0], so a length of 2 would take two of those from
-  // stale slots. So it bursts 4 and the requester picks its half — see
-  // m1_integrated, which aligns the address down and selects on bit 1.
+  // A coprocessor fetch is one 32-bit word, so it needs TWO 16-bit words. It
+  // could take length 2 as well now, but its requester aligns the address down
+  // to a 4-word boundary and selects on bit 1 (see m1_integrated), so changing
+  // it means changing both together. Left at 4 deliberately, not overlooked.
   // p5 is the 3D layer's polygon-model fetch: ten 32-bit words per record, read
-  // strictly in sequence, so it bursts for the same reason p1 and p2 do. p6 is
+  // strictly in sequence, so it bursts for the same reason p2 does. p6 is
   // its tgp_ram colour-word access - one random word per polygon, and a write
   // path for the display list's uploads - so it stays single.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
-      1, 2, 3, 5: blen = 4'd4;
+      1:          blen = 4'd2;   // tile characters: exactly what is consumed
+      2, 3, 5:    blen = 4'd4;
       default:    blen = 4'd1;
     endcase
   endfunction
@@ -650,13 +673,26 @@ module m1_sdram #(
           if (tag_last[0]) begin
             // The final word and its buffer write share an edge, so deliver
             // the staged word directly rather than reading back a stale slot.
-            // Word index 0 on the last word means this was a single-word
-            // transfer; anything else means the full four.
-            if (tag_w[0] == 2'd0)
-              p_dout[tag_p[0]] <= {48'd0, dq_r};
-            else
-              p_dout[tag_p[0]] <= {dq_r, cap[tag_p[0]][2],
-                                   cap[tag_p[0]][1], cap[tag_p[0]][0]};
+            //
+            // INDEXED ON THE LAST WORD'S OWN TAG. This used to test only for
+            // index 0 and treat everything else as a full four, which put the
+            // last word in bits [63:48] whatever its index really was. That is
+            // correct for lengths 1 and 4 and wrong for 2 and 3, and it is the
+            // whole reason those lengths were unavailable. Each arm now takes
+            // exactly the slots that were written, so a short burst reads no
+            // stale slot and the unused high words are zero rather than
+            // whatever the previous transfer left.
+            case (tag_w[0])
+              2'd0: p_dout[tag_p[0]] <= {48'd0, dq_r};
+              2'd1: p_dout[tag_p[0]] <= {32'd0, dq_r,
+                                         cap[tag_p[0]][0]};
+              2'd2: p_dout[tag_p[0]] <= {16'd0, dq_r,
+                                         cap[tag_p[0]][1], cap[tag_p[0]][0]};
+              // Length 4, the unchanged path: bit-identical to what this
+              // assembled before.
+              default: p_dout[tag_p[0]] <= {dq_r, cap[tag_p[0]][2],
+                                            cap[tag_p[0]][1], cap[tag_p[0]][0]};
+            endcase
             p_ack[tag_p[0]]    <= 1'b1;
             ack_cnt[tag_p[0]]  <= 2'(ACK_HOLD - 1);
           end
