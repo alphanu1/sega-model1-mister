@@ -509,6 +509,25 @@ set_global_assignment -name AUTO_RESOURCE_SHARING ON
 set_global_assignment -name MUX_RESTRUCTURE ON
 set_global_assignment -name REMOVE_REDUNDANT_LOGIC_CELLS ON
 set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
+
+# THE SCALER IS EXEMPTED PER INSTANCE, AND ON THIS DESIGN IT IS INERT.
+# Kept because it is how Model 2 handles the same module, it costs nothing, and
+# it is correct the moment ascal does become the path -- but do not read it as
+# fixing our pll_hdmi slack, because it does not.
+#
+# Measured 2026-09-07: adding these two lines produced a BYTE-IDENTICAL
+# bitstream, md5 69890bda81eab8e10846822131876d3c either way, same 41,035 ALM
+# and the same -0.105 ns on pll_hdmi. The assignments do reach the project --
+# they are in the staged qsf, `ascal:ascal` is the real hierarchy path and
+# appears as such in the fit report, and Quartus raises no warning. They change
+# nothing because OUR failing path is not inside ascal. Model 2's is
+# (ascal:ascal|o_hcpt -> o_vcpt_pre3); ours is elsewhere in the HDMI domain and
+# has not been localised.
+#
+# Per-instance, so the global AREA settings still apply to everything we DO want
+# smaller, and no framework source is touched -- which is not ours to edit.
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "ascal:ascal"
+set_instance_assignment -name AUTO_RESOURCE_SHARING OFF -to "ascal:ascal"
 QOPTEOF
     echo "  resource sharing ON, mux restructure ON, redundant cell removal ON"
 fi
