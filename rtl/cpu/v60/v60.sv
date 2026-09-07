@@ -705,12 +705,25 @@ wire [31:0] ea_index = rf_rdata_a << ea_dim;
 // extension displacement follows mode byte(s)
 // A 20-byte F1 instruction can place the second double-displacement field at
 // fetch-buffer offset 16.  Keep the full five-bit offset used by the buffer.
-function automatic [31:0] disp_of(input [4:0] base, input [1:0] sz);
+// ONE EXTRACTION, THEN SLICES. This used to select between three separate
+// reads of the fetch buffer - a byte at `base`, fb16(base) and fb32(base) -
+// so every one of its SIXTEEN call sites inlined a 4-byte 24:1 mux AND a
+// 2-byte one AND a single-byte one. fb32's low slices already are the other
+// two, so one extraction serves all three widths and the byte and half-word
+// muxes disappear.
+//
+// The wider read is safe where the narrower one was: the upper bytes are
+// discarded for sz 0 and 1, so an index past the end of fb contributes only
+// to bits that are sliced away. `default` already read base+3 for sz 2.
+function automatic [31:0] disp_from(input [31:0] w, input [1:0] sz);
     case (sz)
-        2'd0: disp_of = {{24{fb[base][7]}}, fb[base]};
-        2'd1: disp_of = {{16{fb[base+1][7]}}, fb16(base)};
-        default: disp_of = fb32(base);
+        2'd0: disp_from = {{24{w[7]}},  w[7:0]};
+        2'd1: disp_from = {{16{w[15]}}, w[15:0]};
+        default: disp_from = w;
     endcase
+endfunction
+function automatic [31:0] disp_of(input [4:0] base, input [1:0] sz);
+    disp_of = disp_from(fb32(base), sz);
 endfunction
 function automatic [4:0] disp_len(input [1:0] sz);
     disp_len = (sz==2'd0) ? 5'd1 : (sz==2'd1) ? 5'd2 : 5'd4;
