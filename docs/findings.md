@@ -20,6 +20,54 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE DEVICE IS 97% FULL, AND THE 3D IS A DATAFLOW PROBLEM NOW
+
+`make rbf`, Quartus 17.0, 0 errors, with the 6-cycle reciprocal in:
+
+    40,839 / 41,910 ALM   97%
+    545 / 553 M10K        99%
+    67 / 112 DSP          60%
+    setup slack  clk_3d +0.440, clk_cpu +1.090, clk_sys +5.003,
+                 pll_hdmi -0.096 (TNS -0.096, one endpoint)
+
+**This is not attributable to the reciprocal**, which is 4 DSP and 1.7 Kbit of
+LUT ROM and whose whole enclosing module measures 920 ALM. The last figure on
+record was 29,771 ALM / 452 M10K on 2026-08-19, three weeks and the entire 3D
+path ago. But 97% and 99% are a ceiling: anything further needs a plan for
+where it fits, and M10K at 545 of 553 means the answer is almost never "a
+buffer". The pll_hdmi endpoint also went +0.134 -> -0.096 and is now the only
+negative path in the design.
+
+**WHERE THE GEOMETRY PASS ACTUALLY STANDS.**
+
+    543.2 cycles a quad   316% of a peak frame   before today
+    413.5                 243%                   reciprocal 29 -> 6, pipelined
+    375.7                 220%                   projection carries 4 points
+     95.0                  56%                   the arithmetic floor
+
+The floor is what the pass ISSUES: 95 multiplies and 69.6 adds a quad through
+one fp_mul and one fp_add, both of which retire one operation a cycle. So the
+multiplier is busy 95 cycles in 375 - idle three cycles in four - and **the
+remaining 4x is dependency chain, not arithmetic.** There is enough arithmetic
+in the design to make budget already.
+
+**THE CHAIN IS THE WALKER'S, NOT ANY ONE STAGE'S.** Every stage inside a record
+is now issue-many-and-collect rather than issue-one-and-wait: m1_geo_xform
+always was, m1_geo_project is as of today. What remains is that the walker
+retires one record before starting the next, so the pool drains between them.
+Overlapping RECORDS is the next lever and it is a larger change than anything
+done today.
+
+**A MEASURED NEGATIVE RESULT, so it is not retried.** The transform order is
+P0, VN, P1, and the note explaining it rested on projection being a 29-cycle
+unpipelined reciprocal - which expired this morning. Reordering to P0, P1, VN,
+so the second projection no longer waits on all three transforms, measures
+**WORSE: 375.7 -> 384.2**. Projection is no longer the longest pole;
+`normalize -> colour` is, and moving the normal last pushes that tail out by a
+whole transform. Recorded in `m1_geo_walk.sv` at the order itself.
+
+---
+
 ## 2026-09-08 — THE RECIPROCAL IS 6 CYCLES, AND THE INSTRUMENT THAT SIZED IT WAS WRONG
 
 Projection's `1/z` moved off `fp_div` and off the shared FP pool onto a local
