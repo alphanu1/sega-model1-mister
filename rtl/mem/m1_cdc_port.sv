@@ -53,6 +53,22 @@
 // longer than any metastability window. Synchronising a 24-bit bus bit by bit
 // would be actively wrong — the bits would arrive skewed.
 module m1_cdc_port #(
+  // POSTED WRITES. With this on, a WRITE raises a_ack the cycle it is accepted
+  // rather than when the far side completes it, so the CPU stops waiting for a
+  // result a store does not have. The transaction stays in flight -- a_busy is
+  // held until the real completion -- so a following access still waits and
+  // ordering is preserved exactly. No buffer, no reordering.
+  //
+  // Measured reason: a data access costs 6.1 clk_cpu cycles of which the
+  // crossing is 74% and the RETURN path alone is 45%, and the V60 spends 91%
+  // of its cycles in S_WB_MEM, which is that return. The data port is
+  // 157,770 writes to 48 reads.
+  //
+  // Off by default: a requester that needs write completion before it proceeds
+  // must not have this. The V60's store does not -- S_WB_MEM's only use of
+  // dack is to leave the state.
+  parameter bit POST_WRITES = 1'b0,
+
   parameter int AW  = 24,
   parameter int DW  = 16,
   parameter int BEW = 2
@@ -96,6 +112,7 @@ module m1_cdc_port #(
   // ------------------------------------------------------------- slow domain
   logic ack_s1, ack_s2, ack_s3;
   logic a_req_d;
+  logic post_w;      // the in-flight transaction was acked on acceptance
 
   always_ff @(posedge a_clk or negedge a_rst_n) begin
     if (!a_rst_n) begin
@@ -109,6 +126,7 @@ module m1_cdc_port #(
       x_we    <= 1'b0;
       {ack_s3, ack_s2, ack_s1} <= 3'b000;
       a_req_d <= 1'b0;
+      post_w  <= 1'b0;
     end else begin
       {ack_s3, ack_s2, ack_s1} <= {ack_s2, ack_s1, ack_tog};
       a_req_d <= a_req;
@@ -146,12 +164,19 @@ module m1_cdc_port #(
         x_we    <= a_we;
         req_tog <= ~req_tog;
         a_busy  <= 1'b1;
+        // A store has no result, so the requester can go now. a_busy stays set,
+        // so the NEXT access still waits for this one to land.
+        post_w  <= POST_WRITES & a_we;
+        if (POST_WRITES & a_we) a_ack <= 1'b1;
       end
 
       if (a_busy && (ack_s2 ^ ack_s3)) begin
         a_dout <= x_dout;
-        a_ack  <= 1'b1;
+        // Already acknowledged on acceptance if this was a posted write;
+        // raising a_ack twice for one request would look like two completions.
+        a_ack  <= ~post_w;
         a_busy <= 1'b0;
+        post_w <= 1'b0;
       end
     end
   end

@@ -605,6 +605,9 @@ module m1_integrated (
   // ------------------------------------------------------------- the crossings
   logic cpu_sdr_busy;
 
+  // POST_WRITES on the V60's data port. Its S_WB_MEM only uses dack to leave
+  // the state -- a store has no result -- and that state held 91% of the CPU's
+  // cycles, on a port that is 157,770 writes to 48 reads.
   m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_data_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(cpu_sdr_req), .a_we(cpu_sdr_we), .a_addr(cpu_sdr_addr),
