@@ -20,6 +20,58 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — CORRECTION: THE DISPATCH IS 9,494 ALM, AND THE SPLIT WAS WRITTEN OFF TOO EARLY
+
+The entry below concludes "this closes the V60 split as an area strategy". **That
+conclusion is withdrawn.** It was drawn from three experiments that all probed
+the same 9% of the module, and Ben pushed back on it. He was right.
+
+    full V60                                    15,605 ALM
+    opcode folded to a constant, so the whole
+    primary dispatch casez folds away            6,111
+                                                ------
+                                                 9,494 ALM, 61% of the V60
+
+| component | ALM | share |
+|---|---|---|
+| instruction dispatch + execute | **9,494** | **61%** |
+| FP group | ~1,479 | 9% |
+| addressing-mode decode | 1,391 | 9% |
+| fetch, registers, misc | ~3,200 | 21% |
+
+### Why the earlier experiments missed it
+
+Every one of them - `dimext` at 16 ALM, the displacement share at -33, the
+duplicate decode at 5 - hoisted AN EXPRESSION INTO A WIRE INSIDE THE SAME
+MODULE. Not one of them changed the structure. They correctly establish that
+**expression hoisting is exhausted**, and say nothing whatever about
+restructuring, which is the transformation actually applied to Model 2's i960 -
+that split took its CPI from 9 to 3.4, which is pipelining, not hoisting.
+
+### The evidence that the structural target is real
+
+From the post-synthesis netlist statistics, which had not been read before:
+
+    Max LUT depth        34.60
+    Average LUT depth    14.80
+    arriav_lcell_comb    22,996   of which
+        normal           17,533   76%, mux and select logic
+        arith             4,400   ~137 adder-equivalents
+
+An average combinational depth of ~15 levels with a maximum of 34 is what a
+single 3,817-line `always` block with 200 state transitions produces, and it is
+consistent with the 35 MHz Fmax. Depth and area are coupled - the fitter
+duplicates logic to meet timing - so the 17,533 mux cells are both the symptom
+and the cost. 137 adder-equivalents is also far more than a CPU needs, which is
+the shared-datapath argument stated in numbers.
+
+**The lesson about method, not about the V60:** three negative results in the
+same 9% of a module do not license a conclusion about the other 91%. The
+generalisation was made because the experiments were cheap and agreed with each
+other, which is not the same as being representative.
+
+---
+
 ## 2026-09-07 — THERE IS NO DUPLICATE ADDRESSING DECODE IN SILICON: THE SECOND COPY COSTS 5 ALM
 
 Asked why the decode is "not fully recoverable" by extraction. Measured rather
