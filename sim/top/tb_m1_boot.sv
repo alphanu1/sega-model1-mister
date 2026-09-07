@@ -1083,6 +1083,7 @@ reg [23:0] slow_pc [0:31];
 integer    slow_n  [0:31];
 integer    slow_j, slow_seen;
 integer cpi_run, cpi_i;
+integer cpi_instr = 0;   // retired count, for the slow-PC warm-up
 integer cpi_stall_run;
 reg [23:0] cpi_last_pc = 24'hffffff;
 
@@ -1100,6 +1101,7 @@ always @(posedge clk_cpu) begin
     end else begin
         cpi_run = cpi_run + 1;
         if (dbg_pc != cpi_last_pc) begin
+            cpi_instr = cpi_instr + 1;
             cpi_hist[(cpi_run > 63) ? 63 : cpi_run] =
                 cpi_hist[(cpi_run > 63) ? 63 : cpi_run] + 1;
             // WHICH INSTRUCTIONS ARE THE 25-CYCLE CLASS.
@@ -1112,7 +1114,7 @@ always @(posedge clk_cpu) begin
             //
             // A small direct-mapped table rather than a full PC histogram: the
             // V60's address space is 24 bits and only the hot handful matter.
-            if (cpi_run >= 23 && cpi_run <= 27) begin
+            if (cpi_instr > 100000 && cpi_run >= 28 && cpi_run <= 32) begin
                 slow_seen = 0;
                 for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1)
                     if (slow_pc[slow_j] == cpi_last_pc) begin
@@ -1655,7 +1657,7 @@ initial begin
         // The PCs that RETIRE at 23-27 cycles - the 25-cycle class, which is a
         // quarter of the instructions and 44% of the cycles. Look each up in
         // the disassembly to name the opcode; that is what a targeted fix needs.
-        $display("BOOT: PCs retiring in the 25-cycle class (top of a 32-entry table):");
+        $display("BOOT: PCs retiring in the 30-cycle class (top of a 32-entry table):");
         for (slow_j = 0; slow_j < 32; slow_j = slow_j + 1)
             if (slow_n[slow_j] > 0)
                 $display("BOOT:   pc=%06h  n=%0d", slow_pc[slow_j], slow_n[slow_j]);
