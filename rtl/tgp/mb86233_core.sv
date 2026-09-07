@@ -383,6 +383,24 @@ module mb86233_core (
   logic alu_active;
   assign alu_active = d_lab | d_ldmov | d_repgrp;
 
+  // d_lab REGISTERED, FOR THE S_LABB TRANSITIONS ONLY.
+  // After the memory stall was registered, the clk_3d critical path became
+  //   mb86233_core|ir[20] -> state.S_LABB, -0.305 ns at 57.143 MHz
+  // which is the instruction register through mb86233_dec into the next-state
+  // logic. ir is loaded in S_FETCH_W and S_LABB is only ever entered from S_SRC
+  // or S_SRC_W -- two or more cycles later -- so by then a registered decode is
+  // a cycle old and therefore correct.
+  //
+  // S_DECODE keeps the COMBINATIONAL d_lab: it runs the cycle after ir loads,
+  // when d_lab_q still holds the previous instruction's value. That is also why
+  // this is not simply "register the decoder" -- the same signal is needed both
+  // ways depending on how far the instruction has travelled.
+  logic d_lab_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) d_lab_q <= 1'b0;
+    else        d_lab_q <= d_lab;
+  end
+
   // RETIMING: the ALU op reaches the FP operand mux through a REGISTER, not
   // straight out of the decoder.
   //
@@ -525,7 +543,7 @@ module mb86233_core (
         end
 
         S_SRC: begin
-          if (x_src_reg) begin src_val <= rf_rd_data; state <= d_lab ? S_LABB : S_DST; end
+          if (x_src_reg) begin src_val <= rf_rd_data; state <= d_lab_q ? S_LABB : S_DST; end
           else                                        state <= S_SRC_W;
         end
 
@@ -534,7 +552,7 @@ module mb86233_core (
             src_val <= (x_src_sp == mb86233_pkg::EP_PROG) ? prog_rdata
                      : (x_src_sp == mb86233_pkg::EP_IO)   ? io_rdata
                                                           : mem_rdata;
-            state   <= d_lab ? S_LABB : S_DST;
+            state   <= d_lab_q ? S_LABB : S_DST;
           end
         end
 

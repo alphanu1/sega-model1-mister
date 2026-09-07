@@ -308,8 +308,40 @@ module m1_geo_walk (
     fmax = (fkey(a) > fkey(b)) ? a : b;
   endfunction
 
-  wire [31:0] z_min4 = fmin(fmin(o1z, o0z), fmin(n0z, n1z));
-  wire [31:0] z_max4 = fmax(fmax(o1z, o0z), fmax(n0z, n1z));
+  // THE INNER LEVEL IS REGISTERED, WHICH IS A TIMING FIX.
+  // This was fmin(fmin(o1z,o0z), fmin(n0z,n1z)) in one expression, and the two
+  // levels of 32-bit compare feeding qz were m1_geometry's critical path:
+  //   m1_geo_walk|o0z[20] -> qz[8], holding the module to 59.36 MHz.
+  // fkey is already the cheap monotonic-key trick, so the depth was the cost,
+  // not the comparator.
+  //
+  // Safe because the four z values are settled a cycle before they are used.
+  // qz is assigned once, gated on xf_col == 2'd3, and xf_col only reaches 3 the
+  // cycle AFTER the fourth column's transform retires; o0z/o1z are written in
+  // the W_HDR_XFW header states earlier still. So the pair-minima registered
+  // here are always the current values by the time the assignment fires.
+  //
+  // The 3D layer needs clk_3d at 69.2 MHz for the geometry pass to fit inside
+  // one frame -- it measures len=1.47 fr at 47.059 -- so this is on the path to
+  // 800/11 = 72.73, not a cosmetic gain.
+  // ONLY THE O PAIR IS REGISTERED, AND THAT ASYMMETRY IS THE POINT.
+  // o0z/o1z are the OBJECT header's two transformed points, written in the
+  // W_HDR_XFW states well before any quad is emitted, so a registered pair
+  // minimum of them is always current. n0z/n1z are the per-quad points and are
+  // written right up against the xf_col == 2'd3 trigger, so registering THOSE
+  // reads a stale value -- tried, and m1_geometry's real-model walk failed 1,264
+  // of 44,752 while m1_listwalk's 55,791 unit checks all passed. The integration
+  // test caught what the unit test could not.
+  logic [31:0] zmin_o, zmax_o;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin zmin_o <= '0; zmax_o <= '0; end
+    else begin
+      zmin_o <= fmin(o1z, o0z);
+      zmax_o <= fmax(o1z, o0z);
+    end
+  end
+  wire [31:0] z_min4 = fmin(zmin_o, fmin(n0z, n1z));
+  wire [31:0] z_max4 = fmax(zmax_o, fmax(n0z, n1z));
 
   // A record with no link draws nothing, so nothing but the two projections is
   // needed from it - and 1,033 of 5,831 records in a peak frame are link 0
