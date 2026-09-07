@@ -33,6 +33,19 @@ obj_dir/
 #   report.sh          the ALM / M10K / DSP / Fmax report parser
 #   report_timing.tcl  `make quartus_paths`
 #
+# RECOVER THEM WITH, from any clone that has the history:
+#
+#   for f in report.sh report_timing.tcl spike.qsf.in spike.sdc; do
+#     git show edbcd4d:quartus/$f > quartus/$f
+#   done
+#   chmod +x quartus/report.sh
+#
+# THIS IS NOT HYPOTHETICAL AND IT BIT ONCE. `git rm --cached` leaves the files
+# on disk on the branch where it runs, so the working tree looks fine -- but
+# fast-forwarding main onto that commit APPLIES THE DELETION and removes them.
+# The next `make quartus` died with
+# "sed: can't read quartus/spike.qsf.in: No such file or directory".
+#
 # THE CONSEQUENCE, recorded so it is not rediscovered: a fresh clone has no
 # `make quartus` and no `make quartus_paths`. Those are the targets that settle
 # the resource gates, so anyone starting from a clone must restore these four
