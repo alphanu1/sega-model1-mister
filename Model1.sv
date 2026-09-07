@@ -380,12 +380,21 @@ module emu
   wire        ifp_req;
   wire [24:1] ifp_addr;
 
-  // ONE character port. The tile engine is latency-bound - it pays the full
-  // ~18-cycle round trip once per column, 248 times a line - and TWO attempts
-  // to fix that have now been reverted after breaking the 2D on hardware while
-  // every bench stayed green: a second SDRAM port (2026-09-05) and a
-  // next-scanline cache built from the discarded half of each burst
-  // (2026-09-07). See docs/findings.md before trying a third.
+  // ONE character port, and it is the RIGHT number. The tile engine pays a
+  // round trip once per column, 248 times a line, and the way that was fixed
+  // was to make the trip shorter rather than to add a second path for it:
+  // port 1 bursts TWO words now, which is exactly what `char_data` reads, so
+  // it no longer fetches and waits for two words that get discarded. Confirmed
+  // on hardware 2026-09-07 at 46b9e2c, tile overruns massively reduced.
+  //
+  // TWO attempts to add a path were reverted first, both breaking the 2D on
+  // hardware while every bench stayed green: a second SDRAM port (2026-09-05,
+  // yellow rectangle, no sky or ground) and a next-scanline cache built from
+  // the discarded half of each burst (2026-09-07, alternate scanlines gone).
+  // The cache and the fix rest on the SAME observation about the wasted half;
+  // one tried to use it, the other stopped producing it. See
+  // docs/findings.md before adding a path here again - the benches did not
+  // distinguish the two that broke the board from the one that worked.
   wire        char_req, char_ack;
   wire [17:0] char_addr;
   wire [31:0] char_data;

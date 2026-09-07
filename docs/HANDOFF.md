@@ -101,12 +101,25 @@ avoidable and it will happen again otherwise.
    landed tonight, a no-op today - is the prerequisite that makes a second
    divider work. DSPs are 61 of 112, so the arithmetic has somewhere to go.
 
-3. **Tile overruns.** The two-port fetch is designed, written up in
-   `m1-m4-plan.md`, measured at 1,614 -> 568 cycles a layer, built, and
-   REVERTED because it broke the 2D on hardware while every bench passed.
-   **Do not retry it until there is a way to see the failure off the board.**
-   `tb_m1_frame` reproduces zero tile deadline misses once the ROM load is
-   excluded, so it is blind to this by construction.
+3. ~~**Tile overruns.**~~ **FIXED ON HARDWARE, 2026-09-07, at `46b9e2c`.**
+   The 2D renders and tile overruns are massively reduced. The fix was
+   `blen(1) = 2`: `char_data` is `p_dout[1][31:0]` while port 1 bursted FOUR,
+   so half of every character burst was fetched and discarded and the ack
+   waited for it. Stopping that is 2 cycles of latency per column and a third
+   off the bus time per word the engine consumes.
+
+   **The two earlier attempts failed because they ADDED STRUCTURE; this one
+   REMOVED WORK.** The two-port fetch (measured 1,614 -> 568 cycles a layer)
+   broke the 2D with a yellow rectangle; the next-scanline cache dropped
+   alternate scanlines. Both were reverted with every bench passing. The cache
+   was titled "Keep the half of every character burst that was being thrown
+   away" - the same observation as the fix, treated as a resource to exploit
+   rather than a defect to remove. See `docs/findings.md`.
+
+   **Still true and still unexplained:** `tb_m1_frame` reproduces zero tile
+   deadline misses once the ROM load is excluded, so it was blind to both
+   hardware failures by construction. That gap is not closed - the fix landed
+   without it. Do not read a green bench as evidence about this module.
 
 ### Rules this session paid for
 
