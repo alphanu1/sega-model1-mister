@@ -71,7 +71,11 @@
 
 `timescale 1ns/1ps
 
-module m1_geo_xform (
+module m1_geo_xform #(
+  // m1_fp_pool's add latency. MUST MATCH the pool, which is why it is a
+  // parameter and not a local guess: the add schedule below is spaced from it.
+  parameter int FP_ADD_LAT = 4
+) (
   input  logic        clk,
   input  logic        rst_n,
 
@@ -149,9 +153,22 @@ module m1_geo_xform (
   logic [31:0] t [3];
   logic        atrans;
 
-  // Schedule: adds at ac 0,1,2 / 5,6,7 / 10,11,12. round = ac/5, comp = ac%5.
-  wire [1:0] a_round = 2'(ac / 4'd5);
-  wire [2:0] a_comp  = 3'(ac % 4'd5);
+  // Schedule: adds at ac 0,1,2 / 5,6,7 / 10,11,12. round = ac/S, comp = ac%S.
+  //
+  // THE STRIDE IS DERIVED FROM THE POOL'S LATENCY, NOT A LITERAL. It used to be
+  // a bare 4'd5, and that one magic number is what pins m1_fp_pool's pipeline
+  // depth: the pool's operand mux is the clk_3d critical path, registering it
+  // adds a cycle, and a stride hard-coded for latency 4 then reads results that
+  // have not been written yet. That cost 7,806 fails of 7,813 before the reason
+  // was found -- see docs/findings.md.
+  //
+  // Three adds per round plus the gap that covers the latency, so S = LAT + 1.
+  // Every other pool consumer waits on *_rsp and is latency-agnostic; this one
+  // schedules statically because it streams, so it is the only module that has
+  // to be told.
+  localparam int A_STRIDE = FP_ADD_LAT + 1;
+  wire [1:0] a_round = 2'(ac / 4'(A_STRIDE));
+  wire [2:0] a_comp  = 3'(ac % 4'(A_STRIDE));
   wire       a_slot  = (a_comp <= 3'd2);
 
   wire [3:0]  ra    = 4'({1'd0, a_comp} * 4'd3);
@@ -165,7 +182,9 @@ module m1_geo_xform (
   wire [31:0] add_result    = add_res;
 
   // The last round is skipped for a vector: a direction has no origin.
-  wire [3:0] ac_last  = atrans ? 4'd12 : 4'd7;
+  // Last slot: two full strides plus the three adds for a 3-round transform,
+  // one stride plus three for a 2-round one. Was 4'd12 / 4'd7 for stride 5.
+  wire [3:0] ac_last  = atrans ? 4'(2*A_STRIDE + 2) : 4'(A_STRIDE + 2);
   wire [3:0] want_res = atrans ? 4'd9  : 4'd6;
 
   assign mul_req = (mst == M_ISSUE);
