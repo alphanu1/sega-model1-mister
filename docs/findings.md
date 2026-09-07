@@ -20,23 +20,29 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
-## 2026-09-08 — THE DEVICE IS 97% FULL, AND THE 3D IS A DATAFLOW PROBLEM NOW
+## 2026-09-08 — THE RECIPROCAL BOUGHT 652 ALM AS WELL AS 23 CYCLES
 
-`make rbf`, Quartus 17.0, 0 errors, with the 6-cycle reciprocal in:
+`make rbf`, Quartus 17.0, 0 errors, with the 6-cycle reciprocal in, against
+yesterday's build:
 
-    40,839 / 41,910 ALM   97%
-    545 / 553 M10K        99%
-    67 / 112 DSP          60%
-    setup slack  clk_3d +0.440, clk_cpu +1.090, clk_sys +5.003,
-                 pll_hdmi -0.096 (TNS -0.096, one endpoint)
+                    2026-09-07      2026-09-08
+    ALM             41,491 (99%)    40,839 (97%)    -652
+    DSP             63              67              +4
+    M10K            -               545/553 (99%)
+    pll_hdmi slack  -0.044          -0.096
 
-**This is not attributable to the reciprocal**, which is 4 DSP and 1.7 Kbit of
-LUT ROM and whose whole enclosing module measures 920 ALM. The last figure on
-record was 29,771 ALM / 452 M10K on 2026-08-19, three weeks and the entire 3D
-path ago. But 97% and 99% are a ceiling: anything further needs a plan for
-where it fits, and M10K at 545 of 553 means the answer is almost never "a
-buffer". The pll_hdmi endpoint also went +0.134 -> -0.096 and is now the only
-negative path in the design.
+It **paid for itself in area**. Trading `fp_div` round trips for four DSPs and
+1.7 Kbit of LUT ROM took 652 ALM out of a design that was at 99%, and ALM is
+the binding constraint. The core clocks are all met - clk_3d +0.440, clk_cpu
++1.090, clk_sys +5.003 - and the only negative path is the framework's HDMI
+output PLL, which was already negative yesterday and got 0.052 ns worse.
+
+**A correction made while writing this entry.** The first version said the 97%
+was "not attributable to the reciprocal" and compared it against 29,771 ALM
+from 2026-08-19 - a figure three weeks stale, from before the 3D path existed.
+CLAUDE.md had the 2026-09-07 number the whole time. Comparing against the
+oldest number to hand turned a 652 ALM saving into an 11,000 ALM alarm. Take
+the most recent measurement, not the most memorable one.
 
 **WHERE THE GEOMETRY PASS ACTUALLY STANDS.**
 
