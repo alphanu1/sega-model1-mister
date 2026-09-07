@@ -20,6 +20,45 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — AGGRESSIVE AREA ALREADY IMPLIES RESOURCE SHARING; THE EXTRA FLAGS ARE FREE AND INERT
+
+Added `AUTO_RESOURCE_SHARING`, `MUX_RESTRUCTURE`, `REMOVE_REDUNDANT_LOGIC_CELLS`
+and `AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS` to the core build, taken from
+Model 2's shipping `Model2.qsf`. The full 21-minute rebuild produced a
+**byte-identical bitstream**: same md5 `93a95d746e3137d69eb3b48e9e8662bd`, same
+41,124 ALM, same +0.896 ns on clk_sys.
+
+Two independent instruments agree. On the V60 module the result is 16,007 ALM
+with and without `AUTO_RESOURCE_SHARING`, once the mode is Aggressive Area and
+the technique is AREA. On the core it is the same bitstream. **Those two
+settings already enable the sharing the extra flags ask for.**
+
+The flags are NOT harmless in every configuration. Against
+`OPTIMIZATION_MODE "Aggressive Performance"`, `AUTO_RESOURCE_SHARING` alone
+makes the V60 **worse** - 17,759 to 18,125 - because it fights the performance
+bias. They are therefore written inside the same else-branch as the mode and
+technique in `tools/mister_project.sh`, so a build that sets `M1_QSPEED` to keep
+the template's speed-biased settings never gets them.
+
+### What this says about the Model 2 result
+
+Model 2's own comment records that "the mode, the technique and
+AUTO_RESOURCE_SHARING all moved in one change and a fourth variable would make
+the result unattributable". So its gain was credited to the combination and the
+sharing flag's individual contribution was never isolated there. This build
+isolates it: **the mode and the technique do the work**. That is a finding about
+Model 2's configuration as much as ours, though nothing in that repository has
+been changed.
+
+### The thing that DOES matter, restated
+
+The synthesis settings are worth **1,752 ALM on the V60** - more than every hand
+edit made to it in this session combined - and `make rbf` has had them all
+along. `make quartus MOD=<mod>` has not. That gap, not the sharing flag, is the
+real finding of this line of work.
+
+---
+
 ## 2026-09-07 — MODULE BUILDS AND THE CORE BUILD USE DIFFERENT OPTIMISATION SETTINGS
 
 Asked whether Quartus has a flag for shared pathways. It does, the flags are

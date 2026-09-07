@@ -487,6 +487,30 @@ else
            "$stage/Model1.qsf"
     echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = $M1_QTECH"
     echo "  register duplication $M1_QDUP, router logic duplication $M1_QDUP"
+
+    # RESOURCE SHARING AND FRIENDS, taken from the Model 2 core's Model2.qsf
+    # where they are part of a shipping configuration. Quartus defaults
+    # AUTO_RESOURCE_SHARING to OFF, so every mutually exclusive arithmetic
+    # operator has been getting its own adder -- and this design has 255 add
+    # sites, 356 subtracts and 2,042 compares inside the V60's single
+    # 3,817-line always block alone.
+    #
+    # They belong with the two settings above, not on their own: measured on
+    # the V60 module, AUTO_RESOURCE_SHARING against "Aggressive Performance"
+    # makes it WORSE, 17,759 -> 18,125, because it fights the performance bias.
+    # It is only coherent once the mode and technique are area-biased, which is
+    # why it is inside this same else-branch and not a separate knob.
+    #
+    # Sharing costs a mux on the shared operands, so it can lengthen a path.
+    # The core's clk_sys had +0.896 ns of slack before this went in.
+    cat >> "$stage/Model1.qsf" <<'QOPTEOF'
+
+set_global_assignment -name AUTO_RESOURCE_SHARING ON
+set_global_assignment -name MUX_RESTRUCTURE ON
+set_global_assignment -name REMOVE_REDUNDANT_LOGIC_CELLS ON
+set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
+QOPTEOF
+    echo "  resource sharing ON, mux restructure ON, redundant cell removal ON"
 fi
 
 # AGGRESSIVE ROUTABILITY, because the failure at 99% is CONGESTION, not capacity.
