@@ -20,6 +20,78 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE TILE FETCH IS FIXED, AND THE FIX WAS TO STOP FETCHING WHAT WAS DISCARDED
+
+Confirmed on hardware at `46b9e2c`: the 2D renders correctly and **tile
+overruns are massively reduced**. Third attempt at this module, first one to
+survive the board.
+
+### The defect
+
+`char_data` is `p_dout[1][31:0]` - words 0 and 1 of the burst. Port 1 bursted
+**four**. So every column fetched two 16-bit words that nothing ever read, spent
+two CAS commands doing it, and the tile engine's ack waited for them to come
+back before it could ask for the next column. The engine pays that round trip
+248 times a line against a 3,936-cycle budget.
+
+Fixing it is `blen(1) = 2`. The delivered value is bit-identical - `char_addr`
+is `{tile_num,4'b0000} + {14'd0,map_y[2:0],1'b0}` and both terms have bit 0
+clear, so the address is always 2-word aligned, and length 4 assembles `[31:0]`
+as `{cap[1], cap[0]}` while length 2 assembles it as `{dq_r, cap[0]}` - both
+`{word1, word0}`.
+
+Length 2 was not expressible before. The capture assembled every non-single
+burst as `{dq_r, cap[2], cap[1], cap[0]}`, hardcoding the last word at the top,
+which is right for 1 and 4 and wrong for 2 and 3. Indexing that on the last
+word's own tag is the whole enabling change, and the length-4 arm is the
+default and bit-identical.
+
+### THE PATTERN, which is the durable part
+
+Three attempts at this module. The two that failed ADDED STRUCTURE; the one that
+worked REMOVED WORK.
+
+| Attempt | What it did | Board |
+|---|---|---|
+| 2026-09-05, second SDRAM port | added a port so two fetches could overlap | yellow rectangle, no sky or ground |
+| 2026-09-07, next-scanline cache | added a cache to KEEP the discarded half | alternate scanlines missing |
+| 2026-09-07, `blen(1)=2` | stopped fetching the discarded half | **good** |
+
+**The discarded half was known before either failure.** The reverted cache
+(`3a7c6b6`) is literally titled "Keep the half of every character burst that was
+being thrown away" - the same observation, one week and two reverts earlier. It
+led to a scanline cache with new ordering to get wrong, when the same fact
+supported simply not fetching those words. The waste was treated as a resource
+to exploit rather than as a defect to remove.
+
+So when a measurement says work is being wasted, the first question is whether
+the work can be *not done*, before it is whether the waste can be *used*.
+
+### What still does not catch this class of bug
+
+Nothing new. Every bench passed on both failed attempts and passes now, so the
+benches did not distinguish the two that broke the board from the one that
+worked. `tb_m1_video`'s blindness to both hardware failures is still open and
+still unexplained.
+
+What DID catch a real fault here was `burst_of()` in `tb_m1_sdram.cpp`, the
+model's mirror of `blen()`. The RTL changed and the mirror did not, and the
+suite failed immediately with 3,494 mismatches rather than letting a half-length
+burst reach hardware as corrupt tile characters. Its comment already warned the
+two must move together, from a previous drift; it now has a second instance.
+
+### A hazard found while doing it
+
+`build/mister/rtl` and `build/mister/Model1.sv` are **SYMLINKS INTO THE REPO**,
+not copies. Editing RTL during a `make rbf` therefore edits the build's own
+sources. It was survived here only because `quartus_map` - the sole stage that
+reads `.sv` - had ended at 10:32:56 and the edit landed at 10:43:06, with
+`quartus_fit` and `quartus_asm` working from the synthesis netlist. That is luck,
+not design. Check `quartus_map` has ended before touching RTL mid-build, or do
+not touch it.
+
+---
+
 ## 2026-09-07 — THE CAPTURE DEPTH IS AN ALIGNMENT, NOT A MARGIN, and CL+2 is the only correct one
 
 Measured on hardware, sweeping the SDRAM read phase option through all six
