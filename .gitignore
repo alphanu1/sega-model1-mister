@@ -23,8 +23,22 @@ obj_dir/
 *.edif
 
 # ---------------------------------------------------------------- quartus
-# Spike builds and any core build tree.
-/quartus/build/
+# THE WHOLE DIRECTORY, by Ben's decision on 2026-09-07. It is NOT generated
+# output -- it holds four hand-written build sources -- so this is a choice to
+# keep them off GitHub rather than a cleanup of build junk:
+#
+#   spike.qsf.in       the project template Makefile:987 expands for
+#                      `make quartus MOD=<module>`
+#   spike.sdc          that project's timing constraints, Makefile:988
+#   report.sh          the ALM / M10K / DSP / Fmax report parser
+#   report_timing.tcl  `make quartus_paths`
+#
+# THE CONSEQUENCE, recorded so it is not rediscovered: a fresh clone has no
+# `make quartus` and no `make quartus_paths`. Those are the targets that settle
+# the resource gates, so anyone starting from a clone must restore these four
+# files first. `make rbf` is NOT affected -- it stages its own project through
+# tools/mister_project.sh, which is still tracked.
+/quartus/
 # Verilator build trees from tools/run_v60_tests.sh. Anchored with a leading
 # slash so it means the top-level directory only, and checked for as a whole
 # line rather than a substring — an earlier check tested for "/build/" being

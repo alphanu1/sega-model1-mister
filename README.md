@@ -337,8 +337,14 @@ resource cost rather than behaviour.
 
 ## Bootstrap
 
+**`quartus/` IS NOT PUBLISHED.** It is gitignored by choice, so a fresh clone
+does not have it and has no `make quartus` or `make quartus_paths` — the targets
+that measure ALM, M10K, DSP and Fmax. Restore those four files by hand if you
+need the resource gates. `make rbf`, `make lint` and `make test` are unaffected;
+`make rbf` stages its own project through `tools/mister_project.sh`.
+
 ```
-chmod +x tools/bootstrap.sh quartus/report.sh   # if unpacked from a zip
+chmod +x tools/bootstrap.sh     # if unpacked from a zip
 ./tools/bootstrap.sh            # read-only clones into third_party/
 tools/bootstrap.sh --fork       # fork template + s32 to your account first (needs gh)
 tools/bootstrap.sh --update     # re-pin deps.lock to current upstream HEADs
