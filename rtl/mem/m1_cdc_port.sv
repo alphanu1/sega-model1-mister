@@ -112,7 +112,22 @@ module m1_cdc_port #(
   // ------------------------------------------------------------- slow domain
   logic ack_s1, ack_s2, ack_s3;
   logic a_req_d;
-  logic post_w;      // the in-flight transaction was acked on acceptance
+  logic post_w;      // the in-flight transaction was acked early
+  logic post_arm;    // raise that early ack on the NEXT cycle, not this one
+
+  // ONE-DEEP WRITE BUFFER, and posting does not work without it.
+  // Acking a write early tells the requester it may issue the next one, and
+  // this port's whole contract was that it never would -- "a request while one
+  // is outstanding is dropped rather than queued. The V60 bus cannot produce
+  // one, it waits for its ack." Posting makes it produce one, so the drop
+  // becomes a hang: S_STR_FILL issues a write, is acked early, issues the next,
+  // and that one is silently discarded while the CPU waits for a dack that
+  // never comes. Measured as 8 instructions in 25M cycles, stuck at fe0027.
+  logic           p_val;
+  logic [AW-1:0]  p_addr;
+  logic [DW-1:0]  p_din;
+  logic [BEW-1:0] p_be;
+  logic           p_we;
 
   always_ff @(posedge a_clk or negedge a_rst_n) begin
     if (!a_rst_n) begin
@@ -125,8 +140,10 @@ module m1_cdc_port #(
       x_be    <= '0;
       x_we    <= 1'b0;
       {ack_s3, ack_s2, ack_s1} <= 3'b000;
-      a_req_d <= 1'b0;
-      post_w  <= 1'b0;
+      a_req_d  <= 1'b0;
+      post_w   <= 1'b0;
+      post_arm <= 1'b0;
+      p_val    <= 1'b0; p_addr <= '0; p_din <= '0; p_be <= '0; p_we <= 1'b0;
     end else begin
       {ack_s3, ack_s2, ack_s1} <= {ack_s2, ack_s1, ack_tog};
       a_req_d <= a_req;
@@ -166,17 +183,53 @@ module m1_cdc_port #(
         a_busy  <= 1'b1;
         // A store has no result, so the requester can go now. a_busy stays set,
         // so the NEXT access still waits for this one to land.
-        post_w  <= POST_WRITES & a_we;
-        if (POST_WRITES & a_we) a_ack <= 1'b1;
+        // ARMED, NOT RAISED. Acking on the accept cycle itself is earlier than
+        // any completion has ever arrived here, and a requester that registers
+        // the request first would never see it -- "acknowledges must be held,
+        // not pulsed", which has cost this project a dead-looking CPU twice.
+        // One cycle later it is an ordinary fast completion.
+        post_w   <= POST_WRITES & a_we;
+        post_arm <= POST_WRITES & a_we;
+      end
+
+      // A second request arriving while a POSTED write is still in flight is
+      // taken into the buffer instead of being dropped. Only one deep: a third
+      // waits, which is what a_busy staying set already does.
+      if (a_req && a_busy && post_w && !p_val && !(a_ack && a_req_d)) begin
+        p_val <= 1'b1; p_addr <= a_addr; p_din <= a_din;
+        p_be  <= a_be; p_we <= a_we;
+        if (POST_WRITES & a_we) post_arm <= 1'b1;   // a store: release it too
+      end
+
+      if (post_arm) begin
+        a_ack    <= 1'b1;
+        post_arm <= 1'b0;
       end
 
       if (a_busy && (ack_s2 ^ ack_s3)) begin
         a_dout <= x_dout;
         // Already acknowledged on acceptance if this was a posted write;
         // raising a_ack twice for one request would look like two completions.
-        a_ack  <= ~post_w;
-        a_busy <= 1'b0;
-        post_w <= 1'b0;
+        // OR IN THE ARMED ACK, do not overwrite it. A completion and a
+        // buffered write's release can land on the same cycle, and this branch
+        // is later in the block, so a bare `a_ack <= ~post_w` silently swallowed
+        // the buffered request's acknowledgement and the CPU waited in
+        // S_WB_MEM forever at fe1469. Only one ack is ever wanted here: a
+        // posted write's own completion is silent (~post_w = 0), so the OR
+        // cannot merge two acknowledgements into one pulse.
+        a_ack  <= (~post_w) | post_arm;
+        post_arm <= 1'b0;
+        if (p_val) begin
+          // Launch the buffered request straight away rather than going idle.
+          x_addr <= p_addr; x_din <= p_din; x_be <= p_be; x_we <= p_we;
+          req_tog <= ~req_tog;
+          post_w  <= POST_WRITES & p_we;
+          p_val   <= 1'b0;
+          // a_busy stays set: this one is now the in-flight transaction.
+        end else begin
+          a_busy <= 1'b0;
+          post_w <= 1'b0;
+        end
       end
     end
   end
