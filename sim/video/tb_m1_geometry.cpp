@@ -358,6 +358,10 @@ static long whist[32];
 // else is. Those are the cycles that would disappear if that stage were free.
 static long wout[6], wonly[6];
 static long pj_recip = 0, pj_scale = 0, pj_hold = 0, pj_idle = 0;
+// One multiplier and one adder serve seven clients. If the pipeline asks
+// for more of either per quad than the 83-cycle budget has cycles, the
+// pass is bandwidth-bound and no amount of latency work can reach budget.
+static long fp_mul_issued = 0, fp_add_issued = 0;
 static const char* ONAME[6] = { "xform", "project", "determinant",
                                 "normalize", "colour", "tgp_ram" };
 
@@ -427,6 +431,8 @@ struct Dut {
                 {
                     int rs = r->m1_geometry__DOT__u_project__DOT__rst_st;
                     int ss = r->m1_geometry__DOT__u_project__DOT__sst;
+                    if (r->m1_geometry__DOT__u_pool__DOT__mul_any) fp_mul_issued++;
+                    if (r->m1_geometry__DOT__u_pool__DOT__add_any) fp_add_issued++;
                     if (rs == 1)      pj_recip++;      // R_BUSY: in the divide
                     else if (rs == 2) pj_hold++;       // R_FULL: waiting to hand over
                     if (ss != 0)      pj_scale++;      // the mul/add chain
@@ -663,6 +669,7 @@ int main(int argc, char** argv) {
         // before 2026-09-08 was inflated that way. The RATIOS between them were
         // always sound, because all four shared the same wrong window.
         pj_recip = pj_scale = pj_hold = pj_idle = 0;
+        fp_mul_issued = fp_add_issued = 0;
         for (int i = 0; i < reps; i++) { t.run(0x40000, 0x100, 0, oz); quads += (int)t.got.size(); }
         long busy = t.cycles - c0;
         double per_quad = quads ? (double)busy / quads : 0.0;
@@ -685,6 +692,18 @@ int main(int argc, char** argv) {
                "handover %ld (%.1f%%)  idle %ld (%.1f%%)\n",
                pj_recip, 100.0 * pj_recip / busy, pj_scale, 100.0 * pj_scale / busy,
                pj_hold,  100.0 * pj_hold  / busy, pj_idle,  100.0 * pj_idle  / busy);
+        // THE FLOOR. One multiplier and one adder serve seven clients and both
+        // accept an operation every cycle, so a perfectly pipelined pass still
+        // cannot run a quad in fewer cycles than it issues multiplies. That is
+        // the wall no amount of latency work can pass, and the distance between
+        // it and the measured figure is pure serialisation.
+        double mq = (double)fp_mul_issued / quads, aq = (double)fp_add_issued / quads;
+        double floor_q = mq > aq ? mq : aq;
+        printf("  pool demand: %.1f multiplies and %.1f adds a quad\n"
+               "    one mul + one add, 7 clients -> floor %.0f cycles a quad "
+               "(%.0f%% of a frame); measured %.1f, so %.1fx is serialisation\n",
+               mq, aq, floor_q, 100.0 * floor_q * 4798 / 818133.0,
+               per_quad, per_quad / floor_q);
         printf("  inside the record, outstanding / sole cause:\n");
         for (int i = 0; i < 6; i++)
             printf("    %-12s %6ld  %5.1f%%   alone %6ld  %5.1f%%\n",

@@ -135,8 +135,8 @@ module m1_fp_pool #(
 
   wire [CW-1:0] div_win = rr_pick(div_elig, div_rr);
 
-  wire mul_any = |mul_req;
-  wire add_any = |add_req;
+  wire mul_any /* verilator public_flat_rd */ = |mul_req;
+  wire add_any /* verilator public_flat_rd */ = |add_req;
   wire div_any = |div_elig;
 
   // ------------------------------------------------------------- units
