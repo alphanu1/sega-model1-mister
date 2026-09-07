@@ -20,6 +20,44 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THERE IS NO DUPLICATE ADDRESSING DECODE IN SILICON: THE SECOND COPY COSTS 5 ALM
+
+Asked why the decode is "not fully recoverable" by extraction. Measured rather
+than argued, and the answer is stronger than the claim was.
+
+    both decodes present                     15,605 ALM
+    S_BAM_MODE's decode folded away          15,600      -5
+    BOTH decodes folded away                 14,214  -1,391
+
+`S_EA_MODE` and `S_BAM_MODE` are near-duplicates in the SOURCE - same
+`case (modtop)` arms, same displacement decode, same group-7 `modreg` sub-case -
+and that duplication was the entire premise for extracting an AGU. **In the
+netlist it is already gone.** Quartus shares the two states' decode completely,
+because they are arms of one case and therefore mutually exclusive. Removing one
+copy by hand recovers FIVE ALM.
+
+So an AGU module would recover 5 ALM, not "a fraction of 1,391". The 1,391 is a
+single shared decode that the CPU needs in order to decode addressing modes; it
+is not duplication and there is nothing to hoist out of it.
+
+The same argument disposes of the FP group. Its ~1,479 is what one shared FP
+unit costs, and the game executes FP - `dbg_fp_trap` fires at `00fed52b` on a
+real `cvt.sw` - so it cannot be deleted either.
+
+**This closes the V60 split as an area strategy.** Every structural target
+anyone named has now been priced, and the tool had already collapsed all of
+them. What remains is functional logic. The one thing that DID pay, 1,054 ALM,
+paid because the tool could not share it: a four-byte 24:1 mux whose select is a
+runtime offset, different at every call site.
+
+The generalisation worth keeping: **"the source looks duplicated" is not
+evidence of duplicated silicon.** Mutually exclusive case arms are shared by the
+synthesiser as a matter of course, and this project has now spent three
+experiments - dimext at 16 ALM, the displacement share at -33, and this at 5 -
+learning that the same way.
+
+---
+
 ## 2026-09-07 — THE AGU IS WORTH 1,391 ALM IN TOTAL, SO EXTRACTING IT IS NOT WORTH A SESSION
 
 Priced before writing it, which is the rule this session established after
