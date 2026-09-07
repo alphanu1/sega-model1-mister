@@ -20,6 +20,75 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE CAPTURE DEPTH IS AN ALIGNMENT, NOT A MARGIN, and CL+2 is the only correct one
+
+Measured on hardware by Ben, sweeping the SDRAM read phase option through all
+six positions on the build at `0174f13`. **Every depth except CL+2 crashes the
+CPU.** That includes CL+1 and CL+0, which had never been askable before this
+build - the selector's floor was CL+2, so whether the window continued below it
+was unobservable.
+
+### What this corrects
+
+It corrects a reading made ON THIS PAGE'S OWN LOGIC earlier the same day, and
+the wrong reading is kept here because it is an easy mistake to repeat.
+
+**The wrong reading:** "a healthy interface has a contiguous run of working
+depths, so a window exactly one wide means we are clinging to the edge of it -
+the capture is marginal and phase tuning is urgent." Model 2's own comment was
+cited in support, since `m2_sdram` renumbers its selector specifically so that a
+calibration sweep's pass mask reads as a *shape*.
+
+**Why it is wrong:** a burst word is driven for exactly ONE SDRAM clock, which
+is one `clk_sys` period. So exactly one `clk_sys` edge can ever fall inside a
+given word's validity window, and a one-wide pass mask is the ONLY possible
+result for a correct interface. `cap_depth` does not select how much margin the
+capture has. It selects **which word of the burst is called word 0**.
+
+The failure mode confirms it. A wrong depth does not produce noise, it produces
+data shifted by a whole word, and `m1_sdram.sv` already records exactly that
+from an earlier hunt: the assembled line came back shifted right by one 16-bit
+word, and the V60's reset vector read `FE104E` where the ROM holds `4EF3D6`. A
+word-shifted reset vector is a crashed CPU, which is what Ben sees on all five
+wrong depths.
+
+So CL+0 and CL+1 fail because the data has not arrived yet; CL+3 and above fail
+because the bus has moved on to the next word. **CL+2 being uniquely correct is
+the interface working as designed.**
+
+### What it does NOT settle
+
+Whether the capture has setup margin *within* its one-cycle window is a separate
+question and is still open. The arithmetic on the SDC's own device numbers puts
+data at the pin at 37.65 ns against a capture edge at 37.5 ns - nominally 0.15 ns
+LATE, so it works only because the real `tAC` beats the pessimistic 6.4 ns the
+constraints assume. The constrained build measured `SDRAM_CLK_pin` at +0.323 ns.
+
+That is thin, and there is standing evidence it bites: a build whose only change
+was a debug counter and a UART produced a garbage picture with +0.296 ns reported
+slack and no new warnings. Shifting `phase_shift2` earlier than its present 6250 ps
+(a plain 180 degrees, never tuned) buys margin at the same edge and would NOT
+move the working depth, because it does not change which edge captures.
+
+**But the one-wide window is not evidence for it.** Those are two different
+questions and this entry exists because they were conflated.
+
+### What the sweep was worth
+
+The range extension stays. It cost nothing - `make test` counts were
+byte-identical - and it converted "CL+2 is the shallowest we can ask for" into
+"CL+2 is the only one that works", which are not the same statement. The
+capture-depth knob is now settled and should not be looked at again.
+
+Where the cycles actually are, since they are not here: `blen(1)=2` on the
+character port (-2 cycles, and it stops discarding half of every burst),
+skipping `S_DISPATCH` on a row hit (-1), `ACK_HOLD` 2->1 for same-clock ports
+(-1), and the structural one - the single-outstanding-per-port contract at
+`inflight[arb_grant] <= 1'b1`, which is what makes the tile engine latency-bound
+rather than bandwidth-bound.
+
+---
+
 ## 2026-09-07 — THE NEXT-SCANLINE CACHE BREAKS ALTERNATE SCANLINES, and no bench reproduces it
 
 Second attempt at the tile engine's latency, second revert. Recorded because the
