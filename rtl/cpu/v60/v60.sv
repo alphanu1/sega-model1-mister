@@ -342,6 +342,19 @@ reg [31:0] fp_res;             // packed binary32 result awaiting writeback
 //           and val is already the answer -- fp_pack must NOT run on it
 //   sign/E/sg  the significand and exponent fp_pack would have been handed
 reg [76:0] fp_pk;
+// FP OPERAND PIPELINE. fp_add/fp_mul used to unpack both operands, align, add
+// and normalise in ONE cycle, straight from fp_a into fp_pk, and that was the
+// V60's critical path: fp_a[8] -> fp_pk[42] at -8.261 ns against the 50 MHz
+// constraint, through fp_clz28 -- a 28-bit priority encoder inside fp_unpack --
+// then Add144 then LessThan32. Unpacking is its own cycle now, so the encoder
+// and the arithmetic no longer share a path.
+//
+// The extra cycle is free in practice: ADDFS/SUBFS/MULFS are the only users,
+// and FP is rare -- dbg_fp_trap first fires at 00fed52b on an angle-to-sine
+// lookup, never in a hot loop. FDIV is untouched; it is already iterative.
+reg [40:0] fp_ux, fp_uy;       // pre-unpacked {sign, exp[15:0], mant[23:0]}
+reg [31:0] fp_rx, fp_ry;       // the raw operands, for the NaN/inf/zero cases
+reg        fp_kind;            // 0 = add, 1 = mul
 reg [49:0] fdiv_rem;           // FDIV restoring-division partial remainder
 reg [26:0] fdiv_qacc;          // FDIV quotient accumulator (27 bits, MSB=int bit)
 reg [23:0] fdiv_den;           // FDIV divisor mantissa (normalized, bit23=1)
@@ -386,7 +399,7 @@ typedef enum logic [6:0] {
     S_BS_SCH1, S_BS_SCHRD, S_BS_SCHB, S_BS_SCHW,
     S_BS_MOV1, S_BS_MOV2, S_BS_MOVS, S_BS_MOVD, S_BS_MOVB, S_BS_MOVF,
 `ifndef S32_V60_NO_FP
-    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_PACK, S_FP_DIV, S_FP_WB,
+    S_FP_OP2, S_FP_LD, S_FP_EXEC, S_FP_EXEC2, S_FP_PACK, S_FP_DIV, S_FP_WB,
 `endif
     S_EXC_PUSH1, S_EXC_EXTRA, S_EXC_CODE, S_EXC_PUSH2, S_EXC_VEC, S_EXC_JMP,
     S_TASK_LD_NEXT, S_TASK_LD_ACK, S_TASK_ST_NEXT, S_TASK_ST_ACK,
@@ -2512,6 +2525,11 @@ else if (ce) begin
         else st <= S_FP_EXEC;                            // MOVFS/CVTWS/CVTSW: write-only
     end
     S_FP_EXEC: fp_exec();
+    S_FP_EXEC2: begin
+        fp_pk <= fp_kind ? fp_mul(fp_rx, fp_ry, fp_ux, fp_uy)
+                         : fp_add(fp_rx, fp_ry, fp_ux, fp_uy);
+        st <= S_FP_PACK;
+    end
     // Second half of an FP add/multiply: normalise, round, adjust, set flags.
     S_FP_PACK: begin
         logic [31:0] rp;
@@ -4230,7 +4248,8 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
 endfunction
 
 // x + y  (binary32).  SUBFS passes y with its sign flipped.
-function automatic [76:0] fp_add(input [31:0] x, input [31:0] y);
+function automatic [76:0] fp_add(input [31:0] x, input [31:0] y,
+                                input [40:0] ux, input [40:0] uy);
     logic sx, sy, sr; logic signed [15:0] ex, ey, er, d;
     logic [23:0] mx, my;
     logic [26:0] bx, by, sm, res27; logic [27:0] sum;
@@ -4241,8 +4260,10 @@ function automatic [76:0] fp_add(input [31:0] x, input [31:0] y);
     else if (fp_isinf(x)) out = {1'b1, x, 1'b0, 16'd0, 27'd0};
     else if (fp_isinf(y)) out = {1'b1, y, 1'b0, 16'd0, 27'd0};
     else begin
-        {sx, ex, mx} = fp_unpack(x);
-        {sy, ey, my} = fp_unpack(y);
+        // Pre-unpacked by S_FP_EXEC a cycle earlier; fp_unpack's clz28 is
+        // what made this path long.
+        {sx, ex, mx} = ux;
+        {sy, ey, my} = uy;
         if (mx == 0 && my == 0) out = {1'b1, {sx & sy, 31'd0}, 1'b0, 16'd0, 27'd0};        // (+/-0)+(+/-0)
         else if (mx == 0) out = {1'b1, y, 1'b0, 16'd0, 27'd0};
         else if (my == 0) out = {1'b1, x, 1'b0, 16'd0, 27'd0};
@@ -4285,7 +4306,8 @@ function automatic [76:0] fp_add(input [31:0] x, input [31:0] y);
 endfunction
 
 // x * y  (binary32)
-function automatic [76:0] fp_mul(input [31:0] x, input [31:0] y);
+function automatic [76:0] fp_mul(input [31:0] x, input [31:0] y,
+                                input [40:0] ux, input [40:0] uy);
     logic sx, sy, sr; logic signed [15:0] ex, ey, er;
     logic [23:0] mx, my; logic [47:0] p; logic [26:0] sg; logic [76:0] out;
     sr = x[31] ^ y[31];
@@ -4296,8 +4318,10 @@ function automatic [76:0] fp_mul(input [31:0] x, input [31:0] y);
     end
     else if (fp_iszero(x) || fp_iszero(y)) out = {1'b1, {sr, 31'd0}, 1'b0, 16'd0, 27'd0};
     else begin
-        {sx, ex, mx} = fp_unpack(x);
-        {sy, ey, my} = fp_unpack(y);
+        // Pre-unpacked by S_FP_EXEC a cycle earlier; fp_unpack's clz28 is
+        // what made this path long.
+        {sx, ex, mx} = ux;
+        {sy, ey, my} = uy;
         p = mx * my;                       // 48-bit, leading 1 at bit 47 or 46
         if (p[47]) begin
             er = ex + ey + 16'sd1;
@@ -4556,9 +4580,17 @@ task automatic fp_exec;
             r = fp_scale(fp_b, $signed(fp_a[15:0]));
             fp_arith_flags(r); fp_res <= r; fp_finish_write();
         end
-        5'h18: begin fp_pk <= fp_add(fp_b, fp_a);                 st <= S_FP_PACK; end // ADDFS
-        5'h19: begin fp_pk <= fp_add(fp_b, fp_a ^ 32'h8000_0000); st <= S_FP_PACK; end // SUBFS
-        5'h1a: begin fp_pk <= fp_mul(fp_b, fp_a);                 st <= S_FP_PACK; end // MULFS
+        // ADDFS/SUBFS/MULFS unpack here; the arithmetic is in S_FP_EXEC2.
+        5'h18: begin fp_rx <= fp_b; fp_ry <= fp_a;
+                     fp_ux <= fp_unpack(fp_b); fp_uy <= fp_unpack(fp_a);
+                     fp_kind <= 1'b0; st <= S_FP_EXEC2; end            // ADDFS
+        5'h19: begin fp_rx <= fp_b; fp_ry <= fp_a ^ 32'h8000_0000;
+                     fp_ux <= fp_unpack(fp_b);
+                     fp_uy <= fp_unpack(fp_a ^ 32'h8000_0000);
+                     fp_kind <= 1'b0; st <= S_FP_EXEC2; end            // SUBFS
+        5'h1a: begin fp_rx <= fp_b; fp_ry <= fp_a;
+                     fp_ux <= fp_unpack(fp_b); fp_uy <= fp_unpack(fp_a);
+                     fp_kind <= 1'b1; st <= S_FP_EXEC2; end            // MULFS
         5'h1b: fp_div_start(fp_b, fp_a);             // DIVFS (iterative)
         default: st <= S_NEXT;
         endcase
