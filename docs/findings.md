@@ -20,6 +20,57 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — A `function automatic` READING AN UNPACKED ARRAY IS WRONG IN A CONTINUOUS ASSIGNMENT
+
+This cost a long bisect and will cost another one if it is not written down.
+
+    wire [31:0] fbw_ea1 = fb32(ea_ofs + 1);                       // WRONG
+    wire [31:0] fbw_ea1 = {fb[ea_ofs+4], fb[ea_ofs+3],
+                           fb[ea_ofs+2], fb[ea_ofs+1]};           // CORRECT
+
+`fb32` is `function automatic [31:0] fb32(input [4:0] o)` and its body is
+exactly that concatenation, so the two lines are textually the same
+computation. **They do not behave the same.** With the function form,
+`tb_v60_search` fails on "encoded GA2 SKPCUH R28"; with the concatenation it
+passes, every other line in the file identical.
+
+### Why it took so long
+
+Because every check said the substitution was faithful, and each check was
+right:
+
+- the diff was reviewed line by line - all substitutions textually correct
+- `fb[]` is a stable generate-assign slice of `fb_flat`, itself `always_comb`
+  off registers in `v60_ifetch`
+- `ea_ofs` has no blocking assignments anywhere
+- the addend width was tested both ways, `5'd1` and unsized `1` - no difference
+- reverting the `modval2` part alone did not recover it
+
+The bisect narrowed it to THREE lines, all of the form `d1t = fbw_ea1;`
+replacing `d1t = fb32(ea_ofs+1);` inside `S_EA_MODE`, which look equivalent and
+are not. Only swapping the function call for its own body fixed it, which
+identifies the CONTEXT rather than the expression as the fault.
+
+**The rule: inside a clocked block, calling these accessors is fine - that is
+what the other ~60 call sites do and always have. In a continuous assignment,
+write the concatenation.**
+
+### What it unblocked
+
+The hoist this was blocking is now in: 21 call sites of `disp_of`/`fb32`/`fb16`
+at offsets `ea_ofs+1` and `ea_ofs+2`, across `S_EA_MODE` and its near-duplicate
+`S_BAM_MODE`, collapsed to two extractions. Measured IN THE SHIPPING
+CONFIGURATION this time - `QOPT="Aggressive Area"` with `TECHNIQUE AREA` -
+**16,007 to 15,605 ALM, and Fmax 34.81 to 35.38 MHz.** Area and speed together,
+with `v60_trace` unmoved at 24,825.
+
+`S_EA_MODE` and `S_BAM_MODE` being near-duplicates is the finding to carry
+forward: same `case (modtop)` arms, same displacement decode, same group-7
+`modreg` sub-case. That duplicated addressing-mode decode is the AGU the i960
+has as a 102-line module and we do not.
+
+---
+
 ## 2026-09-07 — AGGRESSIVE AREA ALREADY IMPLIES RESOURCE SHARING; THE EXTRA FLAGS ARE FREE AND INERT
 
 Added `AUTO_RESOURCE_SHARING`, `MUX_RESTRUCTURE`, `REMOVE_REDUNDANT_LOGIC_CELLS`

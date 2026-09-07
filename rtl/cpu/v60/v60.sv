@@ -593,7 +593,23 @@ wire [31:0] sp_p4   = r[31] + 32'd4;
 wire [7:0] modval  = fb[ea_ofs];
 wire [4:0] modreg  = modval[4:0];
 wire [2:0] modtop  = modval[7:5];
-wire [7:0] modval2 = fb[ea_ofs+1];
+// THE TWO OFFSETS THE ADDRESSING PATH USES, EXTRACTED ONCE EACH.
+// disp_of and fb32 were called about twenty times between them at exactly
+// these two offsets, across S_EA_MODE and its near-duplicate S_BAM_MODE, and
+// a Verilog function is inlined at every call site. Those states are arms of
+// one case and so mutually exclusive; one extraction per offset serves all.
+//
+// WRITTEN AS CONCATENATIONS, NOT AS fb32(...) CALLS, AND THAT IS LOAD-BEARING.
+// `wire [31:0] fbw_ea1 = fb32(ea_ofs + 1);` is textually the same thing and is
+// WRONG: calling a `function automatic` that reads the unpacked array fb[]
+// from a CONTINUOUS ASSIGNMENT silently yields bad data. tb_v60_search fails
+// on "encoded GA2 SKPCUH R28" with the function form and passes with this one,
+// every other line identical. It cost a long bisect. Do not "tidy" these back
+// into fb32() calls.
+wire [31:0] fbw_ea1 = {fb[ea_ofs+4], fb[ea_ofs+3], fb[ea_ofs+2], fb[ea_ofs+1]};
+wire [31:0] fbw_ea2 = {fb[ea_ofs+5], fb[ea_ofs+4], fb[ea_ofs+3], fb[ea_ofs+2]};
+
+wire [7:0] modval2 = fbw_ea1[7:0];
 
 reg  [4:0] rf_raddr_a, rf_raddr_b;
 // Keep the architectural register file in flops, but expose exactly two
@@ -1355,7 +1371,7 @@ else if (ce) begin
         if (!ea_modm) begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // Displacement
-                d1t = disp_of(ea_ofs+1, modtop[1:0]);
+                d1t = disp_from(fbw_ea1, modtop[1:0]);
                 ea_addr <= rf_rdata_a + d1t;
                 ea_len  <= 5'd1 + disp_len(modtop[1:0]);
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
@@ -1366,7 +1382,7 @@ else if (ce) begin
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
             end
             3'd4, 3'd5, 3'd6: begin // Displacement Indirect (deferred)
-                d1t = disp_of(ea_ofs+1, modtop - 3'd4);
+                d1t = disp_from(fbw_ea1, modtop - 3'd4);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                 dbus_addr <= rf_rdata_a + d1t;
                 ea_len  <= 5'd1 + disp_len(modtop - 3'd4);
@@ -1382,20 +1398,20 @@ else if (ce) begin
                     st <= S_EA_DONE;  // value already
                 end
                 5'h10, 5'h11, 5'h12: begin // PC displacement
-                    d1t = disp_of(ea_ofs+1, modreg[1:0]);
+                    d1t = disp_from(fbw_ea1, modreg[1:0]);
                     ea_addr <= pc + d1t;
                     ea_len  <= 5'd1 + disp_len(modreg[1:0]);
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
                 5'h13: begin        // direct address
-                    d1t = fb32(ea_ofs+1);
+                    d1t = fbw_ea1;
                     ea_addr <= d1t;
                     ea_len  <= 5'd5;
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
                 5'h14: begin        // immediate full
-                    d1t = fb32(ea_ofs+1);
-                    d2t = {16'b0, fb16(ea_ofs+1)};
+                    d1t = fbw_ea1;
+                    d2t = {16'b0, fbw_ea1[15:0]};
                     case (ea_dim)
                         2'd0: ea_out <= {24'b0, fb[ea_ofs+1]};
                         2'd1: ea_out <= d2t;
@@ -1406,21 +1422,21 @@ else if (ce) begin
                     st <= S_EA_DONE;
                 end
                 5'h18, 5'h19, 5'h1a: begin // PC displacement indirect
-                    d1t = disp_of(ea_ofs+1, modreg[1:0]);
+                    d1t = disp_from(fbw_ea1, modreg[1:0]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= pc + d1t;
                     ea_len  <= 5'd1 + disp_len(modreg[1:0]);
                     st <= S_EA_IND;
                 end
                 5'h1b: begin        // direct address deferred
-                    d1t = fb32(ea_ofs+1);
+                    d1t = fbw_ea1;
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= d1t;
                     ea_len  <= 5'd5;
                     st <= S_EA_IND;
                 end
                 5'h1c, 5'h1d, 5'h1e: begin // PC double displacement
-                    d1t = disp_of(ea_ofs+1, modreg[1:0]);
+                    d1t = disp_from(fbw_ea1, modreg[1:0]);
                     d2t = disp_of(ea_ofs+1+disp_len(modreg[1:0]), modreg[1:0]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= pc + d1t;
@@ -1438,7 +1454,7 @@ else if (ce) begin
         else begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // Double displacement: [[reg+d1]+d2]
-                d1t = disp_of(ea_ofs+1, modtop[1:0]);
+                d1t = disp_from(fbw_ea1, modtop[1:0]);
                 d2t = disp_of(ea_ofs+1+disp_len(modtop[1:0]), modtop[1:0]);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                 dbus_addr <= rf_rdata_a + d1t;
@@ -1470,7 +1486,7 @@ else if (ce) begin
             3'd6: begin             // Group 6: indexed, second mode byte
                 case (modval2[7:5])
                 3'd0, 3'd1, 3'd2: begin // Displacement indexed: [reg2+disp] + reg1*size
-                    d1t = disp_of(ea_ofs+2, modval2[6:5]);
+                    d1t = disp_from(fbw_ea2, modval2[6:5]);
                     ea_addr <= rf_rdata_b + d1t + ea_index;
                     ea_len  <= 5'd2 + disp_len(modval2[6:5]);
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
@@ -1481,7 +1497,7 @@ else if (ce) begin
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
                 3'd4, 3'd5, 3'd6: begin // Displacement indirect indexed
-                    d1t = disp_of(ea_ofs+2, modval2[6:5]);
+                    d1t = disp_from(fbw_ea2, modval2[6:5]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= rf_rdata_b + d1t;
                     ea_addr <= ea_index;  // index added after deref
@@ -1494,19 +1510,19 @@ else if (ce) begin
                     end
                     else case (modval2[3:0])
                     4'h0, 4'h1, 4'h2: begin
-                        d1t = disp_of(ea_ofs+2, modval2[1:0]);
+                        d1t = disp_from(fbw_ea2, modval2[1:0]);
                         ea_addr <= pc + d1t + ea_index;
                         ea_len  <= 5'd2 + disp_len(modval2[1:0]);
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
                     4'h3: begin
-                        d1t = fb32(ea_ofs+2);
+                        d1t = fbw_ea2;
                         ea_addr <= d1t + ea_index;
                         ea_len  <= 5'd6;
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
                     4'h8, 4'h9, 4'ha: begin
-                        d1t = disp_of(ea_ofs+2, modval2[1:0]);
+                        d1t = disp_from(fbw_ea2, modval2[1:0]);
                         dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                         dbus_addr <= pc + d1t;
                         ea_addr <= ea_index;
@@ -1514,7 +1530,7 @@ else if (ce) begin
                         st <= S_EA_IND2;
                     end
                     4'hb: begin
-                        d1t = fb32(ea_ofs+2);
+                        d1t = fbw_ea2;
                         dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                         dbus_addr <= d1t;
                         ea_addr <= ea_index;
@@ -2551,7 +2567,7 @@ else if (ce) begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // displacement IS the bit offset
                 logic [31:0] bdt;
-                bdt = disp_of(ea_ofs+1, modtop[1:0]);
+                bdt = disp_from(fbw_ea1, modtop[1:0]);
                 bam_base <= rf_rdata_a;
                 bam_off  <= bdt;
                 bam_fill_len(5'd1 + disp_len(modtop[1:0]));
@@ -2565,7 +2581,7 @@ else if (ce) begin
             end
             3'd4, 3'd5, 3'd6: begin // [reg + disp] deref -> base, off 0
                 logic [31:0] bdt;
-                bdt = disp_of(ea_ofs+1, modtop - 3'd4);
+                bdt = disp_from(fbw_ea1, modtop - 3'd4);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                 dbus_addr <= rf_rdata_a + bdt;
                 bam_off <= 32'd0;
@@ -2576,7 +2592,7 @@ else if (ce) begin
                 case (modreg)
                 5'h13: begin
                     logic [31:0] bdt;
-                    bdt = fb32(ea_ofs+1);
+                    bdt = fbw_ea1;
                     bam_base <= bdt;
                     bam_off  <= 32'd0;
                     bam_fill_len(5'd5);
@@ -2584,7 +2600,7 @@ else if (ce) begin
                 end
                 5'h17: begin        // direct address deferred
                     logic [31:0] bdt;
-                    bdt = fb32(ea_ofs+1);
+                    bdt = fbw_ea1;
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                     dbus_addr <= bdt;
                     bam_off <= 32'd0;
@@ -2602,7 +2618,7 @@ else if (ce) begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // double displacement: deref d1, off = d2
                 logic [31:0] bdt, bdt2;
-                bdt  = disp_of(ea_ofs+1, modtop[1:0]);
+                bdt  = disp_from(fbw_ea1, modtop[1:0]);
                 bdt2 = disp_of(ea_ofs+1+disp_len(modtop[1:0]), modtop[1:0]);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
                 dbus_addr <= rf_rdata_a + bdt;
