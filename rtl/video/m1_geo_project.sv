@@ -86,32 +86,23 @@ module m1_geo_project (
   output logic        out_behind                // z <= 0: the (0,0) case
 );
 
-  // ------------------------------------------------------------ reciprocal
-  typedef enum logic [1:0] { R_IDLE, R_BUSY, R_FULL } rstate_t;
-  rstate_t rst_st /* verilator public_flat_rd */;
+  // ------------------------------------------------------------ in flight
+  // NSLOT points at once, allocated and retired in order. The walker already
+  // issues two projections per record and cannot finish until both are back,
+  // so one-at-a-time made them strictly serial; four covers those two plus the
+  // header pair. Cost is four slots of {vx,vy,z,r} and change.
+  localparam int NSLOT = 4;
+  localparam int SW    = 2;                 // $clog2(NSLOT)
 
-  logic [31:0] rx, ry, rz, recip;
-  logic        r_behind;
+  logic [31:0]   q_vx [NSLOT], q_vy [NSLOT], q_z [NSLOT], q_r [NSLOT];
+  logic          q_beh [NSLOT], q_rv [NSLOT];
+  logic [2:0]    q_stg [NSLOT];             // 0 M0, 1 M1, 2 A0, 3 A1, 4 done
+  logic [1:0]    q_iss [NSLOT], q_got [NSLOT];
+  logic [SW-1:0] wr_ptr, rc_ptr, rd_ptr;
+  logic [SW:0]   count;
 
-  // The reciprocal is LOCAL and pipelined, not the pool's divider: 6 cycles
-  // against 29, and every point's multiplies wait on it. m1_geo_recip's header
-  // carries the measurement and why a second pooled divider did not help. The
-  // pool's div port is tied off here; m1_geo_clip and m1_geo_planes still use it.
-  assign div_req = 1'b0;
-  assign div_a   = '0;
-  assign div_b   = '0;
-
-  logic       rcp_start;
-  wire        div_out_valid;
-  wire [31:0] div_result;
-
-  // rz is loaded at the end of the R_IDLE cycle, so the request is issued one
-  // cycle later - the first cycle of R_BUSY - when rz is the z being divided.
-  m1_geo_recip u_recip (
-    .clk(clk), .rst_n(rst_n),
-    .in_valid(rcp_start), .in_ready(), .in_x(rz),
-    .out_valid(div_out_valid), .out_y(div_result)
-  );
+  // count is SW+1 bits, so full is exactly its top bit.
+  assign in_ready = !count[SW];
 
   // z > 0 means positive, nonzero and not a NaN. A NaN compares false against
   // everything in C, so `z > 0` is false for it and MAME takes the behind path -
@@ -120,170 +111,189 @@ module m1_geo_project (
   wire z_is_zero = (in_z[30:0] == 31'd0);
   wire z_pos     = !in_z[31] && !z_is_zero && !z_is_nan;
 
+  wire accept = in_valid && in_ready;
 
-  // ------------------------------------------------------------ scale stage
-  typedef enum logic [2:0] { S_IDLE, S_M0, S_M1, S_A0, S_A1, S_OUT } sstate_t;
-  sstate_t sst /* verilator public_flat_rd */;
+  // The reciprocal is LOCAL and pipelined, not the pool's divider: 6 cycles
+  // against 29, one per cycle, and every point's multiplies wait on it.
+  // m1_geo_recip's header carries the measurement. The pool's div port is tied
+  // off here; m1_geo_clip and m1_geo_planes still use it.
+  assign div_req = 1'b0;
+  assign div_a   = '0;
+  assign div_b   = '0;
 
-  logic [31:0] sx_f, sy_f, sxx, syy, sr, sx_in, sy_in;
-  logic        s_behind;
-  logic [31:0] s_z;
-  logic [2:0]  step;
-  logic [1:0]  n_got;
+  wire        rcp_valid;
+  wire [31:0] rcp_out;
 
-  wire        mul_out_valid = mul_rsp;
-  wire [31:0] mul_result    = mul_res;
-  wire        add_out_valid = add_rsp;
-  wire [31:0] add_result    = add_res;
+  // EVERY accepted point goes through it, behind-the-eye ones included, and a
+  // behind slot waits for its result before retiring even though it discards it.
+  // That keeps one reciprocal per slot in allocation order, so rc_ptr never has
+  // to skip - and a skipped slot could be reallocated while its result was still
+  // in flight, landing on the wrong point. It costs nothing: the unit is
+  // pipelined, so the extra points ride along in cycles that were already spent.
+  m1_geo_recip u_recip (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(accept), .in_ready(), .in_x(in_z),
+    .out_valid(rcp_valid), .out_y(rcp_out)
+  );
 
-  // Two converters, not one muxed between the coordinates: the conversion is a
-  // shift and a negate, so a second instance is cheaper than the state it would
-  // take to reuse the first, and muxing one between sx_f and sy_f is how the
-  // first version of this module ended up never assigning out_sy at all.
-  logic signed [31:0] sx_i, sy_i;
-  fp_to_int u_f2i_x (.f(sx_f), .i(sx_i));
-  fp_to_int u_f2i_y (.f(sy_f), .i(sy_i));
+  // ------------------------------------------------------------ issue
+  // Oldest slot first, for each unit independently. Scanning down from the
+  // newest means the last write wins and that is slot rd_ptr, so a stalled
+  // point can never be overtaken into the same unit by a younger one.
+  logic          mul_sel_v, add_sel_v;
+  logic [SW-1:0] mul_sel,   add_sel;
+  logic [SW-1:0] scan_s;          // loop temp, hoisted so yosys will take it
 
-  assign in_ready = (rst_st == R_IDLE);
-
-  // Two multiplies then two multiplies, then two adds then two adds. Each pair
-  // is issued back to back and collected before the next, which costs the FP
-  // latency three times over - 19 cycles.
-  //
-  // THIS IS NOW THE STAGE TO ATTACK. It used to be hidden behind a 29-cycle
-  // reciprocal and the note here said tightening it "would buy nothing"; the
-  // reciprocal is 6 cycles as of 2026-09-08 and the bench now reads scale 47.0%
-  // against recip 11.2%. The obvious move is folding S_A0 into S_A1 - the two
-  // adds are (ax + viewx) + xc and yc - (ay + viewy), so they collapse to
-  // ax + (xc + viewx) and (yc - viewy) - ay against constants that only change
-  // when the viewport does. That removes one FP latency of four. Not done yet.
   always_comb begin
-    mul_req = 1'b0; mul_a = '0; mul_b = '0;
-    add_req = 1'b0; add_a = '0; add_b = '0; add_sub = 1'b0;
-    case (sst)
-      S_M0: begin                       // xx = x*r, yy = y*r
-        mul_req = (step < 3'd2);
-        mul_a = (step == 3'd0) ? sx_in : sy_in;
-        mul_b = sr;
+    mul_sel_v = 1'b0; mul_sel = '0;
+    add_sel_v = 1'b0; add_sel = '0;
+    for (int k = NSLOT-1; k >= 0; k--) begin
+      scan_s = SW'(rd_ptr + SW'(k[SW-1:0]));
+      if ({1'b0, SW'(k[SW-1:0])} < count) begin
+        if (q_rv[scan_s] && (q_stg[scan_s] < 3'd2) && (q_iss[scan_s] < 2'd2)) begin
+          mul_sel_v = 1'b1; mul_sel = scan_s;
+        end
+        if ((q_stg[scan_s] >= 3'd2) && (q_stg[scan_s] < 3'd4) && (q_iss[scan_s] < 2'd2)) begin
+          add_sel_v = 1'b1; add_sel = scan_s;
+        end
       end
-      S_M1: begin                       // ax = xx*zoomx, ay = yy*zoomy
-        mul_req = (step < 3'd2);
-        mul_a = (step == 3'd0) ? sxx : syy;
-        mul_b = (step == 3'd0) ? zoomx : zoomy;
-      end
-      S_A0: begin                       // bx = ax+viewx, by = ay+viewy
-        add_req = (step < 3'd2);
-        add_a = (step == 3'd0) ? sxx : syy;
-        add_b = (step == 3'd0) ? viewx : viewy;
-      end
-      S_A1: begin                       // sx = xc+bx, sy = yc-by
-        add_req = (step < 3'd2);
-        add_a = (step == 3'd0) ? xc : yc;
-        add_b = (step == 3'd0) ? sxx : syy;
-        add_sub = (step == 3'd1);       // yc MINUS, the screen y axis is flipped
-      end
-      default: ;
-    endcase
+    end
+  end
+
+  wire m_c1 = (q_iss[mul_sel] == 2'd1);     // second of the pair: the y coord
+  wire a_c1 = (q_iss[add_sel] == 2'd1);
+  wire a_st1 = (q_stg[add_sel] == 3'd3);    // A1 rather than A0
+
+  assign mul_req = mul_sel_v;
+  assign mul_a   = m_c1 ? q_vy[mul_sel] : q_vx[mul_sel];
+  assign mul_b   = (q_stg[mul_sel] == 3'd0) ? q_r[mul_sel]
+                                            : (m_c1 ? zoomy : zoomx);
+
+  assign add_req = add_sel_v;
+  assign add_a   = a_st1 ? (a_c1 ? yc : xc)
+                         : (a_c1 ? q_vy[add_sel] : q_vx[add_sel]);
+  assign add_b   = a_st1 ? (a_c1 ? q_vy[add_sel] : q_vx[add_sel])
+                         : (a_c1 ? viewy : viewx);
+  assign add_sub = a_st1 && a_c1;           // yc MINUS, the screen y axis is flipped
+
+  // ------------------------------------------------------------ tags
+  // fp_mul and fp_add are fixed-latency pipelines, so a client's results come
+  // back in the order it issued them. That is the whole reason several points
+  // can be in flight: each unit needs nothing more than a queue recording which
+  // slot and which coordinate each outstanding operation belongs to.
+  logic [SW-1:0] mtag_s [8], atag_s [8];
+  logic          mtag_c [8], atag_c [8];
+  logic [2:0]    mt_wr, mt_rd, at_wr, at_rd;
+
+  wire [SW-1:0] m_rs = mtag_s[mt_rd];
+  wire          m_rc = mtag_c[mt_rd];
+  wire [SW-1:0] a_rs = atag_s[at_rd];
+  wire          a_rc = atag_c[at_rd];
+
+  // ------------------------------------------------------------ retire
+  logic signed [31:0] sx_i, sy_i;
+  fp_to_int u_f2i_x (.f(q_vx[rd_ptr]), .i(sx_i));
+  fp_to_int u_f2i_y (.f(q_vy[rd_ptr]), .i(sy_i));
+
+  wire retire = (count != 0) && (q_stg[rd_ptr] == 3'd4) && q_rv[rd_ptr];
+
+  // tb_m1_geometry reads these two by name for its inside-projection split.
+  // They are summaries of the queue now, not states of a machine.
+  wire [1:0] rst_st /* verilator public_flat_rd */ =
+      (rc_ptr != wr_ptr) ? 2'd1 : ((count != 0) ? 2'd2 : 2'd0);
+  logic [2:0] sst /* verilator public_flat_rd */;
+  always_comb begin
+    sst = 3'd0;
+    for (int k = 0; k < NSLOT; k++)
+      if (({1'b0, SW'(k[SW-1:0])} < count) && (q_stg[SW'(rd_ptr + SW'(k[SW-1:0]))] < 3'd4))
+        sst = sst + 3'd1;
   end
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      rst_st <= R_IDLE; sst <= S_IDLE;
-      rx <= '0; ry <= '0; rz <= '0; recip <= '0; r_behind <= 1'b0;
-      sx_in <= '0; sy_in <= '0; sr <= '0; sxx <= '0; syy <= '0;
-      sx_f <= '0; sy_f <= '0; s_behind <= 1'b0; s_z <= '0;
-      step <= '0; n_got <= '0;
+      wr_ptr <= '0; rc_ptr <= '0; rd_ptr <= '0; count <= '0;
+      mt_wr <= '0; mt_rd <= '0; at_wr <= '0; at_rd <= '0;
       out_valid <= 1'b0; out_sx <= '0; out_sy <= '0; out_z <= '0;
-      out_behind <= 1'b0; rcp_start <= 1'b0;
+      out_behind <= 1'b0;
+      for (int i = 0; i < NSLOT; i++) begin
+        q_vx[i] <= '0; q_vy[i] <= '0; q_z[i] <= '0; q_r[i] <= '0;
+        q_beh[i] <= 1'b0; q_rv[i] <= 1'b0;
+        q_stg[i] <= 3'd4; q_iss[i] <= '0; q_got[i] <= '0;
+      end
     end else begin
       out_valid <= 1'b0;
-      rcp_start <= (rst_st == R_IDLE) && in_valid && z_pos;
 
-      // ---------------------------------------------------- reciprocal stage
-      case (rst_st)
-        R_IDLE: begin
-          if (in_valid) begin
-            rx <= in_x; ry <= in_y; rz <= in_z;
-            r_behind    <= !z_pos;
-            rst_st      <= R_BUSY;
-          end
-        end
-        R_BUSY: begin
-          if (r_behind) begin
-            // No divide at all for a point behind the eye: MAME does not call
-            // project_point, it assigns zero. Spending 29 cycles to compute a
-            // number that is then discarded would halve the throughput on a
-            // frame full of back-facing geometry.
-            recip  <= '0;
-            rst_st <= R_FULL;
-          end else if (div_out_valid) begin
-            recip  <= div_result;
-            rst_st <= R_FULL;
-          end
-        end
-        R_FULL: begin
-          if (sst == S_IDLE) rst_st <= R_IDLE;
-        end
-        default: rst_st <= R_IDLE;
-      endcase
+      // ------------------------------------------------------ allocate
+      if (accept) begin
+        q_vx[wr_ptr]  <= in_x;
+        q_vy[wr_ptr]  <= in_y;
+        q_z[wr_ptr]   <= in_z;
+        q_beh[wr_ptr] <= !z_pos;
+        // Behind the eye skips the chain entirely, as MAME does: it does not
+        // call project_point, it assigns zero.
+        q_stg[wr_ptr] <= z_pos ? 3'd0 : 3'd4;
+        q_iss[wr_ptr] <= '0;
+        q_got[wr_ptr] <= '0;
+        q_rv[wr_ptr]  <= 1'b0;
+        wr_ptr        <= wr_ptr + SW'(1);
+      end
 
-      // ---------------------------------------------------- scale stage
-      case (sst)
-        S_IDLE: begin
-          if (rst_st == R_FULL) begin
-            sx_in <= rx; sy_in <= ry; s_z <= rz;
-            sr <= recip; s_behind <= r_behind;
-            step <= '0; n_got <= '0;
-            sst  <= r_behind ? S_OUT : S_M0;
-          end
-        end
+      // ------------------------------------------------------ reciprocal in
+      if (rcp_valid) begin
+        q_r[rc_ptr]  <= rcp_out;
+        q_rv[rc_ptr] <= 1'b1;
+        rc_ptr       <= rc_ptr + SW'(1);
+      end
 
-        S_M0, S_M1: begin
-          // Advance only on a grant: a shared multiplier can refuse a cycle, and
-          // stepping through the refusal drops an operand silently.
-          if (step < 3'd2 && mul_gnt) step <= step + 3'd1;
-          if (mul_out_valid) begin
-            if (n_got == 2'd0) sxx <= mul_result;
-            else               syy <= mul_result;
-            n_got <= n_got + 2'd1;
-            if (n_got == 2'd1) begin
-              step  <= '0;
-              n_got <= '0;
-              sst   <= (sst == S_M0) ? S_M1 : S_A0;
-            end
-          end
-        end
+      // ------------------------------------------------------ issue accepted
+      // Advance only on a grant: a shared unit can refuse a cycle, and stepping
+      // through the refusal drops an operand silently.
+      if (mul_req && mul_gnt) begin
+        mtag_s[mt_wr] <= mul_sel;
+        mtag_c[mt_wr] <= m_c1;
+        mt_wr         <= mt_wr + 3'd1;
+        q_iss[mul_sel] <= q_iss[mul_sel] + 2'd1;
+      end
+      if (add_req && add_gnt) begin
+        atag_s[at_wr] <= add_sel;
+        atag_c[at_wr] <= a_c1;
+        at_wr         <= at_wr + 3'd1;
+        q_iss[add_sel] <= q_iss[add_sel] + 2'd1;
+      end
 
-        S_A0, S_A1: begin
-          if (step < 3'd2 && add_gnt) step <= step + 3'd1;
-          if (add_out_valid) begin
-            if (n_got == 2'd0) begin
-              if (sst == S_A0) sxx <= add_result; else sx_f <= add_result;
-            end else begin
-              if (sst == S_A0) syy <= add_result; else sy_f <= add_result;
-            end
-            n_got <= n_got + 2'd1;
-            if (n_got == 2'd1) begin
-              step  <= '0;
-              n_got <= '0;
-              sst   <= (sst == S_A0) ? S_A1 : S_OUT;
-            end
-          end
+      // ------------------------------------------------------ collect
+      if (mul_rsp) begin
+        mt_rd <= mt_rd + 3'd1;
+        if (m_rc) q_vy[m_rs] <= mul_res; else q_vx[m_rs] <= mul_res;
+        if (q_got[m_rs] == 2'd1) begin
+          q_got[m_rs] <= '0; q_iss[m_rs] <= '0; q_stg[m_rs] <= q_stg[m_rs] + 3'd1;
+        end else begin
+          q_got[m_rs] <= q_got[m_rs] + 2'd1;
         end
-
-        S_OUT: begin
-          // Behind the eye is a literal (0,0), as MAME assigns - not a converted
-          // one, because the float chain was never run for it.
-          out_sx     <= s_behind ? 32'sd0 : sx_i;
-          out_sy     <= s_behind ? 32'sd0 : sy_i;
-          out_z      <= s_z;
-          out_behind <= s_behind;
-          out_valid  <= 1'b1;
-          sst        <= S_IDLE;
+      end
+      if (add_rsp) begin
+        at_rd <= at_rd + 3'd1;
+        if (a_rc) q_vy[a_rs] <= add_res; else q_vx[a_rs] <= add_res;
+        if (q_got[a_rs] == 2'd1) begin
+          q_got[a_rs] <= '0; q_iss[a_rs] <= '0; q_stg[a_rs] <= q_stg[a_rs] + 3'd1;
+        end else begin
+          q_got[a_rs] <= q_got[a_rs] + 2'd1;
         end
+      end
 
-        default: sst <= S_IDLE;
-      endcase
+      // ------------------------------------------------------ retire
+      if (retire) begin
+        // Behind the eye is a literal (0,0), as MAME assigns - not a converted
+        // one, because the float chain was never run for it.
+        out_sx     <= q_beh[rd_ptr] ? 32'sd0 : sx_i;
+        out_sy     <= q_beh[rd_ptr] ? 32'sd0 : sy_i;
+        out_z      <= q_z[rd_ptr];
+        out_behind <= q_beh[rd_ptr];
+        out_valid  <= 1'b1;
+        rd_ptr     <= rd_ptr + SW'(1);
+      end
+
+      count <= count + {2'd0, accept} - {2'd0, retire};
     end
   end
 

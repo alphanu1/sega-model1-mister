@@ -190,9 +190,18 @@ module m1_geo_walk (
   //
   // THE POINT COMES FIRST AND THE NORMAL SECOND, which is not the order the
   // record stores them in. p0 is what the first projection and the determinant
-  // both wait on, and the projection is a 29-cycle reciprocal that cannot be
-  // pipelined - so transforming the normal ahead of it put the longest pole in
-  // the stage 18 cycles further out for nothing.
+  // both wait on, and the projection used to be a 29-cycle reciprocal that
+  // could not be pipelined - so transforming the normal ahead of it put the
+  // longest pole in the stage 18 cycles further out for nothing.
+  //
+  // THAT REASON EXPIRED ON 2026-09-08 AND THE ORDER IS STILL RIGHT. The
+  // reciprocal is 6 cycles and pipelined and m1_geo_project now carries four
+  // points at once, so the obvious follow-up was P0, P1, VN - both projections
+  // started earlier, and the second no longer waited on all three transforms.
+  // MEASURED WORSE: 375.7 -> 384.2 cycles a quad. Projection is no longer the
+  // longest pole; normalize -> colour is, and moving the normal last pushes
+  // that tail out by a whole transform. Do not retry it without first making
+  // the normalize tail shorter.
   //
   // AND THE NORMALIZE IS ISSUED WITHOUT WAITING FOR THE CULL. Gating it on the
   // determinant made the tail of the record det -> normalize -> colour, three
