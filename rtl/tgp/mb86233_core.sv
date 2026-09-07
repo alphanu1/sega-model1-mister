@@ -123,18 +123,66 @@ module mb86233_core (
   logic [2:0]  d_stmsub;
   logic [15:0] d_stmm;
 
+  // THE DECODE IS REGISTERED, AND IT DECODES prog_rdata NOT ir.
+  //
+  // ir fans out through this combinational decoder into the state machine, the
+  // register file, the AGU and the ALU, and at clk_3d 57.143 every one of those
+  // destinations sits at about the same delay. Fixing them one at a time moves
+  // the violation sideways rather than closing it -- measured twice:
+  //   ir[20] -> state.S_LABB            -0.305   fixed by registering d_lab
+  //   ir[20] -> mb86233_regs|x...       -0.343   the very next destination
+  // Same source, same delay, different endpoint. So the fix belongs at the
+  // source.
+  //
+  // IT COSTS NO EXTRA CYCLE. ir is latched in S_FETCH_W and first used in
+  // S_DECODE, so decoding prog_rdata -- the value about to become ir -- and
+  // registering the result on the same edge puts the decode in a cycle that was
+  // already just waiting for the fetch. Every consumer sees a registered decode
+  // from S_DECODE onward, and `ir -> decode -> anything` leaves every path at
+  // once.
+  logic c_lab;
+  logic c_ldmov;
+  logic c_stm;
+  logic c_lipl;
+  logic c_repgrp;
+  logic c_ldi;
+  logic c_branch;
+  logic c_unimpl;
+  logic [8:0] c_r1;
+  logic [8:0] c_r2;
+  logic [4:0] c_alu;
+  logic [2:0] c_sub;
+  logic [2:0] c_op7;
+  logic [4:0] c_cond;
+  logic [2:0] c_bsub;
+  logic [15:0] c_bdata;
+  logic c_binv;
+  logic [5:0] c_ldireg;
+  logic [31:0] c_ldival;
+  logic [1:0] c_lsel;
+  logic [31:0] c_lval;
+  logic [23:0] c_lpimm;
+  logic [2:0] c_fsub;
+  logic c_clra;
+  logic c_clrb;
+  logic c_clrd;
+  logic c_repreg;
+  logic [7:0] c_repimm;
+  logic [2:0] c_stmsub;
+  logic [15:0] c_stmm;
+
   mb86233_dec u_dec (
-    .opcode(ir),
-    .is_lab(d_lab), .is_ldmov(d_ldmov), .is_stm(d_stm), .is_lipl(d_lipl),
-    .is_rep_grp(d_repgrp), .is_ldi(d_ldi), .is_branch(d_branch),
-    .unimplemented(d_unimpl),
-    .r1(d_r1), .r2(d_r2), .alu(d_alu), .sub_op(d_sub), .op7_sub(d_op7),
-    .br_cond(d_cond), .br_subtype(d_bsub), .br_data(d_bdata), .br_invert(d_binv),
-    .ldi_reg(d_ldireg), .ldi_val(d_ldival),
-    .lipl_sel(d_lsel), .lipl_val(d_lval), .lipl_p_imm(d_lpimm),
-    .f_sub(d_fsub), .f_clr_a(d_clra), .f_clr_b(d_clrb), .f_clr_d(d_clrd),
-    .f_rep_from_reg(d_repreg), .f_rep_imm(d_repimm),
-    .stm_sub(d_stmsub), .stm_m(d_stmm)
+    .opcode(prog_rdata),
+    .is_lab(c_lab), .is_ldmov(c_ldmov), .is_stm(c_stm), .is_lipl(c_lipl),
+    .is_rep_grp(c_repgrp), .is_ldi(c_ldi), .is_branch(c_branch),
+    .unimplemented(c_unimpl),
+    .r1(c_r1), .r2(c_r2), .alu(c_alu), .sub_op(c_sub), .op7_sub(c_op7),
+    .br_cond(c_cond), .br_subtype(c_bsub), .br_data(c_bdata), .br_invert(c_binv),
+    .ldi_reg(c_ldireg), .ldi_val(c_ldival),
+    .lipl_sel(c_lsel), .lipl_val(c_lval), .lipl_p_imm(c_lpimm),
+    .f_sub(c_fsub), .f_clr_a(c_clra), .f_clr_b(c_clrb), .f_clr_d(c_clrd),
+    .f_rep_from_reg(c_repreg), .f_rep_imm(c_repimm),
+    .stm_sub(c_stmsub), .stm_m(c_stmm)
   );
 
   logic [1:0] x_src_sp, x_dst_sp, x_lab_b_sp;
@@ -383,23 +431,6 @@ module mb86233_core (
   logic alu_active;
   assign alu_active = d_lab | d_ldmov | d_repgrp;
 
-  // d_lab REGISTERED, FOR THE S_LABB TRANSITIONS ONLY.
-  // After the memory stall was registered, the clk_3d critical path became
-  //   mb86233_core|ir[20] -> state.S_LABB, -0.305 ns at 57.143 MHz
-  // which is the instruction register through mb86233_dec into the next-state
-  // logic. ir is loaded in S_FETCH_W and S_LABB is only ever entered from S_SRC
-  // or S_SRC_W -- two or more cycles later -- so by then a registered decode is
-  // a cycle old and therefore correct.
-  //
-  // S_DECODE keeps the COMBINATIONAL d_lab: it runs the cycle after ir loads,
-  // when d_lab_q still holds the previous instruction's value. That is also why
-  // this is not simply "register the decoder" -- the same signal is needed both
-  // ways depending on how far the instruction has travelled.
-  logic d_lab_q;
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) d_lab_q <= 1'b0;
-    else        d_lab_q <= d_lab;
-  end
 
   // RETIMING: the ALU op reaches the FP operand mux through a REGISTER, not
   // straight out of the decoder.
@@ -521,6 +552,40 @@ module mb86233_core (
       state        <= S_FETCH;
       reg_m        <= 16'd0;
       ir           <= 32'd0;
+      // The decode is registered now, so it resets with everything else. A
+      // reset lands the core in S_FETCH, which reaches S_DECODE only through
+      // S_FETCH_W, so these are always reloaded before they are read -- this is
+      // for determinism and to keep X out of simulation, not for correctness.
+      d_lab <= '0;
+      d_ldmov <= '0;
+      d_stm <= '0;
+      d_lipl <= '0;
+      d_repgrp <= '0;
+      d_ldi <= '0;
+      d_branch <= '0;
+      d_unimpl <= '0;
+      d_r1 <= '0;
+      d_r2 <= '0;
+      d_alu <= '0;
+      d_sub <= '0;
+      d_op7 <= '0;
+      d_cond <= '0;
+      d_bsub <= '0;
+      d_bdata <= '0;
+      d_binv <= '0;
+      d_ldireg <= '0;
+      d_ldival <= '0;
+      d_lsel <= '0;
+      d_lval <= '0;
+      d_lpimm <= '0;
+      d_fsub <= '0;
+      d_clra <= '0;
+      d_clrb <= '0;
+      d_clrd <= '0;
+      d_repreg <= '0;
+      d_repimm <= '0;
+      d_stmsub <= '0;
+      d_stmm <= '0;
       src_val      <= 32'd0;
       lab_a_val    <= 32'd0;
       lab_b_val    <= 32'd0;
@@ -530,7 +595,41 @@ module mb86233_core (
     end else begin
       unique case (state)
         S_FETCH:   state <= S_FETCH_W;
-        S_FETCH_W: begin ir <= prog_rdata; state <= S_DECODE; end
+        S_FETCH_W: begin
+          ir <= prog_rdata;
+          // Registered here, from the same value and on the same edge as ir.
+          d_lab <= c_lab;
+          d_ldmov <= c_ldmov;
+          d_stm <= c_stm;
+          d_lipl <= c_lipl;
+          d_repgrp <= c_repgrp;
+          d_ldi <= c_ldi;
+          d_branch <= c_branch;
+          d_unimpl <= c_unimpl;
+          d_r1 <= c_r1;
+          d_r2 <= c_r2;
+          d_alu <= c_alu;
+          d_sub <= c_sub;
+          d_op7 <= c_op7;
+          d_cond <= c_cond;
+          d_bsub <= c_bsub;
+          d_bdata <= c_bdata;
+          d_binv <= c_binv;
+          d_ldireg <= c_ldireg;
+          d_ldival <= c_ldival;
+          d_lsel <= c_lsel;
+          d_lval <= c_lval;
+          d_lpimm <= c_lpimm;
+          d_fsub <= c_fsub;
+          d_clra <= c_clra;
+          d_clrb <= c_clrb;
+          d_clrd <= c_clrd;
+          d_repreg <= c_repreg;
+          d_repimm <= c_repimm;
+          d_stmsub <= c_stmsub;
+          d_stmm <= c_stmm;
+          state <= S_DECODE;
+        end
 
         S_DECODE: begin
           alu_op_r  <= d_alu;
@@ -543,7 +642,7 @@ module mb86233_core (
         end
 
         S_SRC: begin
-          if (x_src_reg) begin src_val <= rf_rd_data; state <= d_lab_q ? S_LABB : S_DST; end
+          if (x_src_reg) begin src_val <= rf_rd_data; state <= d_lab ? S_LABB : S_DST; end
           else                                        state <= S_SRC_W;
         end
 
@@ -552,7 +651,7 @@ module mb86233_core (
             src_val <= (x_src_sp == mb86233_pkg::EP_PROG) ? prog_rdata
                      : (x_src_sp == mb86233_pkg::EP_IO)   ? io_rdata
                                                           : mem_rdata;
-            state   <= d_lab_q ? S_LABB : S_DST;
+            state   <= d_lab ? S_LABB : S_DST;
           end
         end
 

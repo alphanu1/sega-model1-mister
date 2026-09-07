@@ -775,6 +775,8 @@ m1_boot:
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+	  rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v \
+	  rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv \
 	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  rtl/video/m1_listctl.sv \
