@@ -20,6 +20,52 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE AGU IS WORTH 1,391 ALM IN TOTAL, SO EXTRACTING IT IS NOT WORTH A SESSION
+
+Priced before writing it, which is the rule this session established after
+hand-sharing lost twice. Constant mode selectors, so every
+`case(modtop)`/`case(modreg)` arm in BOTH `S_EA_MODE` and its near-duplicate
+`S_BAM_MODE` folds away - deliberately wrong, purely to measure:
+
+    full addressing-mode decode   15,605 ALM
+    decode stubbed out            14,214 ALM
+                                  ------
+                                   1,391 ALM, 9% of the V60
+
+**That is the whole decode, both copies.** An AGU module can only recover the
+DUPLICATION between the two states, never the decode itself, so its ceiling is
+some fraction of 1,391 - and the directly comparable attempt, sharing the
+displacement decode between exactly those two states, came out 33 ALM WORSE.
+The expected return is a few hundred at best and plausibly negative.
+
+### What this says about the whole split
+
+The V60 is 15,605 ALM in the shipping configuration. The two things anyone has
+been able to name as structural targets are the addressing-mode decode at 1,391
+and the FP group at ~1,479. **Together that is under 20% of the module**, and
+neither can be fully recovered by extraction. The remaining ~12,700 is the
+instruction dispatch `casez`, the execution states and the load/store path -
+not one structure, and not obviously duplicated.
+
+So the reasoning that opened this work - the i960 is 5,414 lines in sixteen
+modules at ~7,200 ALM while the V60 is 5,464 lines in four at ~16,000, therefore
+splitting recovers the difference - **is not supported by what the V60 actually
+measures.** The i960 is a fixed-width RISC; the V60 is CISC with variable-length
+instructions, a 24-byte fetch window and multi-level addressing modes. Line
+count is not the comparable quantity, and no measurement taken here shows a path
+from 15,605 to 10,000.
+
+What DID work is one specific shape, twice-confirmed: a large mux whose select
+is a runtime offset, which the tool cannot share because each call site's offset
+expression differs. That was worth 1,054 ALM. Nothing else measured has been
+worth anything.
+
+**Before spending another session on the split, price the target first.** Three
+of the four things priced this way turned out to be worth 16, -33 and 1,391;
+only one was worth building.
+
+---
+
 ## 2026-09-07 — HAND-SHARING SMALL DECODES DOES NOT PAY; ONLY BIG OFFSET-DEPENDENT MUXES DO
 
 Two experiments now say the same thing, and the second was tried anyway because
