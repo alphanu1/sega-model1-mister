@@ -20,6 +20,64 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE COPROCESSOR PORT WAS ALSO FETCHING DOUBLE, AND FIXING IT DID NOT MOVE THE LEFT-SIDE 3D
+
+Confirmed on hardware at `dacf1e6`: nothing regressed, the 2D and the tile
+overruns are as good as `46b9e2c`, and **the left-side 3D dropout is unchanged**.
+
+### What was wrong
+
+p3 is the coprocessor's `copro_data` and math tables. A fetch is one 32-bit
+word; the port bursted FOUR, the top level aligned the address down to the
+burst boundary, and `m1_integrated` picked the half it wanted with
+`tgp_mem_addr[1]`. The same defect p1 had, found by auditing every port's
+`p_dout` consumer against its `blen()` after p1 was fixed.
+
+That audit is worth repeating on any new port. Of the seven: p0, p4 and p6 are
+single-word and matched; p2 and p5 consume all 64 bits of their bursts; p1 and
+p3 were the two fetching double. **p5 was NOT a third instance** - a comment in
+`Model1.sv` claimed it picked a 32-bit half like p3 did, and it does not;
+`m1_integrated` takes all of `r3d_rom_dout`. That comment was wrong and is
+corrected.
+
+Unlike p1, the bench totals move the right way here: 33,352 transactions served
+to **34,096**, +2.2% in the same window, because with neither port fetching
+words it discards the bus does more useful work. The build is also 76 ALM
+smaller and `clk_sys` slack improved from +0.719 to +0.867 ns, consistent with
+deleting the half-select mux.
+
+### The hypothesis it was aimed at, and what the result means
+
+The reasoning was: p3 is the read that blocks the coprocessor before any math
+unit runs, the geometry pass it feeds measures `len=1.47 fr` against a
+one-frame budget, and the left-side 3D dropout is INTERMITTENT - which fits a
+deadline sometimes missed, where a clipping or coordinate error would cut in
+the same place every frame.
+
+**The dropout did not change.** But this is NOT yet a clean elimination, and
+the difference matters:
+
+- `len=` and `obj=` in the PASS3D line were **not read** on this build. If p3
+  did not actually shorten the geometry pass, the hypothesis was never tested -
+  only the fix's side effects were observed.
+- A clean elimination needs `len=` measurably shorter WITH the dropout
+  unchanged. That would say the pass got faster and the cut is elsewhere.
+- `len=` unchanged would say p3 was not the pass's bottleneck, which is a
+  different finding and leaves the deadline theory open.
+
+**So the next measurement is `len=`/`obj=` off the UART, not another fix.**
+
+### Where this leaves the left-side 3D
+
+Still open, and the list of what has been eliminated by measurement grows:
+`a_left = 0` (board said `BF62`), backface culling (identical cull rates, and
+the yaw sweep), span starvation (`A=`/`Z=` answered 44.7%), and now the
+coprocessor data port's bandwidth - provisionally, pending `len=`. The mixer
+remains the last unexamined stage, and `K=`/`G=` have never been read on a
+healthy build.
+
+---
+
 ## 2026-09-07 — THE TILE FETCH IS FIXED, AND THE FIX WAS TO STOP FETCHING WHAT WAS DISCARDED
 
 Confirmed on hardware at `46b9e2c`: the 2D renders correctly and **tile
