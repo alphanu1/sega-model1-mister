@@ -20,6 +20,52 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE TGP IS THE clk_3d CEILING, NOT THE 3D UNITS
+
+Registering all three FP pool operand muxes took m1_geometry from 39.6 to
+**59.36 MHz** and moved its critical path out of the pool entirely, into
+`m1_geo_walk|o0z[20] -> qz[8]`. The pool is no longer the limiter.
+
+So the next rung was tried - clk_3d 800/14 = 57.143, clk_cpu 800/28 = 28.571 -
+and **it fails timing at -1.256 ns**, with TNS -2.820, so two or three paths.
+All five worst are the same place, and it is not the 3D at all:
+
+    mb86233_core|state.S_DST_W -> state.S_DST      -1.256
+    mb86233_core|state.S_DST_W -> state.S_LABB     -1.241
+
+**`m1_tgp` is dual-clock and its core runs on clk_3d**, deliberately at exactly
+2x clk_cpu so the coprocessor gets two cycles per CPU cycle - "against a 16 MHz
+V60, where we had 1:1". So raising clk_3d clocks the COPROCESSOR faster too, and
+its state machine is the ceiling.
+
+The TGP's in-core ceiling is between **53.333, which closes with +1.166 ns**,
+and 57.143, which does not.
+
+### The prediction that was wrong, and why it matters
+
+m1_raster_fill was expected to be the next wall, on its standalone 58.84 MHz.
+It is not - it clears 57.143 comfortably, and so does m1_geometry at 59.36. The
+module that broke it had not been measured at all, because it is not in the 3D
+layer and nobody had thought to check what else lives on clk_3d.
+
+**Check what SHARES a clock before predicting what limits it.** The standalone
+Fmax of the modules you are thinking about says nothing about the module you
+forgot.
+
+### Where the staircase stands
+
+    47.059 / 23.529   start of day, ~70% of the real board
+    53.333 / 26.667   SHIPPED and confirmed on hardware, ~79%, "noticeable"
+    57.143 / 28.571   blocked on mb86233_core's state machine
+    66.67  / 33.33    then blocked on m1_geo_walk 59.36, m1_raster_fill 58.84
+    72.73  / 36.36    the V60's 38.19 binds through the 2x tie, ~107%
+
+Each rung is now a named module with a measured number, which is the useful
+part. The next one is the coprocessor's dispatch, and it is the same shape of
+problem as the V60's - a large FSM whose state transition is the path.
+
+---
+
 ## 2026-09-08 — clk_cpu IS GATED BY THE FP POOL, AND THE POOL'S LATENCY IS BAKED INTO ITS CONSUMERS
 
 Chasing the CPU clock, not area. The V60 runs at 23.529 MHz and a mean CPI of

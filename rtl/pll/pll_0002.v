@@ -30,7 +30,7 @@ module  pll_0002(
 	// lost time twice to pulse-versus-level faults across domains, and a
 	// synchronous ratio removes that class of bug instead of testing for it.
 	//
-	// 57.143 and not 80: m1_raster_fill measures 58.84 MHz and m1_geometry 59.36
+	// 53.333 and not 80: THE TGP IS THE LIMIT, not the 3D units -- see below
 	// once m1_fp_pool's operand mux is registered, so 80 still does not close.
 	// It was 47.059, held down by the pool's unregistered mux at 39.6 MHz.
 	// Measured, not assumed.
@@ -41,11 +41,19 @@ module  pll_0002(
 	// with "output_clock_frequency is set to an illegal value". 57.142857 is
 	// 800/14 and 28.571429 is 800/28, which keeps the exact 2x tie.
 	//
-	// This is the rung above 800/15 and 800/30. It only became reachable once
-	// fp_div's operand mux was registered too, which took m1_geometry from
-	// 54.57 to 59.36 and moved the critical path out of the FP pool entirely,
-	// into m1_geo_walk. The next rung, 800/12 and 800/24, is 66.67 / 33.33 and
-	// overshoots m1_raster_fill's 58.84.
+	// 800/14 AND 800/28 -- 57.143 / 28.571 -- WAS TRIED AND FAILS TIMING, and
+	// not where anyone expected. m1_geometry reaches 59.36 MHz and
+	// m1_raster_fill 58.84, both clear of 57.143. What misses is the
+	// COPROCESSOR: mb86233_core|state.S_DST_W -> state.S_DST and -> S_LABB, at
+	// -1.256 ns with TNS -2.820, so two or three paths. m1_tgp is dual-clock
+	// and its core runs on clk_3d, deliberately at 2x clk_cpu to give the
+	// coprocessor two cycles per CPU cycle, so raising clk_3d clocks the TGP
+	// faster too and its state machine is now the ceiling.
+	//
+	// The TGP's in-core ceiling is therefore between 53.333, which closes with
+	// +1.166 ns, and 57.143, which does not. Going higher means shortening that
+	// state transition first. m1_geo_walk is the 3D side's own next limit at
+	// 59.36, and m1_raster_fill's 58.84 after that.
 	//
 	// EVERY OUTPUT IS AN INTEGER DIVISION OF THE SAME 800 MHz VCO, which is what
 	// makes the ratios exact rather than approximate:
@@ -71,13 +79,13 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("28.571429 MHz"),
+		.output_clock_frequency1("26.666667 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("57.142857 MHz"),
+		.output_clock_frequency3("53.333333 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),
