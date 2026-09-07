@@ -20,6 +20,73 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — clk_cpu IS GATED BY THE FP POOL, AND THE POOL'S LATENCY IS BAKED INTO ITS CONSUMERS
+
+Chasing the CPU clock, not area. The V60 runs at 23.529 MHz and a mean CPI of
+~17.9 against the ~12.5 real time needs, so the game gets about **70% of the
+real board's work done per frame** - which is the VR slowdown.
+
+### The V60 was never the limit
+
+Pipelining fp_add/fp_mul's operand unpack took the V60 from 35.38 to
+**38.19 MHz** (and -179 ALM; committed). But the CPU clock cannot follow,
+because `clk_3d` is tied to **exactly 2x clk_cpu** so the crossing stays a clock
+enable rather than a handshake - a deliberate choice, the comment noting this
+project "has lost time twice to pulse-versus-level faults across domains".
+
+So `clk_cpu <= clk_3d / 2`, and clk_3d has its own ceiling:
+
+    m1_geometry     39.6 MHz  (shipping config; it CONTAINS the pool)
+    m1_fp_pool      53.25
+    m1_raster_fill  58.84
+    m1_quad_store   94.99
+
+    fp_add alone   138.48     <- the units are fast
+    fp_mul alone   145.62
+    fp_div alone   117.81
+
+**The arithmetic is not the problem; the sharing wrapper is.** m1_geometry's
+worst path is `m1_fp_pool|add_rr[1] -> m1_fp_pool|fp_add:u_add|sA_sticky`: the
+round-robin arbiter, through the NC-way 32-bit operand mux `add_a[add_win]`,
+into fp_add's first stage, all in one cycle.
+
+### Why it has not been pipelined, which is the finding
+
+Registering that mux is four lines and it WORKS electrically. It fails
+functionally, and `m1_geo_xform` says why in its own header:
+
+> The add schedule is fixed and spaced, not packed: ac 0 1 2 | 5 6 7 | 10 11 12.
+> Three-cycle gaps, not two. **fp_add's latency is 4**, so round 1's first add
+> reads a t[] the round-0 result must already have been WRITTEN to.
+
+**The pool's latency is a hard-coded constant in its consumers' schedules.**
+Adding a stage makes it 5 and those schedules read stale values:
+`m1_geo_xform` went to 7,806 fails of 7,813. Reverted.
+
+Nine modules instantiate against the pool - geo_xform, project, det, norm,
+color, rsqrt, clip, planes and geometry itself - and only geo_xform documents
+the assumption. The suite aborts at the first failure so the others are
+UNMEASURED; do not assume geo_xform is the only one.
+
+### What this costs and what it would take
+
+The staircase, if the schedules were made latency-parametric:
+
+    fix pool + geometry -> clk_3d ~56   clk_cpu ~28    ~84% of real speed
+    + raster_fill       -> clk_3d ~64   clk_cpu ~32    ~95%
+    + all               -> clk_3d 76.4  clk_cpu 38.19  ~113%, the V60 binds again
+
+76.4 MHz is the ceiling worth aiming at, NOT the units' own 117-145: past
+clk_3d 76.4 the V60's 38.19 binds through the 2x tie.
+
+The honest scope is: make the consumers' schedules derive from a latency
+parameter instead of a literal, then pipeline the pool. That is a session's
+work across nine modules with `m1_geo_*` fuzz suites as the net, not a
+four-line change - and the throughput cost of wider gaps has to be weighed
+against the clock gained, on a geometry pass already measured at len=1.47 fr.
+
+---
+
 ## 2026-09-07 — THE V60's AREA IS REAL LOGIC, NOT TIMING-DRIVEN DUPLICATION
 
 The module build constrains `clk` at 20 ns - 50 MHz - and the V60 achieves
