@@ -23,7 +23,7 @@ obj_dir/
 *.edif
 
 # ---------------------------------------------------------------- quartus
-# THE WHOLE DIRECTORY, by Ben's decision on 2026-09-07. It is NOT generated
+# THE WHOLE DIRECTORY, by decision on 2026-09-07. It is NOT generated
 # output -- it holds four hand-written build sources -- so this is a choice to
 # keep them off GitHub rather than a cleanup of build junk:
 #

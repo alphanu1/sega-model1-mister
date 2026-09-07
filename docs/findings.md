@@ -22,8 +22,8 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ## 2026-09-07 — THE CAPTURE DEPTH IS AN ALIGNMENT, NOT A MARGIN, and CL+2 is the only correct one
 
-Measured on hardware by Ben, sweeping the SDRAM read phase option through all
-six positions on the build at `0174f13`. **Every depth except CL+2 crashes the
+Measured on hardware, sweeping the SDRAM read phase option through all six
+positions on the build at `0174f13`. **Every depth except CL+2 crashes the
 CPU.** That includes CL+1 and CL+0, which had never been askable before this
 build - the selector's floor was CL+2, so whether the window continued below it
 was unobservable.
@@ -49,8 +49,8 @@ The failure mode confirms it. A wrong depth does not produce noise, it produces
 data shifted by a whole word, and `m1_sdram.sv` already records exactly that
 from an earlier hunt: the assembled line came back shifted right by one 16-bit
 word, and the V60's reset vector read `FE104E` where the ROM holds `4EF3D6`. A
-word-shifted reset vector is a crashed CPU, which is what Ben sees on all five
-wrong depths.
+word-shifted reset vector is a crashed CPU, which is what the board does on
+all five wrong depths.
 
 So CL+0 and CL+1 fail because the data has not arrived yet; CL+3 and above fail
 because the bus has moved on to the next word. **CL+2 being uniquely correct is
