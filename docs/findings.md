@@ -20,6 +20,51 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — MODULE BUILDS AND THE CORE BUILD USE DIFFERENT OPTIMISATION SETTINGS
+
+Asked whether Quartus has a flag for shared pathways. It does, the flags are
+worth a lot, and **the core build already sets them** - so there is no win
+sitting there. What the experiment found instead is that our two build paths do
+not measure the same thing.
+
+    make quartus MOD=<mod>     QOPT ?= "Aggressive Performance"
+                               no OPTIMIZATION_TECHNIQUE line at all
+    make rbf                   M1_QOPT  = "Aggressive Area"
+                               M1_QTECH = AREA
+
+Measured on the V60, same RTL:
+
+    Aggressive Performance, no technique      17,759 ALM   36.54 MHz
+    Aggressive Area + TECHNIQUE AREA          16,007 ALM   34.81 MHz
+
+**1,752 ALM, larger than every hand edit made to the V60 today combined**, and
+purely a synthesis setting. Fmax stays far above the 23.529 MHz the CPU is
+clocked at, so the trade costs nothing here.
+
+`AUTO_RESOURCE_SHARING ON` is a red herring twice over. On its own, against
+Aggressive Performance, it makes the V60 WORSE - 17,759 to 18,125, because it
+fights the performance bias. Added on top of Aggressive Area + AREA it changes
+the result by **exactly zero**: 16,007 either way. Those two settings already
+enable the sharing it asks for. Do not add it.
+
+### What this invalidates
+
+Every V60 area figure recorded earlier today came from the module path, so it
+was measured under settings the shipping build does not use. The V60 costs
+~16,007 in the configuration that actually ships, not 17,759. The SHAPE of that
+profile still stands - 89% in v60.sv, FP small, dimext worthless - but the
+absolute numbers were inflated and the gap to the i960's ~7,200 is smaller than
+it appeared.
+
+**So a module-level ALM number does not transfer to the core unless the
+optimisation settings are matched.** Measure V60 work with
+`make quartus MOD=s32_v60 QOPT="Aggressive Area"` and an
+`OPTIMIZATION_TECHNIQUE AREA` line, or the number does not mean what it looks
+like. This is the same class of error as the contaminated 103-cycle fetch wait:
+an instrument measuring a configuration nobody ships.
+
+---
+
 ## 2026-09-07 — WHERE THE V60's 18,411 ALM ACTUALLY IS, MEASURED
 
 Profiled before restructuring anything, because the last three area guesses on
