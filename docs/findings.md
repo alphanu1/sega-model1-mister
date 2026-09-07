@@ -20,6 +20,43 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — THE V60's AREA IS REAL LOGIC, NOT TIMING-DRIVEN DUPLICATION
+
+The module build constrains `clk` at 20 ns - 50 MHz - and the V60 achieves
+35.38, so it fails by 7.370 ns. A fitter chasing an impossible constraint
+duplicates logic, which would have meant every V60 area figure was inflated and
+that cutting LUT depth would recover area for free. Tested by constraining at
+42.5 ns, the ~23.5 MHz the core actually clocks it at:
+
+    50 MHz constraint    15,605 ALM   slack -7.370
+    23.5 MHz constraint  15,649 ALM   slack +0.324
+
+**Same area.** The fitter is not duplicating, the numbers are trustworthy, and
+the 17,533 mux cells are genuine combinational logic implementing the
+instruction set rather than an artefact of over-constraint.
+
+That is a useful negative because it separates two things the LUT depth of 34.60
+could have meant. Pipelining the dispatch would cut depth and raise Fmax - which
+this design does not need, at 23.5 MHz against a 35 MHz ceiling - but it would
+not on its own remove the 9,494 ALM. Area only comes back if the restructure
+lets one physical unit do work that is currently done by several, and the
+synthesiser has already shared everything that is mutually exclusive within the
+block.
+
+### What that leaves
+
+The dispatch is 9,494 ALM of combinational decode for a CISC instruction set.
+The classical answer to exactly that, and the one thing not yet tried here, is
+to stop implementing decode as logic: **a microcoded or ROM-based decoder, which
+moves the dispatch from ALM into M10K.** The core is at 76% of block memory bits
+and ALM is the binding constraint at 98%, so the trade runs the right way. It is
+also a genuine architectural change rather than a refactor, and it would need
+`v60_trace` and the 29-test suite carrying it every step.
+
+Nothing else measured this session has a path to four figures.
+
+---
+
 ## 2026-09-07 — CORRECTION: THE DISPATCH IS 9,494 ALM, AND THE SPLIT WAS WRITTEN OFF TOO EARLY
 
 The entry below concludes "this closes the V60 split as an area strategy". **That
