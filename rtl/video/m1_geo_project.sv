@@ -93,12 +93,25 @@ module m1_geo_project (
   logic [31:0] rx, ry, rz, recip;
   logic        r_behind;
 
-  localparam logic [31:0] ONE = 32'h3f800000;
+  // The reciprocal is LOCAL and pipelined, not the pool's divider: 6 cycles
+  // against 29, and every point's multiplies wait on it. m1_geo_recip's header
+  // carries the measurement and why a second pooled divider did not help. The
+  // pool's div port is tied off here; m1_geo_clip and m1_geo_planes still use it.
+  assign div_req = 1'b0;
+  assign div_a   = '0;
+  assign div_b   = '0;
 
-  assign div_a = ONE;
-  assign div_b = rz;
-  wire        div_out_valid = div_rsp;
-  wire [31:0] div_result    = div_res;
+  logic       rcp_start;
+  wire        div_out_valid;
+  wire [31:0] div_result;
+
+  // rz is loaded at the end of the R_IDLE cycle, so the request is issued one
+  // cycle later - the first cycle of R_BUSY - when rz is the z being divided.
+  m1_geo_recip u_recip (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(rcp_start), .in_ready(), .in_x(rz),
+    .out_valid(div_out_valid), .out_y(div_result)
+  );
 
   // z > 0 means positive, nonzero and not a NaN. A NaN compares false against
   // everything in C, so `z > 0` is false for it and MAME takes the behind path -
@@ -107,10 +120,6 @@ module m1_geo_project (
   wire z_is_zero = (in_z[30:0] == 31'd0);
   wire z_pos     = !in_z[31] && !z_is_zero && !z_is_nan;
 
-  logic div_started;
-  // No !busy term any more: the pool owns the divider's occupancy and simply
-  // withholds the grant, so the client asks and waits.
-  assign div_req = (rst_st == R_BUSY) && !div_started && !r_behind;
 
   // ------------------------------------------------------------ scale stage
   typedef enum logic [2:0] { S_IDLE, S_M0, S_M1, S_A0, S_A1, S_OUT } sstate_t;
@@ -139,8 +148,15 @@ module m1_geo_project (
 
   // Two multiplies then two multiplies, then two adds then two adds. Each pair
   // is issued back to back and collected before the next, which costs the FP
-  // latency three times over - 19 cycles - and is still well inside the 29 the
-  // reciprocal takes, so tightening it would buy nothing.
+  // latency three times over - 19 cycles.
+  //
+  // THIS IS NOW THE STAGE TO ATTACK. It used to be hidden behind a 29-cycle
+  // reciprocal and the note here said tightening it "would buy nothing"; the
+  // reciprocal is 6 cycles as of 2026-09-08 and the bench now reads scale 47.0%
+  // against recip 11.2%. The obvious move is folding S_A0 into S_A1 - the two
+  // adds are (ax + viewx) + xc and yc - (ay + viewy), so they collapse to
+  // ax + (xc + viewx) and (yc - viewy) - ay against constants that only change
+  // when the viewport does. That removes one FP latency of four. Not done yet.
   always_comb begin
     mul_req = 1'b0; mul_a = '0; mul_b = '0;
     add_req = 1'b0; add_a = '0; add_b = '0; add_sub = 1'b0;
@@ -174,14 +190,14 @@ module m1_geo_project (
     if (!rst_n) begin
       rst_st <= R_IDLE; sst <= S_IDLE;
       rx <= '0; ry <= '0; rz <= '0; recip <= '0; r_behind <= 1'b0;
-      div_started <= 1'b0;
       sx_in <= '0; sy_in <= '0; sr <= '0; sxx <= '0; syy <= '0;
       sx_f <= '0; sy_f <= '0; s_behind <= 1'b0; s_z <= '0;
       step <= '0; n_got <= '0;
       out_valid <= 1'b0; out_sx <= '0; out_sy <= '0; out_z <= '0;
-      out_behind <= 1'b0;
+      out_behind <= 1'b0; rcp_start <= 1'b0;
     end else begin
       out_valid <= 1'b0;
+      rcp_start <= (rst_st == R_IDLE) && in_valid && z_pos;
 
       // ---------------------------------------------------- reciprocal stage
       case (rst_st)
@@ -189,12 +205,10 @@ module m1_geo_project (
           if (in_valid) begin
             rx <= in_x; ry <= in_y; rz <= in_z;
             r_behind    <= !z_pos;
-            div_started <= 1'b0;
             rst_st      <= R_BUSY;
           end
         end
         R_BUSY: begin
-          if (div_gnt) div_started <= 1'b1;
           if (r_behind) begin
             // No divide at all for a point behind the eye: MAME does not call
             // project_point, it assigns zero. Spending 29 cycles to compute a

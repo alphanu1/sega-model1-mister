@@ -165,6 +165,21 @@ module m1_geo_rsqrt_top (
   );
 endmodule
 
+module m1_geo_recip_top (
+  input  logic        clk, rst_n,
+  input  logic        in_valid,
+  output logic        in_ready,
+  input  logic [31:0] in_x,
+  output logic        out_valid,
+  output logic [31:0] out_y
+);
+  m1_geo_recip u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .in_valid(in_valid), .in_ready(in_ready), .in_x(in_x),
+    .out_valid(out_valid), .out_y(out_y)
+  );
+endmodule
+
 module m1_geo_color_top (
   input  logic        clk, rst_n,
   input  logic [31:0] light_x, light_y, light_z,

@@ -85,6 +85,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fp_to_int.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_fp_pool.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_xform.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_project.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_recip.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_det.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_rsqrt.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_norm.sv

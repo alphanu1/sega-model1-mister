@@ -20,6 +20,75 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE RECIPROCAL IS 6 CYCLES, AND THE INSTRUMENT THAT SIZED IT WAS WRONG
+
+Projection's `1/z` moved off `fp_div` and off the shared FP pool onto a local
+fixed-point Newton pipeline in DSPs (`rtl/video/m1_geo_recip.sv`).
+
+    latency            29 cycles  ->   6
+    pipelined          no         ->   yes, one reciprocal per cycle
+    cycles per quad    543.2      ->   413.5
+    peak frame         316%       ->   243% of 818,133 cycles
+    cost               920 ALM / 4 DSP / 0 M10K for all of m1_geo_project,
+                       Fmax 94.50 MHz against a 57.143 MHz clk_3d
+                       (Quartus 17.0, MOD=m1_geo_project)
+
+**A TABLE ALONE IS NOT THE MECHANISM, AND THIS WAS ASKED TWICE.** The 64-entry
+seed table is only a ~7-bit first guess. The Newton step `r' = r*(2 - m*r)`
+SQUARES its own error, so 7 -> 14 -> 24 bits in two passes, and a float32
+mantissa only has 24 bits. The table sets where the iteration starts, not where
+it ends, which is why 64 entries is enough and a bigger one buys nothing.
+
+Measured in pixels against the same corpus - 4 M points, x in +/-4096, z over
+six decades, zoom 256, comparing `floor(x*recip*zoom)` to `floor(x/z*zoom)`:
+
+    exact reciprocal (what shipped)     0.1646% of points a pixel out
+    64-entry seed + two Newton steps    0.1667%, never more than 1 pixel
+    64-entry seed + ONE Newton step    14%, up to 62 pixels - rejected
+
+**TWO EARLIER READINGS ARE CORRECTED, both kept visible.**
+
+1. *"the reciprocal is 425% of a frame budget"* - **wrong, and it is what
+   justified this work.** `tb_m1_geometry`'s four inside-projection counters
+   (`pj_recip`, `pj_scale`, `pj_hold`, `pj_idle`) were never reset, so they
+   accumulated over the entire bench while `busy` covered only the throughput
+   loop. Numerator and denominator measured different windows. Fixed in the
+   same change; the honest reading afterwards is **recip 11.2%, scale 47.0%,
+   handover 6.4%, idle 34.3%**. The *ratios* were always sound because all four
+   shared the same wrong window, so the reciprocal genuinely was the largest
+   term - the decision was right, the magnitude was not. Any
+   inside-projection percentage quoted from before 2026-09-08 is inflated.
+
+2. *"x*(1/z) lands on a different pixel in 0.002% of cases"*, in
+   `m1_geo_project.sv`'s header - **not comparable to the numbers above.** It
+   was taken over six FIXED zoom levels; on the corpus above the exact divider
+   itself measures 0.1646%. Comparing 0.002% against 0.1667% reads as a 100x
+   regression when the like-for-like difference is 1.3%. Compare rows of the
+   same corpus, never a row against a number from another one.
+
+**THE SHARED FP POOL WAS THE LATENCY, not a route to avoiding it.** The first
+version of this module ran Newton's step on the pool's float multiplier and
+adder. It was correct - 22.3 bits, 0.15% a pixel out - and measured **21.0
+cycles against fp_div's 29**, a 27% cut where 3x was needed. Three round trips
+through an arbiter (request, grant, respond) cost more than the arithmetic. On
+a latency problem, the pool IS the latency. That version is deleted.
+
+This is the third thing aimed at this reciprocal. A second pooled `fp_div` was
+tried twice and made it slightly WORSE (543.2 -> 545.4 cycles a quad), because
+only one reciprocal is ever outstanding: more units help contention, only a
+faster operation helps a serial dependency.
+
+**WHAT IS NOW THE LARGEST TERM: the scale chain, 47.0%.** Four FP latencies per
+point (`S_M0`, `S_M1`, `S_A0`, `S_A1`). `S_A0` and `S_A1` fold into one - the
+adds are `(ax + viewx) + xc` and `yc - (ay + viewy)`, which regroup to
+`ax + (xc + viewx)` and `(yc - viewy) - ay` against constants that only change
+with the viewport. That removes one latency of four and is not done yet. The
+note in `m1_geo_project.sv` saying the chain was "well inside the 29 the
+reciprocal takes, so tightening it would buy nothing" was true when written and
+is now false; it has been corrected in place.
+
+---
+
 ## 2026-09-08 — THE CLOCK RAISE FIXED TWO SYMPTOMS AND NOT THE THIRD
 
 clk_cpu 23.529 -> 28.571 and clk_3d 47.059 -> 57.143, +21.4% on both, all

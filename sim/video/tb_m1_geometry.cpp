@@ -656,6 +656,13 @@ int main(int argc, char** argv) {
         int reps = 20, quads = 0;
         memset(whist, 0, sizeof whist);
         memset(wout, 0, sizeof wout); memset(wonly, 0, sizeof wonly);
+        // These four accumulate from the moment the DUT starts running, so
+        // without this they cover the whole bench while `busy` covers only the
+        // loop below - which printed "recip 425%" and made the reciprocal look
+        // like four frames of work. Every inside-projection percentage recorded
+        // before 2026-09-08 was inflated that way. The RATIOS between them were
+        // always sound, because all four shared the same wrong window.
+        pj_recip = pj_scale = pj_hold = pj_idle = 0;
         for (int i = 0; i < reps; i++) { t.run(0x40000, 0x100, 0, oz); quads += (int)t.got.size(); }
         long busy = t.cycles - c0;
         double per_quad = quads ? (double)busy / quads : 0.0;
