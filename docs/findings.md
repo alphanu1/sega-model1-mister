@@ -63,6 +63,72 @@ that.
 
 ---
 
+## 2026-09-08 — THE MISSING 3D IS A LATENCY PROBLEM IN PROJECTION, AND A SECOND DIVIDER CANNOT FIX IT
+
+The geometry bench, run against REAL models out of the polygon ROM, settles two
+things at once.
+
+### Geometry does not lose the objects
+
+    800 real objects over 16 yaw angles, 0 that did not match at all
+    15,688 quads, 0 vertex coordinates differing, colour exact on 15,688
+    band touches 1.11 a quad, 0 off screen
+
+Transform, cull, clip and colour are all exact on the real corpus. Whatever
+removes 48% of the 3D is not discarding it in the geometry stage.
+
+### It cannot FINISH, and the overrun is far worse than the telemetry said
+
+    a peak frame of 4,798 quads needs 2,587,533 cycles of 818,133  = 316%
+      project      90.6% outstanding, 36.1% SOLE CAUSE
+      inside projection: recip 425.2%  scale 399.8%  idle 545.5%
+
+**316% of a frame, not the 147% that `len=1.47 fr` suggested.** That is why the
+clock raise did not fix the dropout: clk_3d went up 41% and this needs 3x.
+
+### A second divider was tried again and is still wrong
+
+fp_div is only 263 ALM and the grant race that broke the FIRST attempt is fixed,
+so it deserved a retry. Measured: 543.2 -> **545.4** cycles per quad, 316% ->
+**320%**, reciprocal 425.2% -> **434.0%**. Slightly worse, again.
+
+**The reason is that this is LATENCY, not CONTENTION.** `idle 545.5%` inside
+projection is the tell: the unit is not queueing behind a busy divider, it is
+waiting on its own single reciprocal, because every point needs 1/z before its
+multiplies can start. One request outstanding at a time means a second divider
+sits idle. More units help contention; only a faster operation helps latency.
+
+So the 2026-09-0x note that the grant mask "is the prerequisite that makes any
+second divider work" is true and beside the point -- the mask was needed, and
+the divider still does not help.
+
+### What does follow from it
+
+Make the reciprocal FASTER rather than more numerous. `m1_geo_rsqrt` already did
+exactly this for the same divider - "an 8-bit seed table and ONE Newton-Raphson
+step... about 5 cycles of a multiplier at 69% rather than 29 cycles of a divider
+at 85%".
+
+Measured before writing any RTL, 8 M points over six decades of depth, error
+counted in PIXELS rather than mantissa bits:
+
+    exact reciprocal (ships today)   0.078% of points land a pixel out, max 1
+    2048-entry seed + 1 Newton step  0.152%, max 1
+    1024-entry seed + 2 steps        0.139%, max 1
+    256-entry seed + 1 step          2.6%,   max 4    <- rejected
+
+and the accuracy of the step itself:
+
+    table lookup alone      12.0 correct bits
+    after ONE refinement    22.5 correct bits
+    a real float32 divide   ~24 bits, the format's limit
+
+Past 2048 entries nothing improves - the residue is float32 rounding in the
+final multiply, not the table - so 2048 with one step is the stopping point and
+there is a reason for it rather than a guess. Cost is 64 Kbit of M10K, ~1%.
+
+---
+
 ## 2026-09-08 — WITHDRAWN: THE SDRAM DOES NOT LOSE REFRESHES
 
 **This entry was wrong and is kept because the reasoning looked sound.** It
