@@ -78,7 +78,7 @@ module emu
     "-;",
     "O[2],Video timing,Original 24kHz,Scandoubled;",
     "O[3],Debug overlay,Off,On;",
-    "O[5:4],SDRAM read phase,CL+2,CL+3,CL+4,CL+5;",
+    "O[10:8],SDRAM read phase,CL+2,CL+3,CL+4,CL+5,CL+1,CL+0;",
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
     "-;",
@@ -477,11 +477,24 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
 
   m1_sdram #(.T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
-    // OSD order is CL+2, CL+3, CL+4, CL+5 and the selector's own encoding puts
-    // CL+3 at zero, so the two are mapped rather than passed through. The board
-    // wants CL+2, which is the OSD default.
-    .rd_lat_sel(status[5:4] == 2'd0 ? 2'd1 :
-                status[5:4] == 2'd1 ? 2'd0 : status[5:4]),
+    // OSD POSITION IS NOT CL+n. m1_sdram's own encoding is CL+n now, but the
+    // OSD list cannot be, because position 0 is what an all-zero status gives
+    // and that is what a fresh config, a cleared config and a reset all
+    // produce. CL+2 is the only depth this board is known to capture at, so it
+    // has to stay at position 0 -- booting a default config into a depth that
+    // does not work would present as a dead core, not as a wrong option.
+    //
+    // Positions 0-3 therefore keep exactly the meaning they have always had,
+    // so a saved config still selects what it used to. The two SHALLOWER
+    // depths are appended after them, because they are the ones that have
+    // never been reachable: CL+2 was the floor of the old selector, so whether
+    // the capture window continues below it has never been observable.
+    .rd_lat_sel(status[10:8] == 3'd0 ? 3'd2 :   // CL+2 - the board's default
+                status[10:8] == 3'd1 ? 3'd3 :
+                status[10:8] == 3'd2 ? 3'd4 :
+                status[10:8] == 3'd3 ? 3'd5 :
+                status[10:8] == 3'd4 ? 3'd1 :   // CL+1 - new, below the floor
+                                       3'd0),   // CL+0 - new, below the floor
     .sd_cke(SDRAM_CKE), .sd_cs_n(SDRAM_nCS), .sd_ras_n(SDRAM_nRAS),
     .sd_cas_n(SDRAM_nCAS), .sd_we_n(SDRAM_nWE), .sd_ba(SDRAM_BA),
     .sd_a(SDRAM_A), .sd_dqm({SDRAM_DQMH, SDRAM_DQML}),

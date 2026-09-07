@@ -97,11 +97,19 @@ module m1_sdram #(
   // instruction and the trace read "0 distinct addresses" — a testbench
   // reporting a clean absence of the thing it was measuring.
   //
-  //   0 -> CL+3  (sdram_model, and the safe default)
-  //   1 -> CL+2  (the board: its device is clocked on the inverse of clk_sys)
-  //   2 -> CL+4
-  //   3 -> CL+5
-  input  logic [1:0]           rd_lat_sel,
+  // INDEX n IS CL+n, in strict order. The encoding used to be 0->CL+3,
+  // 1->CL+2, 2->CL+4, 3->CL+5 -- picked so an unconnected selector landed on
+  // the value the model needed -- and that makes a capture sweep's pass mask
+  // MEANINGLESS AS A SHAPE. A capture window is a contiguous run of depths
+  // that work, and finding its centre is the whole point of sweeping it; you
+  // cannot do that when index 1 is one cycle BELOW index 0 and index 2 is two
+  // above it. Model 2 hit this and renumbered for the same reason.
+  //
+  // The range now reaches CL+0 and CL+1, which it could not before. The board
+  // wants CL+2, and CL+2 was the SHALLOWEST the selector could ask for, so
+  // whether the window extends below it has never been observable -- we could
+  // not tell a centred capture from one clinging to the edge of its range.
+  input  logic [2:0]           rd_lat_sel,
 
   // SDRAM device
   output logic                 sd_cke,
@@ -220,9 +228,9 @@ module m1_sdram #(
   // 000d and a one-word shift is invisible.
   //
   // So the capture point is selectable at run time rather than guessed one
-  // Quartus build at a time. `rd_lat_sel` picks CL+2 through CL+5; the
+  // Quartus build at a time. `rd_lat_sel` picks CL+0 through CL+5; the
   // pipeline is always the longest of those and the tag is injected at the
-  // chosen depth. Simulation ties it to 1 and keeps CL+3, so every existing
+  // chosen depth. Simulation ties it to 3 and keeps CL+3, so every existing
   // harness measures what it always measured.
   localparam int unsigned RD_LAT     = CL + 5;   // pipeline depth, the maximum
   localparam int unsigned RD_LAT_DEF = CL + 3;   // what the model needs
@@ -238,9 +246,11 @@ module m1_sdram #(
   always_ff @(posedge clk) begin
     if (!rst_n) cap_depth <= 4'(RD_LAT_DEF);
     else case (rd_lat_sel)
-      2'd0:    cap_depth <= 4'(CL + 3);   // unconnected lands here, by design
-      2'd1:    cap_depth <= 4'(CL + 2);
-      2'd2:    cap_depth <= 4'(CL + 4);
+      3'd0:    cap_depth <= 4'(CL + 0);
+      3'd1:    cap_depth <= 4'(CL + 1);
+      3'd2:    cap_depth <= 4'(CL + 2);   // what the board wants
+      3'd3:    cap_depth <= 4'(CL + 3);
+      3'd4:    cap_depth <= 4'(CL + 4);
       default: cap_depth <= 4'(CL + 5);
     endcase
   end

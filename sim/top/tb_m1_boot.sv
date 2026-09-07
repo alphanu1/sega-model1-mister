@@ -684,7 +684,7 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
     // defaults it to CL+2 and every burst arrives shifted by one word — the
     // V60 then halts after one instruction, which is exactly what this
     // testbench reported until the port was wired.
-    .rd_lat_sel(2'd0),
+    .rd_lat_sel(3'd3),
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
     .sd_we_n(we_n), .sd_ba(ba), .sd_a(a), .sd_dqm(dqm),
     .sd_dq_o(dq_c2m), .sd_dq_oe(dq_oe_c), .sd_dq_i(dq_m2c),
