@@ -593,10 +593,12 @@ module m1_integrated (
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(tgp_mem_req), .b_we(tgp_mem_unused_we), .b_addr(tgp_mem_addr),
     .b_din(tgp_mem_unused_din), .b_be(tgp_mem_unused_be),
-    // A 4-word burst carries TWO 32-bit words. Which one was asked for is bit 1
-    // of the address, and the top level aligns the request down to the burst
-    // boundary — a burst port's address must be burst-aligned.
-    .b_dout(tgp_mem_addr[1] ? tgp_mem_dout[63:32] : tgp_mem_dout[31:0]),
+    // A 2-WORD BURST IS EXACTLY ONE 32-bit word, so there is no half to pick.
+    // This used to be `tgp_mem_addr[1] ? dout[63:32] : dout[31:0]` against a
+    // 4-word burst whose address the top level aligned down — four words
+    // fetched to use two. The address is passed whole now and the burst lands
+    // on the word asked for.
+    .b_dout(tgp_mem_dout[31:0]),
     .b_ack(tgp_mem_ack)
   );
 

@@ -52,8 +52,8 @@ static const int NP = 7;
 // corrupt tile characters. p1 is 2 because the tile engine consumes exactly
 // two 16-bit words per column - see the note on blen() in m1_sdram.sv.
 static int burst_of(int p) {
-  if (p == 1) return 2;
-  return (p == 2 || p == 3 || p == 5) ? 4 : 1;
+  if (p == 1 || p == 3) return 2;
+  return (p == 2 || p == 5) ? 4 : 1;
 }
 
 struct Harness {

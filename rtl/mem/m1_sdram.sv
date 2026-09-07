@@ -196,18 +196,24 @@ module m1_sdram #(
   // the cycles are.
   //
   // p3 is the coprocessor's read-only regions — copro_data and the math tables.
-  // A coprocessor fetch is one 32-bit word, so it needs TWO 16-bit words. It
-  // could take length 2 as well now, but its requester aligns the address down
-  // to a 4-word boundary and selects on bit 1 (see m1_integrated), so changing
-  // it means changing both together. Left at 4 deliberately, not overlooked.
+  // A coprocessor fetch is one 32-bit word, so it needs TWO 16-bit words, and
+  // it now asks for exactly that. It used to burst FOUR while the top level
+  // aligned the address down to the burst boundary and m1_integrated picked
+  // the half it wanted with tgp_mem_addr[1] — the same defect p1 had, two CAS
+  // commands per access fetching words nothing read. This is the coprocessor's
+  // DATA ROM, which is what blocks it before any math unit runs, and the
+  // geometry pass it feeds is measured at 1.47 frames against a one-frame
+  // budget, so the cycles come off a path that is already over.
   // p5 is the 3D layer's polygon-model fetch: ten 32-bit words per record, read
-  // strictly in sequence, so it bursts for the same reason p2 does. p6 is
+  // strictly in sequence, and it consumes the WHOLE 64-bit burst — see
+  // m1_integrated's r3d_rom_dout, which takes all of it. p6 is
   // its tgp_ram colour-word access - one random word per polygon, and a write
   // path for the display list's uploads - so it stays single.
   function automatic logic [3:0] blen(input int unsigned p);
     case (p)
       1:          blen = 4'd2;   // tile characters: exactly what is consumed
-      2, 3, 5:    blen = 4'd4;
+      3:          blen = 4'd2;   // coprocessor: one 32-bit word, nothing more
+      2, 5:       blen = 4'd4;
       default:    blen = 4'd1;
     endcase
   endfunction

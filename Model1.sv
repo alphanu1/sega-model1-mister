@@ -437,14 +437,16 @@ module emu
 // from word 0, which is V60 program ROM, and every glyph decodes from the same
 // wrong data. 31 distinct tile numbers then render identically and the screen
 // is a uniform pattern that looks like a video bug rather than an address one.
-// p3's address is aligned down to its 4-word burst boundary; m1_integrated keeps
-// bit 1 to pick which 32-bit half of the burst it wanted.
-// p5's address is aligned DOWN to its 4-word burst boundary here, the same way
-// p3's is on the line below - m1_integrated keeps bit 1 to pick which 32-bit half
-// of the burst it wanted.
+// p3 is passed WHOLE now. It used to be aligned down to a 4-word boundary so
+// m1_integrated could pick a half with bit 1, which meant every coprocessor
+// fetch pulled four words to use two. It bursts 2 and lands on exactly the
+// 32-bit word asked for, so there is no half to pick.
+// p5's address is aligned DOWN to its 4-word burst boundary here. It does NOT
+// pick a half - m1_integrated takes the full 64 bits of r3d_rom_dout - and a
+// note here previously said it did, which was wrong.
 assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
                  IOFW_BASE + {11'd0, iofw_word},
-                 {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
+                 tgp_mem_addr, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
   assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
