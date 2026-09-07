@@ -20,6 +20,49 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE CLOCK RAISE FIXED TWO SYMPTOMS AND NOT THE THIRD
+
+clk_cpu 23.529 -> 28.571 and clk_3d 47.059 -> 57.143, +21.4% on both, all
+timing met (clk_3d +0.498, clk_sys +0.759, pll_hdmi +0.134 -- the first build
+of the day with no negative slack anywhere). Confirmed on hardware:
+
+    band 0 overrun     ALMOST COMPLETELY GONE
+    slow speed in pit  almost gone, nearly full speed
+    48% missing 3D     STILL THERE, "at times"
+
+### What that says about each
+
+**The overrun and the pit slowdown were throughput**, and 21% more clock was
+enough. That is consistent with the CPU running at ~66% of the real board's work
+per frame before and ~80% now.
+
+**The missing 3D is NOT simply the geometry deadline, or not only that.** The
+pass went from len=1.47 fr to ~1.21 fr -- a 21% cut in the overrun -- and the
+dropout persisted. If it were purely "the pass does not finish in time", a fifth
+of the overrun disappearing should have shown. It did not.
+
+That does not clear the deadline theory outright: 1.21 is still over one frame,
+so the pass still does not fit. But it means the effect is at best partial, and
+the theory has now survived one test it could have failed cleanly.
+
+**The measurement that would settle it has still never been taken.** `len=` and
+`obj=` come out on the UART and nobody has read them on a healthy build. If
+`len=` is now ~1.21 and `obj=` is unchanged on the frames that drop, the cut is
+not the deadline. If `obj=` rose and the dropout merely became rarer, it is.
+One capture answers it, and it is cheaper than the next clock rung -- which
+would need m1_geometry from 61.05 to 66.67 and whatever the TGP needs after
+that.
+
+### Where the clock ladder stands
+
+    47.059 / 23.529   start of day, ~66% of the real board
+    53.333 / 26.667   "noticeable"
+    57.143 / 28.571   SHIPPED, timing met, ~80%, overrun and pit fixed
+    66.67  / 33.33    needs m1_geometry +9% (61.05 today), pass 1.04 fr, ~93%
+    72.73  / 36.36    pass 0.95 fr -- the first rung that FITS -- ~102%
+
+---
+
 ## 2026-09-08 — THE SDRAM CAN SILENTLY LOSE REFRESHES, AND IT HAS ONLY 4% OF MARGIN
 
 Not chased yet, recorded because the mechanism is real whether or not it is the
