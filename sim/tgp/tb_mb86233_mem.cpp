@@ -61,6 +61,10 @@ int main(int argc, char** argv) {
   long checked = 0, fails = 0;
   long hit_ram0 = 0, hit_ram1 = 0, hit_fin = 0, hit_fout = 0, hit_unmap = 0;
 
+  // Previous cycle's external select, because stall is registered -- see the
+  // check below for why that is the contract now.
+  bool sel_ext_prev = false;
+
   for (long n = 0; n < N; n++) {
     uint32_t a = (n < NE) ? edges[n] : (dist(rng) & 0x1ffff);
     // Weight the mapped regions so most cycles do useful work.
@@ -91,7 +95,25 @@ int main(int argc, char** argv) {
     if ((bool)dut->unmapped != unmap)         bad = true;
     if ((bool)dut->ext_rd != (rq && fin_sel)) bad = true;
     if ((bool)dut->ext_wr != (rq && fout_sel))bad = true;
-    if ((bool)dut->stall != (rq && (fin_sel || fout_sel) && !ack)) bad = true;
+    // STALL IS REGISTERED NOW, so the model tracks the PREVIOUS cycle's
+    // select rather than this one's. It used to be
+    //   stall == rq && (fin_sel || fout_sel) && !ack
+    // which put the combinational address decode inside the core's next-state
+    // logic and was the whole clk_3d critical path at 57.143 MHz:
+    //   state.S_DST_W -> u_mem|sel_ram1 -> u_mem|stall -> state.S_DST, -1.256 ns.
+    //
+    // THE CONTRACT IS WEAKER AND THE CORE STILL HOLDS IT. stall is only ever
+    // read in a _W state -- src_done, dst_done and labb_done are used in
+    // S_SRC_W, S_DST_W and S_LABB_W, and S_BRUL_W tests mem_stall directly --
+    // and every one of those is the SECOND cycle of a held access, because the
+    // core always issues from S_SRC/S_DST/S_LABB/S_BRUL_RD first with the same
+    // address. So the select the core needs was computed a cycle earlier. A
+    // first-cycle stall is behaviour nothing consumes.
+    //
+    // If the core ever gains a state that issues an external access and tests
+    // stall in the same cycle, this must go back to combinational and the
+    // clock has to come down with it.
+    if ((bool)dut->stall != (sel_ext_prev && !ack)) bad = true;
 
     if (bad) {
       if (fails < 20)
@@ -113,7 +135,12 @@ int main(int argc, char** argv) {
       else               expect = xr;
     }
 
+    // Across the edge, exactly as the DUT registers it.
+    bool sel_ext_now = rq && (fin_sel || fout_sel);
+
     tick();
+
+    sel_ext_prev = sel_ext_now;
 
     if (do_check) {
       checked++;

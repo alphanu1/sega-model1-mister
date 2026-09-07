@@ -129,7 +129,30 @@ module mb86233_mem (
   // MAME models this as m_stall plus `goto do_stall`, which re-executes the
   // whole instruction. Here the access simply is not complete until ext_ack,
   // and the core holds the instruction.
-  assign stall = req & (sel_fifo_in | sel_fifo_out) & ~ext_ack;
+  //
+  // THE SELECT IS REGISTERED, AND THAT IS A TIMING FIX, NOT A TIDY-UP.
+  // This was `req & (sel_fifo_in | sel_fifo_out) & ~ext_ack`, and it put the
+  // COMBINATIONAL address decode inside the core's next-state logic: the FSM
+  // drives an address, the address decodes to a bank select, the select makes
+  // stall, and stall decides the next state -- all in one cycle. Measured on
+  // the core at clk_3d 57.143 MHz it is the whole critical path,
+  //   state.S_DST_W -> u_mem|sel_ram1 -> pop_data[31] -> u_mem|stall
+  //                 -> Selector7/8 -> state.S_DST
+  // at -1.256 ns, and it is what stopped the clock going past 53.333.
+  //
+  // Registering it is safe because of how the core holds an access. S_DST and
+  // S_DST_W assert the SAME request at the SAME address -- that is what
+  // use_dst_side spanning both states means -- and stall is only ever CHECKED
+  // in the _W states, through src_done/dst_done/labb_done. So by the cycle the
+  // FSM reads stall, the select it needs was computed a cycle earlier and is
+  // sitting in a register. The path from the decode to the state machine is
+  // gone; what is left is two gates off a flop and ext_ack.
+  logic sel_ext_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) sel_ext_q <= 1'b0;
+    else        sel_ext_q <= req & (sel_fifo_in | sel_fifo_out);
+  end
+  assign stall = sel_ext_q & ~ext_ack;
 
   // ------------------------------------------------------------- read mux
   //
