@@ -190,15 +190,44 @@ module mb86233_core (
   logic       x_src_200, x_dst_200, x_src_r2, x_dst_r2;
   logic       x_lab2, x_lab_a200, x_lab_b200, x_unimpl;
 
+  // THE XFER DECODE IS REGISTERED TOO, one layer below mb86233_dec.
+  // Registering the main decoder moved the clk_3d critical path forward rather
+  // than removing it: at 66.667 MHz it became
+  //   d_ldmov -> state.S_DST, -1.135 ns
+  // where d_ldmov is now a REGISTERED decode output. So the decoder is off the
+  // path and what remains is this second layer -- mb86233_xfer turning the
+  // decode into source/destination spaces and modes, combinationally, straight
+  // into the FSM.
+  //
+  // Registered at S_DECODE, which uses none of these: the first use is S_SRC's
+  // x_src_reg. Its inputs are the already-registered d_* so they are stable
+  // through S_DECODE, and every successor state sees them from S_SRC onward.
+  // No extra cycle, same as the layer above.
+  logic [1:0] xc_src_sp;
+  logic [1:0] xc_dst_sp;
+  logic [1:0] xc_lab_b_sp;
+  logic xc_src_reg;
+  logic xc_dst_reg;
+  logic xc_src_bank;
+  logic xc_dst_bank;
+  logic xc_src_200;
+  logic xc_dst_200;
+  logic xc_src_r2;
+  logic xc_dst_r2;
+  logic xc_lab2;
+  logic xc_lab_a200;
+  logic xc_lab_b200;
+  logic xc_unimpl;
+
   mb86233_xfer u_xfer (
     .is_lab(d_lab), .is_ldmov(d_ldmov), .sub_op(d_sub), .op7_sub(d_op7),
-    .src_space(x_src_sp), .src_is_reg(x_src_reg), .src_bank(x_src_bank),
-    .src_add200(x_src_200), .src_use_r2(x_src_r2),
-    .dst_space(x_dst_sp), .dst_is_reg(x_dst_reg), .dst_bank(x_dst_bank),
-    .dst_add200(x_dst_200), .dst_use_r2(x_dst_r2),
-    .lab_two_reads(x_lab2), .lab_b_space(x_lab_b_sp),
-    .lab_a_add200(x_lab_a200), .lab_b_add200(x_lab_b200),
-    .unimplemented(x_unimpl)
+    .src_space(xc_src_sp), .src_is_reg(xc_src_reg), .src_bank(xc_src_bank),
+    .src_add200(xc_src_200), .src_use_r2(xc_src_r2),
+    .dst_space(xc_dst_sp), .dst_is_reg(xc_dst_reg), .dst_bank(xc_dst_bank),
+    .dst_add200(xc_dst_200), .dst_use_r2(xc_dst_r2),
+    .lab_two_reads(xc_lab2), .lab_b_space(xc_lab_b_sp),
+    .lab_a_add200(xc_lab_a200), .lab_b_add200(xc_lab_b200),
+    .unimplemented(xc_unimpl)
   );
 
   // ==================================================================
@@ -552,6 +581,21 @@ module mb86233_core (
       state        <= S_FETCH;
       reg_m        <= 16'd0;
       ir           <= 32'd0;
+      x_src_sp <= '0;
+      x_dst_sp <= '0;
+      x_lab_b_sp <= '0;
+      x_src_reg <= '0;
+      x_dst_reg <= '0;
+      x_src_bank <= '0;
+      x_dst_bank <= '0;
+      x_src_200 <= '0;
+      x_dst_200 <= '0;
+      x_src_r2 <= '0;
+      x_dst_r2 <= '0;
+      x_lab2 <= '0;
+      x_lab_a200 <= '0;
+      x_lab_b200 <= '0;
+      x_unimpl <= '0;
       // The decode is registered now, so it resets with everything else. A
       // reset lands the core in S_FETCH, which reaches S_DECODE only through
       // S_FETCH_W, so these are always reloaded before they are read -- this is
@@ -634,6 +678,22 @@ module mb86233_core (
         S_DECODE: begin
           alu_op_r  <= d_alu;
           fp_post_r <= d_lab | d_ldmov;
+          // The xfer decode, latched here and read from S_SRC onward.
+          x_src_sp <= xc_src_sp;
+          x_dst_sp <= xc_dst_sp;
+          x_lab_b_sp <= xc_lab_b_sp;
+          x_src_reg <= xc_src_reg;
+          x_dst_reg <= xc_dst_reg;
+          x_src_bank <= xc_src_bank;
+          x_dst_bank <= xc_dst_bank;
+          x_src_200 <= xc_src_200;
+          x_dst_200 <= xc_dst_200;
+          x_src_r2 <= xc_src_r2;
+          x_dst_r2 <= xc_dst_r2;
+          x_lab2 <= xc_lab2;
+          x_lab_a200 <= xc_lab_a200;
+          x_lab_b200 <= xc_lab_b200;
+          x_unimpl <= xc_unimpl;
           // brul/bsul memory form needs its target FETCHED before the branch can
           // resolve, so it takes the read states like any other source operand.
           if (brul_memform && brul_ea_simple) state <= S_BRUL_RD;
