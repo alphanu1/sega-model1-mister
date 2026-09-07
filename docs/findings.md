@@ -63,7 +63,45 @@ that.
 
 ---
 
-## 2026-09-08 — THE SDRAM CAN SILENTLY LOSE REFRESHES, AND IT HAS ONLY 4% OF MARGIN
+## 2026-09-08 — WITHDRAWN: THE SDRAM DOES NOT LOSE REFRESHES
+
+**This entry was wrong and is kept because the reasoning looked sound.** It
+claimed `ref_pend` being a single bit meant a refresh falling due while another
+waited would be silently merged and lost, with only 4% of margin at
+`T_REFI = 600`.
+
+The arbitration prevents it, and reading twenty lines further would have shown
+that:
+
+    end else if (!ref_pend && ((wr_pend && ...) || (arb_ok && ...)))
+    // "No new transfer once a refresh is due."
+
+Once `ref_pend` sets, NO new transfer starts. The read pipeline therefore drains
+within `RD_LAT` (7) plus `T_RAS` (5), about twelve cycles, against a `T_REFI` of
+600. A second refresh cannot fall due before the first is serviced, so the
+single bit is safe *because* of that interlock rather than in spite of it.
+
+It was then used to explain VF's attract-mode tile corruption and the 66.667 MHz
+picture, on the grounds that more 3D traffic would starve refresh further. That
+explanation is void too.
+
+### What the entry below still gets right
+
+The observation that prompted it stands: on the 66.667 build the 2D was
+corrupt while the 3D was clean. The likelier reading is that the **V60 hung** --
+its PC pinned in FE13E7..FE13F1 across every UART sample -- and a hung CPU never
+finishes writing the tilemap, so the sky and ground are whatever was left there.
+One fault, not two, and it explains why the 3D still drew correctly from an
+already-loaded display list.
+
+**So the open question is what the V60 polls at FE13E7 that never arrives at
+clk_cpu 33.333.** Disassemble it. This project's own rule -- "when a counter
+names an address, go and read what is at that address" -- has beaten
+hypothesising twice, and two hypotheses died here before it was applied.
+
+---
+
+## 2026-09-08 — SUPERSEDED: the refresh-starvation claim (see above)
 
 Not chased yet, recorded because the mechanism is real whether or not it is the
 symptom below.
