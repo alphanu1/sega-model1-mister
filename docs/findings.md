@@ -20,6 +20,65 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE SDRAM CAN SILENTLY LOSE REFRESHES, AND IT HAS ONLY 4% OF MARGIN
+
+Not chased yet, recorded because the mechanism is real whether or not it is the
+symptom below.
+
+    if (ref_cnt == T_REFI) begin ref_cnt <= '0; ref_pend <= 1'b1; end
+    ...
+    if (ref_pend && !pipe_busy && !ras_any) state <= S_PRE_REF;
+
+**`ref_pend` is a single BIT, not a count.** If a refresh is still waiting when
+the next interval elapses, the second is merged into the first and one refresh
+is lost, silently. It can also only be serviced while `pipe_busy` is low --
+`|tag_v`, so ANY read in flight on ANY port blocks it.
+
+**And the margin is 4%.** `T_REFI = 600` at 80 MHz is 7.5 us; 8192 rows in 64 ms
+needs one every 7.8 us. That is inside spec only while nothing is dropped.
+
+### The symptom it would explain
+
+Left on Virtua Fighter's ATTRACT for a long period, the 2D comes back badly
+corrupted: text mirrored, tiles scrambled in regular vertical bands, palette and
+overall layout intact. **The 3D is fine.** Photographed 2026-09-08 on the
+57.143/28.571 build.
+
+| observation | refresh starvation predicts |
+|---|---|
+| takes minutes | DRAM decay is slow and cumulative |
+| corrupts 2D tiles | character RAM at 0xFA8000 is written once, then only read |
+| 3D unaffected | polygon data is re-read constantly, from a different region |
+| new today | clk_3d +21% -> more 3D traffic -> pipe_busy high more often |
+| never seen before | the load was lower |
+
+### What it is NOT
+
+**Not the unclosed slack.** That build misses by -0.305 ns on
+`mb86233_core|ir[20] -> state.S_LABB`, which is in the TGP on clk_3d and feeds
+the 3D -- and the 3D is clean. clk_sys had +0.474 ns and clk_cpu +5.614, so the
+domain the tilemap actually runs in meets timing comfortably. For the slack to
+cause this, a violation in the coprocessor's state machine would have to corrupt
+the tilemap while leaving the geometry it drives intact.
+
+**Distinct from VR's five-minute black screen**, which is deterministic, happens
+at the END of attract, looks like an attract restart, and never happens in game
+or on VF. See the memory note; that one is a software/state fault.
+
+### The fix, when it is taken up
+
+Make `ref_pend` a small counter so refreshes queue instead of merging, and give
+refresh a deadline after which it preempts rather than waiting for `pipe_busy`
+to clear. Same shape as "acknowledges must be held, not pulsed" -- a
+single-bit event that can be overwritten while the thing it asks for is
+deferred.
+
+**It is provable before a build**: count refreshes issued against elapsed cycles
+in `tb_m1_sdram` under saturated load. If the ratio is worse than one per
+T_REFI, the mechanism is confirmed without touching hardware.
+
+---
+
 ## 2026-09-08 — THE TGP IS THE clk_3d CEILING, NOT THE 3D UNITS
 
 Registering all three FP pool operand muxes took m1_geometry from 39.6 to
