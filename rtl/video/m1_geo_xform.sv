@@ -74,7 +74,7 @@
 module m1_geo_xform #(
   // m1_fp_pool's add latency. MUST MATCH the pool, which is why it is a
   // parameter and not a local guess: the add schedule below is spaced from it.
-  parameter int FP_ADD_LAT = 4
+  parameter int FP_ADD_LAT = 5
 ) (
   input  logic        clk,
   input  logic        rst_n,

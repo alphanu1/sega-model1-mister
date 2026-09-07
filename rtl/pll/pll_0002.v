@@ -30,8 +30,17 @@ module  pll_0002(
 	// lost time twice to pulse-versus-level faults across domains, and a
 	// synchronous ratio removes that class of bug instead of testing for it.
 	//
-	// 47.059 and not 80: the shared FP pool measures 53.25 MHz and the fill unit
-	// 63.75, so 80 does not close. Measured, not assumed.
+	// 53.333 and not 80: m1_raster_fill measures 58.84 MHz and m1_geometry 54.57
+	// once m1_fp_pool's operand mux is registered, so 80 still does not close.
+	// It was 47.059, held down by the pool's unregistered mux at 39.6 MHz.
+	// Measured, not assumed.
+	//
+	// AND 53.333 RATHER THAN 54, BECAUSE THE PLL CANNOT MAKE 54. Every output
+	// is an integer divisor of the 800 MHz VCO -- 80 = 800/10, 23.529412 =
+	// 800/34, 47.058824 = 800/17 -- so asking for a round 54.0 fails the fit
+	// with "output_clock_frequency is set to an illegal value". 53.333333 is
+	// 800/15 and 26.666667 is 800/30, which keeps the exact 2x tie. The next
+	// pair up, 800/14 and 800/28, is 57.14 / 28.57 and overshoots m1_geometry.
 	//
 	// EVERY OUTPUT IS AN INTEGER DIVISION OF THE SAME 800 MHz VCO, which is what
 	// makes the ratios exact rather than approximate:
@@ -57,13 +66,13 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("23.529412 MHz"),
+		.output_clock_frequency1("26.666667 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("47.058824 MHz"),
+		.output_clock_frequency3("53.333333 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),

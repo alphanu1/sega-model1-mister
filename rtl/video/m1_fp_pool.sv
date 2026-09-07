@@ -150,17 +150,54 @@ module m1_fp_pool #(
   assign div_issue = div_any && !d_busy && !div_outstanding;
   logic        div_outstanding;
 
+  // OPERAND MUX REGISTERED, BECAUSE IT WAS THE clk_3d CRITICAL PATH.
+  // m1_geometry's worst path ran
+  //   m1_fp_pool|add_rr[1] -> m1_fp_pool|fp_add:u_add|sA_sticky
+  // the round-robin arbiter, through the NC-way 32-bit operand mux
+  // add_a[add_win], into fp_add's first stage, all in one cycle. The units
+  // themselves are fast -- fp_add 138.48 MHz standalone, fp_mul 145.62,
+  // fp_div 117.81 -- so the sharing wrapper was the limit, not the arithmetic.
+  //
+  // A cycle here buys clk_3d headroom, and clk_3d is tied to exactly 2x clk_cpu
+  // so the crossing stays a clock enable. That makes this the gate on the CPU
+  // clock as well, which is what the VR slowdowns are: ~70% of the real board's
+  // work per frame at 23.529 MHz.
+  //
+  // THE LATENCY IS NOW 5, NOT 4, AND m1_geo_xform MUST BE TOLD. It schedules
+  // its adds statically and derives the spacing from FP_ADD_LAT; every other
+  // consumer waits on *_rsp and does not care. See docs/findings.md.
+  //
+  // div is untouched: it issues only when !d_busy and holds div_outstanding for
+  // the whole iteration, so its mux is not on a per-cycle path.
+  logic        add_v_q, mul_v_q;
+  logic [31:0] add_a_q, add_b_q, mul_a_q, mul_b_q;
+  logic        add_sub_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      add_v_q <= 1'b0; mul_v_q <= 1'b0; add_sub_q <= 1'b0;
+      add_a_q <= '0; add_b_q <= '0; mul_a_q <= '0; mul_b_q <= '0;
+    end else begin
+      add_v_q   <= add_any;
+      add_a_q   <= add_a[add_win];
+      add_b_q   <= add_b[add_win];
+      add_sub_q <= add_sub[add_win];
+      mul_v_q   <= mul_any;
+      mul_a_q   <= mul_a[mul_win];
+      mul_b_q   <= mul_b[mul_win];
+    end
+  end
+
   fp_mul u_mul (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(mul_any), .a(mul_a[mul_win]), .b(mul_b[mul_win]),
+    .in_valid(mul_v_q), .a(mul_a_q), .b(mul_b_q),
     .out_valid(m_valid), .result(m_res),
     .overflow(m_ovf), .underflow(m_unf), .invalid(m_inv)
   );
 
   fp_add u_add (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(add_any), .a(add_a[add_win]), .b(add_b[add_win]),
-    .sub(add_sub[add_win]),
+    .in_valid(add_v_q), .a(add_a_q), .b(add_b_q),
+    .sub(add_sub_q),
     .out_valid(a_valid), .result(a_res),
     .overflow(a_ovf), .underflow(a_unf), .invalid(a_inv)
   );
@@ -189,10 +226,12 @@ module m1_fp_pool #(
   end
 
   // ------------------------------------------------------------- tag pipelines
-  logic [CW-1:0] mtag [4];
-  logic [3:0]    mtag_v;
-  logic [CW-1:0] atag [4];
-  logic [3:0]    atag_v;
+  // FIVE DEEP, NOT FOUR: the operand register above added a stage ahead of the
+  // units, so a tag travels one more cycle before its result appears.
+  logic [CW-1:0] mtag [5];
+  logic [4:0]    mtag_v;
+  logic [CW-1:0] atag [5];
+  logic [4:0]    atag_v;
   logic [CW-1:0] dtag;
 
   assign mul_res = m_res;
@@ -203,8 +242,8 @@ module m1_fp_pool #(
     mul_rsp = '0;
     add_rsp = '0;
     div_rsp = '0;
-    if (m_valid && mtag_v[3]) mul_rsp[mtag[3]] = 1'b1;
-    if (a_valid && atag_v[3]) add_rsp[atag[3]] = 1'b1;
+    if (m_valid && mtag_v[4]) mul_rsp[mtag[4]] = 1'b1;
+    if (a_valid && atag_v[4]) add_rsp[atag[4]] = 1'b1;
     if (d_valid && div_outstanding) div_rsp[dtag] = 1'b1;
   end
 
@@ -213,15 +252,15 @@ module m1_fp_pool #(
       mul_rr <= '0; add_rr <= '0; div_rr <= '0;
       mtag_v <= '0; atag_v <= '0; dtag <= '0;
       div_outstanding <= 1'b0;
-      for (int i = 0; i < 4; i++) begin mtag[i] <= '0; atag[i] <= '0; end
+      for (int i = 0; i < 5; i++) begin mtag[i] <= '0; atag[i] <= '0; end
     end else begin
       // Shift the tags along with the operands.
-      for (int i = 3; i > 0; i--) begin
+      for (int i = 4; i > 0; i--) begin
         mtag[i]   <= mtag[i-1];
         atag[i]   <= atag[i-1];
       end
-      mtag_v <= {mtag_v[2:0], mul_any};
-      atag_v <= {atag_v[2:0], add_any};
+      mtag_v <= {mtag_v[3:0], mul_any};
+      atag_v <= {atag_v[3:0], add_any};
       mtag[0] <= mul_win;
       atag[0] <= add_win;
 
