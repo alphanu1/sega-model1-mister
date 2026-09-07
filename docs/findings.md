@@ -20,6 +20,42 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — HAND-SHARING SMALL DECODES DOES NOT PAY; ONLY BIG OFFSET-DEPENDENT MUXES DO
+
+Two experiments now say the same thing, and the second was tried anyway because
+the first was not believed hard enough.
+
+| hoisted by hand | sites | ALM |
+|---|---|---|
+| `dimext`, a 32-bit 3-way mux | 23 | **16** |
+| addressing-mode displacement decode (`am_tdis`/`am_tlen`/`am_rdis`/`am_rlen`) | 18 | **-33, i.e. WORSE** |
+| fetch-buffer extraction at `ea_ofs+1`/`+2` | 21 | **+1,054** |
+
+The displacement share was reverted. It is correct - 29/29, `make test`
+identical, `v60_trace` unmoved at 24,825 - and it costs 33 ALM and 0.23 MHz to
+have. Quartus was already sharing those decodes across the mutually exclusive
+case arms, so forcing a wire only adds the selection mux back by hand.
+
+**The distinction that predicts which is which:** the fetch-buffer extraction
+paid because each site built a FOUR-BYTE 24:1 MUX whose select is a runtime
+offset. `dimext` and the displacement decode are small fixed-width selects on a
+value the arm already has. The tool shares the second kind on its own and cannot
+share the first, because each call site's offset expression differs.
+
+So the rule for the rest of this split: **hoist a thing only if each of its call
+sites builds a large mux whose select varies.** Counting call sites is not
+evidence, and neither is the code looking duplicated - `S_EA_MODE` and
+`S_BAM_MODE` genuinely are near-duplicates, and sharing the displacement between
+them still lost.
+
+That also lowers the expected return on extracting the AGU as a module. The
+structural duplication is real, but if the tool is already sharing the logic
+inside it, a module boundary changes the report and not the silicon. Price it
+with a deliberately-broken build BEFORE writing it, the way the fetch-buffer
+extraction was priced at 1,285 ALM before a line was changed.
+
+---
+
 ## 2026-09-07 — A `function automatic` READING AN UNPACKED ARRAY IS WRONG IN A CONTINUOUS ASSIGNMENT
 
 This cost a long bisect and will cost another one if it is not written down.
