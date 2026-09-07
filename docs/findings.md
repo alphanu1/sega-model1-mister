@@ -20,6 +20,70 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-07 — WHERE THE V60's 18,411 ALM ACTUALLY IS, MEASURED
+
+Profiled before restructuring anything, because the last three area guesses on
+this project were wrong. All figures from `make quartus MOD=s32_v60`,
+Quartus 17.0.
+
+### The hierarchy
+
+    v60.sv itself   16,325 ALM   89%   23,871 combinational ALUTs, 3,717 regs
+    v60_ifetch       1,315
+    v60_shift          677
+    v60_alu             74
+    lpm_divide          19
+                    ------
+                    18,411        44% of the whole device, 0 block memory bits
+
+**89% is in one module, and inside it one `always @(posedge clk)` block of
+3,817 lines.** For comparison Model 2's i960 is 5,414 lines across SIXTEEN
+modules at ~7,200 ALM; ours is 5,464 lines across FOUR at 18,411. Near-identical
+code volume, 2.5x the area. That comparison is what justifies the split.
+
+### What each candidate is worth, priced by experiment
+
+Each measured by deliberately breaking the thing and rebuilding - wrong output,
+correct area - rather than by estimating.
+
+| candidate | measured | verdict |
+|---|---|---|
+| fetch-buffer variable-offset muxing | **1,285 ALM** | real; 652 banked, 633 parked |
+| FP group (`S32_V60_NO_FP`) | **1,479 ALM** | real, but it is only 8% |
+| `dimext`, 23 call sites | **16 ALM** | NOT a target |
+
+**`dimext` is the important negative.** Twenty-three inlined call sites of a
+32-bit three-way mux cost sixteen ALM in total, because Quartus already shares
+logic across mutually exclusive case arms. So "a Verilog function is inlined per
+call site" is NOT on its own a reason to expect area back - the fetch-buffer
+extractors were worth something because their muxes are large and
+offset-dependent, not merely because they were inlined. Do not spend builds
+hoisting small functions.
+
+**The FP figure also corrects a stale one.** `CLAUDE.md` records the FP group at
+-2,984 ALM. It is 1,479 today.
+
+### So where is the other ~15,600?
+
+Not in any single structure. Inside the 3,817-line block:
+
+    255 add sites, 356 subtract sites, 2,042 compares
+
+That is the monolith signature - mutually exclusive states each synthesising
+their own arithmetic instead of sharing one datapath. The fitter also reports
+`psw_rest[18]~0` at **fan-out 3,101**, which is `psw_ie`: the entire instruction
+`casez` is nested in the `else` of the interrupt check, so that one condition
+gates every register write in the dispatch. That is a routing/timing signal more
+than an area one and should not be assumed to be worth ALM without measuring.
+
+**The remaining prize is a shared datapath - one adder/subtractor and one
+comparator with muxed operands - not more function hoisting.** That is a
+multi-session restructure, and the regression net for it is
+`run_v60_tests.sh` at 29/29 plus `make v60_trace`, which is the gate that
+actually catches behaviour.
+
+---
+
 ## 2026-09-07 — THE COPROCESSOR PORT WAS ALSO FETCHING DOUBLE, AND FIXING IT DID NOT MOVE THE LEFT-SIDE 3D
 
 Confirmed on hardware at `dacf1e6`: nothing regressed, the 2D and the tile
