@@ -30,7 +30,7 @@ module  pll_0002(
 	// lost time twice to pulse-versus-level faults across domains, and a
 	// synchronous ratio removes that class of bug instead of testing for it.
 	//
-	// 53.333 and not 80: m1_raster_fill measures 58.84 MHz and m1_geometry 54.57
+	// 57.143 and not 80: m1_raster_fill measures 58.84 MHz and m1_geometry 59.36
 	// once m1_fp_pool's operand mux is registered, so 80 still does not close.
 	// It was 47.059, held down by the pool's unregistered mux at 39.6 MHz.
 	// Measured, not assumed.
@@ -38,9 +38,14 @@ module  pll_0002(
 	// AND 53.333 RATHER THAN 54, BECAUSE THE PLL CANNOT MAKE 54. Every output
 	// is an integer divisor of the 800 MHz VCO -- 80 = 800/10, 23.529412 =
 	// 800/34, 47.058824 = 800/17 -- so asking for a round 54.0 fails the fit
-	// with "output_clock_frequency is set to an illegal value". 53.333333 is
-	// 800/15 and 26.666667 is 800/30, which keeps the exact 2x tie. The next
-	// pair up, 800/14 and 800/28, is 57.14 / 28.57 and overshoots m1_geometry.
+	// with "output_clock_frequency is set to an illegal value". 57.142857 is
+	// 800/14 and 28.571429 is 800/28, which keeps the exact 2x tie.
+	//
+	// This is the rung above 800/15 and 800/30. It only became reachable once
+	// fp_div's operand mux was registered too, which took m1_geometry from
+	// 54.57 to 59.36 and moved the critical path out of the FP pool entirely,
+	// into m1_geo_walk. The next rung, 800/12 and 800/24, is 66.67 / 33.33 and
+	// overshoots m1_raster_fill's 58.84.
 	//
 	// EVERY OUTPUT IS AN INTEGER DIVISION OF THE SAME 800 MHz VCO, which is what
 	// makes the ratios exact rather than approximate:
@@ -66,13 +71,13 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("26.666667 MHz"),
+		.output_clock_frequency1("28.571429 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("53.333333 MHz"),
+		.output_clock_frequency3("57.142857 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),

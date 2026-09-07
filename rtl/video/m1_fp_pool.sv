@@ -169,13 +169,14 @@ module m1_fp_pool #(
   //
   // div is untouched: it issues only when !d_busy and holds div_outstanding for
   // the whole iteration, so its mux is not on a per-cycle path.
-  logic        add_v_q, mul_v_q;
-  logic [31:0] add_a_q, add_b_q, mul_a_q, mul_b_q;
+  logic        add_v_q, mul_v_q, div_v_q;
+  logic [31:0] add_a_q, add_b_q, mul_a_q, mul_b_q, div_a_q, div_b_q;
   logic        add_sub_q;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      add_v_q <= 1'b0; mul_v_q <= 1'b0; add_sub_q <= 1'b0;
+      add_v_q <= 1'b0; mul_v_q <= 1'b0; div_v_q <= 1'b0; add_sub_q <= 1'b0;
       add_a_q <= '0; add_b_q <= '0; mul_a_q <= '0; mul_b_q <= '0;
+      div_a_q <= '0; div_b_q <= '0;
     end else begin
       add_v_q   <= add_any;
       add_a_q   <= add_a[add_win];
@@ -184,6 +185,23 @@ module m1_fp_pool #(
       mul_v_q   <= mul_any;
       mul_a_q   <= mul_a[mul_win];
       mul_b_q   <= mul_b[mul_win];
+      // DIV TOO, AND IT NEEDS NO TAG CHANGE. Once add and mul were registered
+      // the top path became div_rr[1] -> fp_div:u_div|q_exp[10] -- the same
+      // arbiter-through-operand-mux shape.
+      //
+      // Unlike add and mul, div is single-outstanding and self-timed: dtag is
+      // ONE register held for the whole iteration, not a shift pipeline, so
+      // there is no depth to re-tune. div_outstanding is set at div_issue,
+      // which is still a cycle before fp_div sees in_valid, and it is what
+      // blocks re-issue in that window -- so d_busy arriving a cycle later
+      // cannot cause a double issue.
+      //
+      // No consumer can be latency-sensitive to this either: fp_div is
+      // iterative with VARIABLE latency, so everything already waits on
+      // div_rsp. That is why the add/mul change left geo_rsqrt untouched.
+      div_v_q   <= div_issue;
+      div_a_q   <= div_a[div_win];
+      div_b_q   <= div_b[div_win];
     end
   end
 
@@ -204,7 +222,7 @@ module m1_fp_pool #(
 
   fp_div u_div (
     .clk(clk), .rst_n(rst_n),
-    .in_valid(div_issue), .a(div_a[div_win]), .b(div_b[div_win]),
+    .in_valid(div_v_q), .a(div_a_q), .b(div_b_q),
     .busy(d_busy), .out_valid(d_valid), .result(d_res),
     .overflow(d_ovf), .underflow(d_unf), .div_by_zero(d_dz), .invalid(d_inv)
   );

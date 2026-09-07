@@ -296,12 +296,12 @@ module emu
   // 80 MHz and 19.2 MHz; see docs/m1-m4-plan.md for why those two numbers.
   wire clk_sys, clk_cpu, clk_sdram, pll_locked;
 
-  // The 3D layer's clock: 53.333 MHz, exactly twice clk_cpu.
+  // The 3D layer's clock: 57.143 MHz, exactly twice clk_cpu.
   //
   // A separate domain for the geometry and rasterizer, at exactly 2x clk_cpu so
   // the crossing to the CPU side is a clock enable rather than a handshake.
   //
-  // 53.333 rather than clk_sys's 80 because m1_geometry measures 54.57 MHz and
+  // 57.143 rather than clk_sys's 80 because m1_raster_fill measures 58.84 MHz and
   // m1_raster_fill 58.84 - 80 does not close. It was 47.059 until m1_fp_pool's
   // operand mux was registered, which took m1_geometry from 39.6 to 54.57.
   // See docs/findings.md.
