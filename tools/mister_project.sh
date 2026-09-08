@@ -559,6 +559,21 @@ set_global_assignment -name AUTO_DELAY_CHAINS_FOR_HIGH_FANOUT_INPUT_PINS ON
 # smaller, and no framework source is touched -- which is not ours to edit.
 set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "ascal:ascal"
 set_instance_assignment -name AUTO_RESOURCE_SHARING OFF -to "ascal:ascal"
+
+# AND THE REST OF THE HDMI DOMAIN, which is where our negative path actually is.
+# The note above says ascal is not our failing instance and that ours "has not
+# been localised" - it is in the pll_hdmi clock domain, which also carries the
+# HDMI on-screen display and the PLL's own output counters. pll_hdmi is a HARD
+# PLL, so the technique cannot change the counter itself; what it can change is
+# the logic clocked by it, and hdmi_osd is the bulk of that.
+#
+# Same shape as the ascal pair: per-instance, so the global AREA bias still
+# applies everywhere we want smaller, and no framework source is edited.
+# UNVERIFIED as of 2026-09-09 - the ascal pair produced a byte-identical
+# bitstream, so do not assume these do anything until a build says so.
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "osd:hdmi_osd"
+set_instance_assignment -name AUTO_RESOURCE_SHARING OFF -to "osd:hdmi_osd"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "pll_hdmi:pll_hdmi"
 QOPTEOF
     echo "  resource sharing ON, mux restructure ON, redundant cell removal ON"
 fi
