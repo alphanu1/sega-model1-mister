@@ -712,6 +712,8 @@ module m1_integrated (
   logic [15:0] r3_dbg_plane_l;             // the left clip plane, Y=
   // The clipper's funnel: quads in, quads out, quads it discarded. c= d= e=
   logic [15:0] r3_clip_in, r3_clip_out, r3_clip_drop;
+  // Races that are supposed to be impossible: f= matrix, g= planes.
+  logic [15:0] r3_mat_race, r3_plane_race, r3_lw_stall;
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -765,6 +767,8 @@ module m1_integrated (
     .dbg_hit_l(r3_dbg_hit_l), .dbg_hit_r(r3_dbg_hit_r),
     .dbg_clip_in(r3_clip_in), .dbg_clip_out(r3_clip_out),
     .dbg_clip_drop(r3_clip_drop),
+    .dbg_mat_race(r3_mat_race), .dbg_plane_race(r3_plane_race),
+    .dbg_lw_stall(r3_lw_stall),
     .dbg_plane_l(r3_dbg_plane_l), .dbg_hud_obj(r3_dbg_hudobj)
   );
 
@@ -987,6 +991,8 @@ module m1_integrated (
     .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]), .hud_obj(r3_dbg_hudobj),
     .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r), .plane_l(r3_dbg_plane_l),
     .clip_in(r3_clip_in), .clip_out(r3_clip_out), .clip_drop(r3_clip_drop),
+    .mat_race(r3_mat_race), .plane_race(r3_plane_race),
+    .lw_stall_q(r3_lw_stall),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );

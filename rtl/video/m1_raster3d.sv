@@ -259,6 +259,27 @@ module m1_raster3d #(
 
   // The left clip plane's top 16 bits. Zero means it was never computed.
   output logic [15:0] dbg_clip_in, dbg_clip_out, dbg_clip_drop,
+  // WRITES THAT LAND WHILE THE GEOMETRY IS MID-OBJECT, both of which are
+  // supposed to be impossible and neither of which has ever been OBSERVED.
+  //
+  // m1_geo_xform's mat[] is written ungated; the argument that it is safe is
+  // that lw_stall holds the list walker outside P_WALK/P_IDLE. m1_geo_planes'
+  // recompute is supposed to be excluded by planes_wait at P_OBJ. Both are
+  // readings of the source, not measurements, and a torn matrix is the ONLY
+  // mechanism found so far that fits the left-side cut's signature - six times
+  // the quads, displaced to one side. A clip plane or a cull can only remove
+  // geometry; a wrong transform multiplies it and moves it.
+  //
+  // These wrap, like the clipper's. Nonzero and climbing means the race is real.
+  output logic [15:0] dbg_mat_race, dbg_plane_race,
+  // Cycles the list walker spent STALLED, in 16-cycle units so a
+  // 16-bit counter covers a whole pass. lw_stall is asserted whenever
+  // the producer is not walking - during every object, every sort and
+  // every texture fetch - so this is the walker waiting on the rest of
+  // the stage. Read against clip_in: if quads-per-second jumps six-fold
+  // while the walker stalls LESS, the list itself changed; if it stalls
+  // MORE, the walker is being held and re-reading.
+  output logic [15:0] dbg_lw_stall,
   output logic [15:0] dbg_plane_l,
 
   // Objects with command 0x41 - "drawn above the HUD" - free-running.
@@ -357,6 +378,8 @@ module m1_raster3d #(
 
   // ---------------------------------------------------------------- geometry
   logic        geo_start, geo_busy, geo_done, geo_planes_wait;
+  logic        pw_d;                  // planes_wait, delayed, for edge detection
+  logic [3:0]  lws_pre;               // /16 prescale for dbg_lw_stall
   logic [31:0] geo_plane_left;
   logic [31:0] geo_oldz_out;
   logic        mat_we;
@@ -1106,11 +1129,24 @@ module m1_raster3d #(
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
+      dbg_mat_race <= '0; dbg_plane_race <= '0; pw_d <= 1'b0;
+      dbg_lw_stall <= '0; lws_pre <= '0;
       band_timer <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0; bd_y0[2] <= '0;
       dbg_frames <= '0;
     end else begin
       mat_we <= 1'b0;
+
+      // A PLANE RECOMPUTE STARTING WHILE AN OBJECT IS IN FLIGHT. planes_wait is
+      // supposed to keep these apart by holding geo_start at P_OBJ; this counts
+      // the times it did not. Rising edge, so it counts events not cycles.
+      pw_d <= geo_planes_wait;
+      if (lw_stall) begin
+        lws_pre <= lws_pre + 4'd1;
+        if (lws_pre == 4'hf) dbg_lw_stall <= dbg_lw_stall + 16'd1;
+      end
+      if (geo_planes_wait && !pw_d && geo_busy)
+        dbg_plane_race <= dbg_plane_race + 16'd1;
       if (cst != C_IDLE && cst != C_WAIT) band_timer <= band_timer + 32'd1;
       if (prod_go)                                pass_timer <= '0;
       else if (pst != P_IDLE && pst != P_READY)   pass_timer <= pass_timer + 32'd1;
@@ -1232,6 +1268,9 @@ module m1_raster3d #(
             mat_we   <= 1'b1;
             mat_idx  <= lw_ev_idx[3:0];
             mat_data <= lw_ev_data;
+            // THE MEASUREMENT: a matrix word arriving while an object is still
+            // being transformed means that object saw a mixed matrix.
+            if (geo_busy) dbg_mat_race <= dbg_mat_race + 16'd1;
           end
           8'h0c: begin
             if (lw_ev_idx == 16'd0) vviewx <= lw_ev_data;

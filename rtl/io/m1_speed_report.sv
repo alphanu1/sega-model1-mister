@@ -175,6 +175,16 @@ module m1_speed_report #(
   // cleared by measurement. This is what separates the clipper culling the left
   // side from the geometry never producing it.
   input  logic [15:0] clip_in, clip_out, clip_drop,
+  // f= matrix words written while the geometry was mid-object, g= plane
+  // recomputes started the same way. Both are supposed to be impossible:
+  // lw_stall holds the walker outside P_WALK, and planes_wait gates
+  // geo_start at P_OBJ. Those are readings of the source, never measured.
+  // A torn matrix is the only mechanism found that fits the left-side
+  // cut - six times the quads, displaced to one side, which no clip plane
+  // or cull can produce. Nonzero and climbing means the race is real.
+  input  logic [15:0] mat_race, plane_race,
+  // i= the list walker's stalled cycles, /16. Read against c=.
+  input  logic [15:0] lw_stall_q,
 
   // THE TILEMAP PAIRS' CONTROL WORDS, read on hardware during real play.
   //
@@ -226,7 +236,7 @@ module m1_speed_report #(
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
-  logic [15:0] r_ci, r_co, r_cd;
+  logic [15:0] r_ci, r_co, r_cd, r_mr, r_pr, r_ls;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
   logic        report_go;
@@ -239,7 +249,7 @@ module m1_speed_report #(
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
-      r_ci <= '0; r_co <= '0; r_cd <= '0;
+      r_ci <= '0; r_co <= '0; r_cd <= '0; r_mr <= '0; r_pr <= '0; r_ls <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
       report_go <= 1'b0;
@@ -274,6 +284,7 @@ module m1_speed_report #(
           r_pxr   <= px_right;
           r_oob   <= vert_oob;
           r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
+          r_mr    <= mat_race; r_pr <= plane_race; r_ls <= lw_stall_q;
           r_cull  <= culled;
           r_quads <= quads;
           r_hl    <= hit_l;
@@ -326,7 +337,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 32;             // fields
+  localparam int unsigned NF  = 35;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -343,7 +354,10 @@ module m1_speed_report #(
     hexc = (n < 4'd10) ? (8'h30 + {4'd0, n}) : (8'h41 + {4'd0, n} - 8'd10);
   endfunction
 
-  logic [4:0] fld;
+  // SIX BITS, not five: the field count passed 32 on 2026-09-09 and 5'd32
+  // truncates to 5'd0, so the new fields silently aliased onto F= and S=.
+  // The CASEOVERLAP warning caught it; widen this with any field added.
+  logic [5:0] fld;
   logic [3:0] pos;
 
   logic [7:0]  f_letter;
@@ -360,27 +374,30 @@ module m1_speed_report #(
       5'd7:  begin f_letter = "V"; f_value = r_vpc;            end
       5'd8:  begin f_letter = "X"; f_value = r_spc;            end
       5'd9:  begin f_letter = "L"; f_value = {8'd0, r_plen};   end
-      5'd10: begin f_letter = "T"; f_value = {8'd0, r_late};   end
-      5'd11: begin f_letter = "W"; f_value = {8'd0, r_wband};  end
-      5'd12: begin f_letter = "D"; f_value = {8'd0, r_drop};   end
-      5'd13: begin f_letter = "H"; f_value = {8'd0, r_short};  end
-      5'd14: begin f_letter = "K"; f_value = {8'd0, r_vx1};    end
-      5'd15: begin f_letter = "M"; f_value = {8'd0, r_miss};   end
-      5'd16: begin f_letter = "O"; f_value = {16'd0, r_occ};   end
-      5'd17: begin f_letter = "Q"; f_value = {16'd0, r_wait};  end
-      5'd18: begin f_letter = "A"; f_value = {8'd0, r_pxl};    end
-      5'd19: begin f_letter = "Z"; f_value = {8'd0, r_pxr};    end
-      5'd20: begin f_letter = "G"; f_value = {8'd0, r_oob};    end
-      5'd21: begin f_letter = "E"; f_value = {8'd0, r_cull};   end
-      5'd22: begin f_letter = "U"; f_value = {8'd0, r_quads}; end
-      5'd23: begin f_letter = "I"; f_value = {8'd0, r_hl};    end
-      5'd24: begin f_letter = "J"; f_value = {8'd0, r_hr};    end
-      5'd25: begin f_letter = "Y"; f_value = {8'd0, r_pl};    end
-      5'd26: begin f_letter = "w"; f_value = {8'd0, r_ch};    end
-      5'd27: begin f_letter = "v"; f_value = {8'd0, r_cl};    end
-      5'd28: begin f_letter = "c"; f_value = {8'd0, r_ci};  end
-      5'd29: begin f_letter = "d"; f_value = {8'd0, r_co};  end
-      5'd30: begin f_letter = "e"; f_value = {8'd0, r_cd};  end
+      6'd10: begin f_letter = "T"; f_value = {8'd0, r_late};   end
+      6'd11: begin f_letter = "W"; f_value = {8'd0, r_wband};  end
+      6'd12: begin f_letter = "D"; f_value = {8'd0, r_drop};   end
+      6'd13: begin f_letter = "H"; f_value = {8'd0, r_short};  end
+      6'd14: begin f_letter = "K"; f_value = {8'd0, r_vx1};    end
+      6'd15: begin f_letter = "M"; f_value = {8'd0, r_miss};   end
+      6'd16: begin f_letter = "O"; f_value = {16'd0, r_occ};   end
+      6'd17: begin f_letter = "Q"; f_value = {16'd0, r_wait};  end
+      6'd18: begin f_letter = "A"; f_value = {8'd0, r_pxl};    end
+      6'd19: begin f_letter = "Z"; f_value = {8'd0, r_pxr};    end
+      6'd20: begin f_letter = "G"; f_value = {8'd0, r_oob};    end
+      6'd21: begin f_letter = "E"; f_value = {8'd0, r_cull};   end
+      6'd22: begin f_letter = "U"; f_value = {8'd0, r_quads}; end
+      6'd23: begin f_letter = "I"; f_value = {8'd0, r_hl};    end
+      6'd24: begin f_letter = "J"; f_value = {8'd0, r_hr};    end
+      6'd25: begin f_letter = "Y"; f_value = {8'd0, r_pl};    end
+      6'd26: begin f_letter = "w"; f_value = {8'd0, r_ch};    end
+      6'd27: begin f_letter = "v"; f_value = {8'd0, r_cl};    end
+      6'd28: begin f_letter = "c"; f_value = {8'd0, r_ci};  end
+      6'd29: begin f_letter = "d"; f_value = {8'd0, r_co};  end
+      6'd30: begin f_letter = "e"; f_value = {8'd0, r_cd};  end
+      6'd31: begin f_letter = "f"; f_value = {8'd0, r_mr};  end
+      6'd32: begin f_letter = "g"; f_value = {8'd0, r_pr};  end
+      6'd33: begin f_letter = "i"; f_value = {8'd0, r_ls};  end
       default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end
@@ -422,7 +439,7 @@ module m1_speed_report #(
         // ends.
         if (pos == 4'(FW - 1)) begin
           pos <= '0;
-          fld <= fld + 5'd1;
+          fld <= fld + 6'd1;
         end else begin
           pos <= pos + 4'd1;
         end

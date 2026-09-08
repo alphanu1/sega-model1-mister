@@ -117,6 +117,9 @@ int main(int argc, char** argv) {
     dut->clip_in      = 0x1357;
     dut->clip_out     = 0x2468;
     dut->clip_drop    = 0x369C;
+    dut->mat_race     = 0x4812;
+    dut->plane_race   = 0x5A3B;
+    dut->lw_stall_q   = 0x6C4D;
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
     dut->hud_obj      = 0x0042;
@@ -169,6 +172,7 @@ int main(int argc, char** argv) {
         // The clipper's funnel, added 2026-09-09 for the left-side cut:
         // quads in, quads out, quads it discarded.
         {'c', 0x1357}, {'d', 0x2468}, {'e', 0x369C},
+        {'f', 0x4812}, {'g', 0x5A3B}, {'i', 0x6C4D},
         {'h', 0x0042},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
