@@ -477,6 +477,8 @@ M1_QOPT="${M1_QOPT:-Aggressive Area}"
 #
 # Measured trade for reference: Aggressive Area saved 469 ALM for 0.272 ns.
 M1_QTECH="${M1_QTECH:-AREA}"
+M1_QPACK="${M1_QPACK:-NORMAL}"
+M1_QPACKEFF="${M1_QPACKEFF:-MEDIUM}"
 M1_QDUP="${M1_QDUP:-OFF}"
 if [ -n "${M1_QSPEED:-}" ]; then
     echo "  M1_QSPEED set: keeping the template's speed-biased settings"
@@ -488,6 +490,33 @@ else
            "$stage/Model1.qsf"
     echo "  OPTIMIZATION_MODE = $M1_QOPT, TECHNIQUE = $M1_QTECH"
     echo "  register duplication $M1_QDUP, router logic duplication $M1_QDUP"
+
+    # REGISTER PACKING, and it is a TIMING dial, not an area one - measured, and
+    # the opposite of what was expected.
+    #
+    # N64.qsf runs "SPARSE AUTO" with LOW packing effort and the MiSTer template
+    # ships NORMAL/MEDIUM, both of which spread registers across ALMs to help
+    # routing. The reasoning was that this design is AREA-bound, so it should
+    # want the opposite. Measured on identical RTL, 2026-09-08:
+    #
+    #     NORMAL / MEDIUM                    40,941 ALM   clk_3d -0.246
+    #     MINIMIZE AREA WITH CHAINS / HIGH   41,145 ALM   clk_3d +0.672
+    #
+    # It COSTS 204 ALM and buys 0.9 ns. Packing registers hard into ALMs stops
+    # those ALMs sharing their LUT half, so the count rises - but the logic ends
+    # up physically closer and routes better. Default stays NORMAL/MEDIUM
+    # because ALM is what binds; reach for the dense setting when a build misses
+    # timing and there is area to spend:
+    #
+    #   M1_QPACK="MINIMIZE AREA WITH CHAINS" M1_QPACKEFF=HIGH make rbf
+    #
+    # Every other optimisation assignment in N64.qsf was already set here, and
+    # this design is further along the area axis than that one: it runs
+    # Aggressive Performance / SPEED where we run Aggressive Area / AREA.
+    sed -i -e "s/^set_global_assignment -name QII_AUTO_PACKED_REGISTERS .*/set_global_assignment -name QII_AUTO_PACKED_REGISTERS \"$M1_QPACK\"/" \
+           -e "s/^set_global_assignment -name ALM_REGISTER_PACKING_EFFORT .*/set_global_assignment -name ALM_REGISTER_PACKING_EFFORT $M1_QPACKEFF/" \
+           "$stage/Model1.qsf"
+    echo "  register packing $M1_QPACK, ALM packing effort $M1_QPACKEFF"
 
     # RESOURCE SHARING AND FRIENDS, taken from the Model 2 core's Model2.qsf
     # where they are part of a shipping configuration. Quartus defaults
