@@ -1,5 +1,50 @@
 # HANDOFF
 
+## 2026-09-08 — WHERE TO PICK UP
+
+**The V60's instruction stream now agrees with MAME's for the whole trace
+window**, at two emulated seconds and at four. `make v60_trace` had diverged at
+instruction 24,825 for weeks; it now runs to the end of our stream with no
+mismatch, and only loop COUNTS differ (we are faster against a real-time video
+clock, so the `fe1433` scanline poll spins fewer times).
+
+Two bugs, both in the I/O board, both found in simulation with no hardware
+round trip. `docs/findings.md`, 2026-09-08, has the full trail.
+
+1. **The 93C46 EEPROM was read one bit late.** Every word came back shifted
+   right by one - all six of the identity block, exactly - so the block the
+   firmware published failed the V60's "SEGA" check at `FE078E` and the game
+   took its **uninitialised-board branch**. That is upstream of the display
+   list, the geometry and everything else.
+2. **The EEPROM had no load path on hardware at all.** Its contents came from a
+   `` `ifdef VERILATOR $readmemh ``, so simulation had contents to get wrong and
+   the board read a blank part. It now rides SDRAM with the I/O firmware on
+   download index 3 and `m1_ioz80` preloads it before releasing the Z80; the
+   `$readmemh` is gone, so sim and hardware get it the same way or neither does.
+
+Also fixed, and **not** the same bug: the Z80's clock ratio was 6:1 against the
+board's 4:1 and had been since the tv80 went in. Fixing it alone did not move
+the divergence.
+
+### WHAT IS NOT YET KNOWN
+
+**Whether this fixes the left-side cut.** It is upstream of the display list,
+which is where the cut was localised (objects walked dropping 130 -> 27), so it
+is the best candidate there has been - but that is an inference, not a
+measurement. The board was unreachable when this was built.
+
+**Next step is a board test.** `build/mister/output_files/Model1.rbf` from
+commit `d6310c5`, md5 `17b557b93e88b3e4298dd2afc071dd98`, archived at
+`~/rbf_known_good/Model1_d6310c5_eeprom.rbf`. 41,424/41,910 ALM (99%),
+553/553 M10K, 61 DSP, every one of our clocks positive; only the framework's
+`pll_hdmi` is negative, at -0.519. Drive it and read the UART report: the
+question is whether `P obj` still collapses from ~130 to ~27 during a cut.
+
+The binning work below stands regardless - it is what removes the dropped-quad
+ceiling - but it is no longer obviously the next thing to build.
+
+---
+
 ## 2026-09-05 (late) — WHERE TO PICK UP
 
 **Board state:** `0887e7b8e02a71c9e32ff8db9177066b` flashed, from `d9c6818`.
