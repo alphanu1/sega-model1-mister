@@ -20,6 +20,72 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 — 1,521 ALM WAS IN FOUR COMMENTED-OUT LINES OF THE BUILD SCRIPT
+
+The device sat at 99% for two days and that gated everything: the 3D record
+overlap could not be afforded, and the V60 was being restructured to pay for it.
+Then Ben asked what the Jaguar core's qsf sets. Every OPTIMISATION assignment in
+it was already set here - as with N64_MiSTer - but both files carry a block of
+`VERILOG_MACRO` feature switches, and the MiSTer template ships every one of
+them COMMENTED OUT. A core pays for those features unless it opts out. Ours was
+paying.
+
+    41,312 ALM  99%   before
+    39,791      95%   with four macros set          -1,521
+    598 free    ->    2,119 free
+
+    MISTER_DISABLE_ALSA        292 ALM, measured in the per-entity table
+    MISTER_DISABLE_YC          221 ALM
+    MISTER_DOWNSCALE_NN        the two together were worth ~1,000 more than
+    MISTER_DISABLE_ADAPTIVE    predicted; both are ascal parameters
+
+Every clock we own passes: clk_sys +0.479, clk_3d +1.072, and only the
+framework's HDMI PLL is negative at -0.166. Confirmed on hardware the same day.
+
+**FOR SCALE, AGAINST WHAT WAS BEING DONE INSTEAD.** The same day, splitting the
+V60's floating-point group into its own module - 549 lines, three states out of
+the 106-state machine, a full verification pass - returned **341 ALM standalone
+and 56 in context**. The macros returned 1,521 for four lines and no risk to any
+of our logic. Two other lines of attack were measured at ZERO on the way: the
+nine barrel shifters inside the FP module (removing all of them changed nothing)
+and hoisting the shared displacement expressions (+20 ALM, noise - Quartus
+already shares mutually exclusive arithmetic inside one always block).
+
+**THE LESSON IS ABOUT ORDER, NOT ABOUT MACROS.** Hours went into optimising our
+own logic while a documented, measured, zero-risk saving four times larger sat
+in a file another core publishes. Read what comparable cores switch OFF before
+optimising what we switch on.
+
+**WHAT IS SAFE AND WHY, checked in sys_top.v rather than assumed:**
+
+- ALSA is the LINUX-side audio channel. The mixer takes core_l/core_r outside
+  the ifndef and every output - i2s/HDMI, analog DAC, S/PDIF - is outside it
+  too, so our own sound reaches all of them whether it is set or not. It stays
+  unused after M4, because Model 1's sound is generated in the fabric.
+- YC costs composite VIDEO (CVBS) and S-video only. COMPOSITE SYNC IS
+  PRESERVED: sys_top.v:1510-1514 has an explicit else branch for the macro that
+  drives vga_cs from vga_out's csync_o, and pin 13 carries sync, not video.
+  RGB, VGA and YPbPr are untouched.
+- DOWNSCALE_NN swaps the polyphase filter for nearest neighbour when
+  DOWNscaling. Model 1 renders 496x384 into 1080p and never downscales, so it
+  removes unreachable logic here rather than trading quality.
+- DISABLE_ADAPTIVE is the scanline filter, reachable whenever scanlines are
+  enabled in the OSD. Taken deliberately, not silently.
+
+**AND ONE NOTE IN OUR OWN SCRIPT WAS WRONG.** It said MISTER_SMALL_VBUF shrinks
+"ascal's video buffer - M10K, which is what actually blocks sound". It is DDR3:
+RAMBASE is 32'h20000000 and the macro only changes RAMSIZE, 8 MB -> 2 MB
+(sys_top.v:717). It does nothing for ALM or M10K. Still worth remembering for
+M4, whose PCM samples also live on DDR3.
+
+**WHAT THIS DOES AND DOES NOT UNBLOCK.** The 3D record overlap costs ~350 ALM
+measured, so it now fits with room to spare. Sound does not: it needs ~8,837 ALM
+and ~57 M10K, against 2,119 ALM and 7 M10K free. The ALM half of that is the
+V60's 7,500 gap to the i960 - so the V60 restructure is the SOUND prerequisite,
+not the 3D one. The M10K half has to come from moving a memory off-chip.
+
+---
+
 ## 2026-09-08 — ALL THREE LATENCY FIXES CONFIRMED ON HARDWARE, AND THE 3D IS UNCHANGED
 
 Flashed and run on the DE10-Nano in sequence, each its own bitstream:
