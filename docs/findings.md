@@ -20,6 +20,60 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (late) — THE LEFT-SIDE CUT IS FEWER OBJECTS WALKED, NOT ANYTHING DOWNSTREAM
+
+The projection state went on the wire (j= viewx, k= xc, l= zoomx) along with two
+races that had only ever been cleared by READING the source, and a walker stall
+counter. Two minutes with the cut present and the car parked so it held:
+
+    n     viewx     xc  zoomx   P obj  L passlen   wrL    wrR   L/R   f   g
+    7       0.0  248.0  280.0     129       5500  7188   6436  1.12   0   0
+    11      0.0  248.0  280.0     132       5637  7219   6383  1.13   0   0
+    56      0.0  248.0  280.0      27       3254  1719   9454  0.18   0   0
+    60      0.0  248.0  280.0      27       3255  1719   9453  0.18   0   0
+    68      0.0  248.0  280.0      27       3255  1718   9455  0.18   0   0
+
+**THE PROJECTION STATE NEVER MOVES.** viewx 0.0, xc 248.0, zoomx 280.0, identical
+during the cut and outside it. So nothing is being displaced, which was the best
+remaining theory - a wrong latched viewx would move every vertex sideways and
+produce exactly this left/right split. It does not happen.
+
+**AND BOTH RACES ARE ZERO.** f=0 (matrix words written mid-object) and g=0 (plane
+recomputes started mid-object) for the entire run. Those were cleared earlier by
+reading lw_stall and planes_wait in the source; they are now cleared by
+measurement, which is the standard this project sets and I had not met.
+
+**WHAT DOES CHANGE IS THE OBJECT COUNT: 130 -> 27, a five-fold drop**, with the
+pass length falling with it, 5,500 -> 3,255. The geometry is not clipped, culled,
+dropped, shifted or frozen - it is never walked. That is consistent with every
+clean measurement of the last two days, because nothing downstream can be at
+fault for quads that are never produced.
+
+**TWO CORRECTIONS TO MY OWN READING, both Ben's.**
+
+1. Counting quads while geometry is "missing" gave a count that ROSE six-fold,
+   and I carried on reasoning as though quads were absent. They were not absent.
+   A count that contradicts the symptom means the interpretation is wrong.
+2. The identical pixel counts for a minute (1718/9454 repeating) were NOT a
+   frozen producer. F=58 and S=29 are RATES - 58 fps and the game's 29 Hz list
+   swap - and both are healthy throughout. The counts repeat because the car was
+   parked and the scene is static. An earlier reading of F/S "frozen" was
+   dismissed as a crash state and then wrongly resurrected as evidence.
+
+**THE OPEN QUESTION, stated honestly: is 27 objects WRONG, or is it what is
+visible from where the car stopped?** A sparse stretch of track legitimately
+walks fewer objects, and H= (passes walking fewer than half the previous pass's
+objects) reads 0 throughout, so the walker does not consider it short. The
+correlation with the cut is strong; correlation with "parked somewhere quiet"
+would look identical in this data.
+
+**HOW TO SETTLE IT:** tools/mame_poly_budget.lua counts records walked per frame
+in the reference. Park where the cut shows, dump the same scene from MAME, and
+compare. If MAME walks 130 where we walk 27, the walk is truncating and the
+fault is in m1_listwalk or what terminates it.
+
+---
+
 ## 2026-09-09 — VR'S LEFT-SIDE CUT: SIX CANDIDATES CLEARED, AND WHAT IT ACTUALLY LOOKS LIKE
 
 Two minutes of driving with the UART report, the cut present for about a minute
