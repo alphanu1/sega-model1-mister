@@ -272,6 +272,20 @@ module m1_raster3d #(
   //
   // These wrap, like the clipper's. Nonzero and climbing means the race is real.
   output logic [15:0] dbg_mat_race, dbg_plane_race,
+  // THE LIST RACE. The pass trigger rests on one assumption, stated at
+  // `list_flipped` below: that a pass finishes before the V60 flips again and
+  // starts rewriting the buffer it read - true "for any pass up to two frames".
+  // The pass is MEASURED at 206% of one frame, which is 3% OVER two, so on a
+  // busy stretch the game flips while we are still walking and the V60 rewrites
+  // the list underneath the walker. That truncates the walk, which is exactly
+  // the signature the left-side cut has: objects walked collapsing 130 -> 27
+  // with the EARLY ones surviving, only when the scene is busy, never in
+  // attract on the same corner.
+  //
+  // `f` covers the matrix race and `g` the plane race and both read zero; there
+  // has never been a counter on the LIST buffer itself. This is that counter -
+  // passes during which the game flipped out from under the walk.
+  output logic [15:0] dbg_list_race,
   // Cycles the list walker spent STALLED, in 16-cycle units so a
   // 16-bit counter covers a whole pass. lw_stall is asserted whenever
   // the producer is not walking - during every object, every sort and
@@ -1039,9 +1053,32 @@ module m1_raster3d #(
   // was free walks a list the V60 is halfway through writing, and showed on the
   // board as geometry in the wrong place with vertices collapsed toward the
   // origin. The flip is precisely the moment at which that cannot happen.
+  // The list race, counted once per pass rather than once per cycle: the
+  // condition holds for the whole tail of an overrunning pass, so a per-cycle
+  // count would say how LONG the overrun was and not how OFTEN it happened, and
+  // how often is the question. `lr_seen` latches for the pass and clears when
+  // the next one starts.
+  logic       lr_seen;
   logic       dl_sel_s2_d;
   logic [2:0] fs_since_flip;       // frame pulses since the last flip, saturating
   wire  list_flipped = (dl_sel_s2 != dl_sel_q);
+
+  // A pass that is still walking when the game flips is reading a buffer the
+  // V60 has started rewriting. P_IDLE and P_READY are excluded: idle has no
+  // pass to corrupt, and READY has finished walking and is only waiting to be
+  // swapped in, which is the phase the trigger is designed to leave room for.
+  wire  list_race_now = list_flipped && (pst != P_IDLE) && (pst != P_READY);
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_list_race <= '0; lr_seen <= 1'b0;
+    end else begin
+      if (prod_go) lr_seen <= 1'b0;
+      else if (list_race_now && !lr_seen) begin
+        lr_seen       <= 1'b1;
+        dbg_list_race <= dbg_list_race + 16'd1;
+      end
+    end
+  end
   wire  no_flips     = fs_since_flip[2];
   // AND NOT BEFORE THE VBLANK AFTER THE FLIP. MAME renders the list at the
   // end of the frame in which the game flipped, so the game has the rest of
