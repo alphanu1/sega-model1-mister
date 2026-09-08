@@ -102,7 +102,24 @@ module m1_raster3d #(
   // those were wrong (see m1_quad_store); with the full coordinate a
   // 3,072-quad bank is ~74 blocks, both banks ~+44 over the old design and
   // the whole core ~540 of 553. Frame 2500 needs 2,671.
-  parameter int unsigned NQ     = 3072
+  // 3,584 AS OF 2026-09-09, from 3,072, spending the 24 M10K that halving the
+  // band height freed. MEASURED ON THE BOARD, two minutes of real driving with
+  // the UART report: U peaks at 3,034 against a 3,072 cap and D spills 33 then
+  // 111 quads when it tips over. That is the missing track and scenery - the
+  // store fills in DISPLAY LIST ORDER, so what falls off the end is whatever
+  // the game drew last, and it only happens on the busy stretches, which is why
+  // it comes and goes rather than being always wrong.
+  //
+  // Attract never crosses it - 976 to 1,301 quads, D=0 - which is why the same
+  // corner on the same racing line looks correct there. That contrast is what
+  // identified this; simulation cannot see it, because tb_m1_geometry never
+  // fills the store and D reads zero throughout.
+  //
+  // 3,584 leaves ~550 of headroom over the worst frame seen. It is NOT the real
+  // fix: a peak frame offers more than this and the honest answer is the quad
+  // payload in SDRAM, which stores everything and hands back all 138 M10K. This
+  // is what the freed blocks will buy today.
+  parameter int unsigned NQ     = 3584
 ) (
   input  logic        clk,            // the 3D clock, 45.714 MHz
   input  logic        rst_n,

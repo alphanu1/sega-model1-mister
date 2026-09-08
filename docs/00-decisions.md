@@ -187,6 +187,29 @@ costs D3 before it costs D2.
 
 ## D9 — The I/O board is an HLE, not a Z80
 
+> **SUPERSEDED 2026-09-09: it is a real Z80 running the real BIOS.** This entry
+> named its own revisit condition - "when M2, M3 and M4 are built and the real
+> number is known, if there is ALM room then the LLE is worth taking on its
+> merits" - and that is what happened. `rtl/io/m1_ioz80.sv` holds a tv80 and is
+> instantiated unconditionally at `rtl/m1_main.sv:515`, `m1_ioboard`'s ports did
+> not change as the entry predicted, and the BIOS comes in through the MRA:
+> `epr-14869.25` for Virtua Racing, `epr-14869b.25` for both Star Wars MRAs.
+>
+> The entry's closing argument is what settled it, and it is worth restating
+> because it generalises: an HLE reproduces the protocol someone read out of the
+> ROM, and a Z80 running that ROM *is* the protocol. Star Wars is the case that
+> proves it - a different BIOS revision and a different analogue channel map
+> (0,1,2,4,5 for two sticks and a throttle, with a gap at 3) that the HLE would
+> have had to be taught, and the LLE gets for nothing.
+>
+> The area argument it was decided on has also moved: the budget then was
+> estimates, and the measured figure now is 39,825 ALM of 41,910 with the
+> framework macros off.
+>
+> Kept in full below because the reasoning is sound and the revisit worked
+> exactly as it was written to.
+
+
 Deferred three times because nothing needed it: across a full boot the V60 reads
 exactly one address in the DPRAM region more than twice — the status flag at
 `0xc00040`, forty times — and no input data at all. The core has now reached the
