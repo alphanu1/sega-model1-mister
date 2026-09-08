@@ -222,6 +222,12 @@ def pack_stream(zip_path, game):
     return stream
 
 
+# The I/O board's serial settings EEPROM, dumped by MAME as part of the game
+# set. Its first word is the "SEGA" signature the V60 checks before deciding
+# the board has been configured.
+EE_PART = '93c45.bin'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('game', choices=sorted(SETS))
@@ -272,6 +278,30 @@ def main():
             for b in fw:
                 f.write('%02x\n' % b)
         print(f"{iop}: {len(fw)} bytes of I/O board firmware")
+
+    # The I/O board's settings EEPROM, when the set carries one. 93c45.bin is
+    # 128 bytes and lives in the GAME zip, not the model1io BIOS set. Emitted a
+    # byte per line, the same shape as the firmware, because the benches stream
+    # it through the real loader on its own download index rather than poking
+    # the array - a $readmemh here would pass in simulation and leave the board
+    # reading a blank device.
+    #
+    # Byte order is settled and needs no swap: the dump holds 45 53 41 47, and
+    # hps_io with WIDE=1 presents {byte1, byte0}, which is 0x5345 0x4741 -
+    # "SEGA" as the firmware reads it, and as the V60 checks it at FE078E.
+    try:
+        with zipfile.ZipFile(args.zip) as zf:
+            ee = zf.read(EE_PART)
+    except (KeyError, OSError):
+        ee = None
+    if ee is not None:
+        eep = os.path.join(args.out, f'{args.game}_ee.hex')
+        with open(eep, 'w') as f:
+            for b in ee:
+                f.write('%02x\n' % b)
+        print(f"{eep}: {len(ee)} bytes of I/O board EEPROM")
+    else:
+        print(f"note: {EE_PART} not in {args.zip}; the I/O board will read a blank part")
 
     if args.bin:
         binp = os.path.join(args.out, f'{args.game}_stream.bin')

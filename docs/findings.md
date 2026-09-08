@@ -20,6 +20,85 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE I/O BOARD'S EEPROM WAS READ ONE BIT LATE, AND THE GAME SAW AN UNCONFIGURED BOARD
+
+**The V60's instruction stream now agrees with MAME's for the whole trace
+window.** `make v60_trace` diverged at instruction 24,825 for weeks, on
+
+    FE078E: cmp.w #41474553, 0[R20]     ; "SEGA"
+    FE0797: be     FE07AC
+
+where the reference branches and we fell through. It now runs to the end of our
+window (27,376 of 27,377 instructions, i.e. no mismatch) with only loop COUNTS
+differing.
+
+**What it was.** `R20` points at a 128-byte identity block the I/O board's Z80
+publishes into shared RAM `0x100..0x17f`, which the V60 block-copies to work RAM
+`0x40DC80` at `FE08F2` and then checks. The Z80 reads that block out of a 93C46
+serial EEPROM. Ours returned every word **shifted right by one bit**:
+
+| EEPROM word | want | Z80 got | `want >> 1` |
+|---|---|---|---|
+| 0 | `5345` | `29a2` | `29A2` |
+| 1 | `4741` | `23a0` | `23A0` |
+| 2 | `1c82` | `0e41` | `0E41` |
+| 3 | `0100` | `0080` | `0080` |
+| 4 | `889a` | `444d` | `444D` |
+| 5 | `ff01` | `7f80` | `7F80` |
+
+All six, exactly. `m1_ioz80` loaded `ee_out <= {1'b0, ee[addr]}` when the
+address completed, so the **first** read clock emitted the dummy 0 and the
+firmware — which clocks exactly sixteen times — collected `[0, D15..D1]`. A real
+93C46 presents the dummy on the clock that latches the last address bit. Fixed
+by loading `{ee[addr], 1'b0}` and driving the dummy on that same edge.
+
+The game then failed its own signature check and took its uninitialised-board
+branch. That is upstream of everything: a different init path, a different
+display list.
+
+**A SIMULATION-ONLY `$readmemh` IS WHY THIS SURVIVED.** The array was filled by
+`` `ifdef VERILATOR $readmemh("build/rom/vr_ee_le.hex", ee) ``, with a comment
+saying "hardware needs a load path". So simulation had contents to get wrong and
+**hardware had no contents at all** — it read a blank part and failed the same
+check for a second, independent reason. Both had to be fixed to reach the board:
+
+- the EEPROM now rides SDRAM with the I/O firmware, one 16 KB block above it, on
+  its own download index 3, and `m1_ioz80` preloads its array through the fetch
+  port it already owns before releasing the Z80. No new clock crossing.
+- the `$readmemh` is **gone**. Simulation and hardware get it the same way or
+  neither does.
+- `tools/build_rom_image.py` extracts `93c45.bin` (it is in the GAME zip, not the
+  model1io BIOS set) and `verify_mra.py` now checks index 3 exists, is 128 bytes
+  and starts `5345`. That check is the same insurance that would have caught the
+  coprocessor's data ROM being missing from the MRA.
+
+Byte order needs no swap: the dump holds `45 53 41 47`, and `hps_io` with
+`WIDE=1` presents `{byte1, byte0}` = `0x5345 0x4741`.
+
+**Widening the fetch index bit me once.** `iofw_word` went 13 -> 14 bits to
+reach the second 16 KB, and `m1_integrated` reconstructs it after a CDC as
+`iofw_addr_sys[13:1]`. Left at 13 it truncated, the preload read word 0 of the
+**firmware**, and the Z80 published `ed f3 31 56` as the identity block — which
+looks like a fresh EEPROM bug rather than a width one.
+
+**The Z80's clock ratio was also wrong, and is NOT this bug.** The real board
+runs both CPUs off one 32 MHz crystal, V60 at /2 = 16 MHz and Z80 at /8 = 4 MHz:
+**4:1**. `m1_ioz80` was instantiated `CEN_DIV(6)` off `clk_cpu`, so **6:1** — the
+I/O board ran at two thirds of its proper speed relative to the CPU it
+handshakes with, from the day the tv80 went in (2026-09-04). The ratio IS the
+divisor, so it never depended on `clk_cpu` and the overclock did not cause it;
+the overclock only moved the absolute frequency (3.92 -> 4.76 MHz). Nothing in
+the suite could see it, because nothing exercises the boot handshake. Now a
+Bresenham `CEN_NUM/CEN_DEN` defaulting to 1/4 — a RATIO, with no frequency to go
+stale — and `m1_main` deliberately passes no override. **Fixing it did not move
+the divergence**, measured before the EEPROM fix; it is correct against the
+reference on its own terms.
+
+**Measured before building, and it paid.** Both fixes were found and confirmed
+in `tb_m1_frame` and `make v60_trace`, with no hardware round trip. The
+instruments are in `tb_m1_frame.sv`: `IDWR` (Z80 writes into the block), `IDW60`
+(V60 writes into it) and `IDBLK` (what the V60 reads back, with the PC).
+
 ## 2026-09-09 (late) — THE LEFT-SIDE CUT IS FEWER OBJECTS WALKED, NOT ANYTHING DOWNSTREAM
 
 The projection state went on the wire (j= viewx, k= xc, l= zoomx) along with two

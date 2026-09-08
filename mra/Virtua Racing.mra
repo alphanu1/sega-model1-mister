@@ -133,6 +133,17 @@
         <part name="epr-14869.25"/>
     </rom>
 
+    <!-- The I/O board's 93C46 settings EEPROM, 128 bytes, from the GAME set
+         rather than the model1io BIOS set. Its first word is the "SEGA"
+         signature the V60 checks at FE078E before deciding the board has been
+         configured; without it the firmware publishes an identity block that
+         fails that check and the game takes its uninitialised-board branch,
+         which walks a much shorter display list. Its own index because
+         m1_ioz80 preloads its array from SDRAM before releasing the Z80. -->
+    <rom index="3" zip="vr.zip|vr.7z" md5="none">
+        <part name="93c45.bin"/>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>

@@ -74,7 +74,7 @@ module m1_main #(
   // The I/O board Z80's firmware fetch, into SDRAM. It is 16 KB of read-only
   // code and block RAM has no room for it - see m1_ioz80.
   output logic        iofw_req,
-  output logic [12:0] iofw_word,
+  output logic [13:0] iofw_word,
   input  logic        iofw_ack,
   input  logic [15:0] iofw_din,
 
@@ -512,7 +512,12 @@ module m1_main #(
       // executed RST 38h forever. One fetch in forty million cycles.
       //
       // rst_cpu is ~rst_n | ~rom_loaded, which is what the V60 uses.
-      m1_ioz80 #(.CEN_DIV(6)) ioboard (
+      // NO PARAMETER OVERRIDE ON PURPOSE. The default is the board's own
+      // V60:Z80 clock ratio of 4:1, which is a property of the hardware and not
+      // of whatever we clock the V60 at. The override that stood here was
+      // CEN_DIV(6) - a 6:1 ratio, so the I/O board ran at two thirds speed
+      // relative to the CPU it handshakes with, and always had.
+      m1_ioz80 ioboard (
         .clk(clk), .rst_n(~rst_cpu),
         .fw_req(iofw_req), .fw_word(iofw_word),
         .fw_ack(iofw_ack), .fw_din(iofw_din),
@@ -554,7 +559,7 @@ module m1_main #(
         io_raddr       = 11'd0;
         dbg_io_replies = 16'd0;
         iofw_req       = 1'b0;
-        iofw_word      = 13'd0;
+        iofw_word      = 14'd0;
       end
       // io_ack is driven by the RAM; nothing consumes it in this branch.
     end

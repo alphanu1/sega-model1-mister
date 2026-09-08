@@ -88,7 +88,7 @@ module m1_integrated (
 
   // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
   output logic        iofw_req,
-  output logic [12:0] iofw_word,
+  output logic [13:0] iofw_word,
   input  logic        iofw_ack,
   input  logic [15:0] iofw_din,
 
@@ -678,7 +678,7 @@ module m1_integrated (
   // The I/O board Z80's firmware fetch, CPU side and the crossed address.
   localparam logic [24:1] IOFW_BASE = 24'hD00000;
   logic        m_iofw_req, m_iofw_ack;
-  logic [12:0] m_iofw_word;
+  logic [13:0] m_iofw_word;
   wire  [24:1] iofw_addr_sys;
   m1_cdc_pulse u_frame_pulse (
     .a_clk(clk_sys), .a_rst_n(rst_n_sys), .a_pulse(vblank_irq_sys),
@@ -895,7 +895,7 @@ module m1_integrated (
   m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_iofw_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(m_iofw_req), .a_we(1'b0),
-    .a_addr(IOFW_BASE + {11'd0, m_iofw_word}),
+    .a_addr(IOFW_BASE + {10'd0, m_iofw_word}),
     .a_din(16'd0), .a_be(2'b11),
     .a_dout(iofw_dout_cpu), .a_ack(m_iofw_ack), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
@@ -903,7 +903,10 @@ module m1_integrated (
     .b_din(), .b_be(),
     .b_dout(iofw_din), .b_ack(iofw_ack)
   );
-  assign iofw_word = iofw_addr_sys[13:1];
+  // [14:1], not [13:1]: the window is 32 KB now, the top half of it
+  // carrying the settings EEPROM. Truncating here made the Z80's preload
+  // read word 0 of the FIRMWARE and publish that as the identity block.
+  assign iofw_word = iofw_addr_sys[14:1];
 
   // ------------------------------------------------------------- fast domain
   m1_video video (

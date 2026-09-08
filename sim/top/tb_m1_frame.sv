@@ -186,7 +186,7 @@ wire [15:0] r3d_tex_din;
 // EIGHT PORTS, matching Model1.sv: p7 is the I/O board Z80's firmware fetch.
 localparam logic [24:1] IOFW_BASE = 24'hD00000;
 wire        iofw_req;
-wire [12:0] iofw_word;
+wire [13:0] iofw_word;
 
 wire [6:0]       p_req, p_we, p_ack;
 wire [6:0][24:1] p_addr;
@@ -209,7 +209,7 @@ assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,
 // wanted. Aligning it any earlier destroys that bit and every odd model word
 // returns the even one's data.
 assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
-                 IOFW_BASE + {11'd0, iofw_word},
+                 IOFW_BASE + {10'd0, iofw_word},
                  {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
@@ -828,6 +828,11 @@ initial begin
     for (i = 0; i < 65536; i = i + 1) iofw[i] = 8'hff;
     $readmemh("build/rom/vr_iofw.hex", iofw);
     iofw_ok = (iofw[0] !== 8'hff) || (iofw[1] !== 8'hff);
+    for (i = 0; i < 128; i = i + 1) eerom[i] = 8'hff;
+    $readmemh("build/rom/vr_ee.hex", eerom);
+    ee_ok = (eerom[0] !== 8'hff) || (eerom[1] !== 8'hff);
+    if (!ee_ok)
+        $display("tb_m1_frame: *** no I/O board EEPROM (build/rom/vr_ee.hex): the board reads a blank part, the V60's SEGA check at FE078E fails and the game takes its uninitialised-board branch ***");
     if (!iofw_ok)
         $display("tb_m1_frame: *** no I/O board firmware (build/rom/vr_iofw.hex): the Z80 executes nothing and the V60 waits forever. Run tools/build_rom_image.py with --iofw ***");
     if (ucode[0] === 32'h0)
@@ -943,6 +948,36 @@ task automatic run_iofw_download;
         ioctl_download <= 1'b0;
         ioctl_index    <= 16'd0;
         $display("download: I/O board firmware streamed on index 2");
+        $fflush;
+    end
+endtask
+
+// The I/O board's settings EEPROM, on index 3. Streamed through the REAL
+// loader, exactly like the firmware, because the array has no $readmemh any
+// more: a simulation-only initialiser is how the shifted-read bug survived -
+// the bench had contents to get wrong and the board never did.
+reg [7:0] eerom [0:127];
+integer   ee_ok = 0;
+task automatic run_ee_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd3;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 64; w = w + 1) begin        // 128 bytes as 16-bit words
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {eerom[w*2 + 1], eerom[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: I/O board EEPROM streamed on index 3 (word 0 = %02h%02h)",
+                 eerom[1], eerom[0]);
         $fflush;
     end
 endtask
@@ -1229,6 +1264,56 @@ always @(posedge clk_cpu) begin
                  core.main.m_wdata, core.main.m_rdata,
                  core.main.rams.dpram_lo['h020]);
         dp_n = dp_n + 1;
+    end
+end
+
+// ----------------------------- WHAT DOES THE V60 READ FROM THE ID BLOCK?
+//
+// The Z80 writes "SEGA" plus 0x821C plus 1 into DPRAM 0x100.., the V60 block-
+// copies that to work RAM 0x40DC80 with a halfword-read / byte-store loop at
+// FE08F2, and then FE078E compares it against #41474553 and takes a different
+// branch to the reference's. The Z80's side is confirmed correct by the read-
+// back census above, so the question is what the V60 gets from the same words.
+// The ordering question: the Z80 writes the block MORE THAN ONCE (the census
+// shows 3-4 writes per address) and only the LAST pass is the real identity
+// block. Timestamp both sides of word 0x100 to see which pass the V60 copies.
+integer zid_n = 0;
+always @(posedge clk) begin
+    if (rst_n_sys && core.main.io_we && core.main.io_ack
+        && core.main.io_addr >= 11'h100 && core.main.io_addr <= 11'h107
+        && zid_n < 40) begin
+        $display("IDWR: t=%0t z80 wrote word %03h = %02h",
+                 $time, core.main.io_addr, core.main.io_din);
+        zid_n = zid_n + 1;
+    end
+end
+
+// BOTH CPUs write this block. Timestamp the V60's writes to it as well.
+integer idw60_n = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && core.main.m_ack && core.main.sel_dpram
+        && core.main.m_we
+        && core.main.m_addr[11:1] >= 11'h0f0 && core.main.m_addr[11:1] < 11'h180
+        && idw60_n < 40) begin
+        $display("IDW60: t=%0t pc=%06h word=%03h be=%02h wdata=%04h",
+                 $time, core.dbg_pc, core.main.m_addr[11:1],
+                 core.main.m_be, core.main.m_wdata);
+        idw60_n = idw60_n + 1;
+    end
+end
+
+integer idr_n = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.m_req && core.main.m_ack && core.main.sel_dpram
+        && !core.main.m_we
+        && core.main.m_addr[11:1] >= 11'h100 && core.main.m_addr[11:1] < 11'h180
+        && idr_n < 160) begin
+        $display("IDBLK: t=%0t pc=%06h addr=%06h word=%03h be=%02h rdata=%04h lo=%02h hi=%02h",
+                 $time, core.dbg_pc, core.main.m_addr, core.main.m_addr[11:1],
+                 core.main.m_be, core.main.m_rdata,
+                 core.main.rams.dpram_lo[core.main.m_addr[11:1]],
+                 core.main.rams.dpram_hi[core.main.m_addr[11:1]]);
+        idr_n = idr_n + 1;
     end
 end
 
@@ -2069,6 +2154,7 @@ initial begin
         run_download();
         run_ucode_download();
         if (iofw_ok) run_iofw_download();
+        if (ee_ok)   run_ee_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
         // READ THE MICROCODE BACK OUT OF THE COPROCESSOR.
