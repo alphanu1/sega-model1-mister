@@ -393,7 +393,7 @@ test_geo_recip:
 
 test_geo_rsqrt:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_rsqrt_top \
-	  -Irtl/tgp -Irtl/video rtl/video/m1_geo_rsqrt.sv rtl/video/m1_fp_pool.sv \
+	  -Irtl/tgp -Irtl/video rtl/video/m1_geo_rsqrt.sv \
 	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv sim/video/geo_wrappers.sv \
 	  sim/video/tb_m1_geo_rsqrt.cpp -o tb_geo_rsqrt --Mdir obj_geo_rsqrt
 	./obj_geo_rsqrt/tb_geo_rsqrt
