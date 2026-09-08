@@ -58,6 +58,8 @@ module m1_geometry (
   // reset zero then no recompute has ever run and the display list's viewport,
   // zoom and view-translation commands are not reaching m1_geo_planes at all.
   output logic [31:0] plane_left,
+  // Plane recomputes that arrived mid-set; see m1_geo_planes.
+  output logic [15:0] dbg_plane_redo,
   // THE CLIPPER'S OWN FUNNEL. Connected to m1_geo_clip since it was written and
   // routed nowhere, so nobody has ever seen how many quads it eats. That is the
   // measurement that separates "the clipper culls the left side" from "the
@@ -331,6 +333,7 @@ module m1_geometry (
     .div_gnt(div_gnt[6]), .div_rsp(div_rsp[6]), .div_res(div_res),
     .a_left(a_left), .a_right(a_right),
     .a_bottom(a_bottom), .a_top(a_top), .valid(planes_valid),
+    .dbg_redo(dbg_plane_redo),
     .busy(planes_busy)
   );
 

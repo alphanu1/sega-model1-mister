@@ -185,6 +185,8 @@ module m1_speed_report #(
   input  logic [15:0] mat_race, plane_race,
   // Passes the game flipped out from under. See m1_raster3d's dbg_list_race.
   input  logic [15:0] list_race,
+  // q= : plane recomputes that landed mid-set. See m1_geo_planes.
+  input  logic [15:0] plane_redo,
   // i= the list walker's stalled cycles, /16. Read against c=.
   input  logic [15:0] lw_stall_q,
   // THE PROJECTION STATE, top 16 bits of each IEEE-754 value.
@@ -255,7 +257,7 @@ module m1_speed_report #(
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
   logic [15:0] r_ci, r_co, r_cd, r_mr, r_pr, r_ls;
-  logic [15:0] r_lr;
+  logic [15:0] r_lr, r_prd;
   logic [15:0] r_vx, r_xc, r_zx, r_lb, r_lo;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
@@ -270,7 +272,7 @@ module m1_speed_report #(
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       r_ci <= '0; r_co <= '0; r_cd <= '0; r_mr <= '0; r_pr <= '0; r_ls <= '0;
-      r_lr <= '0;
+      r_lr <= '0; r_prd <= '0;
       r_vx <= '0; r_xc <= '0; r_zx <= '0; r_lb <= '0; r_lo <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
@@ -307,7 +309,7 @@ module m1_speed_report #(
           r_oob   <= vert_oob;
           r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
           r_mr    <= mat_race; r_pr <= plane_race; r_ls <= lw_stall_q;
-          r_lr    <= list_race;
+          r_lr    <= list_race; r_prd <= plane_redo;
           r_vx    <= vx_q; r_xc <= xc_q; r_zx <= zx_q;
           r_lb    <= lw_bad_q; r_lo <= lw_over_q;
           r_cull  <= culled;
@@ -362,7 +364,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 41;             // fields
+  localparam int unsigned NF  = 42;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -430,7 +432,9 @@ module m1_speed_report #(
       6'd38: begin f_letter = "n"; f_value = {8'd0, r_lo};  end
       6'd39: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
       // THE LIST RACE: passes the game flipped out from under the walker.
-      default: begin f_letter = "p"; f_value = {8'd0, r_lr};  end
+      6'd40: begin f_letter = "p"; f_value = {8'd0, r_lr};  end
+      // THE DROPPED PLANE RECOMPUTES - the left-side cut's mechanism.
+      default: begin f_letter = "q"; f_value = {8'd0, r_prd}; end
     endcase
   end
 

@@ -715,6 +715,7 @@ module m1_integrated (
   // Races that are supposed to be impossible: f= matrix, g= planes.
   logic [15:0] r3_mat_race, r3_plane_race, r3_lw_stall;
   logic [15:0] r3_list_race;
+  logic [15:0] r3_plane_redo;
   logic [15:0] r3_lw_bad, r3_lw_over;    // how the list walk ended, m= n=
   // THE PROJECTION STATE, top 16 bits of each float. s.x = xc + (xx*zoomx
   // + viewx), so all three place geometry horizontally, and all three are
@@ -776,6 +777,7 @@ module m1_integrated (
     .dbg_clip_drop(r3_clip_drop),
     .dbg_mat_race(r3_mat_race), .dbg_plane_race(r3_plane_race),
     .dbg_list_race(r3_list_race),
+    .dbg_plane_redo(r3_plane_redo),
     .dbg_lw_stall(r3_lw_stall),
     .dbg_lw_bad(r3_lw_bad), .dbg_lw_over(r3_lw_over),
     .dbg_viewx(r3_viewx), .dbg_viewy(r3_viewy),
@@ -1008,6 +1010,7 @@ module m1_integrated (
     .clip_in(r3_clip_in), .clip_out(r3_clip_out), .clip_drop(r3_clip_drop),
     .mat_race(r3_mat_race), .plane_race(r3_plane_race),
     .list_race(r3_list_race),
+    .plane_redo(r3_plane_redo),
     .lw_stall_q(r3_lw_stall),
     .lw_bad_q(r3_lw_bad), .lw_over_q(r3_lw_over),
     .vx_q(r3_viewx[31:16]), .xc_q(r3_xc[31:16]), .zx_q(r3_zoomx[31:16]),

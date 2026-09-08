@@ -121,6 +121,7 @@ int main(int argc, char** argv) {
     dut->plane_race   = 0x5A3B;
     dut->lw_stall_q   = 0x6C4D;
     dut->list_race    = 0x2B7E;
+    dut->plane_redo   = 0x1D4C;
     dut->vx_q         = 0x7E5F;
     dut->xc_q         = 0x43C4;
     dut->zx_q         = 0x438C;
@@ -188,6 +189,8 @@ int main(int argc, char** argv) {
         // under the walker. f and g cover the matrix and plane races and both
         // read zero on the board; nothing had ever watched the list buffer.
         {'p', 0x2B7E},
+        // Plane recomputes dropped mid-set - the left-side cut's mechanism.
+        {'q', 0x1D4C},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;

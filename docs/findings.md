@@ -20,6 +20,58 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 (late, 2) — THE CAUSE: A PLANE RECOMPUTE ARRIVING MID-SET WAS DROPPED
+
+Found in `m1_geo_planes`, reproduced in simulation to the BIT, and fixed.
+
+    S_IDLE: if (recompute) begin ... st <= S_S1; end
+
+`recompute` is a ONE-CYCLE pulse and that was the only place it was sampled. A
+full set is four planes of two adds and a divide through the shared FP pool -
+172 cycles with the pool to itself, and considerably longer in the design where
+six other clients contend for it. The frustum follows THREE display list
+commands (viewport 0x03, zoom 0x09, view translation 0x0c) and the game sends
+them together, so the later ones land mid-set. **Those pulses were thrown away.**
+
+The operands are combinational on the live registers, so the in-flight set is
+computed from a mix - and is then never recomputed, because the request that
+would have corrected it was the pulse that was lost. **The wrong plane LATCHES**
+until some later command happens to arrive while the module is idle. That is the
+"it lasts minutes if you stop at the right time" symptom, exactly.
+
+**The direction, from the test:** the game sets a NARROW viewport (x1 = 232) for
+some inset and then restores the full one (x1 = 0). It is the RESTORE that gets
+dropped, so the frustum stays narrow and the left 47% of the picture is clipped
+away. Nothing was ever wrong with what the game asked for.
+
+**The fix** is `pend`: a pulse in any state is remembered and the whole set is
+redone when the current one finishes, so the last command of a burst always gets
+a full pass over settled operands. That is correct without latching all ten
+inputs - 320 flops this design has no room for at 99% ALM. `busy` covers `pend`
+too, or an object handed over in the single cycle between a set and its redo
+would be clipped against the mixed planes the redo exists to replace.
+
+**`m1_geo_planes` HAD NO BENCH.** Not one, in a suite with benches for xform,
+project, det, rsqrt, recip, color, norm and clip. The module that produces
+`a_left` - and a wrong `a_left` is a hard vertical cut across the picture - was
+never tested. `tb_m1_geo_planes` now covers it: the board's own viewport, the
+mid-set request, `busy` across the redo, and 400 fuzzed viewports against
+`set_viewport` in host float.
+
+**The bench was verified to CATCH the bug**, by restoring the old behaviour and
+watching it fail - because a test that passes before and after is not evidence:
+
+    FAIL mid_set_request a_left: got -0.8857143 (bf62be2c) want -0.05714286 (bd6a0ea1)
+
+`bf62be2c` and `bd6a0ea1` are, in their top sixteen bits, `BF62` and `BD6A` -
+**the exact two values the board reported** as healthy and cut. Simulation
+reproduces the hardware's wrong value bit for bit.
+
+**Still owed: the board test.** This is proven in simulation and against the
+measured plane values, but nobody has yet driven the game with the fix in.
+
+---
+
 ## 2026-09-08 (late) — THE LEFT-SIDE CUT IS THE LEFT CLIP PLANE, AND IT IS COMPUTED WRONG
 
 **Measured on hardware, in a single capture that contains both a cut and a

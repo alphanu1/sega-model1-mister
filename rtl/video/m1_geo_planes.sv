@@ -51,11 +51,16 @@ module m1_geo_planes (
 
   output logic [31:0] a_left, a_right, a_bottom, a_top,
   output logic        valid,               // a full set has been computed
+  // Recompute requests that arrived while a set was in flight. Non-zero means
+  // this module was asked to redo the planes mid-set, which before the `pend`
+  // flag below was silently dropped. Reported as `q` on the UART.
+  output logic [15:0] dbg_redo,
   // A RECOMPUTE IS IN FLIGHT, so the four planes are a mix of old and new.
   //
   // The planes are computed ONE AT A TIME - each is two adds and a divide from
-  // the shared FP pool, so a full set takes on the order of a thousand cycles -
-  // and each is written as it finishes. For that whole window a_left may be the
+  // the shared FP pool, so a full set is 172 cycles with the pool to itself
+  // (measured, tb_m1_geo_planes) and considerably longer in the design, where
+  // six other clients contend for it - and each is written as it finishes. For that whole window a_left may be the
   // new viewport's while a_right is still the previous one's.
   //
   // `valid` was meant to cover this and could not: it is set once, when the
@@ -72,6 +77,34 @@ module m1_geo_planes (
 );
 
   typedef enum logic [2:0] { S_IDLE, S_S1, S_S1W, S_S2, S_S2W, S_DIV, S_DIVW } st_t;
+
+  // A RECOMPUTE ARRIVING MID-SET USED TO BE LOST.
+  //
+  // `recompute` is a ONE-CYCLE pulse and it was only ever sampled in S_IDLE, but
+  // a full set is four planes of two adds and a divide, each a shared-pool round
+  // trip - on the order of a thousand cycles. The frustum follows THREE display
+  // list commands (viewport 0x03, zoom 0x09, view translation 0x0c) and the game
+  // sends them together, so the second and third routinely land while the first
+  // is still being computed. Those pulses were dropped.
+  //
+  // Worse, the operands below are COMBINATIONAL on the live registers, so the
+  // in-flight set is computed from a MIX - a numerator from the old viewport and
+  // a divisor from the new one - and then never recomputed, because the request
+  // that would have fixed it was the pulse that was thrown away. The wrong plane
+  // then LATCHES until some later command happens to arrive while this is idle.
+  //
+  // Measured on the board, 2026-09-08: a_left reads -0.0571 during the left-side
+  // cut against -0.8828 healthy, which with the capture's own xc=248 zoomx=280
+  // viewx=0 puts the left clip at screen x=232 of 496 - the 47% vertical cut.
+  // Same viewport input in both states, so it was never the game asking for a
+  // different frustum. See docs/findings.md.
+  //
+  // `pend` makes the request sticky: a pulse in ANY state is remembered, and the
+  // whole set is redone when the current one finishes. The last command in a
+  // burst therefore always gets a full pass over settled operands, which is what
+  // makes the final answer correct without latching all ten inputs - 320 flops
+  // this design has no room for.
+  logic pend;
   st_t st;
 
   logic [1:0]  which;                      // 0 left, 1 right, 2 bottom, 3 top
@@ -96,15 +129,28 @@ module m1_geo_planes (
     endcase
   end
 
-  assign busy = (st != S_IDLE) || recompute;
+  // `pend` is part of busy, not just a restart flag. Without it the module
+  // drops to S_IDLE for the single cycle between a set finishing and its redo
+  // starting, and an object handed over in that cycle would be clipped against
+  // the mixed planes the redo exists to replace.
+  assign busy = (st != S_IDLE) || recompute || pend;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= S_IDLE; which <= '0; acc <= '0; valid <= 1'b0;
       a_left <= '0; a_right <= '0; a_bottom <= '0; a_top <= '0;
+      pend <= 1'b0; dbg_redo <= '0;
     end else begin
+      // Remember a request whatever state we are in. Counted when it arrives
+      // mid-set, because that is the case that used to be lost.
+      if (recompute) begin
+        pend <= 1'b1;
+        if (st != S_IDLE) dbg_redo <= dbg_redo + 16'd1;
+      end
       case (st)
-        S_IDLE: if (recompute) begin which <= '0; valid <= 1'b0; st <= S_S1; end
+        S_IDLE: if (pend || recompute) begin
+                  pend <= 1'b0; which <= '0; valid <= 1'b0; st <= S_S1;
+                end
         S_S1:   if (add_gnt) st <= S_S1W;
         S_S1W:  if (add_rsp) begin acc <= add_res; st <= S_S2; end
         S_S2:   if (add_gnt) st <= S_S2W;
@@ -117,7 +163,9 @@ module m1_geo_planes (
             2'd2:    a_bottom <= div_res;
             default: a_top    <= div_res;
           endcase
-          if (which == 2'd3) begin valid <= 1'b1; st <= S_IDLE; end
+          // A request that arrived mid-set sends the whole thing round again,
+          // so the operands the final pass sees are the settled ones.
+          if (which == 2'd3) begin valid <= !pend; st <= S_IDLE; end
           else begin which <= which + 2'd1; st <= S_S1; end
         end
         default: st <= S_IDLE;

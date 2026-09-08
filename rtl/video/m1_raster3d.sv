@@ -286,6 +286,10 @@ module m1_raster3d #(
   // has never been a counter on the LIST buffer itself. This is that counter -
   // passes during which the game flipped out from under the walk.
   output logic [15:0] dbg_list_race,
+  // Plane recomputes that arrived while a set was in flight. Before the fix
+  // in m1_geo_planes these were dropped and the wrong plane LATCHED, which
+  // is the left-side cut. Non-zero here means the fix is doing work.
+  output logic [15:0] dbg_plane_redo,
   // Cycles the list walker spent STALLED, in 16-cycle units so a
   // 16-bit counter covers a whole pass. lw_stall is asserted whenever
   // the producer is not walking - during every object, every sort and
@@ -479,6 +483,7 @@ module m1_raster3d #(
     .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
     .planes_wait(geo_planes_wait), .plane_left(geo_plane_left),
+    .dbg_plane_redo(dbg_plane_redo),
     .dbg_clip_in(dbg_clip_in), .dbg_clip_out(dbg_clip_out),
     .dbg_clip_drop(dbg_clip_drop),
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
