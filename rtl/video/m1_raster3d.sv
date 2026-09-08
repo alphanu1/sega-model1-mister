@@ -280,6 +280,19 @@ module m1_raster3d #(
   // while the walker stalls LESS, the list itself changed; if it stalls
   // MORE, the walker is being held and re-reading.
   output logic [15:0] dbg_lw_stall,
+  // HOW THE LIST WALK ENDED, counted per pass.
+  //
+  // m1_listwalk raises dbg_bad_type when the walk stops on a command the
+  // reference also ends on - 0x0f is the real terminator, and anything
+  // unrecognised falls through to the same place, so an unknown type ends the
+  // list rather than erroring. It raises dbg_overrun when the walk runs off the
+  // end of the buffer. Both have been declared, connected and NEVER READ.
+  //
+  // They matter now because the left-side cut is a five-fold drop in objects
+  // walked - 130 healthy, 27 during the cut - with everything downstream
+  // measured clean. If m= climbs when the picture breaks, the walk is ending on
+  // garbage and that is the fault.
+  output logic [15:0] dbg_lw_bad, dbg_lw_over,
   output logic [15:0] dbg_plane_l,
 
   // Objects with command 0x41 - "drawn above the HUD" - free-running.
@@ -380,6 +393,7 @@ module m1_raster3d #(
   logic        geo_start, geo_busy, geo_done, geo_planes_wait;
   logic        pw_d;                  // planes_wait, delayed, for edge detection
   logic [3:0]  lws_pre;               // /16 prescale for dbg_lw_stall
+  logic        lwd_d;                 // lw_done, delayed, for the edge
   logic [31:0] geo_plane_left;
   logic [31:0] geo_oldz_out;
   logic        mat_we;
@@ -1131,6 +1145,7 @@ module m1_raster3d #(
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       dbg_mat_race <= '0; dbg_plane_race <= '0; pw_d <= 1'b0;
       dbg_lw_stall <= '0; lws_pre <= '0;
+      dbg_lw_bad <= '0; dbg_lw_over <= '0; lwd_d <= 1'b0;
       band_timer <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0; bd_y0[2] <= '0;
       dbg_frames <= '0;
@@ -1141,6 +1156,13 @@ module m1_raster3d #(
       // supposed to keep these apart by holding geo_start at P_OBJ; this counts
       // the times it did not. Rising edge, so it counts events not cycles.
       pw_d <= geo_planes_wait;
+      // Sampled on the walk COMPLETING, because the flags are cleared
+      // when the next walk starts.
+      lwd_d <= lw_done;
+      if (lw_done && !lwd_d) begin
+        if (lw_bad)  dbg_lw_bad  <= dbg_lw_bad  + 16'd1;
+        if (lw_over) dbg_lw_over <= dbg_lw_over + 16'd1;
+      end
       if (lw_stall) begin
         lws_pre <= lws_pre + 4'd1;
         if (lws_pre == 4'hf) dbg_lw_stall <= dbg_lw_stall + 16'd1;

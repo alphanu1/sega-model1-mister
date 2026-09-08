@@ -714,6 +714,7 @@ module m1_integrated (
   logic [15:0] r3_clip_in, r3_clip_out, r3_clip_drop;
   // Races that are supposed to be impossible: f= matrix, g= planes.
   logic [15:0] r3_mat_race, r3_plane_race, r3_lw_stall;
+  logic [15:0] r3_lw_bad, r3_lw_over;    // how the list walk ended, m= n=
   // THE PROJECTION STATE, top 16 bits of each float. s.x = xc + (xx*zoomx
   // + viewx), so all three place geometry horizontally, and all three are
   // LATCHED by display-list commands - the shape Ben's fault has: it stays
@@ -774,6 +775,7 @@ module m1_integrated (
     .dbg_clip_drop(r3_clip_drop),
     .dbg_mat_race(r3_mat_race), .dbg_plane_race(r3_plane_race),
     .dbg_lw_stall(r3_lw_stall),
+    .dbg_lw_bad(r3_lw_bad), .dbg_lw_over(r3_lw_over),
     .dbg_viewx(r3_viewx), .dbg_viewy(r3_viewy),
     .dbg_xc(r3_xc), .dbg_yc(r3_yc),
     .dbg_zoomx(r3_zoomx), .dbg_zoomy(r3_zoomy),
@@ -1001,6 +1003,7 @@ module m1_integrated (
     .clip_in(r3_clip_in), .clip_out(r3_clip_out), .clip_drop(r3_clip_drop),
     .mat_race(r3_mat_race), .plane_race(r3_plane_race),
     .lw_stall_q(r3_lw_stall),
+    .lw_bad_q(r3_lw_bad), .lw_over_q(r3_lw_over),
     .vx_q(r3_viewx[31:16]), .xc_q(r3_xc[31:16]), .zx_q(r3_zoomx[31:16]),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)

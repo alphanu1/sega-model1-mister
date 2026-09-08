@@ -197,6 +197,10 @@ module m1_speed_report #(
   // when the car stops. They have been exported from m1_raster3d all along
   // and connected to nothing.
   input  logic [15:0] vx_q, xc_q, zx_q,
+  // m= walks that ended on an unrecognised command, n= walks that ran off
+  // the end of the buffer. The left-side cut is a five-fold drop in objects
+  // walked with everything downstream clean, so this is where it ends.
+  input  logic [15:0] lw_bad_q, lw_over_q,
 
   // THE TILEMAP PAIRS' CONTROL WORDS, read on hardware during real play.
   //
@@ -249,7 +253,7 @@ module m1_speed_report #(
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
   logic [15:0] r_ci, r_co, r_cd, r_mr, r_pr, r_ls;
-  logic [15:0] r_vx, r_xc, r_zx;
+  logic [15:0] r_vx, r_xc, r_zx, r_lb, r_lo;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
   logic        report_go;
@@ -263,7 +267,7 @@ module m1_speed_report #(
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       r_ci <= '0; r_co <= '0; r_cd <= '0; r_mr <= '0; r_pr <= '0; r_ls <= '0;
-      r_vx <= '0; r_xc <= '0; r_zx <= '0;
+      r_vx <= '0; r_xc <= '0; r_zx <= '0; r_lb <= '0; r_lo <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
       report_go <= 1'b0;
@@ -300,6 +304,7 @@ module m1_speed_report #(
           r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
           r_mr    <= mat_race; r_pr <= plane_race; r_ls <= lw_stall_q;
           r_vx    <= vx_q; r_xc <= xc_q; r_zx <= zx_q;
+          r_lb    <= lw_bad_q; r_lo <= lw_over_q;
           r_cull  <= culled;
           r_quads <= quads;
           r_hl    <= hit_l;
@@ -352,7 +357,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 38;             // fields
+  localparam int unsigned NF  = 40;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -416,6 +421,8 @@ module m1_speed_report #(
       6'd34: begin f_letter = "j"; f_value = {8'd0, r_vx};  end
       6'd35: begin f_letter = "k"; f_value = {8'd0, r_xc};  end
       6'd36: begin f_letter = "l"; f_value = {8'd0, r_zx};  end
+      6'd37: begin f_letter = "m"; f_value = {8'd0, r_lb};  end
+      6'd38: begin f_letter = "n"; f_value = {8'd0, r_lo};  end
       default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end

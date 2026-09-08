@@ -123,6 +123,8 @@ int main(int argc, char** argv) {
     dut->vx_q         = 0x7E5F;
     dut->xc_q         = 0x43C4;
     dut->zx_q         = 0x438C;
+    dut->lw_bad_q     = 0x1A2B;
+    dut->lw_over_q    = 0x3C4D;
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
     dut->hud_obj      = 0x0042;
@@ -179,7 +181,7 @@ int main(int argc, char** argv) {
         // quads in, quads out, quads it discarded.
         {'c', 0x1357}, {'d', 0x2468}, {'e', 0x369C},
         {'f', 0x4812}, {'g', 0x5A3B}, {'i', 0x6C4D},
-        {'j', 0x7E5F}, {'k', 0x43C4}, {'l', 0x438C},
+        {'j', 0x7E5F}, {'k', 0x43C4}, {'l', 0x438C}, {'m', 0x1A2B}, {'n', 0x3C4D},
         {'h', 0x0042},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
