@@ -58,6 +58,12 @@ module m1_geometry (
   // reset zero then no recompute has ever run and the display list's viewport,
   // zoom and view-translation commands are not reaching m1_geo_planes at all.
   output logic [31:0] plane_left,
+  // THE CLIPPER'S OWN FUNNEL. Connected to m1_geo_clip since it was written and
+  // routed nowhere, so nobody has ever seen how many quads it eats. That is the
+  // measurement that separates "the clipper culls the left side" from "the
+  // geometry never produced it" - see docs/HANDOFF.md's left-side entry, where
+  // the mixer and the band memory were both cleared by A=/Z= against I=/J=.
+  output logic [15:0] dbg_clip_in, dbg_clip_out, dbg_clip_drop,
   input  logic [31:0] in_tex_adr,
   input  logic [31:0] in_poly_adr,
   input  logic [31:0] in_size,
@@ -206,6 +212,9 @@ module m1_geometry (
   logic signed [15:0] k_sx0, k_sy0, k_sx1, k_sy1, k_sx2, k_sy2, k_sx3, k_sy3;
   logic        k_out_valid;
   logic [15:0] k_dbg_in, k_dbg_out, k_dbg_drop;
+  assign dbg_clip_in   = k_dbg_in;
+  assign dbg_clip_out  = k_dbg_out;
+  assign dbg_clip_drop = k_dbg_drop;
   logic signed [31:0] pj_out_sx, pj_out_sy;
   logic        pj_out_behind;
   logic        dt_valid, dt_ready, dt_out_valid, dt_out_positive;

@@ -167,6 +167,14 @@ module m1_speed_report #(
   // screen x = xc, about the middle of the screen, and cuts every polygon that
   // crosses it. See m1_geometry.
   input  logic [15:0] plane_l,
+  // THE CLIPPER'S FUNNEL, c= in, d= out, e= discarded. Connected to
+  // m1_geo_clip since it was written and routed nowhere until 2026-09-09, so
+  // nobody had seen how many quads it eats. The left-side cut has now had the
+  // store (D=0), the viewport (K=0), the left plane (Y stable at -0.88), the
+  // out-of-range vertices (G=0) and the band memory (A=/Z= tracking I=/J=) all
+  // cleared by measurement. This is what separates the clipper culling the left
+  // side from the geometry never producing it.
+  input  logic [15:0] clip_in, clip_out, clip_drop,
 
   // THE TILEMAP PAIRS' CONTROL WORDS, read on hardware during real play.
   //
@@ -218,6 +226,7 @@ module m1_speed_report #(
   logic [15:0] r_plen, r_late, r_wband, r_drop, r_short, r_vx1, r_miss;
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
+  logic [15:0] r_ci, r_co, r_cd;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
   logic        report_go;
@@ -230,6 +239,7 @@ module m1_speed_report #(
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
+      r_ci <= '0; r_co <= '0; r_cd <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
       report_go <= 1'b0;
@@ -263,6 +273,7 @@ module m1_speed_report #(
           r_pxl   <= px_left;
           r_pxr   <= px_right;
           r_oob   <= vert_oob;
+          r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
           r_cull  <= culled;
           r_quads <= quads;
           r_hl    <= hit_l;
@@ -315,7 +326,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 29;             // fields
+  localparam int unsigned NF  = 32;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -367,6 +378,9 @@ module m1_speed_report #(
       5'd25: begin f_letter = "Y"; f_value = {8'd0, r_pl};    end
       5'd26: begin f_letter = "w"; f_value = {8'd0, r_ch};    end
       5'd27: begin f_letter = "v"; f_value = {8'd0, r_cl};    end
+      5'd28: begin f_letter = "c"; f_value = {8'd0, r_ci};  end
+      5'd29: begin f_letter = "d"; f_value = {8'd0, r_co};  end
+      5'd30: begin f_letter = "e"; f_value = {8'd0, r_cd};  end
       default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end

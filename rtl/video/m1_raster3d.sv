@@ -258,6 +258,7 @@ module m1_raster3d #(
   output logic [15:0] dbg_hit_r,
 
   // The left clip plane's top 16 bits. Zero means it was never computed.
+  output logic [15:0] dbg_clip_in, dbg_clip_out, dbg_clip_drop,
   output logic [15:0] dbg_plane_l,
 
   // Objects with command 0x41 - "drawn above the HUD" - free-running.
@@ -427,6 +428,8 @@ module m1_raster3d #(
     .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
     .planes_wait(geo_planes_wait), .plane_left(geo_plane_left),
+    .dbg_clip_in(dbg_clip_in), .dbg_clip_out(dbg_clip_out),
+    .dbg_clip_drop(dbg_clip_drop),
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),

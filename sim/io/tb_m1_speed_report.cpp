@@ -114,6 +114,9 @@ int main(int argc, char** argv) {
     dut->hit_l        = 0x0123;
     dut->hit_r        = 0x1234;
     dut->plane_l      = 0xBF80;   // -1.0f's top half, a plausible plane
+    dut->clip_in      = 0x1357;
+    dut->clip_out     = 0x2468;
+    dut->clip_drop    = 0x369C;
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
     dut->hud_obj      = 0x0042;
@@ -162,7 +165,11 @@ int main(int argc, char** argv) {
         {'D', 0x789A}, {'H', 0x89AB}, {'K', 0x9ABC}, {'M', 0xABCD},
         {'O', 0x5A}, {'Q', 0xA5},
         {'A', 0xCDEF}, {'Z', 0xDEF0}, {'G', 0xBCDE},
-        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011}, {'h', 0x0042},
+        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011},
+        // The clipper's funnel, added 2026-09-09 for the left-side cut:
+        // quads in, quads out, quads it discarded.
+        {'c', 0x1357}, {'d', 0x2468}, {'e', 0x369C},
+        {'h', 0x0042},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;
