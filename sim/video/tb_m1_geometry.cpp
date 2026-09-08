@@ -367,6 +367,10 @@ static long fp_mul_issued = 0, fp_add_issued = 0;
 // contention and not arithmetic - they are the dependency chain, and they
 // are the only ones that overlapping records can recover.
 static long fp_dead = 0, fp_dead_rec = 0;
+// Dead cycles bucketed by what the record is still WAITING for. Overlapping
+// the next record's transforms only recovers dead time that sits behind the
+// tail; dead time behind the transforms themselves needs something else.
+static long dead_by[6] = {0,0,0,0,0,0}, dead_none = 0;
 static const char* ONAME[6] = { "xform", "project", "determinant",
                                 "normalize", "colour", "tgp_ram" };
 
@@ -441,7 +445,19 @@ struct Dut {
                     if (!r->m1_geometry__DOT__u_pool__DOT__mul_any
                      && !r->m1_geometry__DOT__u_pool__DOT__add_any) {
                         fp_dead++;
-                        if (cur == 8) fp_dead_rec++;   // W_REC
+                        if (cur == 8) {                // W_REC
+                            fp_dead_rec++;
+                            // SOLE cause only. "Outstanding" stays true from the
+                            // start of a record until a stage finishes, so it
+                            // marks stages that are merely unfinished as well as
+                            // stages that are blocking. Only a dead cycle with
+                            // exactly one stage outstanding names something that
+                            // overlapping work could actually fill.
+                            int n = 0, w = -1;
+                            for (int b = 0; b < 6; b++) if (o[b]) { n++; w = b; }
+                            if (n == 1) dead_by[w]++;
+                            else        dead_none++;
+                        }
                     }
                     if (rs == 1)      pj_recip++;      // R_BUSY: in the divide
                     else if (rs == 2) pj_hold++;       // R_FULL: waiting to hand over
@@ -681,6 +697,8 @@ int main(int argc, char** argv) {
         pj_recip = pj_scale = pj_hold = pj_idle = 0;
         fp_mul_issued = fp_add_issued = 0;
         fp_dead = fp_dead_rec = 0;
+        for (int b = 0; b < 6; b++) dead_by[b] = 0;
+        dead_none = 0;
         for (int i = 0; i < reps; i++) { t.run(0x40000, 0x100, 0, oz); quads += (int)t.got.size(); }
         long busy = t.cycles - c0;
         double per_quad = quads ? (double)busy / quads : 0.0;
@@ -720,6 +738,12 @@ int main(int argc, char** argv) {
                "(%.0f%% of a frame); measured %.1f, so %.1fx is serialisation\n",
                mq, aq, floor_q, 100.0 * floor_q * 4798 / 818133.0,
                per_quad, per_quad / floor_q);
+        printf("  DEAD cycles in the record, by what is still outstanding:\n");
+        for (int b = 0; b < 6; b++)
+            printf("    %-12s %6ld  %4.1f%% of dead\n", ONAME[b], dead_by[b],
+                   100.0 * dead_by[b] / (fp_dead_rec ? fp_dead_rec : 1));
+        printf("    %-12s %6ld  %4.1f%% of dead   (two or more, or none)\n", "shared", dead_none,
+               100.0 * dead_none / (fp_dead_rec ? fp_dead_rec : 1));
         printf("  inside the record, outstanding / sole cause:\n");
         for (int i = 0; i < 6; i++)
             printf("    %-12s %6ld  %5.1f%%   alone %6ld  %5.1f%%\n",
