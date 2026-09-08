@@ -185,6 +185,18 @@ module m1_speed_report #(
   input  logic [15:0] mat_race, plane_race,
   // i= the list walker's stalled cycles, /16. Read against c=.
   input  logic [15:0] lw_stall_q,
+  // THE PROJECTION STATE, top 16 bits of each IEEE-754 value.
+  //   j= viewx   the view TRANSLATION in x
+  //   k= xc      the screen centre
+  //   l= zoomx   the horizontal scale
+  // s.x = xc + (xx*zoomx + viewx), so a wrong value in any of them moves
+  // every vertex sideways - the left half empties and the RIGHT half gains
+  // pixels, which is what A=/Z= measured and what no clip plane, cull or
+  // store overflow can do. All three are latched by display-list commands
+  // and persist until rewritten, which is why the fault holds for minutes
+  // when the car stops. They have been exported from m1_raster3d all along
+  // and connected to nothing.
+  input  logic [15:0] vx_q, xc_q, zx_q,
 
   // THE TILEMAP PAIRS' CONTROL WORDS, read on hardware during real play.
   //
@@ -237,6 +249,7 @@ module m1_speed_report #(
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
   logic [15:0] r_ci, r_co, r_cd, r_mr, r_pr, r_ls;
+  logic [15:0] r_vx, r_xc, r_zx;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
   logic        report_go;
@@ -250,6 +263,7 @@ module m1_speed_report #(
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       r_ci <= '0; r_co <= '0; r_cd <= '0; r_mr <= '0; r_pr <= '0; r_ls <= '0;
+      r_vx <= '0; r_xc <= '0; r_zx <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
       report_go <= 1'b0;
@@ -285,6 +299,7 @@ module m1_speed_report #(
           r_oob   <= vert_oob;
           r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
           r_mr    <= mat_race; r_pr <= plane_race; r_ls <= lw_stall_q;
+          r_vx    <= vx_q; r_xc <= xc_q; r_zx <= zx_q;
           r_cull  <= culled;
           r_quads <= quads;
           r_hl    <= hit_l;
@@ -337,7 +352,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 35;             // fields
+  localparam int unsigned NF  = 38;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -398,6 +413,9 @@ module m1_speed_report #(
       6'd31: begin f_letter = "f"; f_value = {8'd0, r_mr};  end
       6'd32: begin f_letter = "g"; f_value = {8'd0, r_pr};  end
       6'd33: begin f_letter = "i"; f_value = {8'd0, r_ls};  end
+      6'd34: begin f_letter = "j"; f_value = {8'd0, r_vx};  end
+      6'd35: begin f_letter = "k"; f_value = {8'd0, r_xc};  end
+      6'd36: begin f_letter = "l"; f_value = {8'd0, r_zx};  end
       default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end
@@ -431,7 +449,18 @@ module m1_speed_report #(
     if (!rst_n) begin
       busy <= 1'b0; ci <= '0; fld <= '0; pos <= '0;
     end else begin
-      if (report_go) begin
+      // NOT WHILE A LINE IS STILL GOING OUT. This used to re-arm
+      // unconditionally, so a trigger arriving mid-line reset ci and the line
+      // never terminated - the reader saw one good line and then an endless
+      // unterminated stream. It only became reachable when the line grew past
+      // the trigger interval: 38 fields is 344 bytes, which at 115200 baud is
+      // 29.9 ms against a 17.4 ms frame.
+      //
+      // Dropping the report is the right failure. This module already drops
+      // rather than stalls, because a debug channel that can halt the design is
+      // worse than none - and a dropped line costs one sample, while a
+      // corrupted one costs the reader's trust in every number on it.
+      if (report_go && !busy) begin
         busy <= 1'b1; ci <= '0; fld <= '0; pos <= '0;
       end else if (busy && !full) begin
         // The field and position counters walk in step with ci. They are what

@@ -120,6 +120,9 @@ int main(int argc, char** argv) {
     dut->mat_race     = 0x4812;
     dut->plane_race   = 0x5A3B;
     dut->lw_stall_q   = 0x6C4D;
+    dut->vx_q         = 0x7E5F;
+    dut->xc_q         = 0x43C4;
+    dut->zx_q         = 0x438C;
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
     dut->hud_obj      = 0x0042;
@@ -131,7 +134,10 @@ int main(int argc, char** argv) {
     // Enough for a partial line, then two whole ones - the line checked below
     // is the second, so nothing about the first report after reset can flatter
     // the result.
-    std::vector<uint8_t> bytes = capture(700, 40000000L);
+    // Two lines' worth. Each field is 9 bytes and the count has grown from 29
+    // to 38 (line 344 bytes), so 700 no longer guaranteed a COMPLETE line
+    // between two newlines - the bench passed a header and failed to find one.
+    std::vector<uint8_t> bytes = capture(1400, 300000000L);
 
     std::string all((const char*)bytes.data(), bytes.size());
 
@@ -173,6 +179,7 @@ int main(int argc, char** argv) {
         // quads in, quads out, quads it discarded.
         {'c', 0x1357}, {'d', 0x2468}, {'e', 0x369C},
         {'f', 0x4812}, {'g', 0x5A3B}, {'i', 0x6C4D},
+        {'j', 0x7E5F}, {'k', 0x43C4}, {'l', 0x438C},
         {'h', 0x0042},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
