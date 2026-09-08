@@ -276,6 +276,31 @@ module m1_geo_walk (
   logic [31:0] vnx, vny, vnz;
 
   // ------------------------------------------------- the NEXT record's points
+  //
+  // PREFETCHING THE PROJECTIONS TOO DOES NOT HELP - MEASURED 2026-09-09, so do
+  // not retry it without a different plan. Projection is the sole outstanding
+  // stage in 53.9% of dead cycles once the transforms overlap, so overlapping
+  // it as well is the obvious next step. Built, verified bit-identical on
+  // 15,688 real-model quads, and SLOWER:
+  //
+  //     351.3 cycles a quad   transforms prefetched only
+  //     355.8                 transforms and projections prefetched
+  //
+  // It does what it was designed to do - dead time inside the record falls from
+  // 52% of all cycles to 16%, projection from 53.9% of that to 12.6% - and the
+  // pass still slows, because W_REC_W must then wait for the prefetched
+  // projections before loading the next record. The stall RELOCATES from inside
+  // the record to the record advance, where the dead-time counter cannot see
+  // it, and costs slightly more than it saves. Issuing earlier (on pj_iss
+  // rather than pj_col, with one ordered collection point) recovers most of the
+  // loss but not all: 357.8 -> 355.8, still behind 351.3.
+  //
+  // Two bugs to expect on any retry, each of which deadlocked the bench: the
+  // pj_iss counter must be BOUNDED, because pj_valid then covers the prefetch
+  // too and an unbounded increment carries this record's counter past two and
+  // breaks rec_quiet; and the two collection windows must be DISJOINT, or a
+  // single pj_out_valid is counted by both.
+  //
   // 94% of this stage's dead cycles are stages waiting on FP latency with
   // nothing else to issue (sim/video/tb_m1_geometry.cpp). The walker had no
   // other work to give them: it finishes one record entirely before reading the
