@@ -172,11 +172,21 @@ module m1_geo_clip (
   logic [31:0]        tx [4], ty [4], tz [4];
 
   // ------------------------------------------------------------- the stack
-  // A shift register: the top is always entry 0, so a push shifts down and a
-  // pop shifts up, and neither needs an addressed read.
+  // ADDRESSED BY sp, NOT A SHIFT REGISTER. It used to be one, on the reasoning
+  // that keeping the top at entry 0 avoids an addressed read. It does - and it
+  // costs the whole stack moving on every push and pop: 5 x 4 x 32 x 3 = 1,920
+  // flops, each needing a mux between hold, shift-up, shift-down and load. That
+  // was most of this module's 3,277 ALM, three times m1_geo_project and larger
+  // than the TGP's whole ALU, for a clipper.
+  //
+  // A stack does not have to move; a pointer moves instead. Push writes entry
+  // sp, pop reads entry sp-1, and every flop keeps a plain enable. The read mux
+  // an addressed stack needs is five-deep and costs a fraction of what the
+  // shift network did.
   logic [2:0]         sk_lvl [NSTK];
   logic [31:0]        sk_x [NSTK][4], sk_y [NSTK][4], sk_z [NSTK][4];
   logic [2:0]         sp;
+  wire  [2:0]         sp_top = sp - 3'd1;   // the entry a pop reads
 
   // ------------------------------------------------------------ the plane
   wire [31:0] plane_a = (lvl == 3'd0) ? a_bottom :
@@ -361,23 +371,18 @@ module m1_geo_clip (
           kst <= K_TEST;
         end
 
-        // Pop: the top of the stack is entry 0, so this is a shift up.
+        // Pop: the top is entry sp-1. Nothing moves; the pointer does.
         K_POP: if (sp == 3'd0) kst <= K_IDLE;
         else begin
-          lvl <= sk_lvl[0];
+          lvl <= sk_lvl[sp_top];
           for (sv = 0; sv < 4; sv = sv + 1) begin
-            qx[sv] <= sk_x[0][sv]; qy[sv] <= sk_y[0][sv]; qz[sv] <= sk_z[0][sv];
-          end
-          for (si = 0; si < NSTK-1; si = si + 1) begin
-            sk_lvl[si] <= sk_lvl[si+1];
-            for (sv = 0; sv < 4; sv = sv + 1) begin
-              sk_x[si][sv] <= sk_x[si+1][sv]; sk_y[si][sv] <= sk_y[si+1][sv];
-              sk_z[si][sv] <= sk_z[si+1][sv];
-            end
+            qx[sv] <= sk_x[sp_top][sv];
+            qy[sv] <= sk_y[sp_top][sv];
+            qz[sv] <= sk_z[sp_top][sv];
           end
           sp  <= sp - 3'd1;
           ti  <= '0;
-          kst <= (sk_lvl[0] == 3'd4) ? K_EPROJ : K_TEST;
+          kst <= (sk_lvl[sp_top] == 3'd4) ? K_EPROJ : K_TEST;
         end
 
         K_TEST:  if (mul_gnt) kst <= K_TESTW;
@@ -472,25 +477,28 @@ module m1_geo_clip (
         // from a temporary. The SECOND child is pushed first, so it sits deeper
         // and is popped last - which is MAME's recursion order.
         K_CHILD: begin
-          for (si = NSTK-1; si > 0; si = si - 1) begin
-            sk_lvl[si] <= sk_lvl[si-1];
+          // Writes the free entry sp and advances the pointer, so the deeper
+          // entries are untouched and keep the order the shift version gave
+          // them. The bound matters: the shift version dropped the DEEPEST
+          // entry when it overflowed, an addressed one would write past the
+          // array, so a full stack drops the newest instead. Recursion is
+          // bounded by the five clip levels, so it should never fire - and if
+          // it ever does, dropping is what the old code did too, at the other
+          // end.
+          if (sp < 3'(NSTK)) begin
+            sk_lvl[sp] <= lvl + 3'd1;
             for (sv = 0; sv < 4; sv = sv + 1) begin
-              sk_x[si][sv] <= sk_x[si-1][sv]; sk_y[si][sv] <= sk_y[si-1][sv];
-              sk_z[si][sv] <= sk_z[si-1][sv];
+              automatic logic [2:0] k;
+              // second_child, NOT its inverse: on the first pass this selects
+              // MAME's SECOND child, so it sits deeper in the stack and is
+              // popped last - the order MAME's recursion emits in.
+              k = kid(ccase, second_child, 2'(sv));
+              sk_x[sp][sv]  <= k[2] ? tx[k[1:0]]  : qx[k[1:0]];
+              sk_y[sp][sv]  <= k[2] ? ty[k[1:0]]  : qy[k[1:0]];
+              sk_z[sp][sv]  <= k[2] ? tz[k[1:0]]  : qz[k[1:0]];
             end
+            sp <= sp + 3'd1;
           end
-          sk_lvl[0] <= lvl + 3'd1;
-          for (sv = 0; sv < 4; sv = sv + 1) begin
-            automatic logic [2:0] k;
-            // second_child, NOT its inverse: on the first pass this selects
-            // MAME's SECOND child, so it sits deeper in the stack and is popped
-            // last - which is the order MAME's recursion emits in.
-            k = kid(ccase, second_child, 2'(sv));
-            sk_x[0][sv]  <= k[2] ? tx[k[1:0]]  : qx[k[1:0]];
-            sk_y[0][sv]  <= k[2] ? ty[k[1:0]]  : qy[k[1:0]];
-            sk_z[0][sv]  <= k[2] ? tz[k[1:0]]  : qz[k[1:0]];
-          end
-          sp <= sp + 3'd1;
           if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
             second_child <= 1'b1;
           else kst <= K_POP;
