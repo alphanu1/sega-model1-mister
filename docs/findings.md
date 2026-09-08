@@ -20,6 +20,74 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 (late) — THE LEFT-SIDE CUT IS THE LEFT CLIP PLANE, AND IT IS COMPUTED WRONG
+
+**Measured on hardware, in a single capture that contains both a cut and a
+recovery** - which is what every previous attempt lacked. 119 report lines, two
+minutes of driving. Intervals classified by the scanout split `I`/`J` as
+wrap-aware deltas: `L/R < 0.30` is a cut (37 intervals), `> 0.80` healthy (64).
+
+**The left clip plane differs between the two states:**
+
+| | plane_l (`Y`) | float32 | of intervals |
+|---|---|---|---|
+| cut | `0xBD6A` | **-0.0571** | 35 of 37 |
+| healthy | `0xBF62` | **-0.8828** | 47 of 54 |
+
+`m1_geometry`'s own comment gives the mapping, and the same capture gives every
+term: `xc` = `0x4378` = 248.0, `zoomx` = `0x438C` = 280.0, `viewx` = 0.
+
+    screen_x = xc + a_left*zoomx + viewx
+
+    healthy  -0.8828 -> 248 - 247.2 =   0.8   (the left edge; correct)
+    cut      -0.0571 -> 248 -  16.0 = 232.0
+
+**232 of 496 is 47% of the screen**, which is Ben's "about 48% on the left",
+derived rather than guessed. The design note predicted this exact cut for
+`a_left = 0.0` and concluded that a non-zero `a_left` meant the recompute was
+running - but -0.0571 is not zero and still lands the plane in the same place.
+That is why "it is not zero, so that is not it" survived.
+
+**The input is IDENTICAL in both states.** `K` (viewport x1) is 0 on every one
+of the 119 lines, as are `viewx`, `xc` and `zoomx`. Same input, different
+output: the plane COMPUTATION is producing a wrong result, not the game asking
+for a different frustum.
+
+**Three earlier conclusions are corrected by this capture:**
+
+- **"The left clip plane is correct (Y=BF62 = -0.88)."** It sampled only the
+  healthy state. The instrument existed; nobody compared cut against healthy
+  intervals WITHIN one capture, so a value that changes looked constant.
+- **"The cut is fewer objects walked (130 -> 27)."** Not supported here. During
+  the cut `P` is 46.4 mean and while healthy 40.1 - HIGHER during the cut. `P`
+  does not track the cut at all. What tracks it is quads per object: **18.5
+  during the cut against 31.9 healthy**, with `D` = 0. The objects are walked
+  and the clipper eats them.
+- **"The geometry pass is 206% of a frame."** Stale, as Ben suspected. `L` peaks
+  at 5,763 against a two-frame budget of 7,762 - **74%** - and at full scene
+  (`P`=130) it is 5,256, which is **1.35 frames, not 2.06**. The speed work
+  already closed it. Nothing in this capture is over budget.
+
+**The list race is NOT the cause, measured.** `dbg_list_race` (`p`) was built for
+this and reads FLAT through the entire cut - 37 intervals, zero increments. Its
+106 counts all land after the cut recovers. The theory that the pass overruns
+the two-frame flip is dead, and consistent with `L` never approaching budget.
+
+**Where to look next.** `a_left` is computed by `m1_geo_planes` from the
+viewport, using the SHARED adder and divider pool (`add_req[6]`, `div_req[6]`)
+over a req/gnt/rsp handshake. Pool contention scales with scene complexity,
+which is exactly when the cut appears - and would explain a correct input
+producing a wrong output intermittently while attract, with far less
+contention, stays clean. Not yet proven: the per-port `rsp` lines are indexed,
+but `div_res` is a shared bus, so the question is whether the result is stable
+for the granted port on the cycle its `rsp` fires.
+
+`v` (2D tilemap pair 0/1 ctrl) also flips 0x800 <-> 0 with the cut. It is a 2D
+register and cannot clip the 3D layer, so treat it as a marker of the game state
+rather than a mechanism - but it is a reliable one for finding the state again.
+
+---
+
 ## 2026-09-08 — THE GEOMETRY BUDGET IS ONE DEADLINE, NOT TWO, AND IT IS 3% NOT 206%
 
 Written down because it has now been misstated three ways in one session and
