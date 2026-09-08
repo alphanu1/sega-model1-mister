@@ -20,6 +20,77 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 — THE MISSING 3D IS THE QUAD STORE OVERFLOWING, NOT THROUGHPUT
+
+Measured on the board over UART, after two days of treating it as a geometry
+throughput problem. The store holds 3,072 quads and the board reports:
+
+    D = 2,452 to 3,311 quads DROPPED per pass
+    U = up to 3,072 stored
+    so roughly 5,500-6,400 quads are offered to a 3,072-quad store
+
+`has_room = (count < NQ)`: the store fills in DISPLAY LIST ORDER and drops
+everything that arrives after it is full. Cars are early in the list and
+survive; the track and the scenery come later and are thrown away. That is
+exactly the symptom - "the cars show but the track and scenery do not" - and it
+is why it is intermittent: it depends on how much geometry is in front of you.
+
+The store's own comment already records the same failure one size down: "at
+2,048 the grandstand at the end of the list fell off."
+
+**SIMULATION CANNOT SEE THIS, AND SAYS SO.** m1_speed_report.sv's own note:
+"the dropped-quad counter reads zero throughout. Simulation cannot answer" -
+tb_m1_geometry feeds the store synthetic objects and never fills it. The D=
+field existed the whole time and had never been read on hardware.
+
+**WHAT THIS COST.** Two days went on making the geometry pass faster: the
+reciprocal 29->6 cycles, projection carrying four points, the rsqrt 27->8, the
+transform prefetch. All real, all verified, 543.2 -> 351.3 cycles a quad - and
+none of it could ever have fixed the picture, because the pass duration is not
+what drops the objects. The lesson is the project's own rule, not followed: the
+board had the answer in a telemetry field built for this exact question.
+
+**WHAT IS AND IS NOT STILL BROKEN.** Three distinct overruns, and they need
+different fixes:
+
+    1. quad store drops       2,452-3,311 a pass   THE missing scenery
+    2. band fill late         T climbing           bands miss their beam slot
+    3. pass vs the list flip  3% over              a torn tail, not a drop
+
+Only 1 is the missing 3D. And fixing 1 will make 2 WORSE, because the store is
+currently discarding a third of the geometry the fill would otherwise have to
+draw.
+
+**THE FIX IS NOT MORE MEMORY.** Doubling the store needs +138 M10K against 7
+free. The V60's work RAM is already in SDRAM (D8), so that lever is spent, and
+what M10K remains is video memory that is read per scanline - bandwidth-bound,
+which D3 says caching does not fix. The routes that remain are the quad payload
+in SDRAM (bandwidth is trivial at ~8 MB/s; the radix sort's scatter pass is what
+blocks it) or per-band binning.
+
+## 2026-09-09 — WITHDRAWN THE SAME DAY: clk_3d at 58.947 MHz
+
+Raised on the reasoning that the pass had to fit the game's two-frame list flip
+and was 3.01% over. That reasoning is sound - m1_raster3d's prod_go note says a
+pass is safe "for any pass up to two frames" and the bench prints against ONE
+frame, which is why 206% looked like a 2x problem - but it is not what breaks
+the picture. The quad store is.
+
+REVERTED because it cost band 0. Ben: "band 0 is overrunning which it did not
+before on the previous clock." Band 0 is the only band whose presentation is
+tied to the blanking window rather than to the band ahead of it, so a 3% shift
+in when a pass completes relative to the frame boundary moves that phase and
+band 0 falls off the edge of it. A 3% margin on a path that is not the fault is
+not worth a working band.
+
+The VCO arithmetic is kept here because it was the hard part and is reusable:
+clk_sys must stay exactly 80 MHz for the SDRAM, so the VCO must be a multiple of
+it, and 1120 gives 1120/14 = 80.000, 1120/19 = 58.947 and 1120/38 = 29.474 -
+clk_cpu still exactly half of clk_3d. The old 800 VCO could not: 800/14 = 57.143
+and the next step 800/13 = 61.5 is far past m1_raster_fill's 58.84 ceiling.
+
+---
+
 ## 2026-09-09 — 1,521 ALM WAS IN FOUR COMMENTED-OUT LINES OF THE BUILD SCRIPT
 
 The device sat at 99% for two days and that gated everything: the 3D record
