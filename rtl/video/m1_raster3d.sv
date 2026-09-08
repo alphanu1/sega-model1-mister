@@ -78,7 +78,17 @@ module m1_raster3d #(
   // that close to free: a quad is replayed only for the bands its rows touch, so
   // halving the band height moves a quad from touching one or two bands to two
   // or three, not from six to twelve.
-  parameter int unsigned BAND_H = 16,
+  // 8 AS OF 2026-09-09, from 16. Two reasons, and the second is the one that
+  // matters: a band buffer halves to 8 M10K so the three of them free 24 blocks
+  // on a device with 7 left, and band 0 - the only band whose presentation is
+  // tied to the BLANKING window rather than to the band ahead of it - has half
+  // as much to fill before the beam arrives. Raising clk_3d 3% cost band 0
+  // exactly there (see docs/findings.md, the withdrawn 58.947 entry), so the
+  // clock is worth revisiting once this is in.
+  //
+  // The replay cost is bounded, per the note above: a quad goes from touching
+  // one or two bands to two or three, not from six to twelve.
+  parameter int unsigned BAND_H = 8,
   parameter int unsigned SCR_W  = 496,
   parameter int unsigned SCR_H  = 384,
   // Quads a store bank holds. The attract pit stop needs 2,671 for its frame
