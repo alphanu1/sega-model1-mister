@@ -20,6 +20,45 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — ALL THREE LATENCY FIXES CONFIRMED ON HARDWARE, AND THE 3D IS UNCHANGED
+
+Flashed and run on the DE10-Nano in sequence, each its own bitstream:
+
+    reciprocal 29 -> 6 cycles     c17a481   same picture, working
+    projection 1 -> 4 points      7daf73f   same picture, working
+    rsqrt 27 -> 8 cycles          eca5616   same picture, working
+
+"Same picture" is the PASS CONDITION, not a disappointment: all three are
+speed-only and were proven bit-identical in simulation (0 vertex coordinates
+differing and colour exact on 15,688 real-model quads). A visible difference
+would have meant hardware disagreeing with simulation.
+
+**The left-side missing 3D is unchanged, exactly as predicted.** The pass still
+needs 217% of a frame, so objects still drop; cars on the left are present as
+before. Three latency fixes in a row, each buying less than the one before -
+543.2 -> 413.5 -> 375.7 -> 369.2 cycles a quad - and the symptom does not move,
+because the units were never the constraint. See the dead-time entry: 54% of
+cycles ask neither shared unit for work, all of it inside the record walk.
+
+The rsqrt build carries clk_sys at -0.417 with TNS -4.837 and runs correctly
+anyway. That is a data point about how much negative slack this design tolerates
+on that clock, not permission to ship it.
+
+**WITHDRAWN THE SAME DAY: "register packing is a timing dial".** Two controlled
+pairs disagree and there is no explanation that fits both:
+
+    pool rsqrt RTL:  NORMAL/MEDIUM 40,941 ALM clk_3d -0.246
+                     DENSE/HIGH    41,145 ALM clk_3d +0.672   (+204 ALM, +0.9 ns)
+    DSP  rsqrt RTL:  NORMAL/MEDIUM 41,140 ALM clk_sys -0.417
+                     DENSE/HIGH    41,140 ALM clk_sys -0.417   (identical to the ps)
+
+Identical slack to the picosecond across a re-place is not a small effect, it is
+no effect. Both report files were verified fresh. The knob is kept in
+tools/mister_project.sh with this caveat; do not rely on it until a proper
+controlled test explains the difference.
+
+---
+
 ## 2026-09-08 — THE RECIPROCAL BOUGHT 652 ALM AS WELL AS 23 CYCLES
 
 `make rbf`, Quartus 17.0, 0 errors, with the 6-cycle reciprocal in, against
