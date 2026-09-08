@@ -73,33 +73,45 @@ module m1_geo_norm (
   // ---------------------------------------------------------------- rsqrt
   logic        rs_in_valid, rs_in_ready, rs_out_valid;
   logic [31:0] rs_out;
+  logic        rs_mul_req, rs_mul_gnt, rs_mul_rsp;
+  logic [31:0] rs_mul_a, rs_mul_b;
+  logic        rs_add_req, rs_add_gnt, rs_add_rsp, rs_add_sub;
+  logic [31:0] rs_add_a, rs_add_b;
 
   m1_geo_rsqrt u_rsqrt (
     .clk(clk), .rst_n(rst_n),
     .in_valid(rs_in_valid), .in_ready(rs_in_ready), .in_x(len2),
+    .mul_req(rs_mul_req), .mul_a(rs_mul_a), .mul_b(rs_mul_b),
+    .mul_gnt(rs_mul_gnt), .mul_rsp(rs_mul_rsp), .mul_res(mul_res),
+    .add_req(rs_add_req), .add_a(rs_add_a), .add_b(rs_add_b), .add_sub(rs_add_sub),
+    .add_gnt(rs_add_gnt), .add_rsp(rs_add_rsp), .add_res(add_res),
     .out_valid(rs_out_valid), .out_y(rs_out)
   );
 
-  // The rsqrt used to take the pool ports away from this module while it ran -
-  // it needed four multiplies and a subtract from the shared units. It is a
-  // self-contained DSP pipeline as of 2026-09-08, so this module owns the pool
-  // outright and its own multiplies no longer stop while a normal is being
-  // normalised.
+  // While the reciprocal square root is running it owns the pool ports; the rest
+  // of the time this module does. One client of the pool, two users of it.
+  wire rs_active = (st == N_RS_I) || (st == N_RS_W);
+
   logic        my_mul_req, my_add_req, my_add_sub;
   logic [31:0] my_mul_a, my_mul_b, my_add_a, my_add_b;
 
-  assign mul_req = my_mul_req;
-  assign mul_a   = my_mul_a;
-  assign mul_b   = my_mul_b;
-  assign add_req = my_add_req;
-  assign add_a   = my_add_a;
-  assign add_b   = my_add_b;
-  assign add_sub = my_add_sub;
+  assign mul_req = rs_active ? rs_mul_req : my_mul_req;
+  assign mul_a   = rs_active ? rs_mul_a   : my_mul_a;
+  assign mul_b   = rs_active ? rs_mul_b   : my_mul_b;
+  assign add_req = rs_active ? rs_add_req : my_add_req;
+  assign add_a   = rs_active ? rs_add_a   : my_add_a;
+  assign add_b   = rs_active ? rs_add_b   : my_add_b;
+  assign add_sub = rs_active ? rs_add_sub : my_add_sub;
 
-  wire my_mul_gnt = mul_gnt;
-  wire my_mul_rsp = mul_rsp;
-  wire my_add_gnt = add_gnt;
-  wire my_add_rsp = add_rsp;
+  assign rs_mul_gnt = rs_active && mul_gnt;
+  assign rs_mul_rsp = rs_active && mul_rsp;
+  assign rs_add_gnt = rs_active && add_gnt;
+  assign rs_add_rsp = rs_active && add_rsp;
+
+  wire my_mul_gnt = !rs_active && mul_gnt;
+  wire my_mul_rsp = !rs_active && mul_rsp;
+  wire my_add_gnt = !rs_active && add_gnt;
+  wire my_add_rsp = !rs_active && add_rsp;
 
   assign in_ready = (st == N_IDLE);
 
