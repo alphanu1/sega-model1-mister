@@ -58,9 +58,27 @@ module  pll_0002(
 	// EVERY OUTPUT IS AN INTEGER DIVISION OF THE SAME 800 MHz VCO, which is what
 	// makes the ratios exact rather than approximate:
 	//
-	//     800/10 = 80.000    clk_sys and the SDRAM pin
-	//     800/17 = 47.059    clk_3d
-	//     800/34 = 23.529    clk_cpu, an exact half of clk_3d
+	//     1120/14 = 80.000    clk_sys and the SDRAM pin
+	//     1120/19 = 58.947    clk_3d
+	//     1120/38 = 29.474    clk_cpu, an exact half of clk_3d
+	//
+	// THE VCO MOVED 800 -> 1120, AND THAT IS THE POINT. The geometry pass has to
+	// finish inside the game's LIST FLIP interval, not inside a frame: Virtua
+	// Racing flips every second frame, and a pass longer than two frames reads a
+	// buffer the V60 has already begun rewriting, so the tail of the list tears
+	// and those objects vanish. See m1_raster3d's prod_go note - "for any pass
+	// up to two frames".
+	//
+	// tb_m1_geometry measures the pass at 1,685,509 cycles against a 1,636,266
+	// two-frame budget: 3.01% over, which is 10 cycles a quad. The bench prints
+	// that as "206% of a frame" because it divides by ONE frame, and reading it
+	// that way is what made this look like a 2x problem for two days.
+	//
+	// 3% needs 58.86 MHz and m1_raster_fill closes at 58.84 - twenty kilohertz
+	// short, which is why 800/14 was as far as the old VCO went. The next step
+	// down, 800/13 = 61.5, is far past what the fill can do. With clk_sys pinned
+	// at 80 for the SDRAM the VCO must be a multiple of it, and 1120 puts a step
+	// exactly where it is needed: 58.947, +3.16% against the 3.01% required.
 	//
 	// This is why 23.000 was rejected earlier as "not a legal PLL output": with
 	// 80 MHz fixed, the VCO is 800 and 800/23 is not an integer. 800/34 is the
@@ -79,13 +97,13 @@ module  pll_0002(
 		.output_clock_frequency0("80.000000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("28.571429 MHz"),
+		.output_clock_frequency1("29.473684 MHz"),
 		.phase_shift1("0 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("80.000000 MHz"),
 		.phase_shift2("6250 ps"),
 		.duty_cycle2(50),
-		.output_clock_frequency3("57.142857 MHz"),
+		.output_clock_frequency3("58.947368 MHz"),
 		.phase_shift3("0 ps"),
 		.duty_cycle3(50),
 		.output_clock_frequency4("0 MHz"),
