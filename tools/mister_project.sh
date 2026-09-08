@@ -424,8 +424,13 @@ M1_SEED="${M1_SEED:-5}"
 #   MISTER_DISABLE_ADAPTIVE  ascal's adaptive scanline filter. CHANGES THE PICTURE.
 #   MISTER_DOWNSCALE_NN      ascal's polyphase downscaler -> nearest neighbour.
 #                            CHANGES THE PICTURE.
-#   MISTER_SMALL_VBUF        shrinks ascal's video buffer - M10K, which is what
-#                            actually blocks sound.
+#   MISTER_SMALL_VBUF        shrinks ascal's frame buffer 8 MB -> 2 MB. CORRECTED
+#                            2026-09-09: this note used to say M10K, "which is
+#                            what actually blocks sound". It is DDR3 - ascal's
+#                            RAMBASE is 32'h20000000 and the macro only changes
+#                            RAMSIZE (sys_top.v:717). So it does nothing for ALM
+#                            or M10K. It is still worth remembering for M4,
+#                            because the 8 MB of PCM samples go on DDR3 too.
 #   MISTER_DEBUG_NOHDMI      removes HDMI entirely. Last resort.
 #
 # WHY THEY MATTER BEYOND AREA: the only path that ever fails timing is
@@ -451,8 +456,27 @@ M1_SEED="${M1_SEED:-5}"
 # downscales, so the filter it removes is unreachable logic here rather than a
 # quality trade. ADAPTIVE is NOT defaulted - that one is the scanline filter,
 # which is reachable whenever scanlines are switched on in the OSD, so it is a
-# preference to be asked about rather than assumed.
-M1_MACROS="${M1_MACROS:-MISTER_DISABLE_ALSA MISTER_DISABLE_YC MISTER_DOWNSCALE_NN}"
+# preference to be asked about rather than assumed - asked, and the answer was
+# to take it, so it is in the default now. Put it back with a shorter M1_MACROS
+# if scanlines ever get used.
+#
+# YC AND THE ANALOG PORT, checked in the source because getting it wrong breaks
+# someone's display. sys_top.v:1510-1514 has an explicit else branch for the
+# macro:
+#
+#     assign {vga_o, vga_hs, vga_vs, vga_cs, vga_de} =
+#            {vga_o_t, vga_hs_t, vga_vs_t, vga_cs_t, vga_de_t};
+#
+# so vga_cs comes straight from vga_out's csync_o and never passes through the
+# encoder. COMPOSITE SYNC IS PRESERVED - pin 13 of the analog port carries
+# H-sync or composite SYNC (sys_top.v:1522, gated by csync_en, an independent
+# OSD setting), and that is a different signal from composite VIDEO.
+#
+# What is actually lost is composite VIDEO (CVBS) and S-video, which need the
+# colour subcarrier the encoder generates - with yc_en the R/G/B pins stop
+# carrying RGB and carry the encoded signal instead. RGB, VGA and YPbPr, with
+# separate or composite sync, are untouched.
+M1_MACROS="${M1_MACROS:-MISTER_DISABLE_ALSA MISTER_DISABLE_YC MISTER_DOWNSCALE_NN MISTER_DISABLE_ADAPTIVE}"
 if [ -n "${M1_MACROS:-}" ]; then
     printf '\n' >> "$stage/Model1.qsf"
     for m in $M1_MACROS; do
