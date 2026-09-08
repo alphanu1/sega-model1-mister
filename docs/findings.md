@@ -20,6 +20,66 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-08 — THE GEOMETRY BUDGET IS ONE DEADLINE, NOT TWO, AND IT IS 3% NOT 206%
+
+Written down because it has now been misstated three ways in one session and
+each way changes what work looks worth doing.
+
+**The pass takes 2.06 frames. The budget is 2 frames. It is 3% over.**
+
+    206% of ONE frame  =  103% of TWO frames  =  the same duration
+
+Both percentages describe the same measurement. The meaningful denominator is
+two frames, and here is why - it is not a convenience:
+
+- **Virtua Racing flips its display list by hand, every SECOND frame**, at the
+  V60's listctl write. `tools/mame_flip_writes.lua` measured that the buffer it
+  flips TO is finished at the flip and untouched until the next one.
+- So a new list exists only every two frames. **Finishing a pass in one frame
+  would render the same list twice and change nothing on screen.** There is no
+  visual deadline at one frame, and any figure quoted against one frame is
+  measuring against a deadline that does not exist.
+- The flip IS a real deadline, and a correctness one: past it the V60 starts
+  rewriting the buffer the walker is still reading.
+
+**What this rules out.** A claim was made in session that the pass needed
+~76 MHz on `clk_3d`. It does not, and the arithmetic never supported it: 57.14
+-> 76 MHz is 1.33x, which turns 206% into 155% - neither one frame nor two. Ben
+caught this. The deficit is 3%, so the useful clock question is "what buys a few
+percent", not "what buys 2x".
+
+**And the clock ladder is coarse.** The PLL VCO is 800 MHz and every output is
+an integer divisor (`80 = 800/10`, `57.142857 = 800/14`, `28.571429 = 800/28`),
+so the steps above the current `clk_3d` are:
+
+| divisor | clk_3d | vs now |
+|---|---|---|
+| 800/14 | 57.143 (current) | - |
+| 800/13 | 61.538 | +7.7% |
+| 800/12 | 66.667 | +16.7% |
+
+`58.947` is NOT on that ladder - it needs a different VCO, and the figure in
+`CLAUDE.md` predates the present PLL. 800/13 costs 1.25 ns of period against a
+measured `clk_3d` slack of +0.588 to +0.745 ns, so it does not close as it
+stands, and when `clk_3d` is pushed the binding path is the COPROCESSOR
+(`mb86233_core` state paths), not the geometry - `m1_geometry` reaches 59.36 and
+`m1_raster_fill` 58.84.
+
+**So the cheapest few percent is worth more than a clock step.** If the pass
+does not begin at the flip - the bench shows idle time before a pass, though
+its scene is not representative - then starting earlier buys the 3% for nothing.
+
+**The quad store is PER PASS, not per two frames.** `m1_raster3d` instantiates
+`m1_quad_store` twice in a generate, one bank per role, and `qs_clear = prod_go`
+empties the producer's bank at pass start. So NQ = 3,584 is the ceiling on ONE
+image's quads; the silicon holds 7,168 across both banks. A bank's contents are
+DISPLAYED for about two frames because the list only changes that often, which
+is what makes "held for two frames" a natural but wrong reading of the capacity.
+The board measured U peaking at 3,034 against the old 3,072 cap - one image at
+99% of it.
+
+---
+
 ## 2026-09-08 — THE I/O BOARD'S EEPROM WAS READ ONE BIT LATE, AND THE GAME SAW AN UNCONFIGURED BOARD
 
 **The V60's instruction stream now agrees with MAME's for the whole trace
