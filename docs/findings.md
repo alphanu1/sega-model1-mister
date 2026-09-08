@@ -20,6 +20,66 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 — VR'S LEFT-SIDE CUT: SIX CANDIDATES CLEARED, AND WHAT IT ACTUALLY LOOKS LIKE
+
+Two minutes of driving with the UART report, the cut present for about a minute
+in the middle and confirmed by Ben against the trace. Deltas per sample:
+
+           clip_in  clip_drop   e/c   culls    wrL     wrR   L/R
+    healthy  11,092     ~1.3x         18,230   7,000   6,000  ~1.0
+    CUT      45,025      0.41         32,205   1,660  10,010   0.17
+
+**THE CLIPPER IS NOT DOING IT.** Its drop ratio sits at a steady 0.40-0.42 right
+through the cut. **NOR IS THE BACKFACE CULL** - flat at ~30,400 against ~32,200
+elsewhere. Both were the leading suspects and both are now cleared by their own
+counters, which had to be fixed first: they saturated at 0xffff and read FFFF
+across a whole capture until they were made to wrap.
+
+**WHAT THE CUT ACTUALLY IS: quad production jumps SIX-FOLD and lands on the
+right.** Left pixels fall 7,000 -> 1,660 while right pixels RISE 6,000 -> 10,010,
+and total pixels barely change. A clip plane or a cull can only REMOVE geometry;
+neither multiplies it. Six times the quads producing the same pixel count means
+the quads are far smaller, and they are all on one side.
+
+**AND THE COUNTERS GO STATIC.** 62756, 25852, 30392 repeating exactly, sample
+after sample, for the duration. Identical deltas mean the stage is reprocessing
+identical work rather than following a moving scene.
+
+**SIX CANDIDATES CLEARED BY MEASUREMENT, so do not re-derive them:**
+
+    quad store overflow   D=0 through the cut
+    viewport x1           K=0, correct full width
+    left clip plane       Y=BF62 stable at -0.88 throughout; a_left=0 would put
+                          the cut at 48% and it is never 0
+    out-of-range vertices G=0
+    band memory, scanout  A=/Z= track I=/J= in the same proportion, so the fill
+                          is not writing those pixels rather than scanout losing
+                          them - this is what cleared the mixer, the last stage
+                          HANDOFF listed as unexamined
+    the fill's spans      152,025 checks against the reference INCLUDING
+                          self-intersecting quads; the per-segment-vs-per-scanline
+                          left/right bug is already fuzzed for
+    the frustum planes    m1_geo_planes' recompute race is gated by planes_wait,
+                          which m1_raster3d honours at P_OBJ
+    the matrix            m1_geo_xform's mat[] is written ungated, BUT lw_stall
+                          holds the list walker whenever the producer is not in
+                          P_WALK or P_IDLE, so no matrix write can land mid-object
+
+**WHERE TO GO NEXT.** The signature is upstream of the clipper: something makes
+the geometry emit six times the quads, small and right-heavy, in a repeating
+pattern. That is the walker or what it reads - not a rendering stage. The
+instruments to add are a per-pass (not free-running) count of objects walked and
+records processed, and the pass length L= read across the same window.
+
+**AND A PROCESS NOTE THAT COST TWO DAYS.** docs/HANDOFF.md's top entry already
+said, on 2026-09-05, that the left-side cut is VR-specific, that eight causes
+were eliminated, that the mixer was the last unexamined stage and that K=/G= had
+been built for it and never read. CLAUDE.md says to read HANDOFF after it. It was
+not read, and two days went into geometry throughput - which was a real problem,
+measurably fixed, and not this one.
+
+---
+
 ## 2026-09-09 — THE MISSING 3D IS THE QUAD STORE OVERFLOWING, NOT THROUGHPUT
 
 Measured on the board over UART, after two days of treating it as a geometry
