@@ -274,6 +274,21 @@ module m1_geo_walk (
   logic [31:0] n0x, n0y, n0z, n1x, n1y, n1z;
   logic signed [31:0] n0sx, n0sy, n1sx, n1sy;
   logic [31:0] vnx, vny, vnz;
+
+  // ------------------------------------------------- the NEXT record's points
+  // 94% of this stage's dead cycles are stages waiting on FP latency with
+  // nothing else to issue (sim/video/tb_m1_geometry.cpp). The walker had no
+  // other work to give them: it finishes one record entirely before reading the
+  // next, so the shared multiplier idles three cycles in four.
+  //
+  // The transform unit is free from the moment this record's three points are
+  // collected, and the next record's words are already in the prefetch buffer.
+  // So transform them NOW, into a second set, and let the record that follows
+  // skip its transform phase entirely.
+  logic [31:0] pn0x, pn0y, pn0z, pn1x, pn1y, pn1z, pvnx, pvny, pvnz;
+  logic [1:0]  pxf_iss, pxf_col;
+  logic        pre_run;                       // transforming the next record
+  wire         pre_done = (pxf_col == 2'd3);  // ...and all three are collected
   logic [31:0] nvx, nvy, nvz;      // normalized
   logic [31:0] qz;
   logic [15:0] tex_hold;      // latched, since tex_data is only valid on the ack
@@ -373,6 +388,22 @@ module m1_geo_walk (
       xf_y = rec[{1'b0, hdr_i} * 4'd3 + 4'd1];
       xf_z = rec[{1'b0, hdr_i} * 4'd3 + 4'd2];
       xf_translate = 1'b1;
+    end else if (pre_iss) begin
+      // The NEXT record, straight out of the prefetch buffer, in the same
+      // order and with the same type-2 rule as below - read from nrec[] and
+      // its own flag word rather than rec[].
+      case (pxf_iss)
+        2'd0: begin xf_x = nrec[4]; xf_y = nrec[5]; xf_z = nrec[6]; end
+        2'd1: begin xf_x = nrec[1]; xf_y = nrec[2]; xf_z = nrec[3];
+                    xf_translate = 1'b0; end
+        default: begin
+          if (nrec[0][1:0] == 2'd2) begin
+            xf_x = nrec[4]; xf_y = nrec[5]; xf_z = nrec[6];
+          end else begin
+            xf_x = nrec[7]; xf_y = nrec[8]; xf_z = nrec[9];
+          end
+        end
+      endcase
     end else begin
       case (xf_iss)
         2'd0: begin xf_x = rec[4]; xf_y = rec[5]; xf_z = rec[6]; end
@@ -393,7 +424,22 @@ module m1_geo_walk (
     end
   end
 
-  assign xf_valid = (st == W_HDR_XF) || ((st == W_REC) && (xf_iss < 2'd3));
+  // Only once this record has issued all three of its own: the transform unit
+  // takes one point at a time and the current record must never queue behind
+  // the next one.
+  //
+  // NOT GATED ON W_REC, and that is the whole correctness argument. pre_run is
+  // set in W_REC but the record can retire through W_EMIT/W_NEXT before the
+  // three prefetched points are issued - and W_REC_W then waits on pre_done,
+  // which could never arrive. That deadlocked the geometry bench outright. The
+  // prefetch runs to completion in whatever state the walker reaches; the
+  // transform unit is idle in all of them, and pre_run is only ever set with
+  // this record's own transforms already collected, so the two cannot collide.
+  wire pre_iss = pre_run && (pxf_iss < 2'd3) && (st != W_HDR_XF);
+
+  assign xf_valid = (st == W_HDR_XF) || ((st == W_REC) && (xf_iss < 2'd3))
+                 || pre_iss;
+
 
   // ---------------------------------------------------------------- projection mux
   always_comb begin
@@ -436,6 +482,9 @@ module m1_geo_walk (
       tex_hold <= '0;
       oldz <= '0; qz <= '0;
       xf_iss <= '0; xf_col <= '0; pj_iss <= '0; pj_col <= '0;
+      pxf_iss <= '0; pxf_col <= '0; pre_run <= 1'b0;
+      pn0x <= '0; pn0y <= '0; pn0z <= '0; pn1x <= '0; pn1y <= '0; pn1z <= '0;
+      pvnx <= '0; pvny <= '0; pvnz <= '0;
       dt_iss <= 1'b0; dt_col <= 1'b0; nm_iss <= 1'b0; nm_col <= 1'b0;
       cl_iss <= 1'b0; cl_col <= 1'b0; tx_iss <= 1'b0; tx_col <= 1'b0;
       cull_known <= 1'b0; culled <= 1'b0; z_done <= 1'b0;
@@ -466,9 +515,20 @@ module m1_geo_walk (
         pf_wi       <= pf_wi + 4'd1;
       end
 
+      // ---- the transform prefetch, which must run in EVERY state. See pre_iss.
+      if (pre_iss && xf_ready) pxf_iss <= pxf_iss + 2'd1;
+      if (pre_run && (pxf_col < pxf_iss) && xf_out_valid) begin
+        case (pxf_col)
+          2'd0: begin pn0x <= xf_out_x; pn0y <= xf_out_y; pn0z <= xf_out_z; end
+          2'd1: begin pvnx <= xf_out_x; pvny <= xf_out_y; pvnz <= xf_out_z; end
+          default: begin pn1x <= xf_out_x; pn1y <= xf_out_y; pn1z <= xf_out_z; end
+        endcase
+        pxf_col <= pxf_col + 2'd1;
+      end
+
       // ---- collection, which happens whatever state the sequencer is in
       if (st == W_REC) begin
-        if (xf_valid && xf_ready) xf_iss <= xf_iss + 2'd1;
+        if (xf_valid && xf_ready && (xf_iss < 2'd3)) xf_iss <= xf_iss + 2'd1;
         if (pj_valid && pj_ready) pj_iss <= pj_iss + 2'd1;
         if (dt_valid && dt_ready) dt_iss <= 1'b1;
         if (nm_valid && nm_ready) nm_iss <= 1'b1;
@@ -480,13 +540,26 @@ module m1_geo_walk (
         // ends up with a collected flag it can never match. That deadlocked at
         // record 19 of iteration 19 with cl 0/1 - a colour collected for a
         // link-0 record that never asked for one.
-        if (xf_out_valid && (xf_col < xf_iss)) begin
-          case (xf_col)
-            2'd0: begin n0x <= xf_out_x; n0y <= xf_out_y; n0z <= xf_out_z; end
-            2'd1: begin vnx <= xf_out_x; vny <= xf_out_y; vnz <= xf_out_z; end
-            default: begin n1x <= xf_out_x; n1y <= xf_out_y; n1z <= xf_out_z; end
-          endcase
-          xf_col <= xf_col + 2'd1;
+        if (xf_out_valid) begin
+          if (xf_col < xf_iss) begin
+            case (xf_col)
+              2'd0: begin n0x <= xf_out_x; n0y <= xf_out_y; n0z <= xf_out_z; end
+              2'd1: begin vnx <= xf_out_x; vny <= xf_out_y; vnz <= xf_out_z; end
+              default: begin n1x <= xf_out_x; n1y <= xf_out_y; n1z <= xf_out_z; end
+            endcase
+            xf_col <= xf_col + 2'd1;
+          end
+        end
+
+        // Start the next record's transforms the moment this one's are in and
+        // the prefetch holds a record that will actually be walked. Guarded on
+        // nleft and on a nonzero type so the last record does not transform
+        // whatever happens to be in the buffer.
+        if (!pre_run && (xf_col == 2'd3) && pf_ready
+            && (nrec[0][1:0] != 2'd0) && (nleft != 32'd0)) begin
+          pre_run <= 1'b1;
+          pxf_iss <= '0;
+          pxf_col <= '0;
         end
         if (pj_out_valid && (pj_col < pj_iss)) begin
           if (pj_col == 2'd0) begin n0sx <= pj_out_sx; n0sy <= pj_out_sy; end
@@ -578,7 +651,11 @@ module m1_geo_walk (
         end
 
         // ---- ten-float record, already in the prefetch buffer
-        W_REC_W: if (pf_ready) begin
+        // Waits for a running transform prefetch: it reads nrec[] while it
+        // issues, and loading rec[] here restarts the fetch that overwrites it.
+        // In practice the prefetch finishes inside the previous record's tail,
+        // so this costs nothing - it is correctness, not a stall by design.
+        W_REC_W: if (pf_ready && (!pre_run || pre_done)) begin
           for (int i = 0; i < 10; i++) rec[i] <= nrec[i];
           pf_wi <= '0;                     // the NEXT record starts now
           st    <= W_REC_DEC;
@@ -594,11 +671,25 @@ module m1_geo_walk (
           if (dbg_records != 16'hffff) dbg_records <= dbg_records + 16'd1;
           // `type = flags & 3; if (!type) break;` - and the size limit.
           if (rec[0][1:0] == 2'd0 || nleft == 32'd0) begin
-            pf_en <= 1'b0;
-            st    <= W_DONE;
+            pf_en   <= 1'b0;
+            pre_run <= 1'b0;
+            st      <= W_DONE;
           end else begin
             nleft <= nleft - 32'd1;
-            xf_iss <= '0; xf_col <= '0; pj_iss <= '0; pj_col <= '0;
+            // If the previous record transformed this one's points, take them
+            // and declare the transform phase already complete: everything
+            // gated on xf_col - both projections, the determinant, the
+            // normalize and rec_quiet - is then satisfied on the first cycle.
+            if (pre_run) begin
+              n0x <= pn0x; n0y <= pn0y; n0z <= pn0z;
+              n1x <= pn1x; n1y <= pn1y; n1z <= pn1z;
+              vnx <= pvnx; vny <= pvny; vnz <= pvnz;
+              xf_iss  <= 2'd3; xf_col <= 2'd3;
+              pre_run <= 1'b0;
+            end else begin
+              xf_iss <= '0; xf_col <= '0;
+            end
+            pj_iss <= '0; pj_col <= '0;
             dt_iss <= 1'b0; dt_col <= 1'b0; nm_iss <= 1'b0; nm_col <= 1'b0;
             cl_iss <= 1'b0; cl_col <= 1'b0; tx_iss <= 1'b0; tx_col <= 1'b0;
             // flag 0x4000 skips the test, so the cull answer is known already.
