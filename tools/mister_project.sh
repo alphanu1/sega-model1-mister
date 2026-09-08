@@ -446,7 +446,32 @@ fi
 if [ -n "${M1_SEED:-}" ]; then
     # The template's last line has no trailing newline, so append one first or
     # the assignment lands on the end of it and Quartus rejects the file.
-    printf '\nset_global_assignment -name SEED %s\n' "$M1_SEED" >> "$stage/Model1.qsf"
+    
+# FRAMEWORK FEATURES WE DO NOT USE, AND THEY ARE NOT FREE.
+#
+# Found by reading N64_MiSTer's and Jaguar's qsf side by side with ours: both
+# document these VERILOG_MACRO switches, and the MiSTer template ships every one
+# of them COMMENTED OUT - so every core pays for them unless it opts out. Ours
+# was paying, measured from the fit report's per-entity table:
+#
+#     alsa:alsa       292 ALM   mixes LINUX-side audio into the output
+#     yc_out:yc_out   221 ALM   composite / S-video colour encoder
+#
+# ALSA is for cores that play HPS audio (CD tracks and the like). Our core's own
+# audio path is audio_l/audio_r and is untouched by this, so it stays unused
+# even after M4 - Model 1's sound is generated in the fabric, not on the HPS.
+#
+# M1_KEEP_YC=1 puts the composite encoder back, for an analog setup that needs
+# S-video or CVBS. It costs 221 ALM on a device at 99%.
+printf '\nset_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"\n' >> "$stage/Model1.qsf"
+if [ -z "${M1_KEEP_YC:-}" ]; then
+    printf 'set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"\n' >> "$stage/Model1.qsf"
+    echo "  ALSA and YC disabled (513 ALM); M1_KEEP_YC=1 restores composite output"
+else
+    echo "  ALSA disabled; YC kept by request"
+fi
+
+printf '\nset_global_assignment -name SEED %s\n' "$M1_SEED" >> "$stage/Model1.qsf"
     echo "  SEED = $M1_SEED"
 fi
 
