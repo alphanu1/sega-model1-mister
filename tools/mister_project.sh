@@ -435,6 +435,24 @@ M1_SEED="${M1_SEED:-5}"
 # reseeding only rolls against it.
 #
 #   M1_MACROS="MISTER_DISABLE_ALSA MISTER_DISABLE_YC" make rbf
+# DEFAULTED ON, 2026-09-09, after measuring them in the per-entity table of a
+# real build rather than estimating: alsa:alsa 292 ALM and yc_out:yc_out 221,
+# 513 together on a device at 99%. Both are listed SAFE above - the core's own
+# sound reaches every output without ALSA, and YC is invisible on HDMI.
+#
+# The two marked CHANGES THE PICTURE are deliberately NOT defaulted. They are
+# reachable features, not dead logic, and area is not worth a worse picture
+# without being asked. Add them explicitly if you want them:
+#     M1_MACROS="MISTER_DISABLE_ALSA MISTER_DISABLE_YC MISTER_DOWNSCALE_NN" make rbf
+#
+# DOWNSCALE_NN is in the default too, and the "CHANGES THE PICTURE" warning above
+# does not apply to THIS core: it swaps the polyphase filter for nearest
+# neighbour when DOWNscaling, and Model 1 renders 496x384 into 1080p. It never
+# downscales, so the filter it removes is unreachable logic here rather than a
+# quality trade. ADAPTIVE is NOT defaulted - that one is the scanline filter,
+# which is reachable whenever scanlines are switched on in the OSD, so it is a
+# preference to be asked about rather than assumed.
+M1_MACROS="${M1_MACROS:-MISTER_DISABLE_ALSA MISTER_DISABLE_YC MISTER_DOWNSCALE_NN}"
 if [ -n "${M1_MACROS:-}" ]; then
     printf '\n' >> "$stage/Model1.qsf"
     for m in $M1_MACROS; do
@@ -447,30 +465,6 @@ if [ -n "${M1_SEED:-}" ]; then
     # The template's last line has no trailing newline, so append one first or
     # the assignment lands on the end of it and Quartus rejects the file.
     
-# FRAMEWORK FEATURES WE DO NOT USE, AND THEY ARE NOT FREE.
-#
-# Found by reading N64_MiSTer's and Jaguar's qsf side by side with ours: both
-# document these VERILOG_MACRO switches, and the MiSTer template ships every one
-# of them COMMENTED OUT - so every core pays for them unless it opts out. Ours
-# was paying, measured from the fit report's per-entity table:
-#
-#     alsa:alsa       292 ALM   mixes LINUX-side audio into the output
-#     yc_out:yc_out   221 ALM   composite / S-video colour encoder
-#
-# ALSA is for cores that play HPS audio (CD tracks and the like). Our core's own
-# audio path is audio_l/audio_r and is untouched by this, so it stays unused
-# even after M4 - Model 1's sound is generated in the fabric, not on the HPS.
-#
-# M1_KEEP_YC=1 puts the composite encoder back, for an analog setup that needs
-# S-video or CVBS. It costs 221 ALM on a device at 99%.
-printf '\nset_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_ALSA=1"\n' >> "$stage/Model1.qsf"
-if [ -z "${M1_KEEP_YC:-}" ]; then
-    printf 'set_global_assignment -name VERILOG_MACRO "MISTER_DISABLE_YC=1"\n' >> "$stage/Model1.qsf"
-    echo "  ALSA and YC disabled (513 ALM); M1_KEEP_YC=1 restores composite output"
-else
-    echo "  ALSA disabled; YC kept by request"
-fi
-
 printf '\nset_global_assignment -name SEED %s\n' "$M1_SEED" >> "$stage/Model1.qsf"
     echo "  SEED = $M1_SEED"
 fi
