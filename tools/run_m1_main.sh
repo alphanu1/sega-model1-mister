@@ -20,7 +20,7 @@ VF="--binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOP
 # "BUILDFAIL fast_ifetch" with the real cause three lines into a log file. Adding
 # a module to m1_main means adding it here, the same rule as
 # tools/mister_project.sh.
-SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/io/m1_rom_loader.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv rtl/video/m1_listctl.sv rtl/tgp/mb86233_pkg.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv rtl/tgp/mb86233_alu.sv rtl/tgp/mb86233_agu.sv rtl/tgp/mb86233_seq.sv rtl/tgp/mb86233_regs.sv rtl/tgp/mb86233_mem.sv rtl/tgp/mb86233_dec.sv rtl/tgp/mb86233_xfer.sv rtl/tgp/mb86233_core.sv rtl/tgp/m1_copro_if.sv rtl/tgp/m1_tgp.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
+SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/io/m1_rom_loader.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv rtl/video/m1_listctl.sv rtl/tgp/mb86233_pkg.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv rtl/tgp/mb86233_alu.sv rtl/tgp/mb86233_agu.sv rtl/tgp/mb86233_seq.sv rtl/tgp/mb86233_regs.sv rtl/tgp/mb86233_mem.sv rtl/tgp/mb86233_dec.sv rtl/tgp/mb86233_xfer.sv rtl/tgp/mb86233_core.sv rtl/tgp/m1_copro_if.sv rtl/tgp/m1_tgp.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
 
 # Third configuration: no FP group. Whether Model 1 code executes V60
 # floating point decides a ~2,000 ALM and near-doubled-Fmax build option, and a

@@ -36,7 +36,7 @@ for FAST in 0 1; do
     rm -rf $d
     printf 'FAST=%s LAT=%-3s ' "$FAST" "$LAT"
     verilator $VF -GFAST=$FAST -GCEDIV=$CEDIV -GLAT=$LAT --top-module tb_v60_cpi \
-      --Mdir $d -o run rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv sim/cpu/tb_v60_cpi.sv \
+      --Mdir $d -o run rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv sim/cpu/tb_v60_cpi.sv \
       > $d.log 2>&1 && ./$d/run 2>&1 | grep -E '^V60 CPI:' 
     rm -rf $d
   done
