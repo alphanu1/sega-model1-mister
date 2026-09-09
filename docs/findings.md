@@ -20,6 +20,56 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (2) — THE BEAM-BAND CROSSING HAD THE SAME MULTI-BIT FAULT, IN THE OTHER DIRECTION
+
+Ben, on the board after the clip-plane fix: "a gap in a band where it's in the
+wrong place, only a few pixels deep, lasts about 2 seconds". A band is eight
+rows, so "a few pixels deep" is one band.
+
+`m1_raster3d` carries a long comment - written when the 3D-to-video crossing was
+fixed - explaining that a multi-bit bus cannot be crossed on two flops because
+"an increment is not a single-bit change: 7 to 8 flips four bits and 15 to 16
+flips five", and that the receiver can see a value that is neither the old one
+nor the new one. **Twenty lines below it, the video-to-3D crossing did exactly
+that:**
+
+    logic [BW-1:0] beam_band_s1, beam_band_s2;
+    always_ff @(posedge clk) begin
+      beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));   // six bits, plain 2FF
+      beam_band_s2 <= beam_band_s1;
+
+The fix was applied to one direction and not the other, in the same file, under
+the comment that describes the bug.
+
+**Why it shows.** `beam_band_s2` feeds `beam_ext`, which is what decides WHEN A
+FILLED BAND IS PRESENTED. A mixed sample swaps a band in while the beam is
+somewhere else - a band's worth of picture in the wrong place - and
+`beam_blank = (beam_ext >= NBANDS)` can read as blanking when it is not, which
+arms band 0 mid-frame. With 48 bands the index changes 48 times a frame, about
+2,760 times a second, so a rare mixed sample still lands often enough to disturb
+the sequencer for a second or two while it re-syncs.
+
+**Fixed** with the same toggle handshake the other direction uses: data held
+stable, a single toggle bit crossed, receiver captures on the toggle edge. The
+data changes once a line - 655 scan clocks - so it is settled long before the
+toggle has been through two flops.
+
+**NO BENCH CAN CONFIRM THIS, and the file says so about the original**: render3d
+ticks both clocks from one edge and `tb_m1_frame` drives them from exact
+multiples, so neither can produce a settling failure. It is hardware-only by
+construction. `make test` is identical to baseline and `tb_m1_frame` still fills
+and presents bands at the same rate with zero late - which shows the crossing
+still delivers, not that the fault is gone. **Only the board can say that.**
+
+**What was ruled out first, from the same two-minute capture:** every deadline
+counter in the 3D path is flat zero over the whole race - `T` late bands, `D`
+dropped quads, `G` out-of-range vertices, `H` short. There is no time to buy, so
+the clock bump that was proposed could not have helped. The only non-zero
+counter is `M`, the 2D tile fetch overrun, at about 1.7 a frame - a repeated
+scanline in the 2D layer, on `clk_sys`, and a separate matter.
+
+---
+
 ## 2026-09-09 — THE LEFT-SIDE CUT IS FIXED, CONFIRMED ON THE BOARD
 
 Two minutes of real driving with the plane fix (`01ef1cf`), against the same two

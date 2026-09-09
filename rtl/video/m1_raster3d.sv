@@ -788,13 +788,69 @@ module m1_raster3d #(
   // only occasionally the band the beam is drawing, and what reaches the screen
   // is mostly no 3D with stripes of it flashing through as the phase slips.
   // Measured on hardware before it was understood.
-  logic [BW-1:0] beam_band_s1, beam_band_s2;
-  logic [$clog2(BAND_H)-1:0] beam_row_s1, beam_row_s2;
-  always_ff @(posedge clk) begin
-    beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));
-    beam_band_s2 <= beam_band_s1;
-    beam_row_s1  <= scan_y[$clog2(BAND_H)-1:0];
-    beam_row_s2  <= beam_row_s1;
+  // THE SAME MULTI-BIT CROSSING FAULT, IN THIS DIRECTION, LEFT UNFIXED.
+  //
+  // This was a plain two-flop synchroniser on `scan_y >> 3` - a SIX-bit band
+  // index for 48 bands - which is exactly what the comment above condemns for
+  // the other direction. 15 to 16 flips five bits and 31 to 32 flips six, and
+  // the two flops of a multi-bit bus can resolve differently on the same edge,
+  // so `beam_band_s2` could read a value that is neither the old band nor the
+  // new one.
+  //
+  // It matters because `beam_ext` below is what decides WHEN A FILLED BAND IS
+  // PRESENTED. A glitched value swaps a band in while the beam is somewhere
+  // else entirely - a band's worth of picture, eight rows, in the wrong place -
+  // and `beam_blank` (beam_ext >= NBANDS) can read as blanking when it is not,
+  // arming band 0 mid-frame. The band index changes 48 times a frame, about
+  // 2,760 times a second, so a rare mixed sample still happens often enough to
+  // disturb the sequencer for a second or two at a time while it re-syncs.
+  //
+  // Reported on the board 2026-09-09: "a gap in a band where it's in the wrong
+  // place, only a few pixels deep, lasts about 2 seconds". A band is eight rows.
+  //
+  // Same cure as the other direction: hold the data stable, cross a single
+  // toggle, capture on the toggle edge. The data changes once a line - 655 scan
+  // clocks - so it has been stable far longer than the crossing by the time the
+  // toggle has been through two flops.
+  //
+  // AND LIKE THE OTHER DIRECTION, NO BENCH CAN SEE THIS. render3d ticks both
+  // clocks from one edge and tb_m1_frame drives them from exact multiples, so
+  // neither can produce a settling failure. It is hardware-only by construction.
+  logic [BW-1:0] beam_band_q;
+  logic [$clog2(BAND_H)-1:0] beam_row_q;
+  logic beam_tog, beam_upd;
+  wire [BW-1:0] beam_band_now = BW'(scan_y >> $clog2(BAND_H));
+  wire [$clog2(BAND_H)-1:0] beam_row_now = scan_y[$clog2(BAND_H)-1:0];
+  always_ff @(posedge scan_clk or negedge rst_n) begin
+    if (!rst_n) begin
+      beam_band_q <= '0; beam_row_q <= '0; beam_tog <= 1'b0; beam_upd <= 1'b0;
+    end else begin
+      beam_upd <= 1'b0;
+      // One cycle AFTER the data, so the data is settled before the toggle even
+      // starts across.
+      if (beam_upd) beam_tog <= ~beam_tog;
+      if ((beam_band_now != beam_band_q) || (beam_row_now != beam_row_q)) begin
+        beam_band_q <= beam_band_now;
+        beam_row_q  <= beam_row_now;
+        beam_upd    <= 1'b1;
+      end
+    end
+  end
+
+  logic [BW-1:0] beam_band_s2;
+  logic [$clog2(BAND_H)-1:0] beam_row_s2;
+  logic [2:0] beam_tog_s;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      beam_tog_s <= 3'b000; beam_band_s2 <= '0; beam_row_s2 <= '0;
+    end else begin
+      beam_tog_s <= {beam_tog_s[1:0], beam_tog};
+      // beam_tog_s[0] is the metastability catcher and is never used for logic.
+      if (beam_tog_s[2] ^ beam_tog_s[1]) begin
+        beam_band_s2 <= beam_band_q;
+        beam_row_s2  <= beam_row_q;
+      end
+    end
   end
 
   // The row BEHIND the beam, on the buffer that is displaying. A row is only
