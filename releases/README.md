@@ -27,7 +27,7 @@ not start Virtua Racing without the same file, so a complete romset already has
 it.
 
 **Check what you are running.** `Model1_20260909.rbf` is
-`028228e19777076fbb1fa94dbdade500`, 4,637,540 bytes. If the core on your card
+`be608e96045e057487da3ad7f4a9e697`, 4,641,748 bytes. If the core on your card
 does not have that md5 you are not running this build — and the usual reason is
 a second file: MiSTer resolves `<rbf>Model1</rbf>` by scanning for names
 starting `Model1` followed by `.` or `_`, and keeps the lexicographically
@@ -67,16 +67,11 @@ exactly that reason — if they disagree, trust neither and check.**
   is expected, not a fault with your setup. It is milestone M4 and it has not
   been started.
 
-- **Occasional band artefacts.** A band of the 3D picture can appear briefly in
-  the wrong place — a few pixels deep, for a second or two. Diagnosed as a
-  multi-bit clock-domain crossing on the beam's band index; a fix is written and
-  has NOT yet been confirmed on hardware, so it is not in this build.
-
 - **The 2D tile fetch overruns about twice a frame.** When it does, that
   scanline is displayed again rather than updated. Deliberate and stable — the
   alternative tears every following line — but it is not correct.
 
-- Only Virtua Racing is shipped; see above.
+- Only Virtua Racing and Virtua Formula are shipped; see above.
 
 ## Controls
 
