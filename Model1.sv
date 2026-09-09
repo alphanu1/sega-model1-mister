@@ -81,6 +81,7 @@ module emu
     "O[10:8],SDRAM read phase,CL+2,CL+3,CL+4,CL+5,CL+1,CL+0;",
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
+    "O[11],Pedals,Up=Accel,Up=Brake;",
     "-;",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
@@ -246,30 +247,35 @@ module emu
   // racing game with on/off pedals is a different game - you cannot hold a
   // line through a corner without partial throttle.
   //
-  // TWO SEPARATE AXES, because a pad's triggers are two independent inputs.
+  // MiSTer has NO dedicated trigger signal - hps_io offers only the two sticks,
+  // the paddles and the spinners. An arrangement that read one axis per pedal
+  // was tried on the assumption a player would bind LT and RT to them; it put
+  // the accelerator on the LEFT stick's Y and the brake on the RIGHT stick's X,
+  // so steering with the left stick moved the throttle at the same time.
   //
-  // MiSTer has NO dedicated trigger signal - hps_io offers only the two
-  // sticks, the paddles and the spinners, and a trigger reaches a core by the
-  // player binding it to a stick AXIS in the OSD. The documented racing
-  // convention is left-stick-down for the accelerator and right-stick-right
-  // for the brake, so those are the axes to read; binding LT and RT to them
-  // is then an ordinary OSD mapping. Sharing one axis, which an earlier
-  // version did, cannot work: two triggers need two axes.
+  // BOTH PEDALS ON THE RIGHT STICK'S Y AXIS, one per direction.
   //
-  // MAGNITUDE, not sign. A trigger bound to an axis may rest at either end
-  // depending on the pad, so any deflection is a press. That makes the left
-  // stick's Y unusable for anything else, which costs nothing - only its X
-  // steers.
+  // One axis, split by sign: push up to accelerate, pull down to brake, exactly
+  // as a single pedal axis behaves. That frees the LEFT stick entirely for
+  // steering, which is the only thing it should have been doing.
   //
-  // Idle is 0x01 and full 0xff, MAME's PORT_MINMAX(1,0xff): a pedal resting
-  // at 0x00 is a car that will not move, measured in docs/io-board.md. The
-  // buttons stay live and the larger of the two wins.
-  wire signed [7:0] accel_ax = joy0_lstick[15:8];   // left stick Y
-  wire signed [7:0] brake_ax = joy0_rstick[7:0];    // right stick X
-  wire [6:0] accel_mag = accel_ax[7] ? (~accel_ax[6:0] + 7'd1) : accel_ax[6:0];
-  wire [6:0] brake_mag = brake_ax[7] ? (~brake_ax[6:0] + 7'd1) : brake_ax[6:0];
-  wire [7:0] accel_an  = {accel_mag, 1'b1};
-  wire [7:0] brake_an  = {brake_mag, 1'b1};
+  // WHICH HALF IS WHICH DEPENDS ON THE PAD, and no amount of reasoning settles
+  // it - axis polarity is not standardised. `Pedals` in the OSD swaps them, so
+  // a pad that reports the opposite sign is one setting away rather than a
+  // rebuild.
+  //
+  // Idle is 0x01 and full 0xff, MAME's PORT_MINMAX(1,0xff): a pedal resting at
+  // 0x00 is a car that will not move, measured in docs/io-board.md. Centred is
+  // magnitude zero, so both read 0x01 and neither is applied. The buttons stay
+  // live and the larger of the two wins.
+  wire signed [7:0] pedal_ax  = joy0_rstick[15:8];   // right stick Y
+  wire [6:0] pedal_mag = pedal_ax[7] ? (~pedal_ax[6:0] + 7'd1) : pedal_ax[6:0];
+  wire [7:0] pedal_an  = {pedal_mag, 1'b1};
+  // pedal_ax[7] is the sign: one half of the axis is the throttle, the other the
+  // brake, and `Pedals` chooses which.
+  wire       pedal_up  = status[11] ? ~pedal_ax[7] : pedal_ax[7];
+  wire [7:0] accel_an  = pedal_up ? pedal_an : 8'h01;
+  wire [7:0] brake_an  = pedal_up ? 8'h01    : pedal_an;
   wire [7:0] io_accel = io_accel_b ? 8'hff :
                         (accel_an > 8'h01) ? accel_an : 8'h01;
   wire [7:0] io_brake = io_brake_b ? 8'hff :

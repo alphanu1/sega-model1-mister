@@ -77,13 +77,20 @@ exactly that reason — if they disagree, trust neither and check.**
 
 | | default |
 |---|---|
-| Accelerate | R2 |
-| Brake | L2 |
+| Accelerate | R2, or **right stick up** |
+| Brake | L2, or **right stick down** |
 | Shift Up | R1 |
 | Shift Down | L1 |
 | VR1 – VR4 (view buttons) | A, B, X, Y |
 | Start | Start |
 | Coin | Select |
+
+Both pedals are on the **right stick's Y axis**, one per direction, because
+MiSTer has no analogue trigger input — so a pad's LT/RT cannot be read as pedals
+at all. The buttons stay live alongside it and the larger of the two wins, so
+digital-only play is unaffected. Which half is throttle depends on the pad, and
+axis polarity is not standardised: **`Pedals` in the OSD swaps them.** The left
+stick steers.
 
 Service, Test and Coin 2 are mappable and unbound by default. The game is
 configured through its own test menu, which is why there is no DIP menu.
