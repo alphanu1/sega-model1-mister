@@ -107,6 +107,15 @@ module tb_m1_frame #(
     // which is the old behaviour.
     parameter longint unsigned COIN_AT = 0,
 
+    // Scripted inputs, read at runtime. See the script driver below.
+    parameter string  INPUTSCRIPT = "build/input_script.txt",
+
+    // Write a PPM every PPMEVERY frames into build/frames/. 0 disables it and
+    // only the final frame is written, which is the old behaviour. A sequence
+    // is what shows whether a scripted press did anything - one frame at the
+    // end cannot, and that is how a menu was mistaken for a broken renderer.
+    parameter integer PPMEVERY = 0,
+
     // Emit one line per retired instruction, for tools/v60_trace.sh to diff
     // against MAME's own debugger trace. Off by default: it is a firehose.
     parameter bit     PCTRACE    = 0,
@@ -306,10 +315,12 @@ m1_integrated core (
     // The control region as the board presents it at rest, with one byte
     // overridden. Not uniformly idle-high: the three ADC channels at 0x00-0x02
     // rest at 0x80 (steering centred) and 0x01 (each pedal released).
-    .in_bytes({48'hffffffffffff,   // 0x0e..0x09
+    .in_bytes({32'hffffffff,       // 0x0e..0x0b
+               in2_now,            // 0x0a  IN.2  (VF player 2)
+               in1_now,            // 0x09  IN.1  (VR shifters / VF player 1)
                in0_now,            // 0x08  IN.0
                40'hffffffffff,     // 0x07..0x03
-               8'h01, 8'h01,       // 0x02, 0x01  pedals released
+               8'h01, acc_now,     // 0x02 brake released, 0x01 accelerator
                8'h80}),            // 0x00        steering centred
     // m1_integrated's own ports: the microcode arrives through the loader on
     // index 1, and the coprocessor's read-only regions come off SDRAM port 3.
@@ -1041,6 +1052,29 @@ endtask
 localparam integer W = 496;
 localparam integer H = 384;
 
+// One PPM per captured frame, so a run can be watched rather than guessed at.
+// P6 (binary) rather than the P3 the single-frame dump uses: 190,464 pixels of
+// ASCII is 1.1 MB a frame and a few hundred frames of that fills the scratch
+// quota, which on this machine breaks every shell command.
+task automatic dump_frame_ppm(input integer fr);
+    integer fh, xx, yy;
+    string  nm;
+    begin
+        nm = $sformatf("build/frames/f%05d.ppm", fr);
+        fh = $fopen(nm, "wb");
+        if (fh != 0) begin
+            $fwrite(fh, "P6\n%0d %0d\n255\n", W, H);
+            for (yy = 0; yy < H; yy = yy + 1)
+                for (xx = 0; xx < W; xx = xx + 1) begin
+                    $fwrite(fh, "%c", fb_r[yy*W + xx][7:0]);
+                    $fwrite(fh, "%c", fb_g[yy*W + xx][7:0]);
+                    $fwrite(fh, "%c", fb_b[yy*W + xx][7:0]);
+                end
+            $fclose(fh);
+        end
+    end
+endtask
+
 integer fb_r [0:H*W-1];
 integer fb_g [0:H*W-1];
 integer fb_b [0:H*W-1];
@@ -1521,6 +1555,9 @@ always @(posedge clk) begin
         end
         prev_vb <= vid_vb;
 
+        if (PPMEVERY != 0 && vid_vb && !prev_vb && (frames % PPMEVERY == 0))
+            dump_frame_ppm(frames);
+
         if (!vid_hb && !vid_vb) begin
             if (px < W && py < H) begin
                 fb_r[py*W + px] = vid_r;
@@ -1866,10 +1903,77 @@ end
 localparam logic [7:0] IN0_IDLE  = 8'hff;
 localparam logic [7:0] IN0_COIN  = 8'hfe;
 localparam logic [7:0] IN0_START = 8'hef;
+
+// A SCRIPT, because a coin and a start cannot work a menu.
+//
+// A fresh simulation starts with the game's backup RAM blank, so Virtua Racing
+// comes up in its SETTINGS MENU waiting for an operator - which is what the
+// captured frame turned out to be, after it was mistaken for a broken renderer.
+// Getting to gameplay means driving the menu to EXIT, and Virtua Fighter needs
+// its character chosen, whose buttons are on IN.1 rather than IN.0.
+//
+// The script is read at RUNTIME from a file rather than compiled in, so a
+// sequence can be tried, watched and changed without a rebuild - which matters
+// because nobody knows which button walks these menus and it will take several
+// attempts. Format, one step per line, '#' comments and blank lines ignored:
+//
+//     <cycle> <in0> <in1> <in2>          all three hex, ACTIVE LOW
+//
+// Each line takes effect at <cycle> and holds until the next. Idle is ff ff ff.
+// COIN_AT still works when no script is present, so existing runs are unchanged.
+localparam int unsigned NSTEP = 64;
+longint unsigned sc_cyc [0:NSTEP-1];
+logic [7:0]      sc_in0 [0:NSTEP-1], sc_in1 [0:NSTEP-1], sc_in2 [0:NSTEP-1];
+// The ACCELERATOR too - Virtua Racing's course select says "STEP TO START!",
+// so a race cannot be entered with buttons alone. 0x01 released, 0xff full,
+// MAME's PORT_MINMAX(1,0xff).
+logic [7:0]      sc_acc [0:NSTEP-1];
+integer          sc_n = 0, sc_i = 0;
+
+initial begin : load_script
+    integer f;
+    longint unsigned c;
+    integer a, b, d, e;
+    string  line;
+    f = $fopen(INPUTSCRIPT, "r");
+    if (f != 0) begin
+        // Read whole LINES and parse each. $fscanf returns 0 on a match failure
+        // rather than skipping, so a comment line ends the scan and the file
+        // silently loads as empty - which is exactly what happened first try.
+        while (sc_n < NSTEP && !$feof(f)) begin
+            if ($fgets(line, f) > 0) begin
+                e = 8'h01;                       // accelerator defaults released
+                if ($sscanf(line, " %d %h %h %h %h", c, a, b, d, e) >= 4) begin
+                    sc_cyc[sc_n] = c;
+                    sc_in0[sc_n] = a[7:0]; sc_in1[sc_n] = b[7:0]; sc_in2[sc_n] = d[7:0];
+                    sc_acc[sc_n] = e[7:0];
+                    sc_n = sc_n + 1;
+                end
+            end
+        end
+        $fclose(f);
+        $display("tb_m1_frame: input script %s, %0d steps", INPUTSCRIPT, sc_n);
+    end
+end
+
 logic [7:0] in0_now = IN0_IDLE;
+logic [7:0] in1_now = 8'hff;
+logic [7:0] in2_now = 8'hff;
+logic [7:0] acc_now = 8'h01;
 always @(posedge clk) begin
-    if (!rst_n_sys) in0_now <= PRESS_IN0;
-    else if (COIN_AT != 0) begin
+    if (!rst_n_sys) begin
+        in0_now <= PRESS_IN0; in1_now <= 8'hff; in2_now <= 8'hff;
+        acc_now <= 8'h01; sc_i <= 0;
+    end else if (sc_n > 0) begin
+        // The script owns all three bytes once it exists.
+        if (sc_i < sc_n && cycles >= sc_cyc[sc_i]) begin
+            in0_now <= sc_in0[sc_i];
+            in1_now <= sc_in1[sc_i];
+            in2_now <= sc_in2[sc_i];
+            acc_now <= sc_acc[sc_i];
+            sc_i    <= sc_i + 1;
+        end
+    end else if (COIN_AT != 0) begin
         // Two presses of about a third of a second each, well clear of any
         // debounce, with a gap between them.
         if      (cycles > COIN_AT             && cycles < COIN_AT +  30000000) in0_now <= IN0_COIN;

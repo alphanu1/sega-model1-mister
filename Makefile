@@ -844,6 +844,7 @@ m1_frame:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
+	  -GPPMEVERY=$(FRAME_PPM) \
 	  -GROMHEX='"build/rom/$(GAME)_v60.hex"' \
 	  -GUCODEHEX='"build/rom/$(GAME)_tgp_prog.hex"' \
 	  -GIOFWHEX='"build/rom/$(GAME)_iofw.hex"' \
@@ -902,6 +903,8 @@ FRAME_PRESS ?= 0xff
 # a run reaches GAMEPLAY rather than stopping in attract. 0 never does it.
 # Attract has settled by ~250 M, so 300000000 is a reasonable place.
 FRAME_COIN ?= 0
+# Write a PPM every N frames into build/frames/. 0 = only the final frame.
+FRAME_PPM ?= 0
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to
