@@ -20,6 +20,38 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (3) — THE BEAM-BAND CDC FIX DID NOT FIX THE BAND ARTEFACT
+
+Flashed `a1d9192` (md5 `699ee64f82ac8731e70b5b52f094bcbd`) and driven. **The
+misplaced band is still there** - a few pixels deep, in the wrong place, for
+about two seconds at a time.
+
+So the multi-bit crossing was a real defect and is NOT the cause of this
+symptom. The fix stays in: crossing a six-bit incrementing index on two flops is
+wrong however the picture looks, and the file's own comment says so about the
+other direction. But the artefact has another cause and this entry exists so the
+next session does not re-derive the same theory from the same comment.
+
+**What is now ruled out for the band artefact**, all measured:
+
+- every 3D deadline counter flat zero over a two-minute race - `T` bands
+  presented late, `D` quads dropped, `G` vertices out of range, `H` short. There
+  is no timing headroom to buy, so a clock raise cannot be the fix either.
+- the beam-band clock crossing, above.
+- the quad store: `D` = 0 and `U` peaks at 2,257 against a 3,584 cap.
+
+**Still open as candidates:** the band buffer's own addressing or clear
+sequencing; the three-buffer rotation (`fill_buf` / `ready_buf` / `disp_buf`)
+picking the wrong buffer; the row-behind-the-beam clear erasing a row that is
+still to be shown. None of these has an instrument yet, and none of the existing
+counters distinguishes them - which is the gap to close before theorising again.
+
+Nothing about it is countable today, which is the real problem: the left-side
+cut was solved by a counter that made the fault visible in telemetry, and this
+symptom has no equivalent. That is where to start.
+
+---
+
 ## 2026-09-09 (2) — THE BEAM-BAND CROSSING HAD THE SAME MULTI-BIT FAULT, IN THE OTHER DIRECTION
 
 Ben, on the board after the clip-plane fix: "a gap in a band where it's in the
