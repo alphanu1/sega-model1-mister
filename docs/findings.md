@@ -20,7 +20,46 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
-## 2026-09-09 (7) — THE BENCH'S RENDERED FRAME IS THREE PALETTE ENTRIES, AT ANY RUN LENGTH
+## 2026-09-09 (8) — WITHDRAWN: THE BENCH RENDERS FINE. IT IS SITTING IN TEST MODE
+
+The entry below is **wrong** and is kept because the way it was wrong is the
+point. It concluded the simulated video path was broken, from three palette
+indices and a two-colour frame, and called frame-diffing against MAME a
+verification method that "has never once worked".
+
+**Converting the frame to a PNG and LOOKING AT IT settles it in one step**: the
+image is Virtua Racing's TEST MODE menu, fully legible - START CREDIT, COIN
+SETTING, CAR COLOR, COURSE SELECT, EXIT. The renderer is perfect.
+
+Every "symptom" was just what was on screen. White text on black is two colours.
+A font uses low tile indices, and in this chip the colour field OVERLAPS the
+index (`colour = tile_word[14:7]`), so a low index legitimately gives colour 0
+and a palette address in the bottom sixteen. Nothing was misreading anything.
+
+**Why it is in test mode**: the game's backup RAM starts blank in every fresh
+simulation, so it comes up in the settings menu waiting for an operator. The
+board was configured once and has persisted since, which is why hardware reaches
+attract and the bench does not. The I/O board is fine and the run proves it - the
+EEPROM streams (word 0 = 5345), the identity block reads SEGA, and the firmware
+makes 64 READS and 0 WRITES, so it found valid settings and left them alone.
+
+**The reasoning error, worth naming.** Two games producing the same colour COUNTS
+was treated as proof they rendered the same picture. Two different text screens
+have similar counts. A 350M-cycle run "confirming" a 90M one confirmed only that
+the menu does not time out. Three measurements, all consistent, all pointing at a
+conclusion that one glance at the image destroys - and the image cost one command.
+
+**LOOK AT THE PICTURE BEFORE THEORISING ABOUT THE PICTURE.** The bench has
+written `build/frame.ppm` all along.
+
+**What is actually needed for simulated gameplay** is to drive the menu to EXIT,
+which needs input injection the bench does not have: it drives IN.0 only, so it
+can insert a coin and press start but cannot work a menu, and for Virtua Fighter
+cannot select a character either since those buttons are on IN.1.
+
+---
+
+## 2026-09-09 (7) — [WITHDRAWN, see above] THE BENCH'S RENDERED FRAME IS THREE PALETTE ENTRIES
 
 `tb_m1_frame` writes the last frame to `build/frame.ppm`, and the image is two
 colours. That is not a capture bug and not a short run:
