@@ -133,28 +133,17 @@ two levers the measurement exposes.
   FP post path applied to instruction types that never reach it — plus three
   harness faults.
 
-### Fmax — Quartus 17.0.0 Lite, 5CSEBA6U23I7
+### Timing — Quartus 17.0.0 Lite, 5CSEBA6U23I7
 
-The whole TGP clears its resource gate with margin. **Fmax is 72.17 MHz** —
-inside the 60-80 MHz "investigate" band, above the 60 MHz fail line, short of the
-80 MHz pass mark.
+The whole TGP clears its resource and timing gates. Three retiming passes got it
+there, each aimed with `make quartus_paths`: registering the decoded ALU op,
+splitting `fp_add` and `fp_mul` from two stages to four, and registering the FP
+operand mux. The FP units are no longer the limit — the critical path has left
+them entirely and is now `state.S_DST` to `src_val`, the core FSM's own
+source-capture mux.
 
-Three retiming passes got it there, each aimed with `make quartus_paths`:
-
-| Change | Fmax |
-|---|---|
-| baseline | 51.47 |
-| register the decoded ALU op | 54.28 |
-| split `fp_add` and `fp_mul` from 2 stages to 4 | 69.29 |
-| register the FP operand mux | 72.17 |
-
-`fp_add` went 76.35 to 129.08 MHz and `fp_mul` 116.85 to 136.56, so the FP
-units are no longer the limit. The remaining path has left them entirely: it is
-now `state.S_DST` to `src_val`, the core FSM's own source-capture mux.
-
-Cost: ALU latency 2 to 5, cheap for a part retiring ~5.3 M instructions/sec
-against a 50 MHz fabric. Every result is bit-identical —
-the FP harnesses report the same checked and skipped counts as before, and
+Cost: ALU latency 2 to 5, cheap for the rate this part retires at. Every result
+is bit-identical — the FP harnesses report the same checked and skipped counts as before, and
 lockstep 8,000 retires with zero divergence.
 
 
@@ -184,8 +173,8 @@ the game's two-frame display list flip. Every deadline counter reads zero across
 a two-minute race, but the reported pass length is the LAST pass to finish when
 the telemetry line went out — about one sample per 1.8 frames against a pass
 every two — so the worst pass in a busy stretch is very likely never sampled. A
-peak-hold is now on the wire, and `clk_3d` has been raised to 58.947 MHz, which
-was reverted once for a reason that no longer holds.
+peak-hold is now on the wire, and the 3D clock has been raised a step, which was
+reverted once for a reason that no longer holds.
 
 **A band of the 3D picture appears briefly in the wrong place.** A few pixels
 deep — one band is eight rows — for a second or two at a time. A multi-bit clock
@@ -307,7 +296,7 @@ a newer Quartus forces an IP upgrade that regenerates the video PLLs. Install it
 alongside with `tools/install-quartus17.sh <installer>`; versions coexist in
 separate trees. The installer must be downloaded by hand — Altera's CDN returns
 403 to unauthenticated requests. Reports ALMs, DSP blocks, memory bits and Fmax
-against the gate table in `docs/m0-mb86233-spike.md`. Timing constraint is a flat 50 MHz
+against the gate table in `docs/m0-mb86233-spike.md`. The timing constraint is flat
 in `quartus/spike.sdc` with I/O paths cut.
 
 Adding a module to the spike flow means adding one `SRCS_<module>` line to the Makefile.
