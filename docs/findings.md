@@ -20,6 +20,51 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (6) — VIRTUA FIGHTER'S ARENA: WHAT IT IS NOT, MEASURED AGAINST A RUNNING MAME
+
+Ben confirmed MAME renders the arena at the correct size with the same ROMs, so
+this is our defect and not the BAD_DUMP microcode. A Lua display-list decoder
+(`build/mame_vf/`, not committed - it reads the lists at V60 0x600000/0x610000
+and walks them with model1_v.cpp's own stride table) was run against attract,
+character select and a real match.
+
+**Eliminated, all measured rather than argued:**
+
+| candidate | measurement |
+|---|---|
+| the BAD_DUMP microcode | MAME renders correctly with the same `315-5724.bin` |
+| direct polygons, command 0x02 | **0** issued, in attract, character select AND a match |
+| polygon RAM, command 0x05 | **0** issued; and no object has poly_adr bit 23 set |
+| viewport | `xc=248 x1=0 x2=495` in play, matching ours exactly |
+| zoom | raw `0x4315a000` x4 = `0x4415A000`; our board reports the top half as `4415`. IDENTICAL - the "596 vs 598.5" was my truncation of a 16-bit field, not a discrepancy |
+| object size semantics | `size==0` means unlimited in both |
+| geometry for the arena models | 96 object walks over 16 yaws: 960 quads, **0** vertex coordinates differing, colour exact on all |
+| MAME's `init_translation_matrix` | a REAL divergence - see below - but VF submits **0 objects before its first matrix command**, every frame |
+| `vxx/vyy/vzz` and the `ayy` yaw in `transform_point` | inside `#if 0`. A keyboard debug hook, never non-zero, so the transform reduces to ours |
+
+**One real divergence found, which is NOT this bug.** MAME calls
+`init_translation_matrix()` - identity - immediately before walking each list.
+`m1_geo_xform` has `always_ff @(posedge clk) if (mat_we) mat[mat_idx] <= mat_data;`
+and **no per-pass reset at all**, so the matrix carries across objects, passes
+and frames. An object drawn before the first 0x0b would get identity there and a
+stale matrix here. Measured: VF never does that, so it cannot explain the arena -
+but it is still wrong and a game that does draw before its first matrix would
+break in a way that looks like nothing else.
+
+**The limit of the geometry result.** `tb_m1_geometry`'s reference is our own
+reimplementation of `push_object`, written from MAME's source. 0 mismatches
+shows the RTL matches the C++ model, NOT independently that either matches MAME.
+A misreading shared by both passes. The only test that would settle it is
+comparing against MAME's actual emitted quads.
+
+**Still unchecked:** `old_z`, which `push_object` takes BY REFERENCE and carries
+between objects - the flat-z reuse register for poly zmode 0. It affects sort
+order rather than size, so it is a weak candidate, but it is cross-object state
+we may not model. And whether we walk the same NUMBER of objects: MAME shows
+92-104 in play while the board's `P` field ranged 52-92.
+
+---
+
 ## 2026-09-09 (5) — THE BAND SWAP LANDED ON A VISIBLE PIXEL, AND IT WAS TWO SYMPTOMS
 
 Confirmed on the board: the missing pixels at the top of every band are gone,
