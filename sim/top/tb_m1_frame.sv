@@ -1299,6 +1299,34 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// ----------------------------- WHERE DOES THE BAND SWAP ACTUALLY LAND?
+//
+// `disp_buf_s2` is what the scanout reads through. If it changes while the beam
+// is inside the VISIBLE part of a line, the pixels after that point on that line
+// come from a buffer that does not hold them - which on the board is "the first
+// few pixels of each band are missing", and, when the lead was made a whole line
+// instead of a blank, "most of a line is missing".
+//
+// THIS IS A LATENCY EFFECT, NOT A METASTABILITY ONE, so unlike the multi-bit
+// crossings it IS visible here: the bench drives both clocks and the toggle
+// handshake costs real cycles. It only went unmeasured because nothing looked.
+integer swap_total = 0, swap_in_visible = 0, swap_first_x = -1;
+reg [1:0] dbs_d = 2'd0;
+always @(posedge clk) begin       // clk is the scan/system clock in this bench
+    if (core.u_raster3d.rst_n) begin
+        dbs_d <= core.u_raster3d.disp_buf_s2;
+        if (core.u_raster3d.disp_buf_s2 != dbs_d) begin
+            swap_total = swap_total + 1;
+            // Only a swap inside a visible LINE and a visible ROW can damage a
+            // pixel; during vertical blanking nothing is being drawn.
+            if (core.u_raster3d.scan_x < 496 && core.u_raster3d.scan_y < 384) begin
+                swap_in_visible = swap_in_visible + 1;
+                if (swap_first_x < 0) swap_first_x = core.u_raster3d.scan_x;
+            end
+        end
+    end
+end
+
 // ----------------------------- DIRECT POLYGONS: COUNTED, BECAUSE WE DROP THEM
 //
 // Display list command 0x02 is MAME's push_direct - polygons handed over
@@ -2558,6 +2586,8 @@ initial begin
         for (zw_i = 0; zw_i < 2048; zw_i = zw_i + 1)
             if (z80_seen[zw_i] != 0) $write(" %03h:%0d", zw_i, z80_seen[zw_i]);
         $write("\n");
+        $display("FRAME: band swaps: %0d total, %0d landed INSIDE the visible line (want 0), first at scan_x=%0d",
+                 swap_total, swap_in_visible, swap_first_x);
         $display("FRAME: display list: %0d objects (cmd 01/41), %0d DIRECT (cmd 02 DROPPED), %0d polyRAM uploads (cmd 05 DROPPED) of %0d words, %0d objects with poly_adr bit23 (read from ROM instead)",
                  obj_cmds, dir_cmds, polyram_cmds, polyram_words, obj_bit23);
         $display("FRAME: bands filled = %0d, presented LATE = %0d, vertices out of the store's range = %0d",
