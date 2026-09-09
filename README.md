@@ -20,7 +20,8 @@ README with the copy instructions and the md5 to check against.
 
 **Only Virtua Racing is released.** The other five have MRAs in `mra/` and are
 candidates, not releases — an MRA ships only for a game somebody has played on
-hardware.
+hardware, and the release README lists what is not finished in the exact build
+it ships.
 
 **There is no sound.** None at all, in any game. The Model 1's audio is a
 separate PCB — a 68000, a YM3438 and two MultiPCMs — reached over the main
@@ -42,7 +43,7 @@ not boot; MAME will not start Virtua Racing without the same file either.
 | M0 — MB86233 spike | **complete** — TGP verified, fits with margin, gate settled |
 | M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls through a real Z80 I/O board, window/split-scroll mode implemented and verified |
 | M2 — geometry pipeline | **running real microcode on hardware, for five games.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built. A register-sourced `rep` read the wrong register until 2026-09-05, which hung Virtua Fighter on its first frame |
-| M3 — rasterizer and video | **the 3D layer runs on hardware**: geometry, sort, band buffers and scanout are built, and the geometry agrees with MAME quad-for-quad across a full rotation. Two defects open — see below |
+| M3 — rasterizer and video | **the 3D layer runs on hardware**: geometry, sort, band buffers and scanout are built, and the geometry agrees with MAME quad-for-quad across a full rotation. Virtua Racing's left-side cut is fixed and confirmed on the board; the open defects are listed below |
 | M4 — sound | not started — 68000, YM3438 and two MultiPCMs on a separate sound PCB, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
@@ -58,9 +59,9 @@ against an independently written packer with `make verify_mra`.
 | Game | On hardware | In MAME (the oracle) |
 |---|---|---|
 | Virtua Racing | boots, plays, 2D and 3D | yes |
-| Virtua Fighter | runs; geometry judders and the quad store overflows | yes |
+| Virtua Fighter | runs and plays; the fighting arena is the wrong size in a match, and direct-polygon objects are missing | yes |
 | Sega NetMerc | runs, 2D and 3D | reaches its title screen |
-| Star Wars Arcade | ROM packs correctly, untested on hardware | yes |
+| Star Wars Arcade | does not boot — both CPUs park during init | yes |
 | Wing War | ROM packs correctly, untested on hardware | yes |
 
 `vf` and `netmerc` are marked `MACHINE_NOT_WORKING` in MAME and both run
@@ -87,44 +88,9 @@ to tile RAM, 40,960 to the colour translation tables and 8,433 real xBGR-555
 palette entries — so the video block already built has content to display before
 any of the 3D path exists.
 
-| Block | ALM | Verification |
-|---|---|---|
-| `v60` (imported from s32, cast-fixed) | 20,000 | 29/29 unit tests |
-| `m1_sdram` + `sdram_model` | 937 | 80,009 checks, 0 protocol violations |
-| `m1_main` + `m1_mainram` + `m1_glue` | ~700 | boot, plus 25 glue checks |
-| `m1_video` — the whole 2D path | 287 | 380,929 checks against MAME |
-| `m1_rom_loader` / `m1_decode` | 319 | 1,675 / 466,714 checks |
-| `bw_monitor` | 381 | 2 M checks, mutation-tested |
-| `m1_raster_fill` + `m1_raster_div` (M3, early) | 2,113 | 152,025 quads / 31.6 M spans vs MAME |
-
-`make quartus MOD=m1_integrated` builds the V60 side and the 2D side as one
-design: **21,796 ALM, 332/553 M10K, 24.62 MHz**. Fmax is exactly the V60's
-standalone figure, so the V60 is the critical path in context as well as alone.
-
-`make rbf` builds the real core — `sys_top` plus `emu` — and that is the number
-that counts. **Measured 2026-09-05: 40,057 ALM (96%), 546/553 M10K (99%), 61 DSP
-(54%)**, worst-case slack +0.036 ns on the framework's HDMI clock and +0.718 ns
-on `clk_sys`, where our own logic lives.
-
-Where it goes: **the V60 is 15,358 ALM**, the 3D layer 11,280 (geometry 7,580 of
-it), the TGP 2,434, the Z80 I/O board 1,485, and the MiSTer framework about
-6,000 — of which `ascal` alone is 2,135 and the audio chain ~1,700 for sound
-that does not exist yet.
-
-**M10K is the binding resource, not ALM.** Seven blocks are free, and two large
-regions are provably not reducible: the display list buffers take ~104 M10K and
-Wing War uses every word of both (measured across all five games), while the
-quad store costs 211 bits a quad and cannot grow — see `docs/findings.md`,
-2026-09-05.
-
-One ALM lever was measured and is **spent**: removing the V60's FP group is
-worth −2,984 ALM, but `dbg_fp_trap` fires at 421.7 M cycles on a real
-angle-to-sine lookup, so the game genuinely uses it.
-
-The quad filler was built out of M3 order because it was the widest unknown in
-that budget: the fill path alone measures **2,113 ALM, 2 DSP, 0 M10K, 63.67
-MHz** against a 3,000-6,000 estimate for the entire rasterizer, so binning, the
-band buffer and scanout now carry the remaining uncertainty.
+The fill path of the rasterizer was built out of M3 order because it was the
+widest unknown in the budget, so binning, the band buffer and scanout now carry
+the remaining uncertainty.
 `docs/m3-rasterizer-spec.md` has the fill rules transcribed from MAME and the
 two levers the measurement exposes.
 
@@ -167,24 +133,11 @@ two levers the measurement exposes.
   FP post path applied to instruction types that never reach it — plus three
   harness faults.
 
-### Real device numbers — Quartus 17.0.0 Lite, 5CSEBA6U23I7
+### Fmax — Quartus 17.0.0 Lite, 5CSEBA6U23I7
 
-| Module | ALMs | DSP | M10K | Fmax |
-|---|---|---|---|---|
-| `fp_mul` | 161 | **1** | 0 | 136.56 MHz |
-| `fp_add` | 406 | 0 | 0 | 129.08 MHz |
-| `fp_div` | 263 | 0 | 0 | 113.96 MHz |
-| `mb86233_agu` | 176 | 0 | 0 | combinational |
-| `mb86233_seq` | 174 | 0 | 0 | 231.64 MHz |
-| `mb86233_regs` | 644 | 0 | 0 | 827.81 MHz |
-| `mb86233_mem` | 123 | 0 | **3** | n/a |
-| `mb86233_dec` | 121 | 0 | 0 | combinational |
-| `mb86233_xfer` | 28 | 0 | 0 | combinational |
-| **`mb86233_core`** | **2554** | **1** | **3** | **72.17 MHz** |
-
-Against the gate the whole TGP passes ALM (2554 vs < 4K), DSP (1 vs 1-2) and
-M10K (3 vs < 6) with margin. **Fmax is 72.17 MHz** — inside the 60-80 MHz
-"investigate" band, above the 60 MHz fail line, short of the 80 MHz pass mark.
+The whole TGP clears its resource gate with margin. **Fmax is 72.17 MHz** —
+inside the 60-80 MHz "investigate" band, above the 60 MHz fail line, short of the
+80 MHz pass mark.
 
 Three retiming passes got it there, each aimed with `make quartus_paths`:
 
@@ -199,8 +152,8 @@ Three retiming passes got it there, each aimed with `make quartus_paths`:
 units are no longer the limit. The remaining path has left them entirely: it is
 now `state.S_DST` to `src_val`, the core FSM's own source-capture mux.
 
-Cost: 2493 to 2554 ALM and ALU latency 2 to 5, both cheap for a part retiring
-~5.3 M instructions/sec against a 50 MHz fabric. Every result is bit-identical —
+Cost: ALU latency 2 to 5, cheap for a part retiring ~5.3 M instructions/sec
+against a 50 MHz fabric. Every result is bit-identical —
 the FP harnesses report the same checked and skipped counts as before, and
 lockstep 8,000 retires with zero divergence.
 
@@ -214,20 +167,40 @@ the disassembler), so per hard rule 3 the numbering was corrected in
 
 ### Open questions
 
-**Virtua Racing loses the left ~48% of its 3D.** Road and scenery vanish there;
-cars on the same side draw normally. Eight candidate causes have been eliminated
-by measurement on the board — SDRAM contention, coordinate wrapping, spans not
-reaching the left, the band memory losing them, culling, clipping, projection,
-and the frustum's left plane. The mixer is the last unexamined stage. Virtua
-Fighter and NetMerc both draw balanced, so it is VR-specific.
-`docs/findings.md`, 2026-09-05.
+**Virtua Fighter's fighting arena is the wrong size in play.** The fighters are
+correct and the arena is correct in attract; only a real match is wrong. Two
+display list commands are parsed and then discarded, and both are candidates:
+command `0x05`, the polygon RAM upload, has no consumer at all — there is no
+polygon RAM in the core — and `m1_geo_walk` masks away bit 23 of the object's
+polygon address, which is the bit MAME uses to read uploaded geometry instead of
+the ROM. Command `0x02`, direct (already-projected) polygons, is dropped the same
+way and is the likely reason knives do not appear. **Neither is yet proven to be
+the arena**: simulation reaches attract and character select without the game
+issuing either command, and a real match has not been instrumented.
+`docs/findings.md`, 2026-09-09.
 
-**Virtua Fighter discards geometry and judders.** The quad store saturates at
-3,072 and drops 8,072 quads a capture, and the geometry pass takes 1.5 frames so
-the 3D updates around 37 times a second against 57.5. The costed cure is binning
-quads by band into SDRAM — measured at 1.11 bands touched per quad, so about
-17 MB/s — which removes the capacity limit, collapses the 24x band replay to 1x,
-and returns M10K. Not built.
+**Small slowdowns on some Virtua Racing corners.** The geometry pass has to fit
+the game's two-frame display list flip. Every deadline counter reads zero across
+a two-minute race, but the reported pass length is the LAST pass to finish when
+the telemetry line went out — about one sample per 1.8 frames against a pass
+every two — so the worst pass in a busy stretch is very likely never sampled. A
+peak-hold is now on the wire, and `clk_3d` has been raised to 58.947 MHz, which
+was reverted once for a reason that no longer holds.
+
+**A band of the 3D picture appears briefly in the wrong place.** A few pixels
+deep — one band is eight rows — for a second or two at a time. A multi-bit clock
+crossing on the beam's band index was found and fixed, and did NOT cure it; the
+fix stays in because crossing a six-bit incrementing index on two flops is wrong
+regardless. Nothing about this symptom is countable yet, which is the real
+problem: the left-side cut was solved by a counter that made the fault visible in
+telemetry and this has no equivalent. `docs/findings.md`, 2026-09-09.
+
+**Star Wars Arcade does not boot.** Both processors park during init — the V60's
+PC at `0x000004` and the coprocessor at microcode `0x0048` after 69 retires. One
+candidate is EEPROM persistence: `swa` has no factory EEPROM, in our set or in
+MAME's, so it depends on the I/O firmware's virgin-part path at every boot while
+ours is volatile. It also wants a DSBZ80 MPEG sound board that is not implemented
+at all, so expect more than one fault.
 
 **The 2D tile fetch misses scanline deadlines.** Not memory: the port is served
 in 18 cycles while the controller sits ~29% busy. It is the engine's own line
