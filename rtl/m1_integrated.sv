@@ -977,6 +977,26 @@ module m1_integrated (
     end
   end
 
+  // THE PRINTF CHANNEL, behind a switch for the same reason DEBUG_OVERLAY is.
+  //
+  // 430 ALM for m1_speed_report and 37 for m1_uart_tx, measured in the entity
+  // table of a real fit rather than estimated - 467 on a device at 99%, which
+  // is what a build costs when it will not place. It is an instrument, not a
+  // feature: nothing the player sees depends on it.
+  //
+  // OFF is one character away from ON and the generate prunes completely -
+  // DEBUG_OVERLAY proved that, with 4,287 registers removed and no trace of its
+  // capture logic left in the netlist. Turn it back on the moment a fault needs
+  // measuring, which on this core is most weeks: it found the EEPROM shift, the
+  // left-side clip plane and the dropped plane recomputes, and none of those
+  // were visible any other way.
+  //
+  // The counters it reads are pruned with it, so the saving is larger than the
+  // two modules alone.
+  localparam bit UART_REPORT = 1;
+
+  generate
+  if (UART_REPORT) begin : g_speed
   m1_speed_report #(.CLK_HZ(80_000_000), .BAUD(115_200)) u_speed (
     .clk(clk_sys), .rst_n(rst_n_sys),
     .vblank(vblank_irq_sys), .list_sel(listctl_sel),
@@ -1011,6 +1031,10 @@ module m1_integrated (
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );
+  end else begin : g_nospeed
+    assign uart_tx = 1'b1;   // idle high, which is what an idle UART line is
+  end
+  endgenerate
 
   m1_rom_loader loader (
     .clk(clk_sys), .rst(~rst_n_mem), .mem_ready(mem_ready),

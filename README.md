@@ -176,14 +176,6 @@ every two — so the worst pass in a busy stretch is very likely never sampled. 
 peak-hold is now on the wire, and the 3D clock has been raised a step, which was
 reverted once for a reason that no longer holds.
 
-**A band of the 3D picture appears briefly in the wrong place.** A few pixels
-deep — one band is eight rows — for a second or two at a time. A multi-bit clock
-crossing on the beam's band index was found and fixed, and did NOT cure it; the
-fix stays in because crossing a six-bit incrementing index on two flops is wrong
-regardless. Nothing about this symptom is countable yet, which is the real
-problem: the left-side cut was solved by a counter that made the fault visible in
-telemetry and this has no equivalent. `docs/findings.md`, 2026-09-09.
-
 **Star Wars Arcade does not boot.** Both processors park during init — the V60's
 PC at `0x000004` and the coprocessor at microcode `0x0048` after 69 retires. One
 candidate is EEPROM persistence: `swa` has no factory EEPROM, in our set or in

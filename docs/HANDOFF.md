@@ -1,5 +1,40 @@
 # HANDOFF
 
+## 2026-09-09 (late) — THE 3D LAYER IS CLEAN ON VIRTUA RACING
+
+Three faults closed today, all confirmed on the board:
+
+- **The left-side cut** - `m1_geo_planes` dropped frustum recomputes that arrived
+  mid-set, so the viewport RESTORE was lost and the left clip plane latched at
+  -0.0571 instead of -0.8828, clipping 47% of the screen.
+- **Corner slowdowns** - `clk_3d` raised to 58.947 MHz on the 1120 VCO, which had
+  been reverted once for a reason the 8-row bands removed. Ben: "Slow downs are
+  now all gone."
+- **Missing pixels at the top of every band, AND the intermittent band gaps** -
+  one cause, not two: the band buffer swap landed on a visible pixel. Now
+  confined to the horizontal blank at the end of the preceding line, measured at
+  0 of 3,093 swaps on a visible pixel against 3,029 before.
+
+Board build: `9714579`, md5 `be608e96045e057487da3ad7f4a9e697`, archived at
+`~/rbf_known_good/Model1_9714579_hblank.rbf`. 41,383/41,910 ALM, 553/553 M10K,
+every one of our clocks positive.
+
+**The release in `releases/` is now behind the board.** It ships
+`Model1_20260909.rbf` (`028228e1`), which has the left-side fix but neither the
+clock raise nor the band-swap fix. Re-cut it from a build that has been driven.
+
+### WHAT IS OPEN
+
+- **Virtua Fighter's arena is the wrong size in play**, and direct-polygon
+  objects (the knives) are missing. Two commands are parsed and discarded -
+  polygon RAM uploads (0x05) and direct polys (0x02) - and neither is yet proven
+  to be the arena. Counters first, then a 16 MB SDRAM region.
+- **Star Wars Arcade does not boot.** Both CPUs park during init.
+- **The 2D tile fetch** repeats a scanline about twice a frame.
+- **`vf-play-area` is not merged.** Everything today is on it.
+
+---
+
 ## 2026-09-09 — THE LEFT-SIDE CUT IS FIXED AND CONFIRMED ON HARDWARE
 
 `m1_geo_planes` dropped any frustum recompute that arrived while a set was in

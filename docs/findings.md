@@ -20,6 +20,61 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (5) — THE BAND SWAP LANDED ON A VISIBLE PIXEL, AND IT WAS TWO SYMPTOMS
+
+Confirmed on the board: the missing pixels at the top of every band are gone,
+AND so are the intermittent gaps in a band that were reported this morning as a
+separate fault. One cause, two symptoms.
+
+`disp_buf_s2` is what the scanout reads through. If it changes while the beam is
+inside a visible line, every pixel after that point on that line comes from a
+buffer that does not hold it. Measured in `tb_m1_frame`, swaps landing on a
+genuinely visible pixel over one attract run:
+
+| lead | swaps on a visible pixel |
+|---|---|
+| none, as shipped | **3,029 of 3,093** |
+| a whole line | **3,029 of 3,093** |
+| the last line's HORIZONTAL BLANK | **0 of 3,093** |
+
+Both broken variants are 100% of swaps and differ only in WHERE the damage
+lands, which is why the board showed two different pictures: with no lead the
+swap arrives about eight pixels into the band's first line and takes the top few
+pixels; leading a whole line moves it eight pixels into the PREVIOUS line and
+takes most of that instead. The second was flashed and is much worse.
+
+**The window that works is the blank at the end of the last line** - `scan_x`
+runs to 655 against 496 visible, about 160 cycles against a round trip of
+roughly eight.
+
+**THIS WAS NEVER HARDWARE-ONLY, and it was treated as though it were.** It is a
+LATENCY effect, not a metastability one: the bench drives both clocks and the
+toggle handshake costs real cycles, so it was always visible here. Nothing had
+looked. The beam-band multi-bit crossing was fixed first on the strength of a
+plausible story, did not cure it, and is recorded at 2026-09-09 (3) as a real
+defect that was not this one - correctly, but the counter should have come
+first. That is the third time this month the answer was an instrument rather
+than a theory.
+
+**One detail nearly produced a false residual.** The first version of the check
+tested `scan_x` alone and reported 64 failures. Adding `scan_y` showed all 64
+are band 0 presenting during VERTICAL blanking, where nothing is drawn. Stopping
+at the first number would have reported a 2% residual fault that does not exist.
+
+**Also settled here:** two builds of near-identical logic went from "Can't fit
+design in device" to fitting on a fitter SEED change alone, and `clk_3d` slack
+has swung 0.043 to 0.543 ns between builds that differed only by ADDED logic. A
+single failed fit at 99% is placement luck, not proof of capacity - reseed before
+spending area.
+
+**Measured reserves, from a real fit's entity table rather than estimated:**
+framework `audio_out` is **862 ALM** for sound this core does not produce (DC
+blockers, a 425-ALM IIR filter, mixers); the UART report is **467** and is now
+behind `UART_REPORT`, defaulted on; the debug overlay is already off and fully
+pruned, with 4,287 registers removed and nothing left to reclaim.
+
+---
+
 ## 2026-09-09 (4) — VIRTUA FIGHTER: POLYGON RAM IS NOT IMPLEMENTED, AND NEITHER ARE DIRECT POLYS
 
 Ben, on hardware: the fighters are correct and only the fighting arena is wrong;
