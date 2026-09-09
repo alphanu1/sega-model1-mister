@@ -36,6 +36,20 @@ SETS = {
     (('mpr-14886.10', 'mpr-14887.11'), 0x1200000),
     (('mpr-14888.12', 'mpr-14889.13'), 0x1300000),
   ],
+  # Virtua Formula, from ROM_START( vformula ). A Virtua Racing clone: only the
+  # program and the two boot ROMs differ, and the banked pair at 0x1000000. Note
+  # the pair is (15641, 15640) and NOT numeric order - MAME loads epr-15641.6 on
+  # the EVEN lane and epr-15640.7 on the odd one, the same way the .6/.7 pair
+  # goes for every other set here.
+  'vformula': [
+    (('epr-15638.14', 'epr-15639.15'), 0x200000),
+    (('epr-15623.4',),                 0xfc0000),
+    (('epr-15622.5',),                 0xfe0000),
+    (('epr-15641.6',  'epr-15640.7'),  0x1000000),
+    (('mpr-14884.8',  'mpr-14885.9'),  0x1100000),
+    (('mpr-14886.10', 'mpr-14887.11'), 0x1200000),
+    (('mpr-14888.12', 'mpr-14889.13'), 0x1300000),
+  ],
   'vf': [
     (('epr-16082.14', 'epr-16083.15'), 0x200000),
     (('epr-16080.4',),                 0xfc0000),

@@ -6,6 +6,7 @@ Copy to the SD card:
 |---|---|
 | `Model1_20260909.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
 | `Virtua Racing.mra` | `/media/fat/_Arcade/` |
+| `Virtua Formula.mra` | `/media/fat/_Arcade/` |
 
 ROMs are supplied by you and must be in `/media/fat/games/mame/` as the MRA
 names them. Nothing here contains ROM data.
@@ -15,7 +16,8 @@ firmware lives in a separate BIOS set:
 
 | zip | why |
 |---|---|
-| `vr.zip` | the game, its coprocessor microcode, and `93c45.bin` — the I/O board's settings EEPROM |
+| `vr.zip` | Virtua Racing: the game, its coprocessor microcode, and `93c45.bin` — the I/O board's settings EEPROM |
+| `vformula.zip` | Virtua Formula. A Virtua Racing CLONE, so a split set holds only the six parts that differ and the rest come from `vr.zip`; a merged set carries everything itself |
 | `model1io.zip` **or** `daytona93.zip` | `epr-14869.25`, the I/O board's Z80 firmware |
 
 Either of the two will do; the MRA accepts both. **The core runs the real I/O
@@ -37,9 +39,15 @@ polygon and texture regions sit above it; this has only ever been run on 128 MB.
 
 ## What works
 
-**Virtua Racing only.** It boots, runs, reaches attract mode, plays, and reads
-all fourteen control bytes at the board's own cadence. The 2D layers, the
-coprocessor and the 3D geometry and rasteriser are all running.
+**Virtua Racing and Virtua Formula.** Virtua Racing boots, runs, reaches attract
+mode, plays, and reads all fourteen control bytes at the board's own cadence.
+The 2D layers, the coprocessor and the 3D geometry and rasteriser are all
+running.
+
+Virtua Formula is the same game on the linked-cabinet F1 board and is a Virtua
+Racing clone in MAME: only the program ROMs, the two boot ROMs and one banked
+pair differ. Its MRA is verified byte for byte against an independently written
+packer, the same check Virtua Racing gets.
 
 An MRA is shipped only for a game somebody has played on hardware. Virtua
 Fighter, Star Wars, Wing War, NetMerc and Virtua Formula have MRAs in the source
