@@ -1,0 +1,33 @@
+# VIRTUA FIGHTER to an actual match.
+#
+# <cycle> <IN.0> <IN.1> <IN.2> [accel]   ACTIVE LOW
+#
+# VF IN.0: b0 coin1  b1 coin2  b2 service-dip  b3 service1  b4 START1  b5 START2
+# VF IN.1: b0 punch  b1 kick  b2 guard  b4 down  b5 up  b6 right  b7 left  (P1)
+# VF IN.2: the same for player 2
+#
+# 80 MHz clk: one video frame is about 1.39M cycles.
+#
+# Get out of the settings menu a fresh sim always boots into. VR1 did it for
+# Virtua Racing; VF has no view buttons, so sweep the plausible ones.
+ 120000000 fb ff ff 01   # service dip
+ 180000000 ff ff ff 01
+ 210000000 f7 ff ff 01   # service1
+ 270000000 ff ff ff 01
+ 300000000 ef ff ff 01   # start1
+ 360000000 ff ff ff 01
+ 390000000 ff fe ff 01   # P1 punch
+ 450000000 ff ff ff 01
+ 480000000 ff fd ff 01   # P1 kick
+ 540000000 ff ff ff 01
+# coin up and start
+ 600000000 fe ff ff 01
+ 640000000 ff ff ff 01
+ 680000000 ef ff ff 01
+ 720000000 ff ff ff 01
+# choose a character: punch on the select screen
+ 800000000 ff fe ff 01
+ 840000000 ff ff ff 01
+ 880000000 ff fe ff 01
+ 920000000 ff ff ff 01
+1000000000 ff ff ff 01

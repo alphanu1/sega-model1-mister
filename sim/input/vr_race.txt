@@ -1,0 +1,17 @@
+# Virtua Racing to an actual race.
+#
+# <cycle> <IN.0> <IN.1> <IN.2> [accel]   ACTIVE LOW except accel (01..ff)
+#
+# VR1 (IN.0 bit 5) works the test menu - found by sweeping every button and
+# watching the frame sequence. It exits to course select.
+ 120000000 df ff ff 01
+ 180000000 ff ff ff 01
+ 220000000 df ff ff 01
+ 260000000 ff ff ff 01
+# course select: coin, start, then STEP ON THE PEDAL
+ 340000000 fe ff ff 01
+ 380000000 ff ff ff 01
+ 420000000 ef ff ff 01
+ 460000000 ff ff ff 01
+ 500000000 ff ff ff ff
+ 900000000 ff ff ff ff
