@@ -1099,9 +1099,6 @@ module m1_raster3d #(
   logic [2:0] fs_since_flip;       // frame pulses since the last flip, saturating
   wire  list_flipped = (dl_sel_s2 != dl_sel_q);
 
-  logic [2:0] fs_since_flip;       // frame pulses since the last flip, saturating
-  wire  list_flipped = (dl_sel_s2 != dl_sel_q);
-
   wire  no_flips     = fs_since_flip[2];
   // AND NOT BEFORE THE VBLANK AFTER THE FLIP. MAME renders the list at the
   // end of the frame in which the game flipped, so the game has the rest of
