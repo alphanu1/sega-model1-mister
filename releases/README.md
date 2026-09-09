@@ -90,7 +90,7 @@ configured through its own test menu, which is why there is no DIP menu.
 
 ## Credits
 
-The NEC V60 is **[meathax](https://github.com/meathax)**'s, from the
+The V60 implementation is **[meathax](https://github.com/meathax)**'s, from the
 [s32](https://github.com/meathax/s32) Sega System 32 project. The Z80 is
 **T80**, originally by Daniel Wallner. The framework is **MiSTer-devel**'s. The hardware behaviour was verified throughout against
 **MAME**, whose Model 1 driver and MB86233 coprocessor model are the reference

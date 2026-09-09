@@ -216,7 +216,7 @@ docs/rtl-conventions.md         coding rules, testbench shape, area baselines
 rtl/m1_main.sv                  main board — bus, arbitration, memory map
 rtl/m1_mainram.sv               on-chip memories (block RAM idiom matters here)
 rtl/m1_integrated.sv            V60 side + 2D side as one design, for measurement
-rtl/cpu/v60/                    NEC V60, from meathax/s32, cast-fixed and split
+rtl/cpu/v60/                    V60 implementation from meathax/s32, cast-fixed and split
 rtl/mem/                        SDRAM controller, device model, bandwidth monitor
 rtl/io/                         ROM loader, 315-5465 address decode, GLUE
 rtl/video/                      2D path — timing, tilemaps, priority mixer, palette
@@ -332,10 +332,13 @@ rather than several GB.
 
 ## Credits
 
-The NEC V60 is **[meathax](https://github.com/meathax)**'s, from the
+The V60 implementation is **[meathax](https://github.com/meathax)**'s, from the
 [s32](https://github.com/meathax/s32) Sega System 32 project — the CPU at the
 heart of this core, imported with explicit width casts, and its ~35 directed
-testbenches reused unchanged. The Z80 is **T80**, originally by Daniel Wallner,
+testbenches reused unchanged. What it is verified to do is stated below rather
+than assumed: `make v60_trace` diffs its instruction stream against MAME's from
+reset, because a per-opcode suite proves each instruction correct for the state
+it was handed, not that the machine reaches the right state running real code. The Z80 is **T80**, originally by Daniel Wallner,
 via the same project. The framework is **MiSTer-devel**'s.
 
 The hardware behaviour is verified throughout against **MAME**, whose Model 1

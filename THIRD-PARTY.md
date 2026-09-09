@@ -17,8 +17,8 @@ and the release checklist.
 ## In use
 
 ### meathax/s32 — GPL-3.0
-`rtl/cpu/v60/v60.sv` and `v60_bus.sv` are meathax's V60 with explicit width
-casts added so Icarus can elaborate them. `rtl/mem/m1_sdram.sv` follows the
+`rtl/cpu/v60/v60.sv` and `v60_bus.sv` are meathax's V60 implementation with
+explicit width casts added so Icarus can elaborate them. `rtl/mem/m1_sdram.sv` follows the
 state machine of their `sdram.sv`, deliberately: it encodes request-edge
 latching and pend-clear ordering hazards that are invisible from a datasheet.
 Their V60 unit tests are reused unchanged via `tools/run_v60_tests.sh`.

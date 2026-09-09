@@ -5372,7 +5372,7 @@ same approach is what the TGP's outstanding M0 exit criterion needs — noting t
 the existing TGP lockstep compares against a copy of the oracle rather than the
 oracle itself.
 
-## A REAL V60 BUG: OUT had its operands swapped — 2026-08-18
+## A GENUINE BUG IN THE V60 CORE: OUT had its operands swapped — 2026-08-18
 
 Found by `make v60_trace`, the tool built an hour earlier, on its first real use.
 
