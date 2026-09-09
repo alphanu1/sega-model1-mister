@@ -20,6 +20,49 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 — THE LEFT-SIDE CUT IS FIXED, CONFIRMED ON THE BOARD
+
+Two minutes of real driving with the plane fix (`01ef1cf`), against the same two
+minutes captured the night before on the build without it. Same track, same
+instrument, same analysis.
+
+| | before | after |
+|---|---|---|
+| left plane reading `0xBD6A` | 49 of 119 lines | **0 of 119** |
+| `L/R` scanout split, min / mean | 0.18 / 0.69 | **0.82 / 1.00** |
+| intervals in cut (`L/R` < 0.30) | 37 of 118 (31%) | **0** |
+| quads per object | 25.8 | **31.8** |
+| dropped recomputes caught (`q`) | - | **+18,841** |
+
+The bad plane value never appears. The scanout split sits at 1.00 instead of
+collapsing to 0.19, and quads per object is back to the 31.9 that the healthy
+intervals of the previous capture showed. Ben, driving: "Left side stayed the
+whole race."
+
+**`q` says how often this was happening: 18,841 in two minutes**, about 157 a
+second, roughly 2.7 per frame. The game issues its viewport/zoom/translate burst
+constantly and a request landed mid-set on nearly every frame; about one in
+three of those left the frustum wrong. The fault was never rare - it only needed
+one later command to arrive while the module was idle to clear itself, which is
+precisely why it appeared to come and go with scene complexity.
+
+**What this closes.** The missing left side was the single open defect blocking
+the 3D picture and it took four sessions, during which it was attributed in turn
+to the quad store overflowing, the geometry pass duration, the band presentation,
+the clipper, the backface cull, the projection state, and a display-list race -
+every one of those cleared by measurement, and two of them fixed as real but
+unrelated defects. `docs/findings.md` 2026-09-08 has why the plane itself was
+cleared wrongly: it was sampled only in the healthy state.
+
+**The method that finally worked**, worth keeping: one capture containing BOTH a
+cut and a recovery, with intervals classified by a signal that defines the
+symptom (`I`/`J` as wrap-aware deltas), then every other field compared between
+the two classes. Every previous capture was taken entirely inside one state or
+the other, so a value that CHANGED looked constant. Nothing new had to be built
+to do it - the fields were already on the wire.
+
+---
+
 ## 2026-09-08 (late, 2) — THE CAUSE: A PLANE RECOMPUTE ARRIVING MID-SET WAS DROPPED
 
 Found in `m1_geo_planes`, reproduced in simulation to the BIT, and fixed.

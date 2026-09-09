@@ -1,5 +1,37 @@
 # HANDOFF
 
+## 2026-09-09 — THE LEFT-SIDE CUT IS FIXED AND CONFIRMED ON HARDWARE
+
+`m1_geo_planes` dropped any frustum recompute that arrived while a set was in
+flight, so the display list's viewport RESTORE was lost and the left clip plane
+latched at -0.0571 instead of -0.8828 - a hard vertical cut at 47% of the
+screen. Fixed by making the request sticky (`pend`), verified bit-exactly in a
+new `tb_m1_geo_planes`, and confirmed on the board: the bad plane value appears
+0 times in 119 report lines where it previously appeared 49, and the scanout
+split sits at 1.00 against 0.19. See `findings.md`, 2026-09-09.
+
+Board build: `01ef1cf`, md5 `028228e19777076fbb1fa94dbdade500`, archived at
+`~/rbf_known_good/Model1_01ef1cf_planefix.rbf`. 41,321/41,910 ALM, 553/553 M10K,
+61 DSP, every one of our clocks positive (`clk_sys` +0.643, `clk_3d` +0.780,
+`clk_cpu` +3.421); only the framework's `pll_hdmi` negative at -0.034.
+
+### WHAT IS OPEN NOW
+
+- **Stray gaps in a band** - Ben, 2026-09-09: "a couple of stray gaps in a band,
+  could see the grass in between the road". Deferred while the cut was chased;
+  it is now the visible 3D defect.
+- **Star Wars does not boot.** Both processors park: V60 PC at `000004`, TGP at
+  `000048` with 69 retires, frozen. Separate from the left side. One candidate is
+  EEPROM persistence - `swa` has no factory EEPROM (nor does it in MAME), so it
+  depends on the firmware's virgin-part path every boot, and our EEPROM is
+  volatile where a real board and MAME persist it. The MRA already declares
+  `<nvram index="255" size="256"/>` and nothing is wired to it. Star Wars also
+  wants a DSBZ80 MPEG sound board we do not implement at all, so expect more than
+  one fault.
+- **`band-runahead` is not merged.** Everything above is on that branch.
+
+---
+
 ## 2026-09-08 — WHERE TO PICK UP
 
 **The V60's instruction stream now agrees with MAME's for the whole trace
