@@ -27,7 +27,7 @@ not start Virtua Racing without the same file, so a complete romset already has
 it.
 
 **Check what you are running.** `Model1_20260909.rbf` is
-`be608e96045e057487da3ad7f4a9e697`, 4,641,748 bytes. If the core on your card
+`9d401f3a6a6dc4c910efd2014b77be12`, 4,639,196 bytes. If the core on your card
 does not have that md5 you are not running this build — and the usual reason is
 a second file: MiSTer resolves `<rbf>Model1</rbf>` by scanning for names
 starting `Model1` followed by `.` or `_`, and keeps the lexicographically
