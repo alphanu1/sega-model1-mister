@@ -247,3 +247,47 @@ module m1_geo_norm_top (
     .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
   );
 endmodule
+
+// The frustum planes, with a real shared pool behind them.
+//
+// m1_geo_planes had NO bench at all until 2026-09-08, which is how a dropped
+// recompute survived into the field: it is the module that produces a_left, and
+// a wrong a_left is the left-side cut. See docs/findings.md.
+module m1_geo_planes_top (
+  input  logic        clk, rst_n,
+  input  logic [31:0] xc, yc, zoomx, zoomy, viewx, viewy,
+  input  logic [31:0] x1, x2, y1, y2,
+  input  logic        recompute,
+  output logic [31:0] a_left, a_right, a_bottom, a_top,
+  output logic        valid, busy,
+  output logic [15:0] dbg_redo
+);
+  logic [0:0] mr, mg, mrsp, ar, ag, arsp, dr, dg, drsp;
+  logic [31:0] ma [1], mb [1], aa [1], ab [1], da [1], db [1];
+  logic [0:0]  asub;
+  logic [31:0] mres, ares, dres;
+
+  m1_geo_planes u_dut (
+    .clk(clk), .rst_n(rst_n),
+    .xc(xc), .yc(yc), .zoomx(zoomx), .zoomy(zoomy),
+    .viewx(viewx), .viewy(viewy),
+    .x1(x1), .x2(x2), .y1(y1), .y2(y2),
+    .recompute(recompute),
+    .add_req(ar[0]), .add_a(aa[0]), .add_b(ab[0]), .add_sub(asub[0]),
+    .add_gnt(ag[0]), .add_rsp(arsp[0]), .add_res(ares),
+    .div_req(dr[0]), .div_a(da[0]), .div_b(db[0]),
+    .div_gnt(dg[0]), .div_rsp(drsp[0]), .div_res(dres),
+    .a_left(a_left), .a_right(a_right), .a_bottom(a_bottom), .a_top(a_top),
+    .valid(valid), .dbg_redo(dbg_redo), .busy(busy)
+  );
+
+  assign mr = 1'b0; assign ma[0] = '0; assign mb[0] = '0;
+
+  m1_fp_pool #(.NC(1)) u_pool (
+    .clk(clk), .rst_n(rst_n),
+    .mul_req(mr), .mul_a(ma), .mul_b(mb), .mul_gnt(mg), .mul_rsp(mrsp), .mul_res(mres),
+    .add_req(ar), .add_a(aa), .add_b(ab), .add_sub(asub),
+    .add_gnt(ag), .add_rsp(arsp), .add_res(ares),
+    .div_req(dr), .div_a(da), .div_b(db), .div_gnt(dg), .div_rsp(drsp), .div_res(dres)
+  );
+endmodule

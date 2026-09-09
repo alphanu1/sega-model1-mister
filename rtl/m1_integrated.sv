@@ -88,7 +88,7 @@ module m1_integrated (
 
   // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
   output logic        iofw_req,
-  output logic [12:0] iofw_word,
+  output logic [13:0] iofw_word,
   input  logic        iofw_ack,
   input  logic [15:0] iofw_din,
 
@@ -678,7 +678,7 @@ module m1_integrated (
   // The I/O board Z80's firmware fetch, CPU side and the crossed address.
   localparam logic [24:1] IOFW_BASE = 24'hD00000;
   logic        m_iofw_req, m_iofw_ack;
-  logic [12:0] m_iofw_word;
+  logic [13:0] m_iofw_word;
   wire  [24:1] iofw_addr_sys;
   m1_cdc_pulse u_frame_pulse (
     .a_clk(clk_sys), .a_rst_n(rst_n_sys), .a_pulse(vblank_irq_sys),
@@ -710,6 +710,18 @@ module m1_integrated (
   logic [15:0] r3_dbg_culled;              // backface culls over the run, E=
   logic [15:0] r3_dbg_hit_l, r3_dbg_hit_r; // scanout hits per screen half, I=/J=
   logic [15:0] r3_dbg_plane_l;             // the left clip plane, Y=
+  // The clipper's funnel: quads in, quads out, quads it discarded. c= d= e=
+  logic [15:0] r3_clip_in, r3_clip_out, r3_clip_drop;
+  // Races that are supposed to be impossible: f= matrix, g= planes.
+  logic [15:0] r3_mat_race, r3_plane_race, r3_lw_stall;
+  logic [15:0] r3_list_race;
+  logic [15:0] r3_plane_redo;
+  logic [15:0] r3_lw_bad, r3_lw_over;    // how the list walk ended, m= n=
+  // THE PROJECTION STATE, top 16 bits of each float. s.x = xc + (xx*zoomx
+  // + viewx), so all three place geometry horizontally, and all three are
+  // LATCHED by display-list commands - the shape Ben's fault has: it stays
+  // put for minutes if the car stops at the right moment.
+  logic [31:0] r3_viewx, r3_viewy, r3_xc, r3_yc, r3_zoomx, r3_zoomy;
   logic [5:0]  r3_disp_band;
   logic        r3_disp_valid;
 
@@ -761,6 +773,16 @@ module m1_integrated (
     .dbg_px_l(r3_dbg_px_l), .dbg_px_r(r3_dbg_px_r),
     .dbg_culled(r3_dbg_culled),
     .dbg_hit_l(r3_dbg_hit_l), .dbg_hit_r(r3_dbg_hit_r),
+    .dbg_clip_in(r3_clip_in), .dbg_clip_out(r3_clip_out),
+    .dbg_clip_drop(r3_clip_drop),
+    .dbg_mat_race(r3_mat_race), .dbg_plane_race(r3_plane_race),
+    .dbg_list_race(r3_list_race),
+    .dbg_plane_redo(r3_plane_redo),
+    .dbg_lw_stall(r3_lw_stall),
+    .dbg_lw_bad(r3_lw_bad), .dbg_lw_over(r3_lw_over),
+    .dbg_viewx(r3_viewx), .dbg_viewy(r3_viewy),
+    .dbg_xc(r3_xc), .dbg_yc(r3_yc),
+    .dbg_zoomx(r3_zoomx), .dbg_zoomy(r3_zoomy),
     .dbg_plane_l(r3_dbg_plane_l), .dbg_hud_obj(r3_dbg_hudobj)
   );
 
@@ -877,7 +899,7 @@ module m1_integrated (
   m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_iofw_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(m_iofw_req), .a_we(1'b0),
-    .a_addr(IOFW_BASE + {11'd0, m_iofw_word}),
+    .a_addr(IOFW_BASE + {10'd0, m_iofw_word}),
     .a_din(16'd0), .a_be(2'b11),
     .a_dout(iofw_dout_cpu), .a_ack(m_iofw_ack), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
@@ -885,7 +907,10 @@ module m1_integrated (
     .b_din(), .b_be(),
     .b_dout(iofw_din), .b_ack(iofw_ack)
   );
-  assign iofw_word = iofw_addr_sys[13:1];
+  // [14:1], not [13:1]: the window is 32 KB now, the top half of it
+  // carrying the settings EEPROM. Truncating here made the Z80's preload
+  // read word 0 of the FIRMWARE and publish that as the identity block.
+  assign iofw_word = iofw_addr_sys[14:1];
 
   // ------------------------------------------------------------- fast domain
   m1_video video (
@@ -982,6 +1007,13 @@ module m1_integrated (
     .culled(r3_dbg_culled), .quads(r3_dbg_quads),
     .ctrl_hi(dbg_ctrl[1]), .ctrl_lo(dbg_ctrl[0]), .hud_obj(r3_dbg_hudobj),
     .hit_l(r3_dbg_hit_l), .hit_r(r3_dbg_hit_r), .plane_l(r3_dbg_plane_l),
+    .clip_in(r3_clip_in), .clip_out(r3_clip_out), .clip_drop(r3_clip_drop),
+    .mat_race(r3_mat_race), .plane_race(r3_plane_race),
+    .list_race(r3_list_race),
+    .plane_redo(r3_plane_redo),
+    .lw_stall_q(r3_lw_stall),
+    .lw_bad_q(r3_lw_bad), .lw_over_q(r3_lw_over),
+    .vx_q(r3_viewx[31:16]), .xc_q(r3_xc[31:16]), .zx_q(r3_zoomx[31:16]),
     .mem_occ(sdram_occ), .mem_wait(sdram_wait1),
     .tx(uart_tx)
   );

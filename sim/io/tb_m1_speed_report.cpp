@@ -114,6 +114,19 @@ int main(int argc, char** argv) {
     dut->hit_l        = 0x0123;
     dut->hit_r        = 0x1234;
     dut->plane_l      = 0xBF80;   // -1.0f's top half, a plausible plane
+    dut->clip_in      = 0x1357;
+    dut->clip_out     = 0x2468;
+    dut->clip_drop    = 0x369C;
+    dut->mat_race     = 0x4812;
+    dut->plane_race   = 0x5A3B;
+    dut->lw_stall_q   = 0x6C4D;
+    dut->list_race    = 0x2B7E;
+    dut->plane_redo   = 0x1D4C;
+    dut->vx_q         = 0x7E5F;
+    dut->xc_q         = 0x43C4;
+    dut->zx_q         = 0x438C;
+    dut->lw_bad_q     = 0x1A2B;
+    dut->lw_over_q    = 0x3C4D;
     dut->ctrl_hi      = 0x2300;   // pair 2/3, window mode 1
     dut->ctrl_lo      = 0x0011;
     dut->hud_obj      = 0x0042;
@@ -125,7 +138,10 @@ int main(int argc, char** argv) {
     // Enough for a partial line, then two whole ones - the line checked below
     // is the second, so nothing about the first report after reset can flatter
     // the result.
-    std::vector<uint8_t> bytes = capture(700, 40000000L);
+    // Two lines' worth. Each field is 9 bytes and the count has grown from 29
+    // to 38 (line 344 bytes), so 700 no longer guaranteed a COMPLETE line
+    // between two newlines - the bench passed a header and failed to find one.
+    std::vector<uint8_t> bytes = capture(1400, 300000000L);
 
     std::string all((const char*)bytes.data(), bytes.size());
 
@@ -162,7 +178,19 @@ int main(int argc, char** argv) {
         {'D', 0x789A}, {'H', 0x89AB}, {'K', 0x9ABC}, {'M', 0xABCD},
         {'O', 0x5A}, {'Q', 0xA5},
         {'A', 0xCDEF}, {'Z', 0xDEF0}, {'G', 0xBCDE},
-        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011}, {'h', 0x0042},
+        {'E', 0xEF01}, {'U', 0xF012}, {'I', 0x0123}, {'J', 0x1234}, {'Y', 0xBF80}, {'w', 0x2300}, {'v', 0x0011},
+        // The clipper's funnel, added 2026-09-09 for the left-side cut:
+        // quads in, quads out, quads it discarded.
+        {'c', 0x1357}, {'d', 0x2468}, {'e', 0x369C},
+        {'f', 0x4812}, {'g', 0x5A3B}, {'i', 0x6C4D},
+        {'j', 0x7E5F}, {'k', 0x43C4}, {'l', 0x438C}, {'m', 0x1A2B}, {'n', 0x3C4D},
+        {'h', 0x0042},
+        // The LIST race, added 2026-09-08: passes the game flipped out from
+        // under the walker. f and g cover the matrix and plane races and both
+        // read zero on the board; nothing had ever watched the list buffer.
+        {'p', 0x2B7E},
+        // Plane recomputes dropped mid-set - the left-side cut's mechanism.
+        {'q', 0x1D4C},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;

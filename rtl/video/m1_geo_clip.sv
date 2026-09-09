@@ -154,6 +154,18 @@ module m1_geo_clip (
   // Counted: quads in, quads out, and how many were dropped entirely. A clipper
   // that silently drops everything and one that passes everything through look
   // identical from the picture if the scene happens to fit on screen.
+  // THESE WRAP, THEY DO NOT SATURATE, and that is the whole point of them.
+  //
+  // They saturated at 0xffff until 2026-09-09, and free-running from reset that
+  // means they peg within seconds and stop counting: a two-minute capture read
+  // c=FFFF d=FFFF e=FFFF and said nothing at all. m1_quad_store's D= is
+  // readable because it is CLEARED every pass; the clipper has no pass boundary
+  // to clear on, so it wraps and the reader takes deltas - which is how A=/Z=
+  // and I=/J= are read.
+  //
+  // dbg_dropped counts quads whose four vertices are ALL outside the frustum,
+  // which is legitimate work, not a fault. The signal to look for is the RATIO
+  // against dbg_in, and whether it moves when the left side cuts out.
   output logic [15:0] dbg_in, dbg_out, dbg_dropped
 );
 
@@ -367,7 +379,7 @@ module m1_geo_clip (
           qx[3] <= in_x3; qy[3] <= in_y3; qz[3] <= in_z3;
           a_col <= in_col; a_z <= in_z; a_moire <= in_moire;
           lvl <= 3'd0; sp <= '0; ti <= '0;
-          if (dbg_in != 16'hffff) dbg_in <= dbg_in + 16'd1;
+          dbg_in <= dbg_in + 16'd1;         // WRAPS - see the note above
           kst <= K_TEST;
         end
 
@@ -403,7 +415,7 @@ module m1_geo_clip (
             ti  <= '0;
             kst <= (lvl + 3'd1 == 3'd4) ? K_EPROJ : K_TEST;
           end else if (is_out == 4'b1111) begin
-            if (dbg_dropped != 16'hffff) dbg_dropped <= dbg_dropped + 16'd1;
+            dbg_dropped <= dbg_dropped + 16'd1;   // WRAPS
             kst <= K_POP;
           end else begin
             automatic logic [1:0] i;
@@ -505,7 +517,7 @@ module m1_geo_clip (
         end
 
         K_EMIT: if (out_ready) begin
-          if (dbg_out != 16'hffff) dbg_out <= dbg_out + 16'd1;
+          dbg_out <= dbg_out + 16'd1;       // WRAPS
           kst <= K_POP;
         end
 

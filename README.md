@@ -13,6 +13,28 @@ reversed, with what that gives up stated there.
 Six titles: Virtua Racing, Virtua Formula, Virtua Fighter, Wing War, Star Wars Arcade,
 NetMerc.
 
+## Releases
+
+`releases/` holds the staged MiSTer release: the bitstream, the MRA, and a
+README with the copy instructions and the md5 to check against.
+
+**Only Virtua Racing is released.** The other five have MRAs in `mra/` and are
+candidates, not releases — an MRA ships only for a game somebody has played on
+hardware.
+
+**There is no sound.** None at all, in any game. The Model 1's audio is a
+separate PCB — a 68000, a YM3438 and two MultiPCMs — reached over the main
+board's uPD71051C USART, and none of it is implemented. That is milestone M4 and
+it has not been started. The core outputs silence, and that is expected rather
+than a fault in anyone's setup.
+
+**Two ROM zips are needed, not one.** `vr.zip` carries the game, the coprocessor
+microcode and `93c45.bin` (the I/O board's settings EEPROM). The I/O board's Z80
+firmware, `epr-14869.25`, is in a **separate BIOS set — `model1io.zip` or
+`daytona93.zip`**, either of which the MRA accepts. The core runs the real I/O
+board Z80 with no behavioural fallback, so without that firmware the game does
+not boot; MAME will not start Virtua Racing without the same file either.
+
 ## Status
 
 | Milestone | State |

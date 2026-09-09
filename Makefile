@@ -265,7 +265,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -397,6 +397,13 @@ test_geo_rsqrt:
 	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv sim/video/geo_wrappers.sv \
 	  sim/video/tb_m1_geo_rsqrt.cpp -o tb_geo_rsqrt --Mdir obj_geo_rsqrt
 	./obj_geo_rsqrt/tb_geo_rsqrt
+
+test_geo_planes:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_planes_top \
+	  -Irtl/tgp -Irtl/video rtl/video/m1_geo_planes.sv rtl/video/m1_fp_pool.sv \
+	  rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv sim/video/geo_wrappers.sv \
+	  sim/video/tb_m1_geo_planes.cpp -o tb_geo_planes --Mdir obj_geo_planes
+	./obj_geo_planes/tb_geo_planes
 
 test_geo_det:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geo_det_top \

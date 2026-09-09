@@ -20,6 +20,504 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (3) — THE BEAM-BAND CDC FIX DID NOT FIX THE BAND ARTEFACT
+
+Flashed `a1d9192` (md5 `699ee64f82ac8731e70b5b52f094bcbd`) and driven. **The
+misplaced band is still there** - a few pixels deep, in the wrong place, for
+about two seconds at a time.
+
+So the multi-bit crossing was a real defect and is NOT the cause of this
+symptom. The fix stays in: crossing a six-bit incrementing index on two flops is
+wrong however the picture looks, and the file's own comment says so about the
+other direction. But the artefact has another cause and this entry exists so the
+next session does not re-derive the same theory from the same comment.
+
+**What is now ruled out for the band artefact**, all measured:
+
+- every 3D deadline counter flat zero over a two-minute race - `T` bands
+  presented late, `D` quads dropped, `G` vertices out of range, `H` short. There
+  is no timing headroom to buy, so a clock raise cannot be the fix either.
+- the beam-band clock crossing, above.
+- the quad store: `D` = 0 and `U` peaks at 2,257 against a 3,584 cap.
+
+**Still open as candidates:** the band buffer's own addressing or clear
+sequencing; the three-buffer rotation (`fill_buf` / `ready_buf` / `disp_buf`)
+picking the wrong buffer; the row-behind-the-beam clear erasing a row that is
+still to be shown. None of these has an instrument yet, and none of the existing
+counters distinguishes them - which is the gap to close before theorising again.
+
+Nothing about it is countable today, which is the real problem: the left-side
+cut was solved by a counter that made the fault visible in telemetry, and this
+symptom has no equivalent. That is where to start.
+
+---
+
+## 2026-09-09 (2) — THE BEAM-BAND CROSSING HAD THE SAME MULTI-BIT FAULT, IN THE OTHER DIRECTION
+
+Ben, on the board after the clip-plane fix: "a gap in a band where it's in the
+wrong place, only a few pixels deep, lasts about 2 seconds". A band is eight
+rows, so "a few pixels deep" is one band.
+
+`m1_raster3d` carries a long comment - written when the 3D-to-video crossing was
+fixed - explaining that a multi-bit bus cannot be crossed on two flops because
+"an increment is not a single-bit change: 7 to 8 flips four bits and 15 to 16
+flips five", and that the receiver can see a value that is neither the old one
+nor the new one. **Twenty lines below it, the video-to-3D crossing did exactly
+that:**
+
+    logic [BW-1:0] beam_band_s1, beam_band_s2;
+    always_ff @(posedge clk) begin
+      beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));   // six bits, plain 2FF
+      beam_band_s2 <= beam_band_s1;
+
+The fix was applied to one direction and not the other, in the same file, under
+the comment that describes the bug.
+
+**Why it shows.** `beam_band_s2` feeds `beam_ext`, which is what decides WHEN A
+FILLED BAND IS PRESENTED. A mixed sample swaps a band in while the beam is
+somewhere else - a band's worth of picture in the wrong place - and
+`beam_blank = (beam_ext >= NBANDS)` can read as blanking when it is not, which
+arms band 0 mid-frame. With 48 bands the index changes 48 times a frame, about
+2,760 times a second, so a rare mixed sample still lands often enough to disturb
+the sequencer for a second or two while it re-syncs.
+
+**Fixed** with the same toggle handshake the other direction uses: data held
+stable, a single toggle bit crossed, receiver captures on the toggle edge. The
+data changes once a line - 655 scan clocks - so it is settled long before the
+toggle has been through two flops.
+
+**NO BENCH CAN CONFIRM THIS, and the file says so about the original**: render3d
+ticks both clocks from one edge and `tb_m1_frame` drives them from exact
+multiples, so neither can produce a settling failure. It is hardware-only by
+construction. `make test` is identical to baseline and `tb_m1_frame` still fills
+and presents bands at the same rate with zero late - which shows the crossing
+still delivers, not that the fault is gone. **Only the board can say that.**
+
+**What was ruled out first, from the same two-minute capture:** every deadline
+counter in the 3D path is flat zero over the whole race - `T` late bands, `D`
+dropped quads, `G` out-of-range vertices, `H` short. There is no time to buy, so
+the clock bump that was proposed could not have helped. The only non-zero
+counter is `M`, the 2D tile fetch overrun, at about 1.7 a frame - a repeated
+scanline in the 2D layer, on `clk_sys`, and a separate matter.
+
+---
+
+## 2026-09-09 — THE LEFT-SIDE CUT IS FIXED, CONFIRMED ON THE BOARD
+
+Two minutes of real driving with the plane fix (`01ef1cf`), against the same two
+minutes captured the night before on the build without it. Same track, same
+instrument, same analysis.
+
+| | before | after |
+|---|---|---|
+| left plane reading `0xBD6A` | 49 of 119 lines | **0 of 119** |
+| `L/R` scanout split, min / mean | 0.18 / 0.69 | **0.82 / 1.00** |
+| intervals in cut (`L/R` < 0.30) | 37 of 118 (31%) | **0** |
+| quads per object | 25.8 | **31.8** |
+| dropped recomputes caught (`q`) | - | **+18,841** |
+
+The bad plane value never appears. The scanout split sits at 1.00 instead of
+collapsing to 0.19, and quads per object is back to the 31.9 that the healthy
+intervals of the previous capture showed. Ben, driving: "Left side stayed the
+whole race."
+
+**`q` says how often this was happening: 18,841 in two minutes**, about 157 a
+second, roughly 2.7 per frame. The game issues its viewport/zoom/translate burst
+constantly and a request landed mid-set on nearly every frame; about one in
+three of those left the frustum wrong. The fault was never rare - it only needed
+one later command to arrive while the module was idle to clear itself, which is
+precisely why it appeared to come and go with scene complexity.
+
+**What this closes.** The missing left side was the single open defect blocking
+the 3D picture and it took four sessions, during which it was attributed in turn
+to the quad store overflowing, the geometry pass duration, the band presentation,
+the clipper, the backface cull, the projection state, and a display-list race -
+every one of those cleared by measurement, and two of them fixed as real but
+unrelated defects. `docs/findings.md` 2026-09-08 has why the plane itself was
+cleared wrongly: it was sampled only in the healthy state.
+
+**The method that finally worked**, worth keeping: one capture containing BOTH a
+cut and a recovery, with intervals classified by a signal that defines the
+symptom (`I`/`J` as wrap-aware deltas), then every other field compared between
+the two classes. Every previous capture was taken entirely inside one state or
+the other, so a value that CHANGED looked constant. Nothing new had to be built
+to do it - the fields were already on the wire.
+
+---
+
+## 2026-09-08 (late, 2) — THE CAUSE: A PLANE RECOMPUTE ARRIVING MID-SET WAS DROPPED
+
+Found in `m1_geo_planes`, reproduced in simulation to the BIT, and fixed.
+
+    S_IDLE: if (recompute) begin ... st <= S_S1; end
+
+`recompute` is a ONE-CYCLE pulse and that was the only place it was sampled. A
+full set is four planes of two adds and a divide through the shared FP pool -
+172 cycles with the pool to itself, and considerably longer in the design where
+six other clients contend for it. The frustum follows THREE display list
+commands (viewport 0x03, zoom 0x09, view translation 0x0c) and the game sends
+them together, so the later ones land mid-set. **Those pulses were thrown away.**
+
+The operands are combinational on the live registers, so the in-flight set is
+computed from a mix - and is then never recomputed, because the request that
+would have corrected it was the pulse that was lost. **The wrong plane LATCHES**
+until some later command happens to arrive while the module is idle. That is the
+"it lasts minutes if you stop at the right time" symptom, exactly.
+
+**The direction, from the test:** the game sets a NARROW viewport (x1 = 232) for
+some inset and then restores the full one (x1 = 0). It is the RESTORE that gets
+dropped, so the frustum stays narrow and the left 47% of the picture is clipped
+away. Nothing was ever wrong with what the game asked for.
+
+**The fix** is `pend`: a pulse in any state is remembered and the whole set is
+redone when the current one finishes, so the last command of a burst always gets
+a full pass over settled operands. That is correct without latching all ten
+inputs - 320 flops this design has no room for at 99% ALM. `busy` covers `pend`
+too, or an object handed over in the single cycle between a set and its redo
+would be clipped against the mixed planes the redo exists to replace.
+
+**`m1_geo_planes` HAD NO BENCH.** Not one, in a suite with benches for xform,
+project, det, rsqrt, recip, color, norm and clip. The module that produces
+`a_left` - and a wrong `a_left` is a hard vertical cut across the picture - was
+never tested. `tb_m1_geo_planes` now covers it: the board's own viewport, the
+mid-set request, `busy` across the redo, and 400 fuzzed viewports against
+`set_viewport` in host float.
+
+**The bench was verified to CATCH the bug**, by restoring the old behaviour and
+watching it fail - because a test that passes before and after is not evidence:
+
+    FAIL mid_set_request a_left: got -0.8857143 (bf62be2c) want -0.05714286 (bd6a0ea1)
+
+`bf62be2c` and `bd6a0ea1` are, in their top sixteen bits, `BF62` and `BD6A` -
+**the exact two values the board reported** as healthy and cut. Simulation
+reproduces the hardware's wrong value bit for bit.
+
+**Still owed: the board test.** This is proven in simulation and against the
+measured plane values, but nobody has yet driven the game with the fix in.
+
+---
+
+## 2026-09-08 (late) — THE LEFT-SIDE CUT IS THE LEFT CLIP PLANE, AND IT IS COMPUTED WRONG
+
+**Measured on hardware, in a single capture that contains both a cut and a
+recovery** - which is what every previous attempt lacked. 119 report lines, two
+minutes of driving. Intervals classified by the scanout split `I`/`J` as
+wrap-aware deltas: `L/R < 0.30` is a cut (37 intervals), `> 0.80` healthy (64).
+
+**The left clip plane differs between the two states:**
+
+| | plane_l (`Y`) | float32 | of intervals |
+|---|---|---|---|
+| cut | `0xBD6A` | **-0.0571** | 35 of 37 |
+| healthy | `0xBF62` | **-0.8828** | 47 of 54 |
+
+`m1_geometry`'s own comment gives the mapping, and the same capture gives every
+term: `xc` = `0x4378` = 248.0, `zoomx` = `0x438C` = 280.0, `viewx` = 0.
+
+    screen_x = xc + a_left*zoomx + viewx
+
+    healthy  -0.8828 -> 248 - 247.2 =   0.8   (the left edge; correct)
+    cut      -0.0571 -> 248 -  16.0 = 232.0
+
+**232 of 496 is 47% of the screen**, which is Ben's "about 48% on the left",
+derived rather than guessed. The design note predicted this exact cut for
+`a_left = 0.0` and concluded that a non-zero `a_left` meant the recompute was
+running - but -0.0571 is not zero and still lands the plane in the same place.
+That is why "it is not zero, so that is not it" survived.
+
+**The input is IDENTICAL in both states.** `K` (viewport x1) is 0 on every one
+of the 119 lines, as are `viewx`, `xc` and `zoomx`. Same input, different
+output: the plane COMPUTATION is producing a wrong result, not the game asking
+for a different frustum.
+
+**Three earlier conclusions are corrected by this capture:**
+
+- **"The left clip plane is correct (Y=BF62 = -0.88)."** It sampled only the
+  healthy state. The instrument existed; nobody compared cut against healthy
+  intervals WITHIN one capture, so a value that changes looked constant.
+- **"The cut is fewer objects walked (130 -> 27)."** Not supported here. During
+  the cut `P` is 46.4 mean and while healthy 40.1 - HIGHER during the cut. `P`
+  does not track the cut at all. What tracks it is quads per object: **18.5
+  during the cut against 31.9 healthy**, with `D` = 0. The objects are walked
+  and the clipper eats them.
+- **"The geometry pass is 206% of a frame."** Stale, as Ben suspected. `L` peaks
+  at 5,763 against a two-frame budget of 7,762 - **74%** - and at full scene
+  (`P`=130) it is 5,256, which is **1.35 frames, not 2.06**. The speed work
+  already closed it. Nothing in this capture is over budget.
+
+**The list race is NOT the cause, measured.** `dbg_list_race` (`p`) was built for
+this and reads FLAT through the entire cut - 37 intervals, zero increments. Its
+106 counts all land after the cut recovers. The theory that the pass overruns
+the two-frame flip is dead, and consistent with `L` never approaching budget.
+
+**Where to look next.** `a_left` is computed by `m1_geo_planes` from the
+viewport, using the SHARED adder and divider pool (`add_req[6]`, `div_req[6]`)
+over a req/gnt/rsp handshake. Pool contention scales with scene complexity,
+which is exactly when the cut appears - and would explain a correct input
+producing a wrong output intermittently while attract, with far less
+contention, stays clean. Not yet proven: the per-port `rsp` lines are indexed,
+but `div_res` is a shared bus, so the question is whether the result is stable
+for the granted port on the cycle its `rsp` fires.
+
+`v` (2D tilemap pair 0/1 ctrl) also flips 0x800 <-> 0 with the cut. It is a 2D
+register and cannot clip the 3D layer, so treat it as a marker of the game state
+rather than a mechanism - but it is a reliable one for finding the state again.
+
+---
+
+## 2026-09-08 — THE GEOMETRY BUDGET IS ONE DEADLINE, NOT TWO, AND IT IS 3% NOT 206%
+
+Written down because it has now been misstated three ways in one session and
+each way changes what work looks worth doing.
+
+**The pass takes 2.06 frames. The budget is 2 frames. It is 3% over.**
+
+    206% of ONE frame  =  103% of TWO frames  =  the same duration
+
+Both percentages describe the same measurement. The meaningful denominator is
+two frames, and here is why - it is not a convenience:
+
+- **Virtua Racing flips its display list by hand, every SECOND frame**, at the
+  V60's listctl write. `tools/mame_flip_writes.lua` measured that the buffer it
+  flips TO is finished at the flip and untouched until the next one.
+- So a new list exists only every two frames. **Finishing a pass in one frame
+  would render the same list twice and change nothing on screen.** There is no
+  visual deadline at one frame, and any figure quoted against one frame is
+  measuring against a deadline that does not exist.
+- The flip IS a real deadline, and a correctness one: past it the V60 starts
+  rewriting the buffer the walker is still reading.
+
+**What this rules out.** A claim was made in session that the pass needed
+~76 MHz on `clk_3d`. It does not, and the arithmetic never supported it: 57.14
+-> 76 MHz is 1.33x, which turns 206% into 155% - neither one frame nor two. Ben
+caught this. The deficit is 3%, so the useful clock question is "what buys a few
+percent", not "what buys 2x".
+
+**And the clock ladder is coarse.** The PLL VCO is 800 MHz and every output is
+an integer divisor (`80 = 800/10`, `57.142857 = 800/14`, `28.571429 = 800/28`),
+so the steps above the current `clk_3d` are:
+
+| divisor | clk_3d | vs now |
+|---|---|---|
+| 800/14 | 57.143 (current) | - |
+| 800/13 | 61.538 | +7.7% |
+| 800/12 | 66.667 | +16.7% |
+
+`58.947` is NOT on that ladder - it needs a different VCO, and the figure in
+`CLAUDE.md` predates the present PLL. 800/13 costs 1.25 ns of period against a
+measured `clk_3d` slack of +0.588 to +0.745 ns, so it does not close as it
+stands, and when `clk_3d` is pushed the binding path is the COPROCESSOR
+(`mb86233_core` state paths), not the geometry - `m1_geometry` reaches 59.36 and
+`m1_raster_fill` 58.84.
+
+**So the cheapest few percent is worth more than a clock step.** If the pass
+does not begin at the flip - the bench shows idle time before a pass, though
+its scene is not representative - then starting earlier buys the 3% for nothing.
+
+**The quad store is PER PASS, not per two frames.** `m1_raster3d` instantiates
+`m1_quad_store` twice in a generate, one bank per role, and `qs_clear = prod_go`
+empties the producer's bank at pass start. So NQ = 3,584 is the ceiling on ONE
+image's quads; the silicon holds 7,168 across both banks. A bank's contents are
+DISPLAYED for about two frames because the list only changes that often, which
+is what makes "held for two frames" a natural but wrong reading of the capacity.
+The board measured U peaking at 3,034 against the old 3,072 cap - one image at
+99% of it.
+
+---
+
+## 2026-09-08 — THE I/O BOARD'S EEPROM WAS READ ONE BIT LATE, AND THE GAME SAW AN UNCONFIGURED BOARD
+
+**The V60's instruction stream now agrees with MAME's for the whole trace
+window.** `make v60_trace` diverged at instruction 24,825 for weeks, on
+
+    FE078E: cmp.w #41474553, 0[R20]     ; "SEGA"
+    FE0797: be     FE07AC
+
+where the reference branches and we fell through. It now runs to the end of our
+window (27,376 of 27,377 instructions, i.e. no mismatch) with only loop COUNTS
+differing.
+
+**What it was.** `R20` points at a 128-byte identity block the I/O board's Z80
+publishes into shared RAM `0x100..0x17f`, which the V60 block-copies to work RAM
+`0x40DC80` at `FE08F2` and then checks. The Z80 reads that block out of a 93C46
+serial EEPROM. Ours returned every word **shifted right by one bit**:
+
+| EEPROM word | want | Z80 got | `want >> 1` |
+|---|---|---|---|
+| 0 | `5345` | `29a2` | `29A2` |
+| 1 | `4741` | `23a0` | `23A0` |
+| 2 | `1c82` | `0e41` | `0E41` |
+| 3 | `0100` | `0080` | `0080` |
+| 4 | `889a` | `444d` | `444D` |
+| 5 | `ff01` | `7f80` | `7F80` |
+
+All six, exactly. `m1_ioz80` loaded `ee_out <= {1'b0, ee[addr]}` when the
+address completed, so the **first** read clock emitted the dummy 0 and the
+firmware — which clocks exactly sixteen times — collected `[0, D15..D1]`. A real
+93C46 presents the dummy on the clock that latches the last address bit. Fixed
+by loading `{ee[addr], 1'b0}` and driving the dummy on that same edge.
+
+The game then failed its own signature check and took its uninitialised-board
+branch. That is upstream of everything: a different init path, a different
+display list.
+
+**A SIMULATION-ONLY `$readmemh` IS WHY THIS SURVIVED.** The array was filled by
+`` `ifdef VERILATOR $readmemh("build/rom/vr_ee_le.hex", ee) ``, with a comment
+saying "hardware needs a load path". So simulation had contents to get wrong and
+**hardware had no contents at all** — it read a blank part and failed the same
+check for a second, independent reason. Both had to be fixed to reach the board:
+
+- the EEPROM now rides SDRAM with the I/O firmware, one 16 KB block above it, on
+  its own download index 3, and `m1_ioz80` preloads its array through the fetch
+  port it already owns before releasing the Z80. No new clock crossing.
+- the `$readmemh` is **gone**. Simulation and hardware get it the same way or
+  neither does.
+- `tools/build_rom_image.py` extracts `93c45.bin` (it is in the GAME zip, not the
+  model1io BIOS set) and `verify_mra.py` now checks index 3 exists, is 128 bytes
+  and starts `5345`. That check is the same insurance that would have caught the
+  coprocessor's data ROM being missing from the MRA.
+
+Byte order needs no swap: the dump holds `45 53 41 47`, and `hps_io` with
+`WIDE=1` presents `{byte1, byte0}` = `0x5345 0x4741`.
+
+**Widening the fetch index bit me once.** `iofw_word` went 13 -> 14 bits to
+reach the second 16 KB, and `m1_integrated` reconstructs it after a CDC as
+`iofw_addr_sys[13:1]`. Left at 13 it truncated, the preload read word 0 of the
+**firmware**, and the Z80 published `ed f3 31 56` as the identity block — which
+looks like a fresh EEPROM bug rather than a width one.
+
+**The Z80's clock ratio was also wrong, and is NOT this bug.** The real board
+runs both CPUs off one 32 MHz crystal, V60 at /2 = 16 MHz and Z80 at /8 = 4 MHz:
+**4:1**. `m1_ioz80` was instantiated `CEN_DIV(6)` off `clk_cpu`, so **6:1** — the
+I/O board ran at two thirds of its proper speed relative to the CPU it
+handshakes with, from the day the tv80 went in (2026-09-04). The ratio IS the
+divisor, so it never depended on `clk_cpu` and the overclock did not cause it;
+the overclock only moved the absolute frequency (3.92 -> 4.76 MHz). Nothing in
+the suite could see it, because nothing exercises the boot handshake. Now a
+Bresenham `CEN_NUM/CEN_DEN` defaulting to 1/4 — a RATIO, with no frequency to go
+stale — and `m1_main` deliberately passes no override. **Fixing it did not move
+the divergence**, measured before the EEPROM fix; it is correct against the
+reference on its own terms.
+
+**Measured before building, and it paid.** Both fixes were found and confirmed
+in `tb_m1_frame` and `make v60_trace`, with no hardware round trip. The
+instruments are in `tb_m1_frame.sv`: `IDWR` (Z80 writes into the block), `IDW60`
+(V60 writes into it) and `IDBLK` (what the V60 reads back, with the PC).
+
+## 2026-09-09 (late) — THE LEFT-SIDE CUT IS FEWER OBJECTS WALKED, NOT ANYTHING DOWNSTREAM
+
+The projection state went on the wire (j= viewx, k= xc, l= zoomx) along with two
+races that had only ever been cleared by READING the source, and a walker stall
+counter. Two minutes with the cut present and the car parked so it held:
+
+    n     viewx     xc  zoomx   P obj  L passlen   wrL    wrR   L/R   f   g
+    7       0.0  248.0  280.0     129       5500  7188   6436  1.12   0   0
+    11      0.0  248.0  280.0     132       5637  7219   6383  1.13   0   0
+    56      0.0  248.0  280.0      27       3254  1719   9454  0.18   0   0
+    60      0.0  248.0  280.0      27       3255  1719   9453  0.18   0   0
+    68      0.0  248.0  280.0      27       3255  1718   9455  0.18   0   0
+
+**THE PROJECTION STATE NEVER MOVES.** viewx 0.0, xc 248.0, zoomx 280.0, identical
+during the cut and outside it. So nothing is being displaced, which was the best
+remaining theory - a wrong latched viewx would move every vertex sideways and
+produce exactly this left/right split. It does not happen.
+
+**AND BOTH RACES ARE ZERO.** f=0 (matrix words written mid-object) and g=0 (plane
+recomputes started mid-object) for the entire run. Those were cleared earlier by
+reading lw_stall and planes_wait in the source; they are now cleared by
+measurement, which is the standard this project sets and I had not met.
+
+**WHAT DOES CHANGE IS THE OBJECT COUNT: 130 -> 27, a five-fold drop**, with the
+pass length falling with it, 5,500 -> 3,255. The geometry is not clipped, culled,
+dropped, shifted or frozen - it is never walked. That is consistent with every
+clean measurement of the last two days, because nothing downstream can be at
+fault for quads that are never produced.
+
+**TWO CORRECTIONS TO MY OWN READING, both Ben's.**
+
+1. Counting quads while geometry is "missing" gave a count that ROSE six-fold,
+   and I carried on reasoning as though quads were absent. They were not absent.
+   A count that contradicts the symptom means the interpretation is wrong.
+2. The identical pixel counts for a minute (1718/9454 repeating) were NOT a
+   frozen producer. F=58 and S=29 are RATES - 58 fps and the game's 29 Hz list
+   swap - and both are healthy throughout. The counts repeat because the car was
+   parked and the scene is static. An earlier reading of F/S "frozen" was
+   dismissed as a crash state and then wrongly resurrected as evidence.
+
+**THE OPEN QUESTION, stated honestly: is 27 objects WRONG, or is it what is
+visible from where the car stopped?** A sparse stretch of track legitimately
+walks fewer objects, and H= (passes walking fewer than half the previous pass's
+objects) reads 0 throughout, so the walker does not consider it short. The
+correlation with the cut is strong; correlation with "parked somewhere quiet"
+would look identical in this data.
+
+**HOW TO SETTLE IT:** tools/mame_poly_budget.lua counts records walked per frame
+in the reference. Park where the cut shows, dump the same scene from MAME, and
+compare. If MAME walks 130 where we walk 27, the walk is truncating and the
+fault is in m1_listwalk or what terminates it.
+
+---
+
+## 2026-09-09 — VR'S LEFT-SIDE CUT: SIX CANDIDATES CLEARED, AND WHAT IT ACTUALLY LOOKS LIKE
+
+Two minutes of driving with the UART report, the cut present for about a minute
+in the middle and confirmed by Ben against the trace. Deltas per sample:
+
+           clip_in  clip_drop   e/c   culls    wrL     wrR   L/R
+    healthy  11,092     ~1.3x         18,230   7,000   6,000  ~1.0
+    CUT      45,025      0.41         32,205   1,660  10,010   0.17
+
+**THE CLIPPER IS NOT DOING IT.** Its drop ratio sits at a steady 0.40-0.42 right
+through the cut. **NOR IS THE BACKFACE CULL** - flat at ~30,400 against ~32,200
+elsewhere. Both were the leading suspects and both are now cleared by their own
+counters, which had to be fixed first: they saturated at 0xffff and read FFFF
+across a whole capture until they were made to wrap.
+
+**WHAT THE CUT ACTUALLY IS: quad production jumps SIX-FOLD and lands on the
+right.** Left pixels fall 7,000 -> 1,660 while right pixels RISE 6,000 -> 10,010,
+and total pixels barely change. A clip plane or a cull can only REMOVE geometry;
+neither multiplies it. Six times the quads producing the same pixel count means
+the quads are far smaller, and they are all on one side.
+
+**AND THE COUNTERS GO STATIC.** 62756, 25852, 30392 repeating exactly, sample
+after sample, for the duration. Identical deltas mean the stage is reprocessing
+identical work rather than following a moving scene.
+
+**SIX CANDIDATES CLEARED BY MEASUREMENT, so do not re-derive them:**
+
+    quad store overflow   D=0 through the cut
+    viewport x1           K=0, correct full width
+    left clip plane       Y=BF62 stable at -0.88 throughout; a_left=0 would put
+                          the cut at 48% and it is never 0
+    out-of-range vertices G=0
+    band memory, scanout  A=/Z= track I=/J= in the same proportion, so the fill
+                          is not writing those pixels rather than scanout losing
+                          them - this is what cleared the mixer, the last stage
+                          HANDOFF listed as unexamined
+    the fill's spans      152,025 checks against the reference INCLUDING
+                          self-intersecting quads; the per-segment-vs-per-scanline
+                          left/right bug is already fuzzed for
+    the frustum planes    m1_geo_planes' recompute race is gated by planes_wait,
+                          which m1_raster3d honours at P_OBJ
+    the matrix            m1_geo_xform's mat[] is written ungated, BUT lw_stall
+                          holds the list walker whenever the producer is not in
+                          P_WALK or P_IDLE, so no matrix write can land mid-object
+
+**WHERE TO GO NEXT.** The signature is upstream of the clipper: something makes
+the geometry emit six times the quads, small and right-heavy, in a repeating
+pattern. That is the walker or what it reads - not a rendering stage. The
+instruments to add are a per-pass (not free-running) count of objects walked and
+records processed, and the pass length L= read across the same window.
+
+**AND A PROCESS NOTE THAT COST TWO DAYS.** docs/HANDOFF.md's top entry already
+said, on 2026-09-05, that the left-side cut is VR-specific, that eight causes
+were eliminated, that the mixer was the last unexamined stage and that K=/G= had
+been built for it and never read. CLAUDE.md says to read HANDOFF after it. It was
+not read, and two days went into geometry throughput - which was a real problem,
+measurably fixed, and not this one.
+
+---
+
 ## 2026-09-09 — THE MISSING 3D IS THE QUAD STORE OVERFLOWING, NOT THROUGHPUT
 
 Measured on the board over UART, after two days of treating it as a geometry

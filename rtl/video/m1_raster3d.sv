@@ -78,7 +78,17 @@ module m1_raster3d #(
   // that close to free: a quad is replayed only for the bands its rows touch, so
   // halving the band height moves a quad from touching one or two bands to two
   // or three, not from six to twelve.
-  parameter int unsigned BAND_H = 16,
+  // 8 AS OF 2026-09-09, from 16. Two reasons, and the second is the one that
+  // matters: a band buffer halves to 8 M10K so the three of them free 24 blocks
+  // on a device with 7 left, and band 0 - the only band whose presentation is
+  // tied to the BLANKING window rather than to the band ahead of it - has half
+  // as much to fill before the beam arrives. Raising clk_3d 3% cost band 0
+  // exactly there (see docs/findings.md, the withdrawn 58.947 entry), so the
+  // clock is worth revisiting once this is in.
+  //
+  // The replay cost is bounded, per the note above: a quad goes from touching
+  // one or two bands to two or three, not from six to twelve.
+  parameter int unsigned BAND_H = 8,
   parameter int unsigned SCR_W  = 496,
   parameter int unsigned SCR_H  = 384,
   // Quads a store bank holds. The attract pit stop needs 2,671 for its frame
@@ -92,7 +102,24 @@ module m1_raster3d #(
   // those were wrong (see m1_quad_store); with the full coordinate a
   // 3,072-quad bank is ~74 blocks, both banks ~+44 over the old design and
   // the whole core ~540 of 553. Frame 2500 needs 2,671.
-  parameter int unsigned NQ     = 3072
+  // 3,584 AS OF 2026-09-09, from 3,072, spending the 24 M10K that halving the
+  // band height freed. MEASURED ON THE BOARD, two minutes of real driving with
+  // the UART report: U peaks at 3,034 against a 3,072 cap and D spills 33 then
+  // 111 quads when it tips over. That is the missing track and scenery - the
+  // store fills in DISPLAY LIST ORDER, so what falls off the end is whatever
+  // the game drew last, and it only happens on the busy stretches, which is why
+  // it comes and goes rather than being always wrong.
+  //
+  // Attract never crosses it - 976 to 1,301 quads, D=0 - which is why the same
+  // corner on the same racing line looks correct there. That contrast is what
+  // identified this; simulation cannot see it, because tb_m1_geometry never
+  // fills the store and D reads zero throughout.
+  //
+  // 3,584 leaves ~550 of headroom over the worst frame seen. It is NOT the real
+  // fix: a peak frame offers more than this and the honest answer is the quad
+  // payload in SDRAM, which stores everything and hands back all 138 M10K. This
+  // is what the freed blocks will buy today.
+  parameter int unsigned NQ     = 3584
 ) (
   input  logic        clk,            // the 3D clock, 45.714 MHz
   input  logic        rst_n,
@@ -231,6 +258,59 @@ module m1_raster3d #(
   output logic [15:0] dbg_hit_r,
 
   // The left clip plane's top 16 bits. Zero means it was never computed.
+  output logic [15:0] dbg_clip_in, dbg_clip_out, dbg_clip_drop,
+  // WRITES THAT LAND WHILE THE GEOMETRY IS MID-OBJECT, both of which are
+  // supposed to be impossible and neither of which has ever been OBSERVED.
+  //
+  // m1_geo_xform's mat[] is written ungated; the argument that it is safe is
+  // that lw_stall holds the list walker outside P_WALK/P_IDLE. m1_geo_planes'
+  // recompute is supposed to be excluded by planes_wait at P_OBJ. Both are
+  // readings of the source, not measurements, and a torn matrix is the ONLY
+  // mechanism found so far that fits the left-side cut's signature - six times
+  // the quads, displaced to one side. A clip plane or a cull can only remove
+  // geometry; a wrong transform multiplies it and moves it.
+  //
+  // These wrap, like the clipper's. Nonzero and climbing means the race is real.
+  output logic [15:0] dbg_mat_race, dbg_plane_race,
+  // THE LIST RACE. The pass trigger rests on one assumption, stated at
+  // `list_flipped` below: that a pass finishes before the V60 flips again and
+  // starts rewriting the buffer it read - true "for any pass up to two frames".
+  // The pass is MEASURED at 206% of one frame, which is 3% OVER two, so on a
+  // busy stretch the game flips while we are still walking and the V60 rewrites
+  // the list underneath the walker. That truncates the walk, which is exactly
+  // the signature the left-side cut has: objects walked collapsing 130 -> 27
+  // with the EARLY ones surviving, only when the scene is busy, never in
+  // attract on the same corner.
+  //
+  // `f` covers the matrix race and `g` the plane race and both read zero; there
+  // has never been a counter on the LIST buffer itself. This is that counter -
+  // passes during which the game flipped out from under the walk.
+  output logic [15:0] dbg_list_race,
+  // Plane recomputes that arrived while a set was in flight. Before the fix
+  // in m1_geo_planes these were dropped and the wrong plane LATCHED, which
+  // is the left-side cut. Non-zero here means the fix is doing work.
+  output logic [15:0] dbg_plane_redo,
+  // Cycles the list walker spent STALLED, in 16-cycle units so a
+  // 16-bit counter covers a whole pass. lw_stall is asserted whenever
+  // the producer is not walking - during every object, every sort and
+  // every texture fetch - so this is the walker waiting on the rest of
+  // the stage. Read against clip_in: if quads-per-second jumps six-fold
+  // while the walker stalls LESS, the list itself changed; if it stalls
+  // MORE, the walker is being held and re-reading.
+  output logic [15:0] dbg_lw_stall,
+  // HOW THE LIST WALK ENDED, counted per pass.
+  //
+  // m1_listwalk raises dbg_bad_type when the walk stops on a command the
+  // reference also ends on - 0x0f is the real terminator, and anything
+  // unrecognised falls through to the same place, so an unknown type ends the
+  // list rather than erroring. It raises dbg_overrun when the walk runs off the
+  // end of the buffer. Both have been declared, connected and NEVER READ.
+  //
+  // They matter now because the left-side cut is a five-fold drop in objects
+  // walked - 130 healthy, 27 during the cut - with everything downstream
+  // measured clean. If m= climbs when the picture breaks, the walk is ending on
+  // garbage and that is the fault.
+  output logic [15:0] dbg_lw_bad, dbg_lw_over,
   output logic [15:0] dbg_plane_l,
 
   // Objects with command 0x41 - "drawn above the HUD" - free-running.
@@ -329,6 +409,9 @@ module m1_raster3d #(
 
   // ---------------------------------------------------------------- geometry
   logic        geo_start, geo_busy, geo_done, geo_planes_wait;
+  logic        pw_d;                  // planes_wait, delayed, for edge detection
+  logic [3:0]  lws_pre;               // /16 prescale for dbg_lw_stall
+  logic        lwd_d;                 // lw_done, delayed, for the edge
   logic [31:0] geo_plane_left;
   logic [31:0] geo_oldz_out;
   logic        mat_we;
@@ -400,6 +483,9 @@ module m1_raster3d #(
     .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
     .planes_wait(geo_planes_wait), .plane_left(geo_plane_left),
+    .dbg_plane_redo(dbg_plane_redo),
+    .dbg_clip_in(dbg_clip_in), .dbg_clip_out(dbg_clip_out),
+    .dbg_clip_drop(dbg_clip_drop),
     .old_z_in(old_z), .old_z_out(geo_oldz_out),
     .rom_addr(rom_addr), .rom_req(rom_req),
     .rom_valid(rom_valid), .rom_data(rom_data),
@@ -702,13 +788,69 @@ module m1_raster3d #(
   // only occasionally the band the beam is drawing, and what reaches the screen
   // is mostly no 3D with stripes of it flashing through as the phase slips.
   // Measured on hardware before it was understood.
-  logic [BW-1:0] beam_band_s1, beam_band_s2;
-  logic [$clog2(BAND_H)-1:0] beam_row_s1, beam_row_s2;
-  always_ff @(posedge clk) begin
-    beam_band_s1 <= BW'(scan_y >> $clog2(BAND_H));
-    beam_band_s2 <= beam_band_s1;
-    beam_row_s1  <= scan_y[$clog2(BAND_H)-1:0];
-    beam_row_s2  <= beam_row_s1;
+  // THE SAME MULTI-BIT CROSSING FAULT, IN THIS DIRECTION, LEFT UNFIXED.
+  //
+  // This was a plain two-flop synchroniser on `scan_y >> 3` - a SIX-bit band
+  // index for 48 bands - which is exactly what the comment above condemns for
+  // the other direction. 15 to 16 flips five bits and 31 to 32 flips six, and
+  // the two flops of a multi-bit bus can resolve differently on the same edge,
+  // so `beam_band_s2` could read a value that is neither the old band nor the
+  // new one.
+  //
+  // It matters because `beam_ext` below is what decides WHEN A FILLED BAND IS
+  // PRESENTED. A glitched value swaps a band in while the beam is somewhere
+  // else entirely - a band's worth of picture, eight rows, in the wrong place -
+  // and `beam_blank` (beam_ext >= NBANDS) can read as blanking when it is not,
+  // arming band 0 mid-frame. The band index changes 48 times a frame, about
+  // 2,760 times a second, so a rare mixed sample still happens often enough to
+  // disturb the sequencer for a second or two at a time while it re-syncs.
+  //
+  // Reported on the board 2026-09-09: "a gap in a band where it's in the wrong
+  // place, only a few pixels deep, lasts about 2 seconds". A band is eight rows.
+  //
+  // Same cure as the other direction: hold the data stable, cross a single
+  // toggle, capture on the toggle edge. The data changes once a line - 655 scan
+  // clocks - so it has been stable far longer than the crossing by the time the
+  // toggle has been through two flops.
+  //
+  // AND LIKE THE OTHER DIRECTION, NO BENCH CAN SEE THIS. render3d ticks both
+  // clocks from one edge and tb_m1_frame drives them from exact multiples, so
+  // neither can produce a settling failure. It is hardware-only by construction.
+  logic [BW-1:0] beam_band_q;
+  logic [$clog2(BAND_H)-1:0] beam_row_q;
+  logic beam_tog, beam_upd;
+  wire [BW-1:0] beam_band_now = BW'(scan_y >> $clog2(BAND_H));
+  wire [$clog2(BAND_H)-1:0] beam_row_now = scan_y[$clog2(BAND_H)-1:0];
+  always_ff @(posedge scan_clk or negedge rst_n) begin
+    if (!rst_n) begin
+      beam_band_q <= '0; beam_row_q <= '0; beam_tog <= 1'b0; beam_upd <= 1'b0;
+    end else begin
+      beam_upd <= 1'b0;
+      // One cycle AFTER the data, so the data is settled before the toggle even
+      // starts across.
+      if (beam_upd) beam_tog <= ~beam_tog;
+      if ((beam_band_now != beam_band_q) || (beam_row_now != beam_row_q)) begin
+        beam_band_q <= beam_band_now;
+        beam_row_q  <= beam_row_now;
+        beam_upd    <= 1'b1;
+      end
+    end
+  end
+
+  logic [BW-1:0] beam_band_s2;
+  logic [$clog2(BAND_H)-1:0] beam_row_s2;
+  logic [2:0] beam_tog_s;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      beam_tog_s <= 3'b000; beam_band_s2 <= '0; beam_row_s2 <= '0;
+    end else begin
+      beam_tog_s <= {beam_tog_s[1:0], beam_tog};
+      // beam_tog_s[0] is the metastability catcher and is never used for logic.
+      if (beam_tog_s[2] ^ beam_tog_s[1]) begin
+        beam_band_s2 <= beam_band_q;
+        beam_row_s2  <= beam_row_q;
+      end
+    end
   end
 
   // The row BEHIND the beam, on the buffer that is displaying. A row is only
@@ -972,9 +1114,32 @@ module m1_raster3d #(
   // was free walks a list the V60 is halfway through writing, and showed on the
   // board as geometry in the wrong place with vertices collapsed toward the
   // origin. The flip is precisely the moment at which that cannot happen.
+  // The list race, counted once per pass rather than once per cycle: the
+  // condition holds for the whole tail of an overrunning pass, so a per-cycle
+  // count would say how LONG the overrun was and not how OFTEN it happened, and
+  // how often is the question. `lr_seen` latches for the pass and clears when
+  // the next one starts.
+  logic       lr_seen;
   logic       dl_sel_s2_d;
   logic [2:0] fs_since_flip;       // frame pulses since the last flip, saturating
   wire  list_flipped = (dl_sel_s2 != dl_sel_q);
+
+  // A pass that is still walking when the game flips is reading a buffer the
+  // V60 has started rewriting. P_IDLE and P_READY are excluded: idle has no
+  // pass to corrupt, and READY has finished walking and is only waiting to be
+  // swapped in, which is the phase the trigger is designed to leave room for.
+  wire  list_race_now = list_flipped && (pst != P_IDLE) && (pst != P_READY);
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_list_race <= '0; lr_seen <= 1'b0;
+    end else begin
+      if (prod_go) lr_seen <= 1'b0;
+      else if (list_race_now && !lr_seen) begin
+        lr_seen       <= 1'b1;
+        dbg_list_race <= dbg_list_race + 16'd1;
+      end
+    end
+  end
   wire  no_flips     = fs_since_flip[2];
   // AND NOT BEFORE THE VBLANK AFTER THE FLIP. MAME renders the list at the
   // end of the frame in which the game flipped, so the game has the rest of
@@ -1076,11 +1241,32 @@ module m1_raster3d #(
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
+      dbg_mat_race <= '0; dbg_plane_race <= '0; pw_d <= 1'b0;
+      dbg_lw_stall <= '0; lws_pre <= '0;
+      dbg_lw_bad <= '0; dbg_lw_over <= '0; lwd_d <= 1'b0;
       band_timer <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0; bd_y0[2] <= '0;
       dbg_frames <= '0;
     end else begin
       mat_we <= 1'b0;
+
+      // A PLANE RECOMPUTE STARTING WHILE AN OBJECT IS IN FLIGHT. planes_wait is
+      // supposed to keep these apart by holding geo_start at P_OBJ; this counts
+      // the times it did not. Rising edge, so it counts events not cycles.
+      pw_d <= geo_planes_wait;
+      // Sampled on the walk COMPLETING, because the flags are cleared
+      // when the next walk starts.
+      lwd_d <= lw_done;
+      if (lw_done && !lwd_d) begin
+        if (lw_bad)  dbg_lw_bad  <= dbg_lw_bad  + 16'd1;
+        if (lw_over) dbg_lw_over <= dbg_lw_over + 16'd1;
+      end
+      if (lw_stall) begin
+        lws_pre <= lws_pre + 4'd1;
+        if (lws_pre == 4'hf) dbg_lw_stall <= dbg_lw_stall + 16'd1;
+      end
+      if (geo_planes_wait && !pw_d && geo_busy)
+        dbg_plane_race <= dbg_plane_race + 16'd1;
       if (cst != C_IDLE && cst != C_WAIT) band_timer <= band_timer + 32'd1;
       if (prod_go)                                pass_timer <= '0;
       else if (pst != P_IDLE && pst != P_READY)   pass_timer <= pass_timer + 32'd1;
@@ -1202,6 +1388,9 @@ module m1_raster3d #(
             mat_we   <= 1'b1;
             mat_idx  <= lw_ev_idx[3:0];
             mat_data <= lw_ev_data;
+            // THE MEASUREMENT: a matrix word arriving while an object is still
+            // being transformed means that object saw a mixed matrix.
+            if (geo_busy) dbg_mat_race <= dbg_mat_race + 16'd1;
           end
           8'h0c: begin
             if (lw_ev_idx == 16'd0) vviewx <= lw_ev_data;

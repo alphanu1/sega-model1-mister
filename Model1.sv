@@ -296,12 +296,12 @@ module emu
   // 80 MHz and 19.2 MHz; see docs/m1-m4-plan.md for why those two numbers.
   wire clk_sys, clk_cpu, clk_sdram, pll_locked;
 
-  // The 3D layer's clock: 53.333 MHz, exactly twice clk_cpu.
+  // The 3D layer's clock: 57.143 MHz, exactly twice clk_cpu.
   //
   // A separate domain for the geometry and rasterizer, at exactly 2x clk_cpu so
   // the crossing to the CPU side is a clock enable rather than a handshake.
   //
-  // 53.333 rather than clk_sys's 80 because the TGP's state machine misses at
+  // 57.143 rather than clk_sys's 80 because the TGP's state machine misses at
   // m1_raster_fill 58.84 - 80 does not close. It was 47.059 until m1_fp_pool's
   // operand mux was registered, which took m1_geometry from 39.6 to 54.57.
   // See docs/findings.md.
@@ -426,7 +426,7 @@ module emu
   // mismatch is a Z80 executing whatever else is at that address.
   localparam logic [24:1] IOFW_BASE = 24'hD00000;
   wire        iofw_req;
-  wire [12:0] iofw_word;
+  wire [13:0] iofw_word;
 
   // The 3D layer's two masters, from m1_integrated in the clk_sys domain.
   wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
@@ -456,7 +456,7 @@ module emu
 // pick a half - m1_integrated takes the full 64 bits of r3d_rom_dout - and a
 // note here previously said it did, which was wrong.
 assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
-                 IOFW_BASE + {11'd0, iofw_word},
+                 IOFW_BASE + {10'd0, iofw_word},
                  tgp_mem_addr, ifp_addr,
                  24'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};

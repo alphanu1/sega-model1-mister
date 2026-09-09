@@ -28,7 +28,7 @@ import sys, os, zipfile, argparse
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from build_rom_image import pack_stream, load
+from build_rom_image import pack_stream, EE_PART, load
 
 
 def part_bytes(zf, el):
@@ -184,6 +184,37 @@ def main():
         print(f"FAIL microcode is {len(u)} bytes, expected 8192")
         return 1
     print(f"index 1 microcode  {parts[0].get('name')}, {len(u):,} bytes  OK")
+
+    # Index 3, the I/O board's settings EEPROM, when the game set carries one.
+    # Only vr.zip does. The first word must be the "SEGA" signature: the V60
+    # compares it at FE078E and, failing it, decides the board is unconfigured
+    # and walks a much shorter display list. A missing or byte-swapped part is
+    # the same class of silent fault as the microcode above, and looks like a
+    # rendering bug rather than a ROM one.
+    with zipfile.ZipFile(args.zip) as zf:
+        has_ee = EE_PART in zf.namelist()
+        ee_rom = [r for r in root.iter('rom') if r.get('index') == '3']
+        if has_ee and not ee_rom:
+            print(f"FAIL {args.zip} has {EE_PART} but the MRA has no <rom index=\"3\"> "
+                  f"— the I/O board would read a blank part")
+            return 1
+        if ee_rom:
+            parts = [p for p in ee_rom[0] if p.tag == 'part']
+            if len(parts) != 1:
+                print(f"FAIL index 3 has {len(parts)} parts, expected exactly 1")
+                return 1
+            e = load(zf, parts[0].get('name'))
+            if len(e) != 128:
+                print(f"FAIL EEPROM is {len(e)} bytes, expected 128")
+                return 1
+            # hps_io with WIDE=1 presents {byte1, byte0}, which is how m1_ioz80
+            # stores it, so this is the word the firmware reads back first.
+            w0 = e[0] | (e[1] << 8)
+            if w0 != 0x5345:
+                print(f"FAIL EEPROM word 0 is {w0:04x}, expected 5345 (\"SE\")")
+                return 1
+            print(f"index 3 EEPROM     {parts[0].get('name')}, {len(e)} bytes, "
+                  f"word 0 = {w0:04x}  OK")
 
     got = expand(args.mra, args.zip)
     want = pack_stream(args.zip, args.game)

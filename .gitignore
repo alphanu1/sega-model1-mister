@@ -91,8 +91,12 @@ qdb/
 *.sta
 *.asm
 
-# MiSTer release output.
-/releases/
+# MiSTer release output. The staged release folder IS committed - it is how a
+# MiSTer core is distributed, the same as every other core - so only the build's
+# own scratch output is ignored here. `*.rbf` above would otherwise catch the
+# released bitstream, so it is re-included explicitly.
+!/releases/
+!/releases/*.rbf
 
 # --------------------------------------------------------------- toolchain
 /tools/**/__pycache__/

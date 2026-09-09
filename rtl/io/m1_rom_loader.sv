@@ -86,6 +86,16 @@ module m1_rom_loader #(
   parameter logic [15:0] TGP_INDEX     = 16'd1,
   parameter logic [15:0] IOFW_INDEX    = 16'd2,
   parameter logic [15:0] IOFW_END      = 16'h4000,   // 16 KB mapped, of 64 KB
+  // The I/O board's 93C46 settings EEPROM, 128 bytes, on its own index. It
+  // rides the same SDRAM window as the firmware, one 16 KB block above it, and
+  // m1_ioz80 preloads its array from there through the port it already owns -
+  // which is why this needs no new clock crossing. It CANNOT be an initialiser
+  // baked into the RTL: hard rule 2, and a simulation-only $readmemh is worse
+  // than nothing, because it makes the bench pass while the board reads a
+  // blank part.
+  parameter logic [15:0] EE_INDEX      = 16'd3,
+  parameter logic [15:0] EE_END        = 16'd128,    // 64 words of 16 bits
+  parameter logic [24:1] EE_WOFF       = 24'h002000, // word offset from IOFW_BASE
   // Word address. The polygon region ends at word 0xC20000 and the V60's work
   // RAM begins at 0xF80000, so this sits in the gap between them.
   parameter logic [24:1] IOFW_BASE     = 24'hD00000,
@@ -218,17 +228,18 @@ module m1_rom_loader #(
   assign ioctl_wait = ioctl_download &
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
-  logic is_sdram, is_tgp, is_iofw;
-  // Routed by index, not by address. Both streams start at byte 0.
-  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw;
+  logic is_sdram, is_tgp, is_iofw, is_ee;
+  // Routed by index, not by address. Every stream starts at byte 0.
+  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee;
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
   assign is_iofw  = (ioctl_index == IOFW_INDEX) && (ioctl_addr < 25'(IOFW_END));
+  assign is_ee    = (ioctl_index == EE_INDEX)   && (ioctl_addr < 25'(EE_END));
 
   logic stream_ok;
-  // Either index is a stream we accept; which one decides where it goes.
+  // Any of these indices is a stream we accept; which one decides where it goes.
   assign stream_ok = ioctl_download &&
                      ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX) ||
-                      (ioctl_index == IOFW_INDEX));
+                      (ioctl_index == IOFW_INDEX) || (ioctl_index == EE_INDEX));
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -275,7 +286,8 @@ module m1_rom_loader #(
             // download starting at byte 0, so it needs an offset rather than
             // the raw ioctl address. IOFW_BASE is above the polygon region
             // and below the V60's work RAM.
-            fifo_addr[wptr[AW-1:0]] <= is_iofw ? (IOFW_BASE + 24'(ioctl_addr[24:1]))
+            fifo_addr[wptr[AW-1:0]] <= is_ee   ? (IOFW_BASE + EE_WOFF + 24'(ioctl_addr[24:1]))
+                                     : is_iofw ? (IOFW_BASE + 24'(ioctl_addr[24:1]))
                                                : ioctl_addr[24:1];
             fifo_data[wptr[AW-1:0]] <= ioctl_dout;
             wptr <= wptr + 1'b1;

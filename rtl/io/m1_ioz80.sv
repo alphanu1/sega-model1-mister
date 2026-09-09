@@ -42,16 +42,23 @@
 //   PF (5)                    -> output latch (lamps etc.; latched, unused)
 //   PG (6)                    <- button board / EEPROM DO (absent: 0xff)
 //
-// CEN_DIV pacing: the real Z80 runs at 32 MHz / 8 = 4 MHz, which is clk_sys /
-// 12. The firmware's power-on delays (R40 measured them as ~0.12 s and ~3.0 s)
-// are Z80 delay loops, so they now come from the program itself rather than
-// from two magic constants. Simulation may pace CEN faster; the semantics are
+// Pacing: the real board runs BOTH CPUs off one 32 MHz crystal - the V60 at
+// /2 = 16 MHz and this Z80 at /8 = 4 MHz - so the Z80 advances once per FOUR
+// V60 clocks. `clk` here is the V60's clock, so that is what CEN_NUM/CEN_DEN
+// expresses, and it holds at whatever rate we choose to clock the V60.
+//
+// The firmware's power-on delays (R40 measured them as ~0.12 s and ~3.0 s)
+// are Z80 delay loops, so they come from the program itself rather than from
+// two magic constants. Simulation may pace CEN faster; the semantics are
 // unchanged, only the seconds compress.
 
 `timescale 1ns/1ps
 
 module m1_ioz80 #(
-  parameter int unsigned CEN_DIV = 12
+  // Z80 clock enables per `clk`. The DEFAULT is the board's own ratio; there
+  // is deliberately no frequency here to go stale when the V60's clock moves.
+  parameter int unsigned CEN_NUM = 1,
+  parameter int unsigned CEN_DEN = 4
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -71,7 +78,8 @@ module m1_ioz80 #(
   // third heavy reader. If it still shows, a line cache is the next step and
   // this is the shape it would extend.
   output logic        fw_req,
-  output logic [12:0] fw_word,   // 16-bit word index inside the 16 KB
+  output logic [13:0] fw_word,   // 16-bit word index; 0..0x1FFF is firmware,
+                                 // 0x2000.. is the settings EEPROM
   input  logic        fw_ack,
   input  logic [15:0] fw_din,
 
@@ -127,13 +135,31 @@ module m1_ioz80 #(
 );
 
   // ------------------------------------------------------------ Z80 pacing
-  logic [$clog2(CEN_DIV)-1:0] cen_ctr;
+  //
+  // A FRACTIONAL DIVIDER, EXPRESSED AS A RATIO OF THE V60'S CLOCK - NOT AS A
+  // FREQUENCY. This used to be a plain /12 of clk_sys, then /6 of clk_cpu, both
+  // chosen to land the Z80 near its absolute 4 MHz. /6 of clk_cpu is a SIX to
+  // one ratio against a board that is four to one, so the I/O board has run at
+  // two thirds of its proper speed relative to the CPU it handshakes with for
+  // as long as it has existed. Overclocking clk_cpu did not cause that - the
+  // ratio is the divisor, so it never depended on the clock - and no bench
+  // could see it, because nothing in the suite exercises the boot handshake.
+  //
+  // Bresenham, so a non-integer ratio is expressible if a future clock needs
+  // one: accumulate CEN_NUM per clock and fire on reaching CEN_DEN. At 1/4 that
+  // is exactly every fourth clock, with no accumulated phase error.
+  localparam int unsigned CEN_AW = $clog2(CEN_DEN + CEN_NUM + 1);
+  logic [CEN_AW-1:0] cen_acc;
   logic cen;
+  wire  [CEN_AW-1:0] cen_nxt = cen_acc + CEN_AW'(CEN_NUM);
   always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin cen_ctr <= '0; cen <= 1'b0; end
-    else begin
-      cen     <= (cen_ctr == '0);
-      cen_ctr <= (cen_ctr == ($clog2(CEN_DIV))'(CEN_DIV - 1)) ? '0 : cen_ctr + 1'b1;
+    if (!rst_n) begin cen_acc <= '0; cen <= 1'b0; end
+    else if (cen_nxt >= CEN_AW'(CEN_DEN)) begin
+      cen     <= 1'b1;
+      cen_acc <= cen_nxt - CEN_AW'(CEN_DEN);
+    end else begin
+      cen     <= 1'b0;
+      cen_acc <= cen_nxt;
     end
   end
 
@@ -151,7 +177,7 @@ module m1_ioz80 #(
     // blunt instrument and the right one - the core simply does not advance,
     // which is exactly what a CPU waiting on memory does, and it needs no
     // assumption about which T-state samples what.
-    .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss),
+    .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss && ee_ready),
     .wait_n(1'b1), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
     .m1_n(dbg_m1_n), .mreq_n(mreq_n), .iorq_n(), .rd_n(rd_n), .wr_n(wr_n),
     .rfsh_n(), .halt_n(), .busak_n(),
@@ -213,23 +239,60 @@ module m1_ioz80 #(
   wire         fw_hit  = fw_cv && (fw_ca == A[13:1]);
   wire         fw_miss = fw_sel && !fw_hit;
 
+  // ------------------------------------------- EEPROM preload, before the Z80
+  //
+  // The 93C46's contents are a ROM part (93c45.bin) and so cannot be baked into
+  // the RTL - hard rule 2 - and a `ifdef VERILATOR $readmemh is worse than no
+  // load path at all, because the bench then passes while the board reads a
+  // blank device and the game takes its uninitialised-board branch. That is
+  // precisely how the shifted-read bug below survived: simulation had contents
+  // to get wrong, hardware never did.
+  //
+  // So the image rides SDRAM with the firmware, one 16 KB block above it, and
+  // is pulled in here through the fetch port that already exists. The Z80 is
+  // held until it lands - `ee_ready` gates `cen` - which costs 64 SDRAM reads
+  // once, and removes any question of the firmware reading the array early.
+  logic        ee_ready;
+  logic  [6:0] ee_ld_i;          // 0..63, plus the terminal count
+  logic        ee_ld_we;
+  logic  [5:0] ee_ld_a;
+  logic [15:0] ee_ld_d;
+  wire         ee_ld_go = !ee_ready;
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       fw_cv <= 1'b0; fw_ca <= '0; fw_w <= '0; fw_req <= 1'b0;
+      ee_ready <= 1'b0; ee_ld_i <= 7'd0;
+      ee_ld_we <= 1'b0; ee_ld_a <= 6'd0; ee_ld_d <= 16'd0;
     end else begin
+      ee_ld_we <= 1'b0;
       // Held until acknowledged, not pulsed. Anything talking to this
       // controller that pulses a request has it missed - the rule is in
       // CLAUDE.md and it has cost this project two sessions.
-      if (fw_miss && !fw_req && !fw_ack) fw_req <= 1'b1;
+      if ((ee_ld_go || fw_miss) && !fw_req && !fw_ack) fw_req <= 1'b1;
       if (fw_ack) begin
         fw_req <= 1'b0;
-        fw_w   <= fw_din;
-        fw_ca  <= A[13:1];
-        fw_cv  <= 1'b1;
+        if (ee_ld_go) begin
+          // The image is little-endian 16-bit words, the same order the array
+          // is addressed in, so it goes straight in. The WRITE ITSELF is done
+          // in the EEPROM block below: `ee` must have exactly one driver or
+          // Quartus sees a multiply-driven array, which Verilator's lint here
+          // does not object to and the fitter does.
+          ee_ld_we <= 1'b1;
+          ee_ld_a  <= ee_ld_i[5:0];
+          ee_ld_d  <= fw_din;
+          ee_ld_i  <= ee_ld_i + 7'd1;
+          if (ee_ld_i == 7'd63) ee_ready <= 1'b1;
+        end else begin
+          fw_w   <= fw_din;
+          fw_ca  <= A[13:1];
+          fw_cv  <= 1'b1;
+        end
       end
     end
   end
-  assign fw_word = A[13:1];
+  assign fw_word = ee_ld_go ? (14'h2000 + {8'd0, ee_ld_i[5:0]})
+                            : {1'b0, A[13:1]};
   assign fw_q    = A[0] ? fw_w[15:8] : fw_w[7:0];
   // WRITE ON THE SAME EDGE AS THE READ, AND THAT IS THE POINT.
   //
@@ -248,7 +311,7 @@ module m1_ioz80 #(
   //
   // Moving the write to the falling edge makes the array single-clock, which
   // gives it DEFINED read-during-write, and costs nothing else: aw_l and dw_l
-  // are already latched and stable, and the Z80 is paced at CEN_DIV=12 so half
+  // are already latched and stable, and the Z80 is paced at one clock enable in four so half
   // a cycle of write delay is invisible to it. The read keeps the async-ROM
   // shape tv80 needs -- data half a cycle after the address.
   always_ff @(negedge clk) begin
@@ -380,7 +443,8 @@ module m1_ioz80 #(
   // 315-5338A: PA7 = CLK, PA6 = CS, PA5 = DI, PG7 = DO (model1io.cpp io_pa_w).
   // The boot spins forever retrying the serial read if this is absent, which
   // is how it announced itself. 93C46 in 16-bit mode: 64 words; start bit,
-  // 2-bit opcode, 6-bit address; READ shifts a dummy 0 then 16 bits MSB-first.
+  // 2-bit opcode, 6-bit address; READ presents a dummy 0 as the address
+  // completes, then 16 bits MSB-first on the next sixteen clocks.
   // Powers up erased (all-ones): the firmware finds a virgin part, applies its
   // defaults, and writes them back -- so WRITE/ERASE/EWEN are implemented, not
   // just READ. Contents are volatile here; persistence can ride the NVRAM
@@ -389,7 +453,7 @@ module m1_ioz80 #(
   logic        ee_do;
   logic  [8:0] ee_sh;         // start + opcode + address collector
   logic  [3:0] ee_nbits;
-  logic [16:0] ee_out;        // dummy 0 + 16 data bits
+  logic [16:0] ee_out;        // 16 data bits, MSB first, then a trailing 0
   logic [15:0] ee_in;
   logic  [4:0] ee_wcnt;
   logic        ee_ewen;
@@ -400,21 +464,22 @@ module m1_ioz80 #(
   wire ee_cs  = port_out[0][6];
   wire ee_di  = port_out[0][5];
   logic ee_clk_d;
-  initial for (int i = 0; i < 64; i++) ee[i] = 16'hffff;
-`ifdef VERILATOR
   // THE EEPROM HAS CONTENTS AND THEY MATTER. 93c45.bin is 128 bytes sitting in
   // vr.zip, and read as little-endian words its first two are 0x5345 0x4741 -
-  // "SEGA", the same signature the V60 writes into the shared RAM. A firmware
-  // that checks it against a blank device would loop exactly where this one
-  // does. Simulation only for now; hardware needs a load path.
-  initial $readmemh("build/rom/vr_ee_le.hex", ee);
-`endif
+  // "SEGA", the same signature the V60 checks at FE078E before deciding the
+  // board is configured. It arrives over the download path above; there is
+  // deliberately no $readmemh here, so simulation and hardware get it the same
+  // way or neither does.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       ee_do <= 1'b1; ee_sh <= 9'd0; ee_nbits <= 4'd0; ee_out <= 17'd0;
       ee_in <= 16'd0; ee_wcnt <= 5'd0; ee_ewen <= 1'b0; ee_addr <= 6'd0;
       ee_st <= EE_CMD; ee_clk_d <= 1'b0;
     end else begin
+      // The download's write into the array. It happens only while ee_ready is
+      // low, which is before the Z80 has been released, so it can never race
+      // the firmware's own WRITE/ERASE.
+      if (ee_ld_we) ee[ee_ld_a] <= ee_ld_d;
       ee_clk_d <= ee_clk;
       if (!ee_cs) begin
         ee_st <= EE_CMD; ee_nbits <= 4'd0; ee_sh <= 9'd0; ee_do <= 1'b1;
@@ -430,8 +495,24 @@ module m1_ioz80 #(
                 // ee_sh[7:6] after this shift = opcode, [5:0] = address.
                 ee_addr <= {ee_sh[4:0], ee_di};
                 case (ee_sh[6:5])
+                  // THE DUMMY 0 GOES OUT ON THIS EDGE, NOT THE NEXT ONE.
+                  //
+                  // A 93C46 presents the dummy on the clock that latches the
+                  // last address bit, so the firmware's following sixteen
+                  // clocks read D15..D0. Loading {1'b0, data} here instead
+                  // spends the first READ edge on the dummy, and the firmware
+                  // - which clocks exactly sixteen times - then collects
+                  // [0, D15..D1]. That is the whole word SHIFTED RIGHT BY ONE,
+                  // and it was measured as exactly that on all six words of
+                  // the identity block: 5345 read back as 29a2, 4741 as 23a0,
+                  // 1c82 as 0e41, 0100 as 0080, 889a as 444d, ff01 as 7f80.
+                  //
+                  // The block the firmware then published was garbage, the
+                  // V60's "SEGA" check at FE078E failed, and the game took its
+                  // uninitialised-board branch. See docs/findings.md.
                   2'b10: begin ee_st <= EE_READ;
-                               ee_out <= {1'b0, ee[{ee_sh[4:0], ee_di}]}; end
+                               ee_do  <= 1'b0;
+                               ee_out <= {ee[{ee_sh[4:0], ee_di}], 1'b0}; end
                   2'b01: begin ee_st <= EE_WRITE; ee_wcnt <= 5'd0; end
                   2'b11: begin if (ee_ewen) ee[{ee_sh[4:0], ee_di}] <= 16'hffff;
                                ee_st <= EE_DONE; end
