@@ -916,9 +916,30 @@ module m1_raster3d #(
   // The arm is kept for the case it was built for - a sweep that begins at
   // the blanking edge because there was nothing to hand over - and that is
   // what `armed_ok` gates.
+  // ONE LINE OF LEAD, because the swap does not take effect where it is made.
+  //
+  // `beam_ext >= want_ext` first becomes true at the FIRST LINE of the band, so
+  // the swap was being asked for while the beam was already drawing that line.
+  // disp_buf then crosses into the scanout domain through the toggle handshake -
+  // two or three scan clocks - so the first few pixels of that line were still
+  // read from the buffer being replaced, which holds nothing for those rows.
+  //
+  // On screen: at the start of every band, the first line, the first few pixels,
+  // no 3D. Forty-eight times a frame down the left edge. Reported from the board
+  // 2026-09-09 and present before the clock raise as well, which fits - it is a
+  // fixed number of cycles against the start of a line, not a throughput fault.
+  //
+  // `beam_row_s2` is captured on the same toggle as `beam_band_s2`, so the two
+  // are consistent by construction, and it was already crossed and unused. On
+  // the last row of a band the lead is one band, which gives the whole of that
+  // line - and its horizontal blank - for the swap to land before the new band's
+  // first visible pixel.
+  wire        beam_last_row = (beam_row_s2 == ($clog2(BAND_H))'(BAND_H - 1));
+  wire [BW:0] beam_lead     = beam_ext + {{BW{1'b0}}, beam_last_row};
+
   wire present_now = ready_valid
                   && ((want_ext == '0) ? (beam_blank || (frame_armed && armed_ok))
-                                       : (!beam_blank && beam_ext >= want_ext));
+                                       : (!beam_blank && beam_lead >= want_ext));
 
 
   always_ff @(posedge scan_clk or negedge rst_n) begin
