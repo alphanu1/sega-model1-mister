@@ -952,6 +952,32 @@ task automatic run_iofw_download;
     end
 endtask
 
+// The game id, on index 4. Sent FIRST, the way the MRA orders it, and streamed
+// through the REAL loader - which does not accept index 4 as a stream at all.
+// That is the point of the test: an index the loader ignores must not disturb
+// rom_loaded, or the V60 is released on a ROM that is not there yet. The
+// released RBF predates this index entirely and must also survive an MRA that
+// carries it.
+task automatic run_gameid_download(input [7:0] id);
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd4;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        while (ioctl_wait) @(posedge clk);
+        ioctl_wr   <= 1'b1;
+        ioctl_addr <= 0;
+        ioctl_dout <= {id, id};
+        @(posedge clk);
+        ioctl_wr   <= 1'b0;
+        @(posedge clk);
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: game id %02h streamed on index 4", id);
+        $fflush;
+    end
+endtask
+
 // The I/O board's settings EEPROM, on index 3. Streamed through the REAL
 // loader, exactly like the firmware, because the array has no $readmemh any
 // more: a simulation-only initialiser is how the shifted-read bug survived -
@@ -2151,6 +2177,7 @@ initial begin
     $fflush;
 
     if (DOWNLOAD) begin
+        run_gameid_download(8'd0);   // 0 = Virtua Racing
         run_download();
         run_ucode_download();
         if (iofw_ok) run_iofw_download();
