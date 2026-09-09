@@ -934,8 +934,48 @@ module m1_raster3d #(
   // the last row of a band the lead is one band, which gives the whole of that
   // line - and its horizontal blank - for the swap to land before the new band's
   // first visible pixel.
+  // AND ONLY DURING THAT LINE'S HORIZONTAL BLANK.
+  //
+  // Leading for the WHOLE last line was tried on the board 2026-09-09 and is
+  // much worse: the swap then lands a few pixels into that line and the REST of
+  // it reads the incoming buffer, so instead of a few missing pixels at the top
+  // of each band, most of a line goes. Ben's photo shows it as blue rules across
+  // the picture.
+  //
+  // The window that works is the blank at the END of the last line: scan_x runs
+  // to 655 against 496 visible, so about 160 cycles, against a round trip of
+  // roughly eight - scan_y crosses in, the present decides, disp_buf crosses
+  // back out. That is enough for the swap to be in place before the new band's
+  // first visible pixel and late enough that the line still on screen is never
+  // touched.
+  //
+  // scan_x is already an input and a single bit crossing a domain is safe on two
+  // flops, unlike the band index itself.
+  // THE COMPARISON IS MADE WHERE scan_x IS STABLE, and only the RESULT crosses.
+  //
+  // Sampling scan_x in this domain and comparing it here would be the same
+  // multi-bit fault as the band index: a mixed sample of 255 -> 256 can read as
+  // 511, which is >= 496, so hblank would assert in the middle of a visible line
+  // and fire the very early swap this is meant to prevent. One bit that is
+  // already resolved crosses safely on two flops; ten bits in flight do not.
+  logic beam_hb_q;
+  always_ff @(posedge scan_clk or negedge rst_n) begin
+    if (!rst_n) beam_hb_q <= 1'b0;
+    else        beam_hb_q <= (scan_x >= 10'(SCR_W));
+  end
+
+  logic beam_hb_s1, beam_hb_s2;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin beam_hb_s1 <= 1'b0; beam_hb_s2 <= 1'b0; end
+    else begin
+      beam_hb_s1 <= beam_hb_q;   // metastability catcher, never used for logic
+      beam_hb_s2 <= beam_hb_s1;
+    end
+  end
+
   wire        beam_last_row = (beam_row_s2 == ($clog2(BAND_H))'(BAND_H - 1));
-  wire [BW:0] beam_lead     = beam_ext + {{BW{1'b0}}, beam_last_row};
+  wire        beam_eol      = beam_last_row && beam_hb_s2;
+  wire [BW:0] beam_lead     = beam_ext + {{BW{1'b0}}, beam_eol};
 
   wire present_now = ready_valid
                   && ((want_ext == '0) ? (beam_blank || (frame_armed && armed_ok))
