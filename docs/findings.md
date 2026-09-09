@@ -20,6 +20,44 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (7) — THE BENCH'S RENDERED FRAME IS THREE PALETTE ENTRIES, AT ANY RUN LENGTH
+
+`tb_m1_frame` writes the last frame to `build/frame.ppm`, and the image is two
+colours. That is not a capture bug and not a short run:
+
+| | 90 M cycles | 350 M cycles |
+|---|---|---|
+| distinct palette WORDS read | 6 | 6 |
+| distinct tile words read | 32 | 32 |
+| distinct palette INDICES requested | **3** | **3** |
+| tilemap 2 pixels that frame | 180,677 | 180,677 |
+
+Identical at nearly four times the length, so the game is not simply "not there
+yet". The palette RAM itself is fine - `build/frame_pal.hex` holds **579
+distinct entries, 2,706 non-zero** - and the tilemap is being read with real
+entries (`8031`, `8032`, `8036`, ...). The problem is between them:
+
+    m1_tile_decode:  pal_index = {colour, pixel},  colour = tile_word[14:7]
+
+and every tile word observed has bits 14:7 ZERO, so every palette address lands
+in the bottom sixteen. Two Virtua Racing runs and one Virtua Fighter run all
+produced a byte-identical frame - 186,142 black and 4,322 white - which is
+conclusive on its own: two different games cannot render the same picture.
+
+**The same RTL renders full colour on hardware**, so this is a simulation-side
+divergence rather than a core defect. It matters because "frame image diffs
+against MAME on a fixed input script" is one of the project's three stated
+verification methods and, on this evidence, has never once worked. There is
+already a probe in the bench written for this exact symptom - "Two colours out
+of a palette holding real xBGR-555 entries says the data reaching the video path
+is not the data the CPU wrote" - so it was hit before and left.
+
+Not chased further yet. The next question is whether the tile words the renderer
+sees are the ones the V60 wrote, which the probe was built to answer and which
+nothing has yet compared against the CPU's write stream.
+
+---
+
 ## 2026-09-09 (6) — VIRTUA FIGHTER'S ARENA: WHAT IT IS NOT, MEASURED AGAINST A RUNNING MAME
 
 Ben confirmed MAME renders the arena at the correct size with the same ROMs, so
