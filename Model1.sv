@@ -139,6 +139,14 @@ module emu
   wire io_coin2    = joy0[16];
 
   // Steering on the d-pad as well as the stick.
+  // Two players, for the fighters. joy[0] right, [1] left, [2] down, [3] up,
+  // buttons from [4] - the same order the VR decode above relies on.
+  wire p1_right = joy0[0], p1_left = joy0[1], p1_down = joy0[2], p1_up = joy0[3];
+  wire p1_b1    = joy0[4], p1_b2   = joy0[5], p1_b3   = joy0[6];
+  wire p2_right = joy1[0], p2_left = joy1[1], p2_down = joy1[2], p2_up = joy1[3];
+  wire p2_b1    = joy1[4], p2_b2   = joy1[5], p2_b3   = joy1[6];
+  wire io_start2   = joy1[12];
+
   wire io_steer_l  = joy0[1];
   wire io_steer_r  = joy0[0];
 
@@ -157,10 +165,60 @@ module emu
   //   IN.0  0 coin1, 1 coin2, 2 test, 3 service, 4 start, 5 VR1, 6 VR2, 7 VR3
   //   IN.1  0 VR4, 4 shift down, 5 shift up
   // Inverted because every control on this hardware is active low.
-  wire [7:0] io_in0 = ~{io_vr3, io_vr2, io_vr1, io_start,
-                        io_service, io_test, io_coin2, io_coin};
-  wire [7:0] io_in1 = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
-  wire [7:0] io_in2 = 8'hff;          // drive board RX line, nothing on it here
+  // WHICH GAME IS LOADED, from the MRA.
+  //
+  // Six titles share one bitstream and they do not agree about the input map,
+  // so the core has to be told. The MRA carries a literal byte on its own
+  // download index - the same mechanism every multi-game MiSTer core uses -
+  // and it arrives once, before the ROM.
+  //
+  //   0  Virtua Racing (and Virtua Formula: the same cabinet)
+  //   1  Virtua Fighter
+  //   2  Star Wars Arcade
+  //   3  Wing War
+  //   4  Sega NetMerc
+  //
+  // Held through an OSD reset and cleared only at power-on: the byte arrives
+  // before the ROM and must not be lost when the game side is reset. An MRA
+  // with no such element leaves this at 0, which is Virtua Racing - the
+  // behaviour every existing MRA had before this existed.
+  // Declared here because the input map below needs it; DRIVEN further down,
+  // after the ioctl wires exist. Verilator accepts a reference above the
+  // declaration and Quartus does not, which has already cost this project a
+  // build once.
+  localparam [15:0] GAMEID_INDEX = 16'd4;
+  logic [7:0] game_id;
+  wire is_vf = (game_id == 8'd1);
+
+  // THE INPUT MAP IS PER GAME, AND IT HAS TO BE.
+  //
+  // These three bytes are the board's IN.0/IN.1/IN.2 and the games do not agree
+  // about them beyond IN.0's bottom five bits. Virtua Racing puts its four view
+  // buttons and two shift levers here; VIRTUA FIGHTER puts a full 8-way stick
+  // and three buttons for EACH of two players, on IN.1 and IN.2. Publishing
+  // VR's layout unconditionally left Virtua Fighter with no left or right for
+  // player 1, buttons 2 and 3 unreachable, and player 2 entirely dead, because
+  // IN.2 was tied to 0xff for the drive board that only VR has.
+  //
+  // model1.cpp INPUT_PORTS_START( vr ) and ( vf ). Active LOW throughout, so
+  // idle is all-ones and a press is a bit going low.
+  wire [7:0] io_in0_vr = ~{io_vr3, io_vr2, io_vr1, io_start,
+                           io_service, io_test, io_coin2, io_coin};
+  wire [7:0] io_in1_vr = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
+  wire [7:0] io_in2_vr = 8'hff;       // drive board RX line, nothing on it here
+
+  // Virtua Fighter. IN.0 bit 5 is START2 where VR has its first view button -
+  // without it player 2 cannot join at all.
+  wire [7:0] io_in0_vf = ~{2'b00, io_start2, io_start,
+                           io_service, io_test, io_coin2, io_coin};
+  wire [7:0] io_in1_vf = ~{p1_left, p1_right, p1_up, p1_down,
+                           1'b0, p1_b3, p1_b2, p1_b1};
+  wire [7:0] io_in2_vf = ~{p2_left, p2_right, p2_up, p2_down,
+                           1'b0, p2_b3, p2_b2, p2_b1};
+
+  wire [7:0] io_in0 = is_vf ? io_in0_vf : io_in0_vr;
+  wire [7:0] io_in1 = is_vf ? io_in1_vf : io_in1_vr;
+  wire [7:0] io_in2 = is_vf ? io_in2_vf : io_in2_vr;
 
   // The three MSM6253 channels. Each idle value is measured rather than assumed
   // — see docs/io-board.md — and they are not the same: steering rests centred
@@ -244,6 +302,13 @@ module emu
   wire [26:0] ioctl_addr;
   wire [15:0] ioctl_dout;
   wire [15:0] ioctl_index;
+
+  // The game id itself. See GAMEID_INDEX above for the mapping and why it is
+  // held through an OSD reset.
+  always_ff @(posedge clk_sys) begin
+    if (!pll_locked)                                    game_id <= 8'd0;
+    else if (ioctl_wr && (ioctl_index == GAMEID_INDEX)) game_id <= ioctl_dout[7:0];
+  end
   wire        ioctl_wait;
 
   hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io

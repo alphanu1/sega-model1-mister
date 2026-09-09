@@ -31,6 +31,15 @@
       sound board. Those blocks do not exist in the core, so sending them would
       only slow the load. They belong here as M2 and M4 land.
     -->
+    <!-- WHICH GAME THIS IS. Six titles share one bitstream and they do not
+         agree about the input map, so the core has to be told. Ahead of
+         index 0 deliberately: the byte must arrive before the ROM.
+         0 Virtua Racing / Formula, 1 Virtua Fighter, 2 Star Wars,
+         3 Wing War, 4 NetMerc. -->
+    <rom index="4" md5="none">
+        <part>02 02</part>
+    </rom>
+
     <rom index="0" zip="swa.zip" md5="none">
         <!-- stream 0x000000, ROM_LOAD16_BYTE -->
         <interleave output="16">
