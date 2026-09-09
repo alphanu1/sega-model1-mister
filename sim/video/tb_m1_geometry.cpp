@@ -783,15 +783,24 @@ int main(int argc, char** argv) {
     // neither is in the repository - hard rule 2.
     printf("test: REAL models from the polygon ROM, against push_object\n");
     {
-        FILE* rf = fopen("build/rom/vr_stream.bin", "rb");
-        FILE* of = fopen("build/real_objects.txt", "r");
+        // Overridable so another game's models can be walked. Virtua Fighter's
+        // arena is the wrong size on hardware while its fighters are correct,
+        // and its display list, viewport, zoom and object sizes all match MAME
+        // exactly - so the remaining suspect is the geometry for those specific
+        // models, which is what this test exists to compare.
+        const char* rom_path = getenv("GEO_STREAM");
+        const char* obj_path = getenv("GEO_OBJECTS");
+        if (!rom_path) rom_path = "build/rom/vr_stream.bin";
+        if (!obj_path) obj_path = "build/real_objects.txt";
+        FILE* rf = fopen(rom_path, "rb");
+        FILE* of = fopen(obj_path, "r");
         if (!rf || !of) {
             printf("  skipped: need build/rom/vr_stream.bin (build_rom_image.py --bin)\n");
             printf("           and build/real_objects.txt (see tools/dlist_objects.py)\n");
         } else {
             fseek(rf, 0x840000, SEEK_SET);
             size_t got = fread(prom.data(), 4, PROM_WORDS, rf);
-            printf("  polygon ROM: %zu model words from byte 0x840000\n", got);
+            printf("  polygon ROM: %zu model words from byte 0x840000 of %s\n", got, rom_path);
 
             // The DUT's plane inputs follow the viewport, and this test never
             // set one - so it was comparing against a model that recomputes the
