@@ -216,7 +216,7 @@ docs/rtl-conventions.md         coding rules, testbench shape, area baselines
 rtl/m1_main.sv                  main board — bus, arbitration, memory map
 rtl/m1_mainram.sv               on-chip memories (block RAM idiom matters here)
 rtl/m1_integrated.sv            V60 side + 2D side as one design, for measurement
-rtl/cpu/v60/                    NEC V60, imported from s32 and cast-fixed
+rtl/cpu/v60/                    NEC V60, from meathax/s32, cast-fixed and split
 rtl/mem/                        SDRAM controller, device model, bandwidth monitor
 rtl/io/                         ROM loader, 315-5465 address decode, GLUE
 rtl/video/                      2D path — timing, tilemaps, priority mixer, palette
@@ -329,6 +329,22 @@ tools/bootstrap.sh --update     # re-pin deps.lock to current upstream HEADs
 Pins land in `deps.lock`. `third_party/` is gitignored. The MAME checkout is a blobless
 partial clone with a non-cone sparse filter, so it pulls ~5 MB of reference sources
 rather than several GB.
+
+## Credits
+
+The NEC V60 is **[meathax](https://github.com/meathax)**'s, from the
+[s32](https://github.com/meathax/s32) Sega System 32 project — the CPU at the
+heart of this core, imported with explicit width casts, and its ~35 directed
+testbenches reused unchanged. The Z80 is **T80**, originally by Daniel Wallner,
+via the same project. The framework is **MiSTer-devel**'s.
+
+The hardware behaviour is verified throughout against **MAME**, whose Model 1
+driver and MB86233 coprocessor model are the reference every block here is
+checked against: the coprocessor is fuzzed per opcode against it and the V60's
+instruction stream is diffed against its tracer from reset.
+
+Full component breakdown, with licences and exactly what was taken from each, in
+`THIRD-PARTY.md`.
 
 ## Licence
 
