@@ -121,11 +121,6 @@ int main(int argc, char **argv) {
     }
     checks++;
     if (mid_seen < 60) { fails++; fprintf(stderr, "  FAIL only %d mid-set trials landed\n", mid_seen); }
-    checks++;
-    if (dut->dbg_redo == 0) {
-        fails++;
-        fprintf(stderr, "  FAIL dbg_redo is 0 after %d mid-set requests\n", mid_seen);
-    }
 
     // ---- 3. busy must cover the redo, or an object is clipped on mixed planes
     set_vp(248, 192, 280, 280, 0, 0, 0, 496, 0, 384);
@@ -160,8 +155,8 @@ int main(int argc, char **argv) {
         check_set("fuzz", xc, yc, zx, zy, vx, vy, x1, x2, y1, y2);
     }
 
-    printf("m1_geo_planes: checks=%ld fails=%ld set=%d cycles redo=%u\n",
-           checks, fails, cyc, (unsigned)dut->dbg_redo);
+    printf("m1_geo_planes: checks=%ld fails=%ld set=%d cycles mid=%d\n",
+           checks, fails, cyc, mid_seen);
     delete dut;
     return fails ? 1 : 0;
 }

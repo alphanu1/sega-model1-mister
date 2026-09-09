@@ -183,10 +183,6 @@ module m1_speed_report #(
   // cut - six times the quads, displaced to one side, which no clip plane
   // or cull can produce. Nonzero and climbing means the race is real.
   input  logic [15:0] mat_race, plane_race,
-  // Passes the game flipped out from under. See m1_raster3d's dbg_list_race.
-  input  logic [15:0] list_race,
-  // q= : plane recomputes that landed mid-set. See m1_geo_planes.
-  input  logic [15:0] plane_redo,
   // i= the list walker's stalled cycles, /16. Read against c=.
   input  logic [15:0] lw_stall_q,
   // THE PROJECTION STATE, top 16 bits of each IEEE-754 value.
@@ -257,17 +253,9 @@ module m1_speed_report #(
   logic [7:0]  r_occ, r_wait;
   logic [15:0] r_pxl, r_pxr, r_oob, r_cull, r_quads, r_hl, r_hr, r_pl;
   logic [15:0] r_ci, r_co, r_cd, r_mr, r_pr, r_ls;
-  logic [15:0] r_lr, r_prd, r_plmax;
   logic [15:0] r_vx, r_xc, r_zx, r_lb, r_lo;
   logic [15:0] r_ch, r_cl, r_ho;
   logic [31:0] wband_max;
-  // THE PEAK PASS, not the last one. `r_plen` samples whatever pass happened
-  // to have finished when the line went out - about one sample every 1.8
-  // frames against a pass every two - so the WORST pass in a busy stretch is
-  // very likely never seen. A corner is exactly where it would be, and a
-  // corner is where Ben reports the slowdown, so the peak is the number that
-  // decides whether the geometry is overrunning the list flip at all.
-  logic [31:0] plen_max;
   logic        report_go;
 
   always_ff @(posedge clk or negedge rst_n) begin
@@ -276,11 +264,9 @@ module m1_speed_report #(
       r_frame <= '0; r_swap <= '0; r_bands <= '0; r_pass <= '0;
       r_tpc <= '0; r_tret <= '0; r_npres <= '0; r_vpc <= '0; r_spc <= '0;
       r_plen <= '0; r_late <= '0; r_wband <= '0; wband_max <= '0;
-      plen_max <= '0; r_plmax <= '0;
       r_drop <= '0; r_short <= '0; r_vx1 <= '0; r_miss <= '0;
       r_occ <= '0; r_wait <= '0; r_pxl <= '0; r_pxr <= '0; r_oob <= '0;
       r_ci <= '0; r_co <= '0; r_cd <= '0; r_mr <= '0; r_pr <= '0; r_ls <= '0;
-      r_lr <= '0; r_prd <= '0;
       r_vx <= '0; r_xc <= '0; r_zx <= '0; r_lb <= '0; r_lo <= '0;
       r_cull <= '0; r_quads <= '0; r_hl <= '0; r_hr <= '0; r_pl <= '0;
       r_ch <= '0; r_cl <= '0; r_ho <= '0;
@@ -290,7 +276,6 @@ module m1_speed_report #(
       sel_d <= list_sel;
       if (list_sel != sel_d) n_swap <= n_swap + 16'd1;
       if (band_cycles > wband_max) wband_max <= band_cycles;
-      if (pass_cycles > plen_max)  plen_max  <= pass_cycles;
       if (vblank) begin
         n_frame <= n_frame + 16'd1;
         if (period_cnt == 16'(PERIOD - 1)) begin
@@ -318,7 +303,6 @@ module m1_speed_report #(
           r_oob   <= vert_oob;
           r_ci    <= clip_in; r_co <= clip_out; r_cd <= clip_drop;
           r_mr    <= mat_race; r_pr <= plane_race; r_ls <= lw_stall_q;
-          r_lr    <= list_race; r_prd <= plane_redo;
           r_vx    <= vx_q; r_xc <= xc_q; r_zx <= zx_q;
           r_lb    <= lw_bad_q; r_lo <= lw_over_q;
           r_cull  <= culled;
@@ -330,7 +314,6 @@ module m1_speed_report #(
           r_cl    <= ctrl_lo;
           r_ho    <= hud_obj;
           r_wband <= wband_max[19:4]; wband_max <= '0;
-          r_plmax <= plen_max[23:8]; plen_max <= '0;
           report_go <= 1'b1;
         end else period_cnt <= period_cnt + 16'd1;
       end
@@ -374,7 +357,7 @@ module m1_speed_report #(
   // first two reached the board and read as UART corruption. The third was
   // caught by tb_m1_speed_report before it could be built, which is what that
   // bench exists for. Good to 511 bytes now.
-  localparam int unsigned NF  = 43;             // fields
+  localparam int unsigned NF  = 40;             // fields
   localparam int unsigned FW  = 9;              // bytes per field
   localparam int unsigned NCH = NF * FW + 2;    // + CR + LF
 
@@ -440,13 +423,7 @@ module m1_speed_report #(
       6'd36: begin f_letter = "l"; f_value = {8'd0, r_zx};  end
       6'd37: begin f_letter = "m"; f_value = {8'd0, r_lb};  end
       6'd38: begin f_letter = "n"; f_value = {8'd0, r_lo};  end
-      6'd39: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
-      // THE LIST RACE: passes the game flipped out from under the walker.
-      6'd40: begin f_letter = "p"; f_value = {8'd0, r_lr};  end
-      // THE DROPPED PLANE RECOMPUTES - the left-side cut's mechanism.
-      6'd41: begin f_letter = "q"; f_value = {8'd0, r_prd}; end
-      // PEAK pass length since the last line, same scaling as L.
-      default: begin f_letter = "r"; f_value = {8'd0, r_plmax}; end
+      default: begin f_letter = "h"; f_value = {8'd0, r_ho};  end
     endcase
   end
 

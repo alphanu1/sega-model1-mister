@@ -51,10 +51,6 @@ module m1_geo_planes (
 
   output logic [31:0] a_left, a_right, a_bottom, a_top,
   output logic        valid,               // a full set has been computed
-  // Recompute requests that arrived while a set was in flight. Non-zero means
-  // this module was asked to redo the planes mid-set, which before the `pend`
-  // flag below was silently dropped. Reported as `q` on the UART.
-  output logic [15:0] dbg_redo,
   // A RECOMPUTE IS IN FLIGHT, so the four planes are a mix of old and new.
   //
   // The planes are computed ONE AT A TIME - each is two adds and a divide from
@@ -139,14 +135,10 @@ module m1_geo_planes (
     if (!rst_n) begin
       st <= S_IDLE; which <= '0; acc <= '0; valid <= 1'b0;
       a_left <= '0; a_right <= '0; a_bottom <= '0; a_top <= '0;
-      pend <= 1'b0; dbg_redo <= '0;
+      pend <= 1'b0;
     end else begin
-      // Remember a request whatever state we are in. Counted when it arrives
-      // mid-set, because that is the case that used to be lost.
-      if (recompute) begin
-        pend <= 1'b1;
-        if (st != S_IDLE) dbg_redo <= dbg_redo + 16'd1;
-      end
+      // Remember a request whatever state we are in.
+      if (recompute) pend <= 1'b1;
       case (st)
         S_IDLE: if (pend || recompute) begin
                   pend <= 1'b0; which <= '0; valid <= 1'b0; st <= S_S1;

@@ -259,8 +259,7 @@ module m1_geo_planes_top (
   input  logic [31:0] x1, x2, y1, y2,
   input  logic        recompute,
   output logic [31:0] a_left, a_right, a_bottom, a_top,
-  output logic        valid, busy,
-  output logic [15:0] dbg_redo
+  output logic        valid, busy
 );
   logic [0:0] mr, mg, mrsp, ar, ag, arsp, dr, dg, drsp;
   logic [31:0] ma [1], mb [1], aa [1], ab [1], da [1], db [1];
@@ -278,7 +277,7 @@ module m1_geo_planes_top (
     .div_req(dr[0]), .div_a(da[0]), .div_b(db[0]),
     .div_gnt(dg[0]), .div_rsp(drsp[0]), .div_res(dres),
     .a_left(a_left), .a_right(a_right), .a_bottom(a_bottom), .a_top(a_top),
-    .valid(valid), .dbg_redo(dbg_redo), .busy(busy)
+    .valid(valid), .busy(busy)
   );
 
   assign mr = 1'b0; assign ma[0] = '0; assign mb[0] = '0;
