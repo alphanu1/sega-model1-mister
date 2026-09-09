@@ -191,6 +191,11 @@ int main(int argc, char** argv) {
         {'p', 0x2B7E},
         // Plane recomputes dropped mid-set - the left-side cut's mechanism.
         {'q', 0x1D4C},
+        // PEAK pass length since the last line - the last-pass sample in L
+        // misses the worst one in a busy stretch, which is a corner.
+        // With one pass value present the peak equals L, which is the check:
+        // the peak-hold must track the same signal, not a stale or zero one.
+        {'r', 0x0A12},
     };
     const int NF = sizeof(want) / sizeof(want[0]);
     const int FW = 9;

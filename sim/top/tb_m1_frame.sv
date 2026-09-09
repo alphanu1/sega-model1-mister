@@ -1310,7 +1310,28 @@ end
 // arena is wrong, and it is right in attract and wrong in play. Objects drawn
 // by command 0x01 and objects drawn by command 0x02 is exactly that split, so
 // this counts them: how many the game issues, and whether that changes.
-integer dir_cmds = 0, obj_cmds = 0;
+integer dir_cmds = 0, obj_cmds = 0, polyram_cmds = 0, obj_bit23 = 0, polyram_words = 0;
+// Objects whose polygon address has BIT 23 set should read uploaded polygon RAM
+// (model1_v.cpp: `if (poly_adr & 0x800000) poly_data = m_poly_ram`). We mask
+// that bit away and always read the ROM, so these are the objects drawn from
+// the wrong model. If they appear only once a match starts, that is the arena.
+always @(posedge clk_3d) begin
+    if (core.u_raster3d.rst_n) begin
+        if (core.u_raster3d.lw_ev_valid && !core.u_raster3d.lw_ev_body
+            && core.u_raster3d.lw_ev_kind == 8'h05
+            && core.u_raster3d.lw_ev_idx == 16'd0)
+            polyram_cmds = polyram_cmds + 1;
+        if (core.u_raster3d.lw_ev_valid && core.u_raster3d.lw_ev_body
+            && core.u_raster3d.lw_ev_kind == 8'h05)
+            polyram_words = polyram_words + 1;
+        if (core.u_raster3d.lw_ev_valid && !core.u_raster3d.lw_ev_body
+            && (core.u_raster3d.lw_ev_kind == 8'h01 || core.u_raster3d.lw_ev_kind == 8'h41)
+            && core.u_raster3d.lw_ev_idx == 16'd1
+            && core.u_raster3d.lw_ev_data[23])
+            obj_bit23 = obj_bit23 + 1;
+    end
+end
+
 reg [3:0] wst_d = 0;
 always @(posedge clk_3d) begin
     if (core.u_raster3d.u_walk.rst_n) begin
@@ -2537,8 +2558,8 @@ initial begin
         for (zw_i = 0; zw_i < 2048; zw_i = zw_i + 1)
             if (z80_seen[zw_i] != 0) $write(" %03h:%0d", zw_i, z80_seen[zw_i]);
         $write("\n");
-        $display("FRAME: display list: %0d objects (cmd 01/41 drawn), %0d DIRECT polys (cmd 02, DROPPED)",
-                 obj_cmds, dir_cmds);
+        $display("FRAME: display list: %0d objects (cmd 01/41), %0d DIRECT (cmd 02 DROPPED), %0d polyRAM uploads (cmd 05 DROPPED) of %0d words, %0d objects with poly_adr bit23 (read from ROM instead)",
+                 obj_cmds, dir_cmds, polyram_cmds, polyram_words, obj_bit23);
         $display("FRAME: bands filled = %0d, presented LATE = %0d, vertices out of the store's range = %0d",
                  core.u_raster3d.dbg_bands, core.u_raster3d.dbg_late, core.u_raster3d.dbg_oob);
         $display("FRAME: 3D passes=%0d  len mean=%0d.%02d fr max=%0d.%02d fr, over a frame=%0d | wait-for-swap mean=%0d.%02d max=%0d.%02d | idle mean=%0d.%02d max=%0d.%02d",
