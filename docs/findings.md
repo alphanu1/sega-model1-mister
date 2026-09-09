@@ -20,6 +20,75 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-09 (4) — VIRTUA FIGHTER: POLYGON RAM IS NOT IMPLEMENTED, AND NEITHER ARE DIRECT POLYS
+
+Ben, on hardware: the fighters are correct and only the fighting arena is wrong;
+it is right in ATTRACT and wrong once a match starts. Two display list commands
+turn out to be parsed and then discarded, and both are Virtua Fighter's.
+
+**1. Command 0x05, the POLYGON RAM upload, has no consumer.**
+
+    case 5: m_poly_ram[adr - 0x800000 + i] = readi(...);      model1_v.cpp:1526
+
+`m1_listwalk` defines `C_POLYRAM = 8'h05` and parses its length, but
+`m1_raster3d` consumes only kinds 01, 03, 04, 06, 09, 0c and 41. **There is no
+polygon RAM anywhere in the core** - the grep returns nothing outside the
+walker.
+
+**And the selector that reaches it is masked away.** MAME chooses the source
+per object:
+
+    if (poly_adr & 0x800000) poly_data = m_poly_ram;
+    else                     poly_data = m_poly_rom;
+
+`m1_geo_walk` does `padr <= in_poly_adr[22:0]`, discarding bit 23. So an object
+that should read UPLOADED geometry reads the polygon ROM at the masked offset -
+a different model entirely. That is not a scaling error, it is the wrong object,
+which is what a wrong-size arena looks like. It fits attract-fine/play-wrong
+directly if VF uploads the ring only once a match begins.
+
+Not yet proven to be the arena specifically: no instrument counts command 5 yet,
+and until one does this is a strong explanation rather than a measurement. The
+counter is the next thing to build, not another theory - that is the lesson from
+the left-side cut.
+
+**2. Command 0x02, DIRECT polygons, is also dropped.** `push_direct` hands over
+polygons ALREADY PROJECTED rather than transformed. `m1_listwalk` walks its
+18-word header and sub-records purely to find the length and step over it, and
+nothing downstream consumes `ev_kind` 2. Ben expects this is why the knives do
+not appear in Virtua Fighter. Confirmed absent by the same census; a separate
+defect from the arena, and it needs fixing too.
+
+**What was ruled out first, all by comparison against model1_v.cpp rather than
+by reasoning:**
+
+| checked | result |
+|---|---|
+| copro microcode `315-5724.bin` | correct file on index 1; MAME flags it BAD_DUMP |
+| program banking `0x100000-0x1fffff` | implemented, `rom_bank[2:0]` |
+| zoom command 0x09 | matches `set_zoom(readf(+2)*4, readf(+4)*4)`, x/y order and the x4 |
+| viewport command 0x03 | indices 1..6 are xc,yc,x1,y2,x2,y1 and the y words are `422 - word`; matches |
+| matrix command 0x0b | 12 floats, stride 26; matches |
+| object command 0x01/0x41 | 3 params, stride 8; matches |
+| camera state on hardware | `xc` 248.0, `viewx` 0, `zoomx` 596.0 and the left plane -0.41 are SELF-CONSISTENT: 248 + (-0.41 x 596) = 4, the left edge |
+
+The camera measurement is what removed the whole projection theory: `zoomx` does
+not change between attract and play, and the fighters being correct says the
+same thing independently.
+
+**Cost of the fix.** MAME's poly RAM is `0x400000` 32-bit words - **16 MB**. M10K
+is 100% full, so it belongs in SDRAM alongside the polygon ROM, which the
+geometry already fetches from. How much of it Virtua Fighter actually touches is
+unmeasured.
+
+**The frame bench was Virtua Racing whatever you asked for.** `ROMHEX` was a
+parameter but the microcode, I/O firmware and EEPROM paths were hardcoded to
+`vr_*`, so `make m1_frame` could not run another game at all. Now
+`make m1_frame GAME=vf` works and VF reaches 3D: 103 objects, 2,273 quads, 160
+passes, viewport latched 150 times, `0..495`.
+
+---
+
 ## 2026-09-09 (3) — THE BEAM-BAND CDC FIX DID NOT FIX THE BAND ARTEFACT
 
 Flashed `a1d9192` (md5 `699ee64f82ac8731e70b5b52f094bcbd`) and driven. **The

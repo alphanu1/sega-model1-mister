@@ -54,6 +54,12 @@ module tb_m1_frame #(
     // is actually in needs about 3.6e9, so this has to be 64-bit.
     parameter longint RUN_CYCLES = 120000000,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
+    // The rest of the per-game artefacts. Hardcoded until 2026-09-09, which is
+    // why every bench run has been Virtua Racing whatever ROMHEX said - the
+    // microcode, the I/O firmware and the EEPROM all came from vr_*.
+    parameter string  UCODEHEX   = "build/rom/vr_tgp_prog.hex",
+    parameter string  IOFWHEX    = "build/rom/vr_iofw.hex",
+    parameter string  EEHEX      = "build/rom/vr_ee.hex",
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -822,14 +828,14 @@ initial begin
     $fflush;
     $readmemh(ROMHEX, rom);
     for (i = 0; i < 2048; i = i + 1) ucode[i] = 32'h0;
-    $readmemh("build/rom/vr_tgp_prog.hex", ucode);
+    $readmemh(UCODEHEX, ucode);
     // The I/O board firmware, as bytes. $readmemh on a byte array wants one
     // hex byte per line; tools/build_rom_image.py --iofw writes it.
     for (i = 0; i < 65536; i = i + 1) iofw[i] = 8'hff;
-    $readmemh("build/rom/vr_iofw.hex", iofw);
+    $readmemh(IOFWHEX, iofw);
     iofw_ok = (iofw[0] !== 8'hff) || (iofw[1] !== 8'hff);
     for (i = 0; i < 128; i = i + 1) eerom[i] = 8'hff;
-    $readmemh("build/rom/vr_ee.hex", eerom);
+    $readmemh(EEHEX, eerom);
     ee_ok = (eerom[0] !== 8'hff) || (eerom[1] !== 8'hff);
     if (!ee_ok)
         $display("tb_m1_frame: *** no I/O board EEPROM (build/rom/vr_ee.hex): the board reads a blank part, the V60's SEGA check at FE078E fails and the game takes its uninitialised-board branch ***");
@@ -1290,6 +1296,33 @@ always @(posedge clk_cpu) begin
                  core.main.m_wdata, core.main.m_rdata,
                  core.main.rams.dpram_lo['h020]);
         dp_n = dp_n + 1;
+    end
+end
+
+// ----------------------------- DIRECT POLYGONS: COUNTED, BECAUSE WE DROP THEM
+//
+// Display list command 0x02 is MAME's push_direct - polygons handed over
+// ALREADY PROJECTED, rather than transformed through the geometry pipeline.
+// m1_listwalk parses it only to find its length and step over it, and nothing
+// downstream consumes ev_kind 2, so every one of them is silently discarded.
+//
+// Ben, 2026-09-09: Virtua Fighter's fighters are correct and only the fighting
+// arena is wrong, and it is right in attract and wrong in play. Objects drawn
+// by command 0x01 and objects drawn by command 0x02 is exactly that split, so
+// this counts them: how many the game issues, and whether that changes.
+integer dir_cmds = 0, obj_cmds = 0;
+reg [3:0] wst_d = 0;
+always @(posedge clk_3d) begin
+    if (core.u_raster3d.u_walk.rst_n) begin
+        wst_d <= core.u_raster3d.u_walk.st;
+        if (core.u_raster3d.u_walk.st != wst_d
+            && core.u_raster3d.u_walk.st == core.u_raster3d.u_walk.S_DIR_FLAGS)
+            dir_cmds = dir_cmds + 1;
+        if (core.u_raster3d.u_walk.ev_valid
+            && (core.u_raster3d.u_walk.ev_kind == 8'h01
+             || core.u_raster3d.u_walk.ev_kind == 8'h41)
+            && core.u_raster3d.u_walk.ev_idx == 16'd0)
+            obj_cmds = obj_cmds + 1;
     end
 end
 
@@ -2504,6 +2537,8 @@ initial begin
         for (zw_i = 0; zw_i < 2048; zw_i = zw_i + 1)
             if (z80_seen[zw_i] != 0) $write(" %03h:%0d", zw_i, z80_seen[zw_i]);
         $write("\n");
+        $display("FRAME: display list: %0d objects (cmd 01/41 drawn), %0d DIRECT polys (cmd 02, DROPPED)",
+                 obj_cmds, dir_cmds);
         $display("FRAME: bands filled = %0d, presented LATE = %0d, vertices out of the store's range = %0d",
                  core.u_raster3d.dbg_bands, core.u_raster3d.dbg_late, core.u_raster3d.dbg_oob);
         $display("FRAME: 3D passes=%0d  len mean=%0d.%02d fr max=%0d.%02d fr, over a frame=%0d | wait-for-swap mean=%0d.%02d max=%0d.%02d | idle mean=%0d.%02d max=%0d.%02d",

@@ -776,8 +776,8 @@ m1_main:
 # the figure cannot be reproduced. A set of numbers recorded without their run
 # length already read as a regression once, and was not one.
 m1_boot:
-	@test -f build/rom/vr_v60.hex || { \
-	  echo "build/rom/vr_v60.hex missing — run:"; \
+	@test -f build/rom/$(GAME)_v60.hex || { \
+	  echo "build/rom/$(GAME)_v60.hex missing — run:"; \
 	  echo "  python3 tools/build_rom_image.py vr <path-to>/vr.zip -o build/rom"; \
 	  exit 1; }
 	verilator --binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND \
@@ -835,8 +835,8 @@ WATCH_PAGE  ?= 0xC0
 # draw, and that took ~2.3 M cycles single-domain and more like four times that
 # now. FRAME_CYCLES is generous; watch the progress lines.
 m1_frame:
-	@test -f build/rom/vr_v60.hex || { \
-	  echo "build/rom/vr_v60.hex missing — run:"; \
+	@test -f build/rom/$(GAME)_v60.hex || { \
+	  echo "build/rom/$(GAME)_v60.hex missing — run:"; \
 	  echo "  python3 tools/build_rom_image.py vr <path-to>/vr.zip -o build/rom"; \
 	  exit 1; }
 	@mkdir -p build
@@ -844,6 +844,11 @@ m1_frame:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
+	  -GROMHEX='"build/rom/$(GAME)_v60.hex"' \
+	  -GUCODEHEX='"build/rom/$(GAME)_tgp_prog.hex"' \
+	  -GIOFWHEX='"build/rom/$(GAME)_iofw.hex"' \
+	  -GEEHEX='"build/rom/$(GAME)_ee.hex"' \
+	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
