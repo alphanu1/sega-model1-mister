@@ -20,6 +20,59 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (4) — STUBBING THE UNUSED V60 INSTRUCTIONS IS WORTH 764 ALM
+
+**Instrument:** `tools/v60_opcensus.sh` for the candidate list, then
+`make quartus MOD=s32_v60` with and without a define. Experiment preserved on
+branch `v60-stub-experiment` (`41785e3`); the working tree was restored and
+`v60.sv` verified byte-identical to `build/v60_backup/v60.sv`.
+
+| | ALM | registers | setup slack |
+|---|---|---|---|
+| full V60 | 17,707 | 4,415 | -3.067 ns |
+| unused groups stubbed | 16,943 | 4,191 | -2.474 ns |
+| **delta** | **-764 (-4.3%)** | **-224** | **+0.593 ns** |
+
+Both slacks are negative because `quartus/spike.sdc` asks the standalone module
+for a clock it cannot meet. That is the measurement vehicle, not a failure; the
+DELTA is the result, and stubbing helps timing as well as area.
+
+**Eight groups**, each measured never executed by vr, vf or netmerc: ROTC,
+DISPOSE, TASI, PREPARE, the decimal group (ADDDC/SUBDC/SUBRDC), bit-field
+INSERT, bit-string MOVE, and task switch (LDTASK/STTASK). **The halves that ARE
+used stayed**: `extbfl`/`extbfz` (bit-field extract) and `sch1bsu` (bit-string
+search) are in the census, so only their siblings went.
+
+**764 ALM is worth having.** The last full build was 41,321/41,910 with 589
+spare, so this roughly doubles the headroom - at a moment when M10K is at
+553/553 and ALM is the binding constraint.
+
+**WHAT THIS MEASUREMENT DOES NOT ESTABLISH, and the precedent says take it
+seriously.** The census window is 10 emulated seconds of each game with no
+input automation, so it is BOOT AND ATTRACT for all three. That is the same
+window that said the V60's FP group was unused - worth 2,984 ALM and 21 MHz -
+and `dbg_fp_trap` fired on a real `cvt.sw` at 421.7 M cycles. netmerc alone
+moving the list (it is the only one of the three reaching `divf.s`, `mulf.s`,
+`negf.s`) shows how sensitive the set is to which code you happen to run.
+
+The experiment branch has **no trap**: an unused opcode falls through to the
+state machine's default and resets the CPU, silently. It is NOT for merge.
+Anything shipped must follow the `dbg_fp_trap` pattern - a sticky bit set the
+first time a stubbed opcode takes the reserved vector, surfaced where a test
+run can read it - which is exactly what Ben proposed when he asked for this.
+
+Also on the V60, and correcting a claim made in this session: **the core was
+PORTED from the s32 project** (`0d1f85b M1: import the V60`), not translated
+from MAME here. Its header's "behavioural contract is MAME's v60 core" is the
+UPSTREAM AUTHOR'S claim about their own work, and citing it as evidence that
+the core is a faithful MAME translation was wrong. Our own evidence is
+`v60_alu` (360,001 checks), `v60_shift` (69,121) and `v60_trace`; none of them
+checks register values instruction by instruction on real code, which is the
+gap a full-CPU lockstep against MAME's device would close - the pattern
+`sim/tgp/mb86233_ref.cpp` already uses for the coprocessor.
+
+---
+
 ## 2026-09-10 (3) — THE VF "CPU DIVERGENCE" IS NOT THE CPU. IT IS A MISSING INTERRUPT SOURCE
 
 **Instrument:** `make v60_trace GAME=vf INPUTSCRIPT=sim/input/vf_match.txt`,
