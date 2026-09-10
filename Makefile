@@ -47,7 +47,7 @@ SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
 SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv \
   rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
   rtl/io/m1_rom_loader.sv rtl/io/m1_speed_report.sv rtl/io/m1_uart_tx.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
@@ -79,6 +79,7 @@ SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
 SRCS_m1_glue := rtl/io/m1_glue.sv
+SRCS_m1_sound_usart := rtl/io/m1_sound_usart.sv
 SRCS_m1_ioboard := rtl/io/m1_ioboard.sv
 SRCS_m1_uart_tx := rtl/io/m1_uart_tx.sv
 SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
@@ -101,7 +102,7 @@ SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # Everything built so far as one design, for an integrated area figure. Not the
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_rom_loader.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_rom_loader.sv \
   rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
@@ -158,7 +159,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -185,6 +186,7 @@ lint:
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_rom_loader) --top-module m1_rom_loader
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_decode) --top-module m1_decode
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_glue) --top-module m1_glue
+	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_sound_usart) --top-module m1_sound_usart
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_ioboard) --top-module m1_ioboard
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_uart_tx) --top-module m1_uart_tx
 	verilator --lint-only -Wall $(VFLAGS) $(SRCS_m1_tile_decode) --top-module m1_tile_decode
@@ -265,7 +267,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -508,6 +510,14 @@ test_glue:
 	  $(SRCS_m1_glue) sim/io/tb_m1_glue.cpp -o tb_glue --Mdir obj_glue
 	./obj_glue/tb_glue
 
+# TxRDY is IRQ level 3 and the games pump their sound queues on it, so this is
+# checked as an interrupt source rather than as a serial port. Its absence read
+# as a V60 divergence on vf - see the module header.
+test_sound_usart:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sound_usart \
+	  $(SRCS_m1_sound_usart) sim/io/tb_m1_sound_usart.cpp -o tb_sound_usart --Mdir obj_sound_usart
+	./obj_sound_usart/tb_sound_usart
+
 # No MAME oracle: MAME runs the real Z80. The reference is the protocol the
 # boot trace established, tested as properties — including the two that have
 # already gone wrong for real, a second handshake with a different code and a
@@ -684,7 +694,7 @@ test_core:
 # "Executing OPT_DFF pass" lines to stdout during synth, and a bare grep for
 # DFF matches those first, so head consumes log noise and no numbers ever
 # appear. Anchoring on "Printing statistics" is what makes this report real.
-AREA_MODULES := bw_monitor m1_copro_if m1_sdram m1_cdc_port m1_cdc_pulse m1_fetch_bridge m1_rom_loader m1_decode m1_glue m1_ioboard m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
+AREA_MODULES := bw_monitor m1_copro_if m1_sdram m1_cdc_port m1_cdc_pulse m1_fetch_bridge m1_rom_loader m1_decode m1_glue m1_sound_usart m1_ioboard m1_mainram m1_tile_decode m1_tile_mixer m1_tile_fetch m1_video_timing m1_palette m1_video m1_raster_div m1_raster_fill fp_mul fp_add fp_div mb86233_alu mb86233_agu mb86233_seq mb86233_regs mb86233_mem mb86233_dec mb86233_xfer mb86233_core
 
 # Expanded by make, not the shell: $(SRCS_$(m)) has to resolve at make time,
 # and a shell loop variable cannot index a make variable.
@@ -787,7 +797,7 @@ m1_boot:
 	  -GWATCH_PAGE=$(WATCH_PAGE) -GTGPTRACE=$(TGPTRACE) -GMATH_ZERO=$(MATH_ZERO) \
 	  --Mdir build/m1boot -o m1boot \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv rtl/io/m1_decode.sv \
-	  rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
+	  rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
 	  rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v \
 	  rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv \
 	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \

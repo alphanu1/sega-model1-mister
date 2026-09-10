@@ -20,6 +20,89 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (3) — THE VF "CPU DIVERGENCE" IS NOT THE CPU. IT IS A MISSING INTERRUPT SOURCE
+
+**Instrument:** `make v60_trace GAME=vf INPUTSCRIPT=sim/input/vf_match.txt`,
+plus a probe in `tb_m1_frame` reporting `irq_n` and `psw_ie` at the one
+instruction the two streams parted on.
+
+`make v60_trace GAME=vf` reported **DIVERGES at instruction 21,817**, at
+`FE4648: updpsw.w #FFFFFFFF, #40000` — mask `0x40000` is bit 18, `psw_ie`, so
+this is the game enabling interrupts for the first time. MAME went one way, we
+went another, and it was read as a V60 bug. **It is not.**
+
+The collapsed streams part like this:
+
+    MAME:  fe4648 -> fe3f5c -> ff3ebc..ff3f24 -> fe3f62 -> fe3f6b -> fe4654 -> ...
+    OURS:  fe4648 ->                                                 fe4654 -> ...
+
+and rejoin at `fe4654` with nothing else different. So it was never seven wrong
+instructions: it is the reference running an extra block and returning.
+
+**The RAW traces settle it.** Aligned from `fe4648`, ours and MAME's agree for
+198 instructions — both enter the interrupt handler at `fe3ed4` on the SAME
+boundary, both run it identically — and part at instruction 199, on `FE3F59:
+retis #0`. MAME's next instruction is `FE3F5C: jsr FF3EBC[PC]`. That is not a
+fall-through past the `retis`. It is a SECOND interrupt taken immediately, and
+model1.cpp names it in a comment:
+
+    // vf
+    // 1 = fe3ed4 (vblank)
+    // 3 = fe3f5c (uart queue pump)
+
+**Level 3 is the sound USART, and we never had one.** `m1_decode` asserted
+`sel_uart` for `0xc4xxxx` and NOTHING WAS CONNECTED TO IT — the bus returned its
+undecoded `0xffff` and `m1_glue` raised only levels 0 and 1. `m1_glue`'s own
+header said so in as many words: "IRQ 3  UART ready — the sound path, not
+implemented yet". model1.cpp wires the uPD71051C's txrdy and rxrdy handlers to
+`sound_ready_w()`, which raises level 3 whenever the line is ready and level 3
+is unmasked; vf unmasks it while its sound queue is non-empty and masks it again
+once drained. With no USART the queue never drained and the interrupt never
+existed.
+
+**So the V60 is exonerated for this divergence.** It took the same interrupt at
+the same instruction boundary and ran the same handler. It was never offered the
+second one. `psw_ie` and the `!irq_n && psw_ie` boundary check are correct.
+
+**VERIFIED AFTER THE FIX.** Re-run with the USART present, `make v60_trace
+GAME=vf` reaches **instruction 25,283 of our 25,284** — the end of our own
+capture window. The two collapsed streams are identical for 25,282 of them; the
+last two are us still spinning in the `fe03a2/fe03a4/fe03ac` poll loop when the
+trace ran out, where MAME had already left it. That is the same shape of result
+`make v60_trace` gives on Virtua Racing ("26,336 of our 26,338"), and it means
+**there is no V60 control-flow divergence on Virtua Fighter in the window that
+can be compared.** The ISR-strip counts say the same thing independently: ours
+went from 100 handler entries to **101**, and the extra one is level 3.
+
+**What this does NOT establish.** It does not explain VF's small arena — that is
+still open — and agreement ends where our capture does, so it says nothing about
+the V60 beyond ~25,000 collapsed instructions. Level 3 fires only ONCE in MAME's
+two-second window, so nothing here should be read as a likely cause of the
+arena. Making the traces comparable is the point of the fix, not the end of the
+question.
+
+**A near-miss worth recording.** A note already in `v60.sv` at `S_DECODE`
+describes a PREVIOUS false report at this very instruction — `dbg_pc` was
+published above the interrupt check, so a preempted instruction advertised a PC
+it never executed. That was found, fixed, and documented. Arriving at `fe4648`
+a second time by a different route, the temptation was to assume the same cause.
+It was not. **The same address can name two unrelated faults**; read the raw
+trace rather than the previous conclusion.
+
+**Fixed by** `rtl/io/m1_sound_usart.sv` — the i8251 transmit path modelled off
+`third_party/mame/src/devices/machine/i8251.cpp`, with the byte discarded until
+M4 gives it somewhere to go — and the level 3 raise in `m1_glue`. The subtlety
+that matters is that TxRDY is **double buffered**: `data_w` clears it and
+`check_for_tx_start()` sets it straight back when the shifter is idle, so a
+write to an idle transmitter leaves the line HIGH and re-raises level 3. That is
+the drain loop. A plain busy flag would drain one byte per unmask instead of one
+per character, which looks like it works and is not what the reference does.
+Character time is held as a RATIO of the CPU (5,120 V60 clocks: 10 bits at
+31.25 kbit/s against 16 MHz), so the overclock carries the sound handshake with
+it — the same reasoning as `m1_ioz80`'s `CEN_NUM/CEN_DEN`.
+
+---
+
 ## 2026-09-10 (2) — VF'S ARENA IS NOT A TIMING FAULT: IT IS THE SAME AT 16 MHz
 
 Ben's argument, and the measurement agrees with him rather than with me.

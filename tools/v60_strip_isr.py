@@ -21,9 +21,11 @@
 # agree for **26,336 of our 26,338** collapsed instructions, i.e. to the end of
 # the shorter one. There was no control-flow divergence in that window at all.
 #
-# The handler is fe02bc..fe0343 (`retis #0`), measured: 281 entries and 281
-# retis in a five-second reference trace. Nested interrupts are not handled and
-# do not occur here — the count matching exactly is the check.
+# vr's handler is fe02bc..fe0343 (`retis #0`), measured: 281 entries and 281
+# retis in a five-second reference trace. A game may run MORE THAN ONE — vf has
+# a vblank handler and a sound-queue handler on different levels — so this takes
+# a list per game. Nested interrupts are not handled and do not occur here; the
+# entry and exit counts matching exactly is the check.
 import os, sys
 
 # PER GAME, and hardcoding it silently strips NOTHING for any other title.
@@ -33,56 +35,53 @@ import os, sys
 # being compared still had their interrupt handlers spliced in wherever the
 # interrupt happened to land - which makes any divergence it reports untrustworthy.
 #
-# vf's is fe3ed4, found the same way vr's was: the address reached from the most
-# distinct predecessors, which is what an interrupt vector looks like. It runs to
-# a `retis` at fe3f59.
-ENTRY_BY_GAME = {
-    "vr":       "fe02bc",
-    "vformula": "fe02bc",
-    "vf":       "fe3ed4",
+# vf's vblank handler is fe3ed4, found the same way vr's was: the address reached
+# from the most distinct predecessors, which is what an interrupt vector looks
+# like. It runs to a `retis` at fe3f59.
+HANDLERS_BY_GAME = {
+    "vr":       [("fe02bc", "fe0343")],
+    "vformula": [("fe02bc", "fe0343")],
+    # vf runs TWO. Level 1 is vblank at fe3ed4; level 3 is the sound queue pump
+    # at fe3f5c, raised by the USART's TxRDY (model1.cpp's own vector comment).
+    # Level 3 only started existing here on 2026-09-10 - see docs/findings.md -
+    # and listing only the vblank handler leaves the other spliced into the main
+    # stream wherever its interrupt happened to land, which is precisely the
+    # artefact this tool exists to remove.
+    "vf":       [("fe3ed4", "fe3f59"), ("fe3f5c", "fe3f6b")],
 }
-ENTRY = ENTRY_BY_GAME.get(os.environ.get("GAME", "vr"), "fe02bc")
-# The EXIT is per game too, and getting it wrong is worse than getting the entry
-# wrong: the tool enters the handler once, never leaves, and strips everything
-# after it. Against Virtua Fighter that dropped 3,694,020 of 3,981,461
-# instructions - 93% - and then cheerfully reported the surviving prefix as
-# IDENTICAL. The entries==exits check is what catches it; it printed
-# "entries=1 exits=0  MISMATCH" and the number is only trustworthy when that
-# line says the counts agree.
-EXIT_BY_GAME = {
-    "vr":       "fe0343",
-    "vformula": "fe0343",
-    "vf":       "fe3f59",   # the `retis #0` at the end of fe3ed4's handler
-}
-EXIT  = EXIT_BY_GAME.get(os.environ.get("GAME", "vr"), "fe0343")
+HANDLERS = HANDLERS_BY_GAME.get(os.environ.get("GAME", "vr"),
+                                HANDLERS_BY_GAME["vr"])
+ENTRIES = {e: x for e, x in HANDLERS}
 
 def main():
     if len(sys.argv) < 3:
         print("usage: v60_strip_isr.py <in> <out>", file=sys.stderr)
         return 2
     kept = dropped = entries = exits = 0
-    inside = False
+    # Which handler we are inside, or None. Nested interrupts are not handled
+    # and do not occur here - the entries==exits check is what would catch it.
+    want_exit = None
     with open(sys.argv[1]) as f, open(sys.argv[2], "w") as o:
         for line in f:
             pc = line.strip()
             if not pc:
                 continue
-            if not inside and pc == ENTRY:
-                inside = True
+            if want_exit is None and pc in ENTRIES:
+                want_exit = ENTRIES[pc]
                 entries += 1
                 dropped += 1
                 continue
-            if inside:
+            if want_exit is not None:
                 dropped += 1
-                if pc == EXIT:
-                    inside = False
+                if pc == want_exit:
+                    want_exit = None
                     exits += 1
                 continue
             o.write(pc + "\n")
             kept += 1
     # Report rather than discard silently: an entry count that does not match the
-    # exit count means the handler's extent is wrong and the filter is eating
-    # real code.
+    # exit count means a handler's extent is wrong and the filter is eating real
+    # code.
     print("v60_strip_isr: kept=%d dropped=%d entries=%d exits=%d%s"
           % (kept, dropped, entries, exits,
              "" if entries == exits else "  MISMATCH - handler extent is wrong"),

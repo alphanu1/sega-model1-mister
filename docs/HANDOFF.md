@@ -1,5 +1,48 @@
 # HANDOFF
 
+## 2026-09-10 — THE VF V60 DIVERGENCE IS ANSWERED, AND IT WAS NOT THE CPU
+
+The V60 trace on Virtua Fighter parted from MAME at instruction 21,817 and that
+had been sitting over the arena investigation as "but our CPU diverges". It is
+resolved: **the V60 is not diverging.** Aligned from the instruction in
+question, the RAW streams agree for 198 instructions - both machines take the
+interrupt on the SAME boundary and run the SAME handler - and part on `FE3F59:
+retis #0`, where MAME immediately takes a SECOND interrupt and we do not.
+
+That second interrupt is **level 3, the sound USART's queue pump**, which
+model1.cpp names in a comment (`3 = fe3f5c (uart queue pump)`). `m1_decode`
+asserted `sel_uart` for 0xc4xxxx and nothing was wired to it, so the bus returned
+its undecoded 0xffff and `m1_glue` raised only levels 0 and 1. The glue's own
+header had said "IRQ 3 UART ready - the sound path, not implemented yet" the
+whole time.
+
+Now built: `rtl/io/m1_sound_usart.sv`, the uPD71051C's transmit path off
+`third_party/mame/src/devices/machine/i8251.cpp`, with the byte discarded until
+M4 has somewhere to put it, plus the level 3 raise in `m1_glue` at both places
+MAME calls `sound_ready_w()`. `tools/v60_strip_isr.py` now takes a LIST of
+handlers per game, because vf has two and leaving the second inline puts back
+exactly the wall-clock artefact that tool exists to remove.
+
+**Verified.** Re-run with the USART present, the trace reaches instruction
+25,283 of our 25,284 - the end of our own capture window - and the two collapsed
+streams are identical for 25,282 of them, the last two being us still in a poll
+loop MAME had already left. The strip counts agree independently: ours went from
+100 handler entries to 101. **There is no V60 control-flow divergence on Virtua
+Fighter in the window that can be compared**, which is the same result
+`v60_trace` gives on Virtua Racing.
+
+**What this does and does not buy.** The CPU is cleared for that window and can
+stop being offered as an explanation for the arena. It does NOT explain the
+arena, and level 3 fires only once in MAME's two seconds, so nothing here should
+be read as a likely cause of it. The arena question goes back to the
+coprocessor, with `tgp_wrtrace GAME=vf` needing to be repointed from
+`make m1_boot` to `m1_frame` with `sim/input/vf_match.txt` before it can run.
+
+Full detail, including the near-miss where a note already in `v60.sv` describes a
+DIFFERENT false report at the very same instruction, is in `docs/findings.md`.
+
+---
+
 ## 2026-09-09 (late) — THE 3D LAYER IS CLEAN ON VIRTUA RACING
 
 Three faults closed today, all confirmed on the board:

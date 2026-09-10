@@ -32,7 +32,24 @@
 //
 //   IRQ 0  timer expiry
 //   IRQ 1  vblank, raised at scanline 384
-//   IRQ 3  UART ready — the sound path, not implemented yet
+//   IRQ 3  USART ready — the sound path
+//
+// LEVEL 3 IS RAISED BY THE SOUND USART, AND LEAVING IT OUT COSTS A DIVERGENCE
+//
+// model1.cpp wires the uPD71051C's txrdy and rxrdy handlers to sound_ready_w(),
+// and calls that from irq_mask_w() as well:
+//
+//   if ((txrdy_r() || rxrdy_r()) && !BIT(m_irq_mask, 3)) irq_raise(3);
+//
+// Note it RE-READS the line rather than trusting the argument it was handed, so
+// the raise is a level test taken at each of those events. Virtua Fighter's
+// level 3 vector is 0xfe3f5c and its handler pumps the sound queue out through
+// the USART; the game unmasks level 3 while that queue is non-empty and masks
+// it again once it drains. With no USART, level 3 never existed here, the queue
+// never drained, and `make v60_trace GAME=vf` diverged from MAME 21,817
+// instructions in — one boundary after the game enables interrupts — because
+// the reference services vblank AND THEN level 3 and we serviced vblank alone.
+// That read as a CPU bug and was not one. See rtl/io/m1_sound_usart.sv.
 //
 // THE TIMERS COUNT IN UNITS OF 0x800
 //
@@ -58,6 +75,11 @@ module m1_glue (
   output logic [15:0] rdata,
 
   input  logic        vblank,    // pulse at the start of vertical blanking
+
+  // The sound USART's interrupt line. `snd_ready_ev` pulses where MAME calls
+  // update_tx_ready(); `snd_txrdy` is the level it re-reads there.
+  input  logic        snd_txrdy,
+  input  logic        snd_ready_ev,
 
   output logic        irq_n,     // active low, to the V60
   // The vector the CPU takes, and the pulse telling us it took it. MAME's
@@ -105,6 +127,15 @@ module m1_glue (
         irq_status[1] <= 1'b1;
       end
 
+      // sound_ready_w(), from the USART's own handlers. Placed above the
+      // register writes so that an explicit 0x10/0x20 acknowledge arriving in
+      // the same cycle still wins: in MAME these are separate calls that can
+      // never coincide, and letting the clear lose would strand a level the
+      // handler believed it had cleared.
+      if (snd_ready_ev && snd_txrdy && !irq_mask[3]) begin
+        irq_status[3] <= 1'b1;
+      end
+
       // MAME stores the vector inside irq_callback, i.e. when the CPU consumes
       // it. `last_irq` is what the 0x20 control write clears, so latching it at
       // raise time would clear whichever source raised most recently rather
@@ -138,7 +169,13 @@ module m1_glue (
                   if      (wdata[7:0] == 8'h10) irq_status <= '0;
                   else if (wdata[7:0] == 8'h20) irq_status[last_irq] <= 1'b0;
                 end
-          3'd1: if (be[0]) irq_mask <= wdata[7:0];
+          // irq_mask_w() ends with its own sound_ready_w() call, against the
+          // mask it has JUST written - so unmasking level 3 while the line is
+          // ready raises it immediately, which is how vf's queue pump starts.
+          3'd1: if (be[0]) begin
+                  irq_mask <= wdata[7:0];
+                  if (snd_txrdy && !wdata[3]) irq_status[3] <= 1'b1;
+                end
           // bank_w: the low nibble selects which window and bits 7:4 the bank.
           // Only selector 1 — the 0x100000-0x1fffff data ROM window — is used
           // by any dumped game; the others are decoded and ignored, as there.

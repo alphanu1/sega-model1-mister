@@ -32,7 +32,7 @@ struct Glue {
     d = new Vm1_glue;
     d->clk = 0; d->ce = 1; d->rst_n = 0;
     d->sel = 0; d->we = 0; d->a = 0; d->be = 3; d->wdata = 0; d->vblank = 0;
-    d->irq_ack = 0;
+    d->irq_ack = 0; d->snd_txrdy = 0; d->snd_ready_ev = 0;
     d->eval();
     for (int i = 0; i < 4; i++) tick();
     d->rst_n = 1;
@@ -45,6 +45,11 @@ struct Glue {
   }
   uint16_t rd(int addr) { d->a = addr; d->eval(); return d->rdata; }
   void pulse_vblank() { d->vblank = 1; tick(); d->vblank = 0; tick(); }
+  // One update_tx_ready() call from the USART, with the line in `ready`.
+  void snd_event(int ready) {
+    d->snd_txrdy = ready; d->snd_ready_ev = 1; tick();
+    d->snd_ready_ev = 0; tick();
+  }
   // The CPU consuming the vector, which is when MAME's irq_callback runs.
   void ack() { d->irq_ack = 1; tick(); d->irq_ack = 0; tick(); }
 };
@@ -174,6 +179,66 @@ int main(int argc, char** argv) {
     for (int i = 0; i < PRESC * 3; i++) g.tick();
     chk(g.rd(6) == 17, "timer 0 counted 3");
     chk(g.rd(7) == 2,  "timer 1 counted 3");
+  }
+
+  // LEVEL 3 IS THE SOUND USART, AND ITS ABSENCE WAS MISREAD AS A CPU BUG.
+  // `make v60_trace GAME=vf` matched MAME for 21,816 instructions and then
+  // parted one boundary after the game enabled interrupts: the reference took
+  // vblank and then level 3, we took vblank alone. Nothing here raised 3.
+  printf("test: level 3 follows the USART, as sound_ready_w does\n");
+  {
+    Glue g;
+    g.wr(1, 0xff);                       // everything masked, as at reset in MAME
+    g.snd_event(1);
+    chk(g.d->irq_n == 1, "masked level 3 does not raise even with the line ready");
+
+    // The line NOT ready must not raise either: sound_ready_w re-reads txrdy
+    // rather than trusting the state change that called it. Drop the line
+    // BEFORE unmasking, or the unmasking write raises it on its own - which is
+    // real behaviour, and has its own test below.
+    g.d->snd_txrdy = 0; g.tick();
+    g.wr(1, 0xf7);                       // unmask 3 only
+    g.snd_event(0);
+    chk(g.d->irq_n == 1, "an event with the line down raises nothing");
+
+    g.snd_event(1);
+    chk(g.d->irq_n == 0, "line ready and unmasked raises");
+    chk(g.d->irq_vec == 3, "vector 3");
+
+    g.ack();
+    g.wr(0, 0x20);
+    chk(g.d->irq_n == 1, "0x20 clears it");
+  }
+
+  printf("test: unmasking level 3 while ready raises it there and then\n");
+  {
+    // irq_mask_w() calls sound_ready_w() against the mask it has just written,
+    // so the game's "and.b #0xf7" is itself what starts the queue pump. Raising
+    // only on later USART events would leave the first byte unsent.
+    Glue g;
+    g.wr(1, 0xff);
+    g.d->snd_txrdy = 1; g.tick();
+    chk(g.d->irq_n == 1, "still masked");
+    g.wr(1, 0xf7);
+    chk(g.d->irq_n == 0, "the unmasking write raises it");
+    chk(g.d->irq_vec == 3, "vector 3");
+
+    // ...and masking it again is not, by itself, a raise.
+    g.ack(); g.wr(0, 0x20);
+    g.wr(1, 0xff);
+    chk(g.d->irq_n == 1, "masking again with the line still ready raises nothing");
+  }
+
+  printf("test: level 3 loses to the lower levels, as the scan from bit 0 has it\n");
+  {
+    Glue g;
+    g.wr(1, 0xf5);                       // unmask vblank (bit 1) and sound (bit 3)
+    g.snd_event(1);
+    chk(g.d->irq_vec == 3, "3 alone");
+    g.pulse_vblank();
+    chk(g.d->irq_vec == 1, "vblank outranks it");
+    g.ack(); g.wr(0, 0x20);
+    chk(g.d->irq_vec == 3, "and 3 is still there underneath");
   }
 
   printf("test: banking takes selector 1 only\n");

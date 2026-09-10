@@ -573,11 +573,29 @@ module m1_main #(
   logic [2:0]  glue_irq_vec;
   logic        cpu_irq_ack;
 
+  // ------------------------------------------------- SOUND USART (0xc40000)
+  // The board's uPD71051C. No sound board is attached yet, but its TxRDY line
+  // is IRQ level 3 and the games use it: vf's level 3 handler drains the sound
+  // queue, and without the interrupt that queue never empties. This decoded to
+  // nothing until 2026-09-10 and cost a false CPU divergence - see the header
+  // of rtl/io/m1_sound_usart.sv.
+  logic [15:0] usart_rdata;
+  logic        usart_txrdy, usart_ready_ev;
+
+  m1_sound_usart usart (
+    .clk(clk), .ce(ce), .rst_n(rst_n),
+    .sel(sel_uart), .we(m_req && m_we), .a(m_addr[1]),
+    .be(m_be), .wdata(m_wdata), .rdata(usart_rdata),
+    .txrdy(usart_txrdy), .ready_ev(usart_ready_ev),
+    .tx_data(), .tx_stb()
+  );
+
   m1_glue glue (
     .clk(clk), .ce(ce), .rst_n(rst_n),
     .sel(sel_glue), .we(m_req && m_we), .a(m_addr[3:1]),
     .be(m_be), .wdata(m_wdata), .rdata(glue_rdata),
     .vblank(vblank_irq),
+    .snd_txrdy(usart_txrdy), .snd_ready_ev(usart_ready_ev),
     .irq_n(irq_n), .irq_vec(glue_irq_vec), .irq_ack(cpu_irq_ack),
     .rom_bank(rom_bank)
   );
@@ -808,6 +826,7 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
           else if (sel_colxlat) rdata_r <= cxlat_q;
           else if (sel_dpram)   rdata_r <= dpram_q;
           else if (sel_glue)    rdata_r <= glue_rdata;
+          else if (sel_uart)    rdata_r <= usart_rdata;
           else if (sel_listctl) rdata_r <= listctl_q;
           // sel_fifo_stat deliberately falls through: MAME's fifoin_status_r
           // returns a constant 0xFFFF and the default below already is that.

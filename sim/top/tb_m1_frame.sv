@@ -1373,6 +1373,31 @@ always @(posedge clk) begin       // clk is the scan/system clock in this bench
     end
 end
 
+// ----------------------------- WHICH INTERRUPT LEVELS DOES THE CORE TAKE?
+//
+// This replaces a one-shot probe that asked whether an interrupt was pending at
+//     FE4648: updpsw.w #FFFFFFFF, #40000     (bit 18 = psw_ie)
+// the instruction Virtua Fighter's V60 trace parted from MAME on. It answered:
+// irq_n LOW, psw_ie LOW - an interrupt WAS waiting and the game was in the act
+// of enabling interrupts to take it. Our CPU then took it, on the same boundary
+// MAME does. The divergence was that MAME took a SECOND one straight after,
+// level 3, the sound USART's queue pump, which nothing here raised because
+// nothing was connected to 0xc40000. See docs/findings.md, 2026-09-10 (3).
+//
+// A census by level is the useful instrument now, because the question that
+// remains is not "did we vector" but "did we get offered the same interrupts".
+// Level 3 reading zero here is the regression that would put the trace back
+// where it was.
+integer irq_taken [0:7];
+integer irq_total = 0;
+initial for (int i = 0; i < 8; i++) irq_taken[i] = 0;
+always @(posedge clk_cpu) begin
+    if (core.main.rst_cpu === 1'b0 && core.main.cpu_irq_ack) begin
+        irq_taken[core.main.glue_irq_vec] = irq_taken[core.main.glue_irq_vec] + 1;
+        irq_total = irq_total + 1;
+    end
+end
+
 // ----------------------------- HOW BIG IS EACH OBJECT ON SCREEN?
 //
 // Virtua Fighter's arena renders as a tiny slab. The display list, viewport,
@@ -2713,6 +2738,12 @@ initial begin
     $display("FRAME: 3D layer: objects=%0d quads=%0d dropped=%0d passes=%0d",
              core.r3_dbg_objects, core.r3_dbg_quads,
              core.r3_dbg_dropped, core.r3_dbg_frames);
+    // Level 3 is the sound USART's queue pump. It read zero until 2026-09-10
+    // because nothing was connected to 0xc40000, and that absence was misread
+    // as a V60 divergence on vf - docs/findings.md 2026-09-10 (3).
+    $display("FRAME: interrupts taken: total=%0d  L0(timer)=%0d L1(vblank)=%0d L2=%0d L3(sound)=%0d L4=%0d L5=%0d L6=%0d L7=%0d",
+             irq_total, irq_taken[0], irq_taken[1], irq_taken[2], irq_taken[3],
+             irq_taken[4], irq_taken[5], irq_taken[6], irq_taken[7]);
     // ---------------------------------------------------------------------
     // DOES THE BAND FILLER FIT INSIDE A FRAME?
     //
