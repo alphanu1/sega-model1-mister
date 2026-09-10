@@ -1,5 +1,113 @@
 # HANDOFF
 
+## 2026-09-10 (END OF DAY) — WHERE THINGS ARE, AND WHAT TO DO FIRST TOMORROW
+
+### ON THE BOARD RIGHT NOW
+
+`Model1_b2fc7b8e` — VR confirmed good by Ben. Two behavioural changes shipped
+and confirmed today, plus one no-op refactor:
+
+| build | change | ALM | confirmed |
+|---|---|---|---|
+| `ef8cfa10` | USART + IRQ level 3 | 41,473 | VR and VF unchanged |
+| `5011fb44` | register file lane enables | **40,926** (-547) | VR and VF unchanged |
+| `b2fc7b8e` | quad payload behind an interface | 41,168 (+242) | VR "looking good" |
+
+Archived in `~/rbf_known_good/`: `Model1_ef8cfa10_usart.rbf`,
+`Model1_5011fb44_rflane.rbf`, `Model1_b2fc7b8e_qspay.rbf`. Roll back to
+`5011fb44` if the payload work goes wrong - it is the last build with a
+resource win and no in-flight refactor.
+
+**`pll_hdmi` is at -0.632 on the build on the board.** Ours are all positive
+(`clk_3d` +0.535, `clk_cpu` +0.870). It has been negative before (-0.034,
+-0.096, -0.338) and worked, but never this negative. If the picture does
+something strange, suspect that before the RTL.
+
+### THE JOB IN FLIGHT: THE QUAD STORE INTO DDR3
+
+**Why**: to free M10K, which is 553/553 and has blocked the band buffer, the
+second display list and the sound board in turn. **Not** to fix the quad-store
+overflow - see below, it does not currently reproduce.
+
+Done, all committed and all benches at baseline:
+
+1. **Payload behind a request/valid interface** (`m1_quad_payload`) - board
+   confirmed.
+2. **DDR3 client** (`m1_ddram_payload`) with `tb_m1_ddram_payload`, whose
+   latency is a PARAMETER. Measured cost against ideal: 1.00x at 10, 40 and
+   100 cycles, 1.01x at 400, 1.03x at 1,000, 1.23x at 2,000. The bench found
+   two real bugs neither a fixed-latency model nor the store's own bench would
+   have: `owed` assigned in two branches and losing an increment when a read
+   issued as a reply returned, and `wr_ready` not checking `wr_pending` so a
+   second write clobbered the first burst's high half.
+3. **The scan decoupled from the output**, so reads prefetch. This was
+   mandatory, not an optimisation: 22,700 emissions a pass at even 60 cycles of
+   serial latency is 1.36 M cycles against a pass of ~1.2 M.
+
+**LEFT TO DO, in order:**
+
+4. Swap `m1_quad_payload`'s backing to `m1_ddram_payload` (add a `BACKING`
+   parameter; both already share the `req`/`ready` + `valid`/`take` shape).
+5. Arbitrate the two banks onto the one DDR3 port. One bank is written by
+   geometry while the other is read by the fill; writes are 3,193 a pass
+   against ~22,700 reads, so contention should be small - **that is reasoning,
+   not measurement, and it is the next thing that could bite.**
+6. Wire `DDRAM_*` from `m1_raster3d` through `m1_integrated` to `Model1.sv`,
+   replacing the tie-to-zero at `Model1.sv:49`.
+7. Build, board test.
+
+**The prize is 112 M10K**, not 196: `att` carries the band range and is read for
+EVERY quad on EVERY one of the 48 bands - 172,032 reads a pass - so it is the
+filter and can never go behind memory. `key` and `idx` stay too (the radix
+scatter writes them randomly).
+
+**Falling back to SDRAM is cheap if DDR3's latency disappoints**: an SDRAM
+client behind the same interface and a parameter. Everything in 1-3 is
+backing-agnostic. But SDRAM was measured the worse home: 16 bits wide means two
+burst reads and EIGHT single-word writes per payload, ~+15% controller
+occupancy on the bus that is ALREADY contended (40% peak, tile port waiting
+26%, M=7,417 misses).
+
+### WHAT CHANGED ABOUT WHAT WE BELIEVED
+
+- **VF's arena is not the CPU.** `v60_trace GAME=vf` now agrees with MAME to the
+  end of the window. The divergence was a missing interrupt source, not a CPU
+  bug. The arena is still wrong; the coprocessor is next
+  (`tgp_wrtrace GAME=vf`, repointed from `m1_boot` to `m1_frame` with
+  `sim/input/vf_match.txt`).
+- **The quad store is not currently overflowing.** 90 seconds of Ben driving:
+  `D`=0 throughout, `U` peaked 3,193 against the 3,584 cap. The 2026-09-09
+  finding measured D=2,452-3,311 against a 3,072 cap, and the raise fixed it
+  for that content. **Ben was never asked whether he saw scenery drop out
+  during that capture - ASK, because if he did, the cause is now something else
+  and `M`=7,417 is sitting in the same telemetry.**
+- **The V60 optimisation list was wrong end up.** Measured: register file lane
+  enables 547 ALM (done), instruction stubbing 764 (Ben: last resort, it
+  removes instructions), shared address datapath only 150-250, FP onto DSP
+  ALREADY DONE, FP add/mul dedup 54. There is no easy large ALM win left.
+- **Sound does not fit.** The full board is 8,837 ALM against 984 spare. A
+  MultiPCM-only shortcut is plausible on ALM but blocked on the command->sample
+  mapping, which lives in the sound 68000's program. That mapping IS
+  discoverable: MAME emulates the whole board, so a Lua tap on the MultiPCM's
+  register writes correlated against the USART bytes would build the table.
+  Worth a few hours before any RTL.
+
+### STILL OPEN, NOT STARTED
+
+- **netmerc's attract-mode layer.** Ben: a second 3D layer draws above the top
+  tile instead of behind. MAME composites in FOUR stages with TWO 3D passes
+  (`0x01`/`0x02` below the HUD tilemaps, `0x41` above through a stencil); we
+  run ONE, and `m1_raster3d` sets `obj_hud` and never reads it - its own
+  comment says so. **The polarity is the opposite of what Ben describes, so it
+  is not proven to be his bug.** Capturing it needs attract, and a CREDIT
+  SITTING IN NVRAM is what keeps netmerc out of attract - clear that, do not
+  just capture for longer.
+- **Star Wars does not boot.** Both CPUs park during init.
+- **The 2D tile fetch** repeats a scanline about twice a frame; `M`=7,417 in a
+  90-second capture.
+
+---
+
 ## 2026-09-10 — THE VF V60 DIVERGENCE IS ANSWERED, AND IT WAS NOT THE CPU
 
 The V60 trace on Virtua Fighter parted from MAME at instruction 21,817 and that
