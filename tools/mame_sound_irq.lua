@@ -37,6 +37,22 @@ utap = prog:install_write_tap(0xc40000, 0xc40003, "usart", function(offset, data
     return data
 end)
 
+-- DOES THE SOUND BOARD TALK BACK? model1.cpp wires m1audio's rxd into the USART
+-- and rxrdy_handler into sound_ready_w too, so a reply is ALSO a level 3. Our
+-- core models transmit only, which is honest for "no sound board attached" but
+-- wrong if the game waits on a reply. Count status polls and data reads.
+reads_data, reads_status = 0, 0
+rx_seen = {}
+rtap = prog:install_read_tap(0xc40000, 0xc40003, "usart_r", function(offset, data, mask)
+    if (offset & 2) == 0 then
+        reads_data = reads_data + 1
+        bump(rx_seen, data & 0xff)
+    else
+        reads_status = reads_status + 1
+    end
+    return data
+end)
+
 -- 0xe00002 is the per-level irq mask, active low: a SET bit blocks that level.
 mtap = prog:install_write_tap(0xe00002, 0xe00003, "irqmask", function(offset, data, mask)
     local v = data & 0xff
@@ -77,6 +93,13 @@ notifier = emu.add_machine_frame_notifier(function()
                                             (k & 8) == 0 and " (L3 on)" or "")
         end
         print("  mask values written: " .. table.concat(parts, ", "))
+        print(string.format("  USART reads: data=%d  status=%d", reads_data, reads_status))
+        local rks = {}
+        for k in pairs(rx_seen) do rks[#rks+1] = k end
+        table.sort(rks)
+        local rp = {}
+        for _, k in ipairs(rks) do rp[#rp+1] = string.format("%02x x%d", k, rx_seen[k]) end
+        print("  bytes READ from the data register: " .. (#rp > 0 and table.concat(rp, ", ") or "none"))
         manager.machine:exit()
     end
 end)
