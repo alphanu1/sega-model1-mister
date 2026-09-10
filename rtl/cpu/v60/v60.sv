@@ -1663,6 +1663,12 @@ else if (ce) begin
     end
 
     // ROTC: 1 bit/cycle through carry (V60-5)
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: ROTC ----
+    // ROTC.B/.H/.W - rotate through carry, one bit a cycle. rot.h IS used and is
+// NOT here; this is only the carry-rotate variants.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_ROTC: begin
         if (rotc_cnt == 0) begin
             logic [1:0] d2l;
@@ -1708,6 +1714,7 @@ else if (ce) begin
     end
 
     // generic memory RMW: read op2 -> modify per rmw_kind -> write back
+`endif
     S_RMW_RD: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= rmw_dim; dbus_addr <= op2;
@@ -1986,6 +1993,11 @@ else if (ce) begin
     end
 
     // DISPOSE: FP fetched
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: DISPOSE ----
+    // DISPOSE - tear down the stack frame PREPARE built.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_DISP1: if (dack) begin
         dbus_req <= 0;
         queue_reg_write(5'd30, bus_rdata, 32'hffff_ffff); // FP = R30
@@ -1995,6 +2007,7 @@ else if (ce) begin
     end
 
     // RSR (A9): pop PC only, SP += 4
+`endif
     S_RSR: if (dack) begin
         dbus_req <= 0;
         pc <= bus_rdata;
@@ -2052,6 +2065,12 @@ else if (ce) begin
     end
 
     // TASI: read byte at addr, set flags, write 0xFF
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: TASI ----
+    // TASI - test-and-set: read a byte, set flags, write 0xFF. The atomic
+// primitive; no Model 1 game uses it because there is nothing to contend with.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_TASI1: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd0; dbus_addr <= op1;
@@ -2083,6 +2102,12 @@ else if (ce) begin
     end
 
     // PREPARE: push FP, FP=SP, SP-=imm
+`endif
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: PREPARE ----
+    // PREPARE - build a stack frame. Its partner DISPOSE is removed above.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_PREP1: if (dack) begin
         dbus_req <= 0; dbus_we <= 0;
         queue_reg_write(5'd30, r[31] - 4, 32'hffff_ffff); // FP = R30
@@ -2095,6 +2120,7 @@ else if (ce) begin
     //   op1 (from S_EA_DONE, ea_target2=0) = source address.
     //   length byte at fb[2+len1]; op2 = dest address; length at fb[3+len1+len2].
     //   R27 (dst) / R28 (src) updated at completion (MAME MOVSTR).
+`endif
     S_STR_OP1: begin
         // op1 = source address; read len1 byte then decode op2
         logic [7:0] lb;
@@ -2350,6 +2376,13 @@ else if (ce) begin
     end
     // ------------------------------------------------------------------
     // 0x59 decimal group (F7c): op1 value decoded; now op2 as address
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: DECIMAL ----
+    // ADDDC / SUBDC / SUBRDC - packed-BCD add and subtract with the decimal
+// carry. MAME implements them off the radm timer; nothing in these games
+// does decimal arithmetic.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_DEC_OP1: begin
         ea_want_addr <= 1'b1;
         ea_dim  <= (subop[4:0] == 5'h10) ? 2'd1 : 2'd0;  // CVTDPZ dest: half
@@ -2463,6 +2496,7 @@ else if (ce) begin
         end
     end
 
+`endif
 `ifndef S32_V60_NO_FP
     // ------------------------------------------------------------------
     // single-precision FP group (0x5C/0x5F).  op1 already decoded as a value;
@@ -2701,6 +2735,12 @@ else if (ce) begin
     // ------------------------------------------------------------------
     // INSBFR/INSBFL: op1 word value decoded; op2 = BAM address; ext len;
     // RMW the 32-bit field at the bit position
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: BIT FIELD INSERT ----
+    // INSBFL / INSBFR - bit-field INSERT. The EXTRACT half (extbfl/extbfz,
+// S_BF_EXT*) IS used and stays.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_BF_INS1: begin
         bam_second <= 1'b1;
         ea_modm <= subop[5];
@@ -2745,6 +2785,7 @@ else if (ce) begin
 
     // ------------------------------------------------------------------
     // SCH0BSU/SCH1BSU: scan bit string for first 0/1
+`endif
     S_BS_SCH1: begin
         logic [7:0] lb;
         logic [31:0] l;
@@ -2808,6 +2849,12 @@ else if (ce) begin
 
     // ------------------------------------------------------------------
     // MOVBSU/MOVBSD: bit-string copy (subop bit0: 0=up, 1=down)
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: BIT STRING MOVE ----
+    // MOVBSU / MOVBSD - bit-string move, ascending and descending. The SEARCH
+// half (sch1bsu, S_BS_SCH*) IS used and stays.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_BS_MOV1: begin
         logic [7:0] lb;
         lb = fb[5'd2 + len1];
@@ -2915,6 +2962,7 @@ else if (ce) begin
         end
     end
 
+`endif
     S_STR_NEXT: begin
         logic [31:0] stp;
         stp = cur_op[1] ? 32'd2 : 32'd1;
@@ -2943,6 +2991,13 @@ else if (ce) begin
     // ------------------------------------------------------------------
     // LDTASK/STTASK task-block transfers. Phase 0 is TKCW, phases 1..4
     // are enabled L0SP..L3SP fields, and phases 5..35 are R0..R30.
+`ifndef S32_V60_NO_UNUSED
+    // ---- STUBBED IN THE S32_V60_NO_UNUSED BUILD: TASK SWITCH ----
+    // LDTASK / STTASK - load and store the whole task state block: every general
+// register plus the privileged ones, through the bus, one word at a time.
+// This is the OS-level context switch and no arcade game performs one.
+    // Measured never executed by vr, vf or netmerc - tools/v60_opcensus.sh.
+    // Restore by building without the define; the code is unchanged.
     S_TASK_LD_NEXT: begin
         if (task_phase == 0) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
@@ -3028,6 +3083,7 @@ else if (ce) begin
     // ------------------------------------------------------------------
     // exception / interrupt entry (MAME v60_do_irq):
     //   switch to interrupt context, push old PSW, push PC, PC = vector
+`endif
     S_EXC_PUSH1: begin
         // Synchronous exceptions preserve IS; IRQ/NMI force the interrupt
         // stack. CHLVL supplies a nonzero target execution level.
