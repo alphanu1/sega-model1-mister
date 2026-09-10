@@ -474,24 +474,49 @@ endfunction
 reg        rf_we0, rf_we1;
 reg [4:0]  rf_waddr0, rf_waddr1;
 reg [31:0] rf_wdata0, rf_wdata1;
-reg [31:0] rf_wmask0, rf_wmask1;
+// THE WRITE MASK IS A LANE PATTERN, NOT AN ARBITRARY 32 BITS, AND HOLDING IT
+// AS ONE COST ~981 ALM.
+//
+// Every architectural write reaches the file through queue_reg_write below, and
+// every caller passes one of exactly three masks: 0x000000ff, 0x0000ffff or
+// 0xffffffff - setreg's three dim cases plus the literal full-word writes. So
+// the mask carries two bits of information, and storing 32 gave every one of
+// the 1,024 flops its own enable term. Measured on the real thing:
+// sim/microbench/rf_flops.sv 2,289 ALM against rf_lane.sv 1,308.
+// See docs/findings.md 2026-09-10 (8).
+reg [1:0]  rf_wsz0, rf_wsz1;      // 0 = byte, 1 = halfword, 2 = word
+
+function automatic [1:0] mask_to_sz(input [31:0] mask);
+    casez (mask)
+        32'h0000_00ff: mask_to_sz = 2'd0;
+        32'h0000_ffff: mask_to_sz = 2'd1;
+        default:       mask_to_sz = 2'd2;
+    endcase
+endfunction
 
 task automatic queue_reg_write(
     input [4:0] rn,
     input [31:0] v,
     input [31:0] mask
 );
+    // The signature still takes a mask so no call site changes, but only the
+    // three lane patterns are representable. Anything else is a bug in the
+    // caller and is loud in simulation rather than silently truncated.
+    // synthesis translate_off
+    if (mask !== 32'h0000_00ff && mask !== 32'h0000_ffff && mask !== 32'hffff_ffff)
+        $display("V60: queue_reg_write got a non-lane mask %08x for r%0d", mask, rn);
+    // synthesis translate_on
     if (!rf_we0) begin
         rf_we0 = 1'b1;
         rf_waddr0 = rn;
         rf_wdata0 = v;
-        rf_wmask0 = mask;
+        rf_wsz0 = mask_to_sz(mask);
     end
     else begin
         rf_we1 = 1'b1;
         rf_waddr1 = rn;
         rf_wdata1 = v;
-        rf_wmask1 = mask;
+        rf_wsz1 = mask_to_sz(mask);
     end
 endtask
 
@@ -786,8 +811,8 @@ else if (ce) begin
     rf_waddr1 = 5'd0;
     rf_wdata0 = 32'd0;
     rf_wdata1 = 32'd0;
-    rf_wmask0 = 32'd0;
-    rf_wmask1 = 32'd0;
+    rf_wsz0 = 2'd0;
+    rf_wsz1 = 2'd0;
     irq_ack <= 0;
     nmi_r <= ~nmi_n;
     if (~nmi_n & ~nmi_r) nmi_seen <= 1'b1;
@@ -3144,11 +3169,18 @@ else if (ce) begin
 
     // Port 1 is applied second so the final queued write retains the original
     // nonblocking-assignment priority when both ports address the same bit.
-    for (int rf_wbit = 0; rf_wbit < 32; rf_wbit = rf_wbit + 1) begin
-        if (rf_we0 && rf_wmask0[rf_wbit])
-            r[rf_waddr0][rf_wbit] <= rf_wdata0[rf_wbit];
-        if (rf_we1 && rf_wmask1[rf_wbit])
-            r[rf_waddr1][rf_wbit] <= rf_wdata1[rf_wbit];
+    // Three lane enables per port instead of thirty-two bit enables. Port 1 is
+    // still applied second, so it still wins on an overlapping lane exactly as
+    // the per-bit loop's nonblocking ordering did.
+    if (rf_we0) begin
+                            r[rf_waddr0][7:0]   <= rf_wdata0[7:0];
+        if (rf_wsz0 >= 2'd1) r[rf_waddr0][15:8]  <= rf_wdata0[15:8];
+        if (rf_wsz0 >= 2'd2) r[rf_waddr0][31:16] <= rf_wdata0[31:16];
+    end
+    if (rf_we1) begin
+                            r[rf_waddr1][7:0]   <= rf_wdata1[7:0];
+        if (rf_wsz1 >= 2'd1) r[rf_waddr1][15:8]  <= rf_wdata1[15:8];
+        if (rf_wsz1 >= 2'd2) r[rf_waddr1][31:16] <= rf_wdata1[31:16];
     end
 end
 end
@@ -3489,9 +3521,23 @@ task automatic exec_op;
             f_z  <= ~rf_rdata_b[bi];
             f_cy <=  rf_rdata_b[bi];
             case (cur_op)
-                8'h97: queue_reg_write(op2[4:0], 32'hffff_ffff, 32'h1 << bi);
-                8'ha7: queue_reg_write(op2[4:0], 32'h0000_0000, 32'h1 << bi);
-                8'hb7: queue_reg_write(op2[4:0], ~rf_rdata_b, 32'h1 << bi);
+                // MERGED HERE, NOT MASKED AT THE FLOPS.
+                //
+                // These three used to pass a single-bit mask, `32'h1 << bi`,
+                // and they are the ONLY writes in the core that are not a
+                // byte, halfword or word lane. Supporting them cost a 32-bit
+                // mask on both write ports, which is one enable term per flop:
+                // ~981 ALM measured (docs/findings.md 2026-09-10 (8)).
+                //
+                // rf_rdata_b is this very register - line above tests
+                // rf_rdata_b[bi] - so the merged word is free and no read port
+                // is added. A first attempt at the lane optimisation missed
+                // these because the mask census only matched hex literals, and
+                // `make v60_trace GAME=vr` caught it immediately: SET1 wrote
+                // all 32 bits instead of one.
+                8'h97: queue_reg_write(op2[4:0], rf_rdata_b |  (32'h1 << bi), 32'hffff_ffff);
+                8'ha7: queue_reg_write(op2[4:0], rf_rdata_b & ~(32'h1 << bi), 32'hffff_ffff);
+                8'hb7: queue_reg_write(op2[4:0], rf_rdata_b ^  (32'h1 << bi), 32'hffff_ffff);
                 default: ;
             endcase
             st <= S_NEXT;
