@@ -107,6 +107,18 @@ module tb_m1_frame #(
     // which is the old behaviour.
     parameter longint unsigned COIN_AT = 0,
 
+    // THROTTLE THE V60 TO THE BOARD'S RATE, for testing what the overclock
+    // changes. clk_cpu is 29.474 MHz against the real 16, so the game does 1.84x
+    // as much work per frame as the hardware ever did while video stays at 57.5
+    // Hz. Virtua Racing tolerates that; whether Virtua Fighter does is exactly
+    // the open question about its arena.
+    //
+    // Bresenham, like the I/O board's: CE_NUM enables per CE_DEN clocks. 16/29
+    // is 16.26 MHz, near enough the real part. 1/1 is no throttle and is the
+    // default, so nothing changes unless asked.
+    parameter int unsigned CE_NUM = 1,
+    parameter int unsigned CE_DEN = 1,
+
     // Scripted inputs, read at runtime. See the script driver below.
     parameter string  INPUTSCRIPT = "build/input_script.txt",
 
@@ -294,7 +306,7 @@ wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
 m1_integrated core (
     .clk_sys(clk), .ce_pix(ce_pix),
-    .clk_cpu(clk_cpu), .ce_cpu(1'b1),
+    .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
     //
     // The tool tied it to zero and said nothing, so the 3D layer has never
@@ -2058,6 +2070,18 @@ initial begin : load_script
         end
         $fclose(f);
         $display("tb_m1_frame: input script %s, %0d steps", INPUTSCRIPT, sc_n);
+    end
+end
+
+// The V60's clock enable. See CE_NUM/CE_DEN.
+logic [15:0] ce_acc = 0;
+logic        ce_cpu = 1'b1;
+always @(posedge clk_cpu) begin
+    if (CE_NUM >= CE_DEN) ce_cpu <= 1'b1;
+    else if (ce_acc + CE_NUM >= CE_DEN) begin
+        ce_cpu <= 1'b1; ce_acc <= ce_acc + CE_NUM - CE_DEN;
+    end else begin
+        ce_cpu <= 1'b0; ce_acc <= ce_acc + CE_NUM;
     end
 end
 

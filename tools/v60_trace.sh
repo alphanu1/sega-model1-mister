@@ -156,7 +156,12 @@ echo "  $(wc -l < "$out/mame_pc.txt") instructions"
 
 echo "=== our core (${cycles} cycles) ==="
 cd "$root"
-make m1_frame FRAME_TRACE=0 FRAME_CYCLES="$cycles" V60_PCTRACE=1 \
+# GAME reached the MAME side and NOT ours, so every run built Virtua Racing
+# whatever was asked for - which means our V60 has never been diffed against
+# MAME on any other game. INPUTSCRIPT is passed too, so a run can be driven
+# somewhere a plain boot never reaches.
+make m1_frame GAME="$game" FRAME_TRACE=0 FRAME_CYCLES="$cycles" V60_PCTRACE=1 \
+     ${INPUTSCRIPT:+INPUTSCRIPT="$INPUTSCRIPT"} \
      V60_PCTRACE_MAX="${PCTRACE_MAX:-40000000}" \
   > "$out/ours.log" 2>&1 || true
 grep '^PCT ' "$out/ours.log" | awk '{print $2}' > "$out/our_pc_raw.txt"

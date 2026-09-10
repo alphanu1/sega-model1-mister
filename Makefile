@@ -844,7 +844,7 @@ m1_frame:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
-	  -GPPMEVERY=$(FRAME_PPM) \
+	  -GPPMEVERY=$(FRAME_PPM) -GCE_NUM=$(FRAME_CE_NUM) -GCE_DEN=$(FRAME_CE_DEN) \
 	  -GROMHEX='"build/rom/$(GAME)_v60.hex"' \
 	  -GUCODEHEX='"build/rom/$(GAME)_tgp_prog.hex"' \
 	  -GIOFWHEX='"build/rom/$(GAME)_iofw.hex"' \
@@ -905,6 +905,9 @@ FRAME_PRESS ?= 0xff
 FRAME_COIN ?= 0
 # Write a PPM every N frames into build/frames/. 0 = only the final frame.
 FRAME_PPM ?= 0
+# Throttle the V60: 16/29 is about the board's 16 MHz. 1/1 is no throttle.
+FRAME_CE_NUM ?= 1
+FRAME_CE_DEN ?= 1
 
 # The MRA owns the ROM layout completely, because m1_rom_loader deliberately
 # does no base-address arithmetic. That makes a misplaced region impossible to

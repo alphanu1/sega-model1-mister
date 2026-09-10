@@ -20,6 +20,60 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (2) — VF'S ARENA IS NOT A TIMING FAULT: IT IS THE SAME AT 16 MHz
+
+Ben's argument, and the measurement agrees with him rather than with me.
+
+The V60 runs at 29.474 MHz against the board's 16, so the game gets ~512,000
+CPU cycles a frame where the hardware gave it ~278,000 - the one ratio the clock
+raise does NOT preserve, because video is fixed at 57.5 Hz on both. That was the
+hypothesis. Ben's objections were that every INTERNAL ratio is preserved
+(CPU:TGP 1:2, CPU:Z80 4:1) and that the arena was small before the clock raise,
+so a 3% change cannot explain it.
+
+`ce_cpu` was wired to a Bresenham divider in `tb_m1_frame` - the port exists for
+exactly this and was tied to 1 - and Virtua Fighter re-run at 16/29 of clk_cpu,
+about 16.26 MHz. **The arena renders identically small.** Timing is eliminated.
+
+`ce_cpu` in the CORE is untouched and stays at 1; the throttle is a bench
+parameter (`FRAME_CE_NUM`/`FRAME_CE_DEN`) and nothing shipped changed. 57.5 Hz
+is not negotiable and was never a candidate to move.
+
+**What that leaves.** The wrong matrix is already in the display list; our
+reading of it is byte-exact; the model data is byte-identical to MAME's; MAME
+runs the same microcode with no HLE and no patches. So the V60 or the
+coprocessor produces it, and not because of how fast either runs.
+
+**A divergence that is still unresolved, and honestly reported.** With the ISR
+strip finally working (entries=105/exits=105 reference, 100/100 ours) the V60
+trace on VF diverges at instruction 21,817, at
+`FE4648: updpsw.w #FFFFFFFF, #40000` - bit 18 is `psw_ie`. MAME takes a pending
+interrupt immediately; we run on for seven instructions. It sits directly after
+an I/O board poll loop that runs 439 iterations in MAME and 314 in ours, so a
+different moment in the frame is still a live explanation and this is NOT yet a
+CPU bug. The V60 already carries a comment about this exact instruction from a
+previous FALSE bug report - that one was a stale published PC, and this is not
+that, because seven instructions execute.
+
+**THREE TOOLS SILENTLY DID NOTHING ON A NON-VR GAME**, each producing a
+confident result from a test that had not run:
+
+- `v60_trace.sh` passed `GAME` to MAME and not to our bench, so every run built
+  Virtua Racing whatever was asked for. Our V60 had never been diffed on any
+  other title.
+- `v60_strip_isr.py` had Virtua Racing's handler ENTRY hardcoded (`fe02bc`,
+  which occurs 0 times in VF). It stripped nothing and reported
+  `entries=0 exits=0`, and I read the resulting divergence as real.
+- the same file had VR's EXIT hardcoded. With VF's entry but VR's exit it
+  entered the handler once, never left, dropped 3,694,020 of 3,981,461
+  instructions and reported the surviving 21,816-instruction prefix as
+  IDENTICAL.
+
+All three are fixed. The lesson is the `entries == exits` line: the tool printed
+`MISMATCH - handler extent is wrong` next to a result I quoted anyway.
+
+---
+
 ## 2026-09-10 — VF'S ARENA: THE RENDERING PATH IS EXONERATED, THE MATRIX ARRIVES WRONG
 
 The bug now reproduces in simulation (`sim/input/vf_match.txt`), so it can be
