@@ -65,6 +65,33 @@ local function walk(base)
 end
 
 frames = 0
+CENSUS_FRAMES = tonumber(os.getenv("CENSUS_FRAMES") or "1200")
+SAMPLE_EVERY  = tonumber(os.getenv("SAMPLE_EVERY")  or "10")
+
+-- DRIVING THE GAME IN, for titles that never reach attract.
+--
+-- netmerc is set to FREE PLAY, so it waits at the start screen indefinitely and
+-- a census that simply runs longer measures the same idle frame forever. It
+-- also has no Start button - it is a gun game whose fields are Trigger, Thumb
+-- and MVD Holder. PRESS taps a field, HOLD holds one down for the whole run.
+--
+--   PRESS="Trigger" HOLD="MVD Holder" GAME=netmerc tools/mame_run.sh ...
+local function find_field(want)
+    for _, port in pairs(manager.machine.ioport.ports) do
+        for name, field in pairs(port.fields) do
+            if name == want then return field end
+        end
+    end
+    print("input: no field named '" .. want .. "'")
+    return nil
+end
+press_fields, hold_fields = {}, {}
+for w in (os.getenv("PRESS") or ""):gmatch("[^,]+") do
+    local f = find_field(w); if f then press_fields[#press_fields+1] = f end
+end
+for w in (os.getenv("HOLD") or ""):gmatch("[^,]+") do
+    local f = find_field(w); if f then hold_fields[#hold_fields+1] = f end
+end
 tot   = {}          -- type -> total count across sampled frames
 obj_adr = {}        -- poly address -> times drawn
 vp_seen = {}
@@ -74,10 +101,21 @@ sampled   = 0
 
 notif = emu.add_machine_frame_notifier(function()
     frames = frames + 1
+
+    -- Tap PRESS fields for 12 frames in every 90, so a title screen, a
+    -- difficulty select and a "get ready" all get dismissed without knowing
+    -- the menu flow. HOLD fields stay down throughout.
+    for _, f in ipairs(hold_fields) do f:set_value(1) end
+    local phase = frames % 90
+    for _, f in ipairs(press_fields) do f:set_value(phase < 12 and 1 or 0) end
     -- Sample rather than walk every frame: the walk is ~thousands of reads and
     -- the list only changes at the game's own rate.
-    if frames % 10 ~= 0 then return end
-    if frames > 1200 then return end
+    -- SAMPLE FOR AS LONG AS THE CALLER ASKS. The 1,200-frame cap here was 20
+    -- seconds, which on netmerc is early attract and shows none of the second
+    -- 3D layer; a census that stops before the thing you are looking for
+    -- reports its absence just as confidently as its non-existence.
+    if frames % SAMPLE_EVERY ~= 0 then return end
+    if frames > CENSUS_FRAMES then return end
     sampled = sampled + 1
 
     -- The active buffer is listctl bit 6; walk BOTH, since a buffer the game is
@@ -94,7 +132,7 @@ notif = emu.add_machine_frame_notifier(function()
         tot_quads = tot_quads + quads
     end
 
-    if sampled == 120 then
+    if sampled == CENSUS_FRAMES // SAMPLE_EVERY then
         print("=== display list census, " .. sampled .. " samples over " .. frames .. " frames")
         local names = {[0]="nop", [1]="OBJECT", [2]="DIRECT", [3]="viewport",
                        [4]="colour", [5]="polyram", [6]="lightparam", [7]="mode",
