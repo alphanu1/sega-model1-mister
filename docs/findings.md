@@ -22,7 +22,7 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ## 2026-09-10 (7) — SHARING AN ADDER SAVES 7%, NOT A LOT: THE OPTIMISATION RANKING WAS WRONG
 
-**Instrument:** `quartus/microbench/addr_separate.sv` vs `addr_shared.sv`,
+**Instrument:** `sim/microbench/addr_separate.sv` vs `addr_shared.sv`,
 identical function, `make quartus MOD=addr_separate` / `MOD=addr_shared`.
 
 | arm | ALM |
