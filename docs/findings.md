@@ -20,6 +20,68 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (10) — THE QUAD STORE: SDRAM IS AFFORDABLE, BUT THE OVERFLOW DID NOT REPRODUCE
+
+Two measurements, and they point in different directions.
+
+**1. THE STORE IS NOT CURRENTLY DROPPING.** 90 seconds of Ben driving Virtua
+Racing on build `5011fb44`, captured over UART:
+
+    D dropped quads      0    0    (min/max over 90 samples)
+    U quads stored     139  3193
+    O sdram occupancy   50   102   (40% of full scale)
+    Q tile port wait    25    67   (26%)
+    T bands late         0    0
+    M fetch miss      2438  7417
+
+`D` was **zero throughout**. The 2026-09-09 finding measured D=2,452-3,311 per
+pass against a **3,072**-quad cap; the cap was later raised to 3,584 and on this
+drive that was enough - `U` peaked at 3,193, 89% full and marginal, but never
+over. **So the premise of the SDRAM work does not currently hold.** `M` at 7,417
+is the other overrun in the same capture and is not the store.
+
+**2. IF IT IS DONE ANYWAY, LATENCY IS NOT THE OBSTACLE.** Ben's concern was
+SDRAM latency and its effect on cycles per quad. Measured in `tb_m1_frame` with
+a new emissions probe - emissions being how many times a quad passes its band
+filter and has its vertices read, which is the figure SDRAM would have to serve:
+
+    busiest pass    11,320 emissions from 1,589 quads   = 7.12 bands per quad
+    pass length     1.22 frames = 21.2 ms
+    so             one emission every 1.87 us = ~150 SDRAM cycles available
+    needed         10 cycles (20 bytes on a 16-bit bus)
+    margin         ~15x
+
+Scaled to the board's 3,193-quad peak: ~22,700 emissions, **13 MB/s**, about
+**+8% occupancy** against the 40% measured. Comfortable.
+
+**7.12 bands per quad is the surprise** and it is a property of the content:
+VR's road and scenery quads are tall, so with 8-row bands they span many. An
+earlier guess of 2-3 would have under-sized the traffic by 3x.
+
+**WHAT MUST STAY IN M10K.** `att` carries the band range and is read for EVERY
+quad on EVERY one of the 48 bands - 172,032 reads a pass at NQ=3,584. It is the
+filter, and it can never be behind SDRAM. Only the ~145-bit vertex payload
+moves. That splits the store's 196 M10K (35% of the device) into ~140 that can
+leave and ~56 that cannot.
+
+**AND MOVING IT COSTS ALM, IT DOES NOT FREE IT.** Block RAM and ALMs are
+separate resources. The store's arrays are M10K; its ~1,188 ALM (543.9 + 644.3
+for the two banks) is control logic, and an SDRAM version keeps all of that and
+adds address generation, a prefetch FIFO and another port to arbitrate. This
+was asked directly and is worth stating plainly: **SDRAM migration is the M10K
+lever, not the ALM lever.**
+
+**The other constraint SDRAM does not fix**: a 1,589-quad pass already runs 1.22
+frames, so 3,193 quads would be ~2.45 - past the game's two-frame list flip.
+That is overrun 3 from the 2026-09-09 entry and it is untouched by where the
+quads are stored.
+
+Caveat on the emissions figure: the VR input script reaches real geometry for
+only four passes (282 passes at q=0, 97 at q=6, four at ~1,580), so the 3,193
+figure is an EXTRAPOLATION at the same 7.12 bands per quad, not a measurement.
+
+---
+
 ## 2026-09-10 (9) — THE LANE-ENABLE REGISTER FILE IS ON HARDWARE: -547 ALM, AND THE TRACE CAUGHT THE BUG THE FUZZERS DID NOT
 
 Build `5011fb4493ae56f603f09cbd8fe03ccf`, 0 errors.

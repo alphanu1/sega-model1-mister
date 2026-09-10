@@ -1373,6 +1373,42 @@ always @(posedge clk) begin       // clk is the scan/system clock in this bench
     end
 end
 
+// ----------------------------- HOW MANY PAYLOAD READS WOULD SDRAM HAVE TO SERVE?
+//
+// Moving the quad store's vertex payload to SDRAM frees M10K but adds latency,
+// and the number that decides whether that is affordable is EMISSIONS PER PASS:
+// how many times a quad passes its band filter and has its four vertices read.
+//
+// It is not the same as the quad count. `att` - which carries the band range -
+// is read for EVERY quad on EVERY band, 48 of them, and must stay in M10K
+// because it is the filter. Only quads that pass get their vertices read, so
+// emissions is the SDRAM figure and it is a property of how tall the geometry
+// is, not how much of it there is.
+integer qs_emit [0:1];
+integer qs_emit_max = 0, qs_emit_total = 0, qs_pass_n = 0;
+initial begin qs_emit[0] = 0; qs_emit[1] = 0; end
+genvar gqs;
+generate
+  for (gqs = 0; gqs < 2; gqs++) begin : g_qsprobe
+    always @(posedge core.u_raster3d.clk) begin
+      if (core.u_raster3d.rst_n) begin
+        if (core.u_raster3d.g_store[gqs].u_store.out_valid &&
+            core.u_raster3d.g_store[gqs].u_store.out_ready)
+          qs_emit[gqs] = qs_emit[gqs] + 1;
+        // A bank is cleared at the start of a pass; bank that value first.
+        if (core.u_raster3d.g_store[gqs].u_store.clear) begin
+          if (qs_emit[gqs] > 0) begin
+            qs_pass_n = qs_pass_n + 1;
+            qs_emit_total = qs_emit_total + qs_emit[gqs];
+            if (qs_emit[gqs] > qs_emit_max) qs_emit_max = qs_emit[gqs];
+          end
+          qs_emit[gqs] = 0;
+        end
+      end
+    end
+  end
+endgenerate
+
 // ----------------------------- WHICH INTERRUPT LEVELS DOES THE CORE TAKE?
 //
 // This replaces a one-shot probe that asked whether an interrupt was pending at
@@ -2741,6 +2777,9 @@ initial begin
     // Level 3 is the sound USART's queue pump. It read zero until 2026-09-10
     // because nothing was connected to 0xc40000, and that absence was misread
     // as a V60 divergence on vf - docs/findings.md 2026-09-10 (3).
+    if (qs_pass_n > 0)
+      $display("FRAME: quad store emissions: passes=%0d  max=%0d  mean=%0d  (SDRAM reads per pass if the payload moves out)",
+               qs_pass_n, qs_emit_max, qs_emit_total / qs_pass_n);
     $display("FRAME: interrupts taken: total=%0d  L0(timer)=%0d L1(vblank)=%0d L2=%0d L3(sound)=%0d L4=%0d L5=%0d L6=%0d L7=%0d",
              irq_total, irq_taken[0], irq_taken[1], irq_taken[2], irq_taken[3],
              irq_taken[4], irq_taken[5], irq_taken[6], irq_taken[7]);
