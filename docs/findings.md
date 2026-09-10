@@ -20,6 +20,62 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (9) — THE LANE-ENABLE REGISTER FILE IS ON HARDWARE: -547 ALM, AND THE TRACE CAUGHT THE BUG THE FUZZERS DID NOT
+
+Build `5011fb4493ae56f603f09cbd8fe03ccf`, 0 errors.
+
+| | before | after |
+|---|---|---|
+| ALM | 41,473 (99%) | **40,926 (98%)** |
+| spare | 437 | **984** |
+| `clk_cpu` setup | +0.410 | +0.655 |
+| `pll_hdmi` | +0.108 | +0.166 |
+| M10K / DSP | 553 / 61 | unchanged |
+
+**-547 ALM in the design**, against 981 on the standalone microbench - the
+standalone figure was inflated by virtual pins, so quote this one.
+
+**THE FIRST ATTEMPT WAS WRONG, AND ONLY THE TRACE FOUND IT.** The premise was
+that every write mask is a byte/halfword/word lane. Three sites are not:
+`SET1` (0x97), `CLR1` (0xa7) and `NOT1` (0xb7) pass a SINGLE-BIT mask of the
+form `32'h1 << bi`. The census that "proved" the premise used a regex that only
+matched hex literals, so it never saw them, and the first build had `SET1`
+writing all 32 bits instead of one.
+
+What did NOT catch that:
+
+- `make lint`, clean
+- the V60 unit suite, **29/29**
+- `v60_alu`, **360,001 checks, 0 fails**
+- `v60_shift`, **69,121 checks, 0 fails**
+- `make test`, fully green
+
+What DID catch it, immediately: **`make v60_trace GAME=vr`**. Our collapsed
+stream went from 27,377 instructions to 50,609 with 14,326 spinning loops, and
+parted from MAME at instruction 24,909.
+
+**This is the clearest demonstration yet of the gap in the V60's verification.**
+Per-opcode fuzzing proves each instruction correct FOR THE STATE IT WAS HANDED;
+it never generated a `SET1` whose clobbered upper bits were read back later, so
+a change that corrupted 31 of 32 bits passed 429,000 checks. Only running real
+code found it. A full-CPU lockstep against MAME's device - the
+`sim/tgp/mb86233_ref.cpp` pattern - is what would close it.
+
+The fix costs nothing: those three merge in the datapath using `rf_rdata_b`,
+which is the same register they already read for the flag test on the line
+above, so no read port is added.
+
+**Also fixed alongside**: `irq_mask` now resets to `0xff`, matching MAME's
+`machine_reset`. Ours was `'0` - nothing masked - which was harmless while only
+the timer and vblank existed, since both need their own trigger and every game
+programs the mask first. Level 3 raises off a USART event and made the reset
+value observable, exactly as model1.cpp's comment says it otherwise is not.
+
+Board: VR loaded, telemetry healthy (`D`=0, `T`=0, 58 Hz), Ben confirms "that's
+working fine". VF healthy on telemetry likewise.
+
+---
+
 ## 2026-09-10 (8) — THE V60's PER-BIT REGISTER WRITE MASK COSTS ~1,030 ALM
 
 **Instrument:** `sim/microbench/rf_flops.sv` and two variants, each
