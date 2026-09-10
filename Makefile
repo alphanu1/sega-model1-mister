@@ -153,6 +153,12 @@ SRCS_m1_loader_harness := $(SRCS_m1_rom_loader) $(SRCS_m1_sdram) $(SRCS_sdram_mo
 # Microbenchmarks for the "share the adder" question - see docs/findings.md.
 SRCS_addr_separate := sim/microbench/addr_separate.sv
 SRCS_addr_shared   := sim/microbench/addr_shared.sv
+SRCS_v60_fp := rtl/cpu/v60/v60_fp.sv
+SRCS_rf_flops := sim/microbench/rf_flops.sv
+SRCS_rf_word := sim/microbench/rf_word.sv
+SRCS_rf_1w := sim/microbench/rf_1w.sv
+SRCS_v60_fp_addonly := sim/microbench/v60_fp_addonly.sv
+SRCS_v60_fp_mulonly := sim/microbench/v60_fp_mulonly.sv
 SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \

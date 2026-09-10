@@ -20,6 +20,43 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (8) — THE V60's PER-BIT REGISTER WRITE MASK COSTS ~1,030 ALM
+
+**Instrument:** `sim/microbench/rf_flops.sv` and two variants, each
+`make quartus MOD=<m>`. The model is v60.sv's actual register file: 32x32, two
+async read ports built as 32-way muxes, two write ports with PER-BIT masks.
+
+| variant | ALM |
+|---|---|
+| as built - 2 write ports, per-bit masks | **2,289** |
+| 2 write ports, WORD writes | 1,256 |
+| 1 write port, per-bit masks | 1,250 |
+
+**The per-bit mask costs about 1,030 ALM** - more than stubbing every unused
+instruction group (764), and unlike stubbing it removes no functionality. Each
+of the 1,024 flops carries its own enable term (`we && wmask[b] && address
+match`) plus a two-port data mux, so there is roughly one ALUT of control per
+bit of storage.
+
+**The fix is to merge before the write**: `wdata = (old & ~mask) | (new & mask)`
+into a whole-word write. One 32-bit merge replaces 1,024 per-bit enables, and
+the old value is already to hand - `r[rf_waddr0]` and `r[rf_waddr1]` are two of
+only FOUR dynamic read sites in the whole file.
+
+**The correctness crux is a same-register collision.** With per-bit masks, two
+ports writing the same register merge bit by bit; with word writes port 1 would
+clobber port 0 entirely, and v60.sv's own comment says the ordering is
+load-bearing ("Port 1 is applied second so the final queued write retains the
+original nonblocking-assignment priority when both ports address the same
+bit"). The merge must therefore combine BOTH masks when the addresses match.
+
+**Context: this is now the largest measured lever in the V60**, against the
+whole optimisation list measured the same day - shared address datapath
+150-250, FP add/mul dedup 54, FP onto DSP already done. It is also the only one
+of them that changes no architectural behaviour at all.
+
+---
+
 ## 2026-09-10 (7) — SHARING AN ADDER SAVES 7%, NOT A LOT: THE OPTIMISATION RANKING WAS WRONG
 
 **Instrument:** `sim/microbench/addr_separate.sv` vs `addr_shared.sv`,
