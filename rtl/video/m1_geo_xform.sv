@@ -112,7 +112,7 @@ module m1_geo_xform #(
   output logic [31:0] out_x, out_y, out_z
 );
 
-  logic [31:0] mat [12];
+  logic [31:0] mat [12] /* verilator public_flat_rd */;
   always_ff @(posedge clk) if (mat_we) mat[mat_idx] <= mat_data;
 
   // ------------------------------------------------------------ product bank

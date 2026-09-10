@@ -1361,6 +1361,111 @@ always @(posedge clk) begin       // clk is the scan/system clock in this bench
     end
 end
 
+// ----------------------------- HOW BIG IS EACH OBJECT ON SCREEN?
+//
+// Virtua Fighter's arena renders as a tiny slab. The display list, viewport,
+// zoom, matrix command and object size all match MAME exactly, and the geometry
+// agrees with our own reimplementation of push_object - which is not the same as
+// agreeing with MAME, because both read the same model data.
+//
+// So measure the OUTPUT: for each object, the screen-space extent of the quads
+// it produced. MAME's own dump gives the arena as poly=00b0d67 size=4373, so the
+// object can be identified by address and its size compared rather than argued.
+// Count the matrix element writes the walker makes. Twelve per 0x0b command;
+// fewer means the matrix an object is drawn with was never fully written.
+// WHAT THE DISPLAY LIST ASKED FOR, against what the matrix ended up holding.
+//
+// Comparing our matrix against MAME's dump is invalid: the dumps are from
+// different frames and the camera moves, so they SHOULD differ. This needs no
+// frame alignment - it asks whether mat[] equals the twelve floats of the 0x0b
+// command that preceded the object. If it does, our latching is right and the
+// difference is upstream; if it does not, the bug is here.
+logic [31:0] cmd_mat [0:11];
+integer cm_i, cm_cmds = 0;
+always @(posedge clk_3d) begin
+    if (core.u_raster3d.rst_n && core.u_raster3d.lw_ev_valid
+        && !core.u_raster3d.lw_ev_body
+        && core.u_raster3d.lw_ev_kind == 8'h0b) begin
+        if (core.u_raster3d.lw_ev_idx < 16'd12)
+            cmd_mat[core.u_raster3d.lw_ev_idx[3:0]] <= core.u_raster3d.lw_ev_data;
+        if (core.u_raster3d.lw_ev_idx == 16'd11) cm_cmds = cm_cmds + 1;
+    end
+end
+
+integer mat_writes = 0;
+always @(posedge clk_3d)
+    if (core.u_raster3d.rst_n && core.u_raster3d.mat_we) mat_writes = mat_writes + 1;
+
+integer ob_n = 0;
+integer ob_qn = 0;
+integer ob_xmin = 99999, ob_xmax = -99999, ob_ymin = 99999, ob_ymax = -99999;
+reg [31:0] ob_poly_d = 32'hffffffff;
+integer obq_x, obq_y, oi;
+
+task automatic flush_object;
+    begin
+        // Only once the MATCH is running. The first forty objects of a run are
+        // attract, and the arena is never among them - which is what the first
+        // attempt reported.
+        if (ob_qn > 0 && ob_n < 200 && cycles > 64'd900000000) begin
+            // The projection state IN FORCE for this object, not a range over
+            // the run: a min/max that contains the right answer says nothing
+            // about the moment the object was drawn.
+            // THE FRAME NUMBER, so an extent can be tied to the picture it came
+            // from. A cluster of small objects is correct if the camera is
+            // pulled back, and reading it as "everything is tiny" without
+            // looking at the frame is how the test menu was called a broken
+            // renderer.
+            $display("OBJ: f%0d poly=%07h quads=%-5d x %0d..%0d (%0d wide)  y %0d..%0d (%0d tall)  zoomx=%08h xc=%08h m0=%08h m4=%08h m8=%08h",
+                     frames, ob_poly_d[23:0], ob_qn, ob_xmin, ob_xmax, ob_xmax - ob_xmin,
+                     ob_ymin, ob_ymax, ob_ymax - ob_ymin,
+                     core.u_raster3d.vzoomx, core.u_raster3d.vxc,
+                     core.u_raster3d.u_geo.u_xform.mat[0],
+                     core.u_raster3d.u_geo.u_xform.mat[4],
+                     core.u_raster3d.u_geo.u_xform.mat[8]);
+            $display("     mat: %08h %08h %08h | %08h %08h %08h | %08h %08h %08h | %08h %08h %08h  (writes=%0d)",
+                     core.u_raster3d.u_geo.u_xform.mat[0], core.u_raster3d.u_geo.u_xform.mat[1],
+                     core.u_raster3d.u_geo.u_xform.mat[2], core.u_raster3d.u_geo.u_xform.mat[3],
+                     core.u_raster3d.u_geo.u_xform.mat[4], core.u_raster3d.u_geo.u_xform.mat[5],
+                     core.u_raster3d.u_geo.u_xform.mat[6], core.u_raster3d.u_geo.u_xform.mat[7],
+                     core.u_raster3d.u_geo.u_xform.mat[8], core.u_raster3d.u_geo.u_xform.mat[9],
+                     core.u_raster3d.u_geo.u_xform.mat[10], core.u_raster3d.u_geo.u_xform.mat[11],
+                     mat_writes);
+            $display("     cmd: %08h %08h %08h | %08h %08h %08h | %08h %08h %08h | %08h %08h %08h  (0x0b cmds=%0d)",
+                     cmd_mat[0], cmd_mat[1], cmd_mat[2], cmd_mat[3],
+                     cmd_mat[4], cmd_mat[5], cmd_mat[6], cmd_mat[7],
+                     cmd_mat[8], cmd_mat[9], cmd_mat[10], cmd_mat[11], cm_cmds);
+            ob_n = ob_n + 1;
+        end
+        ob_qn = 0; ob_xmin = 99999; ob_xmax = -99999;
+        ob_ymin = 99999; ob_ymax = -99999;
+    end
+endtask
+
+always @(posedge clk_3d) begin
+    if (core.u_raster3d.rst_n) begin
+        if (core.u_raster3d.obj_poly !== ob_poly_d) begin
+            flush_object();
+            ob_poly_d = core.u_raster3d.obj_poly;
+        end
+        if (core.u_raster3d.q_valid) begin
+            ob_qn = ob_qn + 1;
+            for (oi = 0; oi < 4; oi = oi + 1) begin
+                case (oi)
+                    0: begin obq_x = $signed(core.u_raster3d.q_x0); obq_y = $signed(core.u_raster3d.q_y0); end
+                    1: begin obq_x = $signed(core.u_raster3d.q_x1); obq_y = $signed(core.u_raster3d.q_y1); end
+                    2: begin obq_x = $signed(core.u_raster3d.q_x2); obq_y = $signed(core.u_raster3d.q_y2); end
+                    default: begin obq_x = $signed(core.u_raster3d.q_x3); obq_y = $signed(core.u_raster3d.q_y3); end
+                endcase
+                if (obq_x < ob_xmin) ob_xmin = obq_x;
+                if (obq_x > ob_xmax) ob_xmax = obq_x;
+                if (obq_y < ob_ymin) ob_ymin = obq_y;
+                if (obq_y > ob_ymax) ob_ymax = obq_y;
+            end
+        end
+    end
+end
+
 // ----------------------------- DIRECT POLYGONS: COUNTED, BECAUSE WE DROP THEM
 //
 // Display list command 0x02 is MAME's push_direct - polygons handed over

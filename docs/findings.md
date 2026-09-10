@@ -20,6 +20,69 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 — VF'S ARENA: THE RENDERING PATH IS EXONERATED, THE MATRIX ARRIVES WRONG
+
+The bug now reproduces in simulation (`sim/input/vf_match.txt`), so it can be
+measured instead of eliminated. Taking the arena object `00b0f5f`, which BOTH
+MAME and our core draw:
+
+| | MAME | ours |
+|---|---|---|
+| model bytes at `poly_adr 0xb0d67` | | **byte-identical**, all 16 words |
+| display list commands | | identical - no 0x02, no 0x05, no bit 23 |
+| `zoomx` / `xc` when the object is drawn | `4415a000` / `43780000` | **the same** |
+| on-screen width | fills much of 496 | **6 pixels** |
+
+**The matrix `mat[]` holds is exactly the matrix the display list asked for.**
+Printed side by side for the same object in the same frame, `mat:` and `cmd:`
+agree element for element, and 78,240 matrix element writes across 6,520 `0x0b`
+commands is 12.0 per command - nothing partial, nothing dropped.
+
+So the whole rendering path is correct and the bad matrix was **already in the
+display list**. The V60 wrote it there from values the COPROCESSOR computed.
+Ben's suggestion, and it is now the only explanation left standing.
+
+**The matrix is wrong on its own terms too.** Treating rows as MAME's
+`transform_point` does - `(m[0],m[3],m[6])`, `(m[1],m[4],m[7])`, `(m[2],m[5],m[8])`:
+
+    x row  0,      0.3125, 1.0      length 1.047
+    y row -0.0978, 0.0428, 0        length 0.107     <- ten times short
+    z row -0.9952, 0.4353, 0        length 1.086
+
+Two rows unit-length and one squashed tenfold is not something a camera
+transform should produce.
+
+**MAME is NOT working around the bad dump**, which was worth checking before
+blaming our execution: it instantiates a real `MB86233` at 40 MHz with program,
+data and IO maps, and there is no HLE, no patched opcode and no driver
+workaround - only the `BAD_DUMP` marker on the ROM load. Both run the same bytes;
+only MAME renders correctly.
+
+**A caveat on the likely shape of the fault.** Our coprocessor is fuzzed per
+opcode against MAME and passes, so a divergence is more likely to be STATE than
+arithmetic - the microcode's matrix stack (`cmd_05_matrix_push`,
+`cmd_06_matrix_pop`) persists across objects, and corrupting it gives exactly
+"objects drawn right after their own matrix write are fine, ones drawn deep in
+the list are wrong". That is the fighters-correct/arena-wrong split. It is also
+the same class as the `ST` register bug already in this file, which per-opcode
+fuzzing likewise passed.
+
+**Two comparisons of mine were invalid and are withdrawn.** Matrices from
+MAME's frame ~2400 were compared against ours from frame 681 as though they were
+the same instant; the camera moves, so they SHOULD differ, and no conclusion
+about magnitude survives that. And a cluster of small objects during READY/DRAW
+was read as "the whole scene is tiny" when Ben had already watched the video and
+seen only the arena wrong.
+
+**Next**: `tgp_wrtrace` is the right instrument - it diffs the coprocessor's
+data-memory WRITES, catching a wrong value where it is produced, which a PC-level
+trace cannot because a wrong number does not change control flow. It drives
+`make m1_boot` though, which has none of the input scripting, so neither side
+reaches a match and the arena is never drawn. It needs pointing at `m1_frame`
+with the input script before it can answer this.
+
+---
+
 ## 2026-09-09 (8) — WITHDRAWN: THE BENCH RENDERS FINE. IT IS SITTING IN TEST MODE
 
 The entry below is **wrong** and is kept because the way it was wrong is the
