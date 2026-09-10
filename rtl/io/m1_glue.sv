@@ -116,7 +116,18 @@ module m1_glue (
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      irq_status <= '0; irq_mask <= '0; rom_bank <= '0; vbl_d <= 1'b0;
+      // IRQ_MASK RESETS TO ALL-MASKED, AS MAME'S machine_reset DOES
+      // (`m_irq_mask = 0xff`). This was '0 - nothing masked - and harmless for
+      // as long as the only sources were the timer and vblank, because each
+      // needs its own trigger and the game programs the mask long before it
+      // arms either. Level 3 is different: it raises off a USART event, so an
+      // all-clear mask let it fire before the game had written the mask at all.
+      // `make v60_trace GAME=vr` caught exactly that - we vectored to fe02a4,
+      // Virtua Racing's non-vblank handler, one instruction after the game
+      // enabled interrupts, where the reference does not. model1.cpp's own
+      // comment says the reset value "is not observable"; adding level 3 made
+      // it observable. See docs/findings.md 2026-09-10 (9).
+      irq_status <= '0; irq_mask <= 8'hff; rom_bank <= '0; vbl_d <= 1'b0;
       last_irq <= '0; timer_mode <= '0;
       for (int t = 0; t < 2; t++) begin
         timer_period[t] <= '0; timer_count[t] <= '0; timer_presc[t] <= '0;

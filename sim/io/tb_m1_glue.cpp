@@ -63,11 +63,24 @@ static void chk(bool ok, const char* what) {
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
 
+  printf("test: the mask RESETS to all-masked, as MAME's machine_reset does\n");
+  {
+    // This was '0 here, and it cost a real divergence once level 3 existed: the
+    // USART could raise before the game had written the mask at all, and vr
+    // vectored to its non-vblank handler one instruction after enabling
+    // interrupts. MAME resets m_irq_mask to 0xff.
+    Glue g;
+    chk(g.rd(1) == 0x00ff, "irq_mask reads 0xff after reset");
+    g.d->snd_txrdy = 1; g.snd_event(1);
+    chk(g.d->irq_n == 1, "a ready USART cannot raise level 3 before the game unmasks it");
+    g.pulse_vblank();
+    chk(g.d->irq_n == 1, "and vblank is masked at reset too");
+  }
+
   printf("test: the mask blocks, it does not enable\n");
   {
     Glue g;
-    // Mask at its reset value of zero: vblank must reach the CPU. Under an
-    // enable reading it would not, which is the bug this is here to catch.
+    g.wr(1, 0x00);                        // the game programs the mask
     chk(g.d->irq_n == 1, "idle: no interrupt pending");
     g.pulse_vblank();
     chk(g.d->irq_n == 0, "vblank raises with mask=0");
@@ -87,6 +100,7 @@ int main(int argc, char** argv) {
   printf("test: control 0x20 clears only the last raised\n");
   {
     Glue g;
+    g.wr(1, 0x00);                        // unmask everything first
     g.wr(4, 1);                           // timer 0 period 1
     for (int i = 0; i < PRESC * 3 + 8; i++) g.tick();
     chk(g.d->irq_n == 0, "timer raised");
@@ -136,6 +150,7 @@ int main(int argc, char** argv) {
   printf("test: the vector is the lowest set status bit, MAME's irq_callback\n");
   {
     Glue g;
+    g.wr(1, 0x00);
     g.pulse_vblank();                       // IRQ 1
     chk(g.d->irq_n == 0, "vblank pending");
     chk(g.d->irq_vec == 1, "vector is 1 for vblank alone");
@@ -155,6 +170,7 @@ int main(int argc, char** argv) {
   printf("test: 0x20 clears the source that was acknowledged\n");
   {
     Glue g;
+    g.wr(1, 0x00);
     g.wr(4, 1);
     for (int i = 0; i < PRESC * 3 + 8; i++) g.tick();   // IRQ 0 pending
     g.pulse_vblank();                                   // IRQ 1 pending too
