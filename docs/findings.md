@@ -20,6 +20,40 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (6) — THE USART/IRQ-3 FIX IS ON HARDWARE: NO REGRESSION, AND IT DOES NOT FIX VF'S ARENA
+
+Build `ef8cfa103ecb26648273fa57f40859d4`, 41,473/41,910 ALM (99%), 553/553 M10K,
+61/112 DSP, 0 errors. **Every clock positive, including `pll_hdmi` at +0.108** -
+that one had been negative on the last several builds (-0.034, -0.096, -0.338).
+The USART cost +152 ALM over the 41,321 baseline.
+
+Tested on the board from a cold boot, one `load_core` per reboot:
+
+- **Virtua Racing: unchanged.** Ben: "it looks and plays the same". Telemetry
+  matches its documented healthy baseline - `U` 887-983 quads inside the
+  documented 976-1,301 attract band, `D`=0 dropped, `T`=0 late bands, 58 Hz.
+  This was the regression check that mattered, because VR's level 3 is now live
+  too and VR is the title that already worked.
+- **Virtua Fighter: unchanged.** Ben: "vf is the same. small fighting arena, no
+  regression." Telemetry healthy - `D`=0, `T`=0, 58 Hz, `U` 842-1,889.
+
+**So the arena is NOT the missing interrupt.** That was the prediction stated
+before the test and it held. The correlation argument was sound - one thing was
+measurably wrong and it demonstrably changed execution from frame 124 - but the
+change it makes is not the arena.
+
+**What the fix is still worth keeping for**: the V60 no longer diverges from
+MAME on Virtua Fighter, so "but our CPU diverges" can no longer sit in front of
+the arena investigation. The register the game polls 12.9 times a frame now
+returns real status instead of the bus's undecoded 0xffff, which had been
+claiming RxRDY plus parity, overrun and framing errors on every poll.
+
+**Next for the arena is the coprocessor**, which was Ben's original hypothesis:
+`tgp_wrtrace GAME=vf`, repointed from `make m1_boot` to `m1_frame` with
+`sim/input/vf_match.txt`.
+
+---
+
 ## 2026-09-10 (5) — WHERE THE V60'S AREA ACTUALLY IS: MUXES AND DUPLICATED ADDRESS ARITHMETIC
 
 **Instrument:** the Fitter's per-entity table in `s32_v60.fit.rpt`, plus a yosys
