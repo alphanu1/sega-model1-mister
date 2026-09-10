@@ -20,6 +20,62 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (5) — WHERE THE V60'S AREA ACTUALLY IS: MUXES AND DUPLICATED ADDRESS ARITHMETIC
+
+**Instrument:** the Fitter's per-entity table in `s32_v60.fit.rpt`, plus a yosys
+coarse-cell census (`proc; opt -fast; stat`). Recorded so the next person does
+not optimise the wrong block.
+
+| entity | ALM | share |
+|---|---|---|
+| `s32_v60` top level ITSELF | 13,377 | 75.5% |
+| `v60_fp` | 2,266 | 12.8% |
+| `v60_ifetch` | 1,299 | 7.3% |
+| `v60_shift` | 672 | 3.8% |
+| `v60_alu` | **74** | 0.4% |
+
+**`v60_alu` at 74 ALM is the finding.** That is far too small to be a 32-bit
+CPU's ALU, and it means arithmetic is NOT routed through it - it is inlined,
+per-case, across the top level's exec statement.
+
+The yosys census says the same thing from the other side. For the whole design:
+
+    $mux 14,798   $pmux 588   $eq 1,106   $ne 433
+    $add   140   $sub   56   $mul    7   $div   1
+
+**Muxing dominates, not arithmetic** - and the 140 adders are the symptom of
+the same cause. At source level, single registers are assigned from very many
+places:
+
+    st 196 sites   dbus_req 116   dbus_addr 53   exc_vector 25
+    total_len 23   ea_len 21      pc 17          ea_addr 17    dbus_wdata 16
+
+`dbus_addr` is 32 bits wide and computed by 53 different expressions, so it
+carries a 53-way 32-bit mux AND most of those expressions contain their own
+adder. That is the classic monolithic-microsequencer shape.
+
+**So the highest-value structural change is a shared address datapath** - route
+address arithmetic through one adder with a small operand mux, rather than 53
+independent expressions - and NOT optimising the ALU, shifter or FP unit, which
+are between them under a quarter of the core. This is what the "split the V60
+for AREA, not speed" note has been pointing at.
+
+**Two caveats on the absolute numbers.** The 17,707 total was built by
+`make quartus MOD=s32_v60`, whose `quartus/spike.qsf.in` defaults to
+OPTIMIZATION_TECHNIQUE **Speed**. The real hardware build already runs
+`Aggressive Area` + `AREA` + `MUX_RESTRUCTURE ON` (`tools/mister_project.sh`),
+so the in-design cost is lower and that lever is ALREADY PULLED - do not
+"discover" it again. The DELTAS measured on the spike remain valid; the
+absolutes do not transfer.
+
+**And STA cannot break the 13,377 down further** - it is a timing tool. The
+per-entity table stops at module boundaries, so seeing inside the top level
+needs either the yosys census above or wrapping logical blocks (EA engine, exec
+case, register file) in real modules, which would make the Fitter report them
+separately as a side effect of being the refactor worth doing anyway.
+
+---
+
 ## 2026-09-10 (4) — STUBBING THE UNUSED V60 INSTRUCTIONS IS WORTH 764 ALM
 
 **Instrument:** `tools/v60_opcensus.sh` for the candidate list, then
