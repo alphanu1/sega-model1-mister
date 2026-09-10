@@ -178,14 +178,38 @@ module m1_quad_store #(
   logic [4*VW-1:0] pay_wdata;
   logic            pay_req;
   logic [IW-1:0]   pay_raddr;
+  logic            pay_ready;
   logic            pay_valid;
+  logic            pay_take;
   logic [4*VW-1:0] pay_rdata;
 
   m1_quad_payload #(.NQ(NQ), .IW(IW), .VW(VW)) u_pay (
     .clk(clk), .rst_n(rst_n),
     .we(pay_we), .waddr(pay_waddr), .wdata(pay_wdata),
-    .req(pay_req), .raddr(pay_raddr), .valid(pay_valid), .rdata(pay_rdata)
+    .req(pay_req), .raddr(pay_raddr), .ready(pay_ready),
+    .valid(pay_valid), .take(pay_take), .rdata(pay_rdata)
   );
+
+  // THE SCAN RUNS AHEAD OF THE OUTPUT, and this FIFO is what lets it.
+  //
+  // The replay used to freeze on a hit and stay frozen until the fill took the
+  // quad. That is fine when the vertices are one cycle away and fatal when
+  // they are not: 22,700 emissions a pass at even 60 cycles of memory latency
+  // is 1.36 M cycles against a pass of about 1.2 M.
+  //
+  // Emissions are FILL-paced - one every ~1.87 us measured on a real race -
+  // so the scan has time in hand. It now issues a payload read on every hit
+  // and keeps scanning, holding the quad's colour here until the payload
+  // arrives to meet it. Reads complete during a fill the core was doing
+  // anyway, and latency stops mattering until it exceeds DEPTH x the fill's
+  // pace. See docs/findings.md 2026-09-10 (10) and tb_m1_ddram_payload.
+  localparam int unsigned MD = 16;
+  localparam int unsigned MW = $clog2(MD);
+  logic [16:0] meta [MD];                 // {moire, colour as RGB565}
+  logic [MW:0] mwp, mrp;
+  wire  [MW:0] mfill  = mwp - mrp;
+  wire         mfull  = (mfill == (MW+1)'(MD));
+  wire         mempty = (mfill == '0);
   (* ramstyle = "M10K" *) logic [AT_W-1:0] att_lo  [NLO];  (* ramstyle = "M10K" *) logic [AT_W-1:0] att_hi  [NHI];
   (* ramstyle = "M10K" *) logic [31:0]     key_lo  [NLO];  (* ramstyle = "M10K" *) logic [31:0]     key_hi  [NHI];
   // Two index arrays, ping-ponged by the radix passes.
@@ -211,9 +235,6 @@ module m1_quad_store #(
     pay_wdata = {{sat_y(in_y3), sat_x(in_x3)}, {sat_y(in_y2), sat_x(in_x2)},
                  {sat_y(in_y1), sat_x(in_x1)}, {sat_y(in_y0), sat_x(in_x0)}};
   end
-
-  // The payload as it came back, held across P_OUT.
-  logic [VW-1:0] pv0, pv1, pv2, pv3;
 
   logic [IW:0]  count;
   assign dbg_count = {{(16-IW-1){1'b0}}, count};
@@ -545,8 +566,10 @@ module m1_quad_store #(
   // not with ord_idx itself. Re-registering ord_idx into another stage instead
   // shifts the quad one place against its own attributes, which draws every quad
   // exactly once and in the wrong order.
-  typedef enum logic [1:0] { P_IDLE, P_RUN, P_WAIT, P_OUT } pstate_t;
+  typedef enum logic [1:0] { P_IDLE, P_RUN } pstate_t;
+typedef enum logic       { O_IDLE, O_OUT } ostate_t;
   pstate_t p_st;
+  ostate_t o_st;
 
   logic [IW:0]   pi;
   logic          v1, v2;
@@ -571,9 +594,15 @@ module m1_quad_store #(
   wire [BW-1:0] q_band_lo = att_rd[AT_W-1 -: BW];
   wire [BW-1:0] q_band_hi = att_rd[AT_W-1-BW -: BW];
   wire          hit = v2 && (replay_band >= q_band_lo) && (replay_band <= q_band_hi);
-  wire              adv = (p_st == P_RUN) && !hit;
+  // Room to record a hit means both halves: somewhere to put the colour and a
+  // payload read the backing will accept. Without both the scan must wait,
+  // which is the only thing that still stalls it.
+  wire          can_take = !mfull && pay_ready;
+  wire          adv = (p_st == P_RUN) && (!hit || can_take);
 
-  assign replay_busy = (p_st != P_IDLE);
+  // Busy until the scan has finished AND everything it queued has gone out;
+  // the two now end at different times.
+  assign replay_busy = (p_st != P_IDLE) || !mempty || out_valid;
 
   // The att read by ord_idx and the vertex reads by q, one site each, every
   // cycle; the consumers above pick the half a cycle later. att used to be
@@ -602,9 +631,10 @@ module m1_quad_store #(
       out_x0 <= '0; out_y0 <= '0; out_x1 <= '0; out_y1 <= '0;
       out_x2 <= '0; out_y2 <= '0; out_x3 <= '0; out_y3 <= '0;
       out_col <= '0; out_moire <= 1'b0;
-      pay_req <= 1'b0; pay_raddr <= '0;
-      pv0 <= '0; pv1 <= '0; pv2 <= '0; pv3 <= '0;
+      pay_req <= 1'b0; pay_raddr <= '0; pay_take <= 1'b0;
+      mwp <= '0; mrp <= '0; o_st <= O_IDLE;
     end else begin
+      pay_req <= 1'b0;
       if (adv) begin
         q2      <= ord_idx;
         v1      <= v0;
@@ -617,69 +647,62 @@ module m1_quad_store #(
           out_valid <= 1'b0;
           if (replay_start && count != 0) begin
             pi <= '0; v1 <= 1'b0; v2 <= 1'b0;
+            // The queues are per band: a band starts with nothing in flight.
+            mwp <= '0; mrp <= '0;
             p_st <= P_RUN;
           end
         end
 
         P_RUN: begin
-          if (hit) begin
-            // ASK FOR THE VERTICES, do not assume they are already here. They
-            // used to be, from a free-running read of an on-chip array; the
-            // whole point of the payload module is that a caller must not
-            // depend on that. P_WAIT costs one cycle per emission against this
-            // backing and any number against another.
+          if (hit && can_take) begin
+            // Record the colour and ASK for the vertices, then carry on. The
+            // scan does not wait for either the payload or the fill.
+            meta[mwp[MW-1:0]] <= {att_rd[16],
+                                  att_rd[15:11], att_rd[10:5], att_rd[4:0]};
+            mwp       <= mwp + 1'b1;
             pay_req   <= 1'b1;
             pay_raddr <= q2;
-            // 565 back to 888 with the low bits clear; the band takes the top
-            // bits again, so the round trip is exact.
-            out_col   <= {att_rd[15:11], 3'b000, att_rd[10:5], 2'b00, att_rd[4:0], 3'b000};
-            out_moire <= att_rd[16];
-            p_st      <= P_WAIT;
-          end else if (!v0 && !v1 && !v2) begin
-            p_st <= P_IDLE;              // drained
-          end
-        end
-
-        // Hold until the payload answers. One cycle with the on-chip backing.
-        P_WAIT: begin
-          pay_req <= 1'b0;
-          if (pay_valid) begin
-            {pv3, pv2, pv1, pv0} <= pay_rdata;
-            p_st <= P_OUT;
-          end
-        end
-
-        // The payload is in pv0..pv3 by the time P_OUT runs.
-        //
-        // ONE READ PER ARRAY, NOT TWO. `vtx0[q][15:0]` and `vtx0[q][31:16]` are
-        // two separate reads of the same array at the same address as far as
-        // synthesis is concerned, and Quartus answers a second read port by
-        // DUPLICATING the memory. Measured in the fit report: vtx0 as
-        // vtx0_rtl_0 and vtx0_rtl_1, 10 and 11 M10K for one 65,536-bit array,
-        // and the same for the other three - 91 blocks for 411,648 bits of
-        // unique data, 40% packing efficiency.
-        //
-        // A concatenation on the left is one read, split on the way out, and it
-        // is bit-identical: the store writes {in_y, in_x}.
-        P_OUT: begin
-          // Zero-extended: screen coordinates are never negative. Through a
-          // function so each array is read ONCE - slicing vtx0[q] twice in
-          // one statement duplicated every vertex memory (vtx0_rtl_0 and
-          // _rtl_1 in the fit report, 9 blocks where 5 would do), the same
-          // trap the comment above describes.
-          {out_y0, out_x0} <= widen(pv0);
-          {out_y1, out_x1} <= widen(pv1);
-          {out_y2, out_x2} <= widen(pv2);
-          {out_y3, out_x3} <= widen(pv3);
-          out_valid <= 1'b1;
-          if (out_valid && out_ready) begin
-            out_valid <= 1'b0;
-            v2        <= 1'b0;           // this one is consumed
-            p_st      <= P_RUN;
+          end else if (!hit && !v0 && !v1 && !v2) begin
+            p_st <= P_IDLE;              // the scan is drained
           end
         end
 
         default: p_st <= P_IDLE;
+      endcase
+
+      // ------------------------------------------------------- output stage
+      // Independent of the scan. It marries a queued colour to the payload
+      // that answered its read - they arrive in the same order, one FIFO each,
+      // so no tag is needed - and holds the quad until the fill takes it.
+      pay_take <= 1'b0;
+      case (o_st)
+        O_IDLE:
+          if (!mempty && pay_valid) begin
+            // Zero-extended: screen coordinates are never negative. widen()
+            // per vertex so each is read once - see the note on duplicated
+            // memories above.
+            {out_y0, out_x0} <= widen(pay_rdata[      VW-1 -:VW]);
+            {out_y1, out_x1} <= widen(pay_rdata[2*VW-1   -:VW]);
+            {out_y2, out_x2} <= widen(pay_rdata[3*VW-1   -:VW]);
+            {out_y3, out_x3} <= widen(pay_rdata[4*VW-1   -:VW]);
+            // 565 back to 888 with the low bits clear, exactly as before.
+            out_col   <= {meta[mrp[MW-1:0]][15:11], 3'b000,
+                          meta[mrp[MW-1:0]][10:5],  2'b00,
+                          meta[mrp[MW-1:0]][4:0],   3'b000};
+            out_moire <= meta[mrp[MW-1:0]][16];
+            out_valid <= 1'b1;
+            mrp       <= mrp + 1'b1;
+            pay_take  <= 1'b1;
+            o_st      <= O_OUT;
+          end
+
+        O_OUT:
+          if (out_ready) begin
+            out_valid <= 1'b0;
+            o_st      <= O_IDLE;
+          end
+
+        default: o_st <= O_IDLE;
       endcase
     end
   end

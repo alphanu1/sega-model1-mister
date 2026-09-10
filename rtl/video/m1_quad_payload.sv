@@ -48,7 +48,8 @@
 module m1_quad_payload #(
   parameter int unsigned NQ = 3584,
   parameter int unsigned IW = 12,
-  parameter int unsigned VW = 32          // one vertex: {y, x}
+  parameter int unsigned VW = 32,         // one vertex: {y, x}
+  parameter int unsigned DEPTH = 16       // reads that may be in flight
 ) (
   input  logic            clk,
   input  logic            rst_n,
@@ -58,11 +59,16 @@ module m1_quad_payload #(
   input  logic [IW-1:0]   waddr,
   input  logic [4*VW-1:0] wdata,          // {v3, v2, v1, v0}
 
-  // Read port. `valid` answers a `req`; with this backing it is the next
-  // cycle, and nothing downstream may assume that.
+  // Read port, PREFETCHED. `req`/`ready` issue, `valid`/`take` retire, and
+  // several reads may be in flight - which is the whole point: the replay scan
+  // runs ahead of the span fill and the answers arrive during a fill the core
+  // was doing anyway. The same shape as m1_ddram_payload, so the backing can
+  // be swapped without the store changing.
   input  logic            req,
   input  logic [IW-1:0]   raddr,
+  output logic            ready,
   output logic            valid,
+  input  logic            take,
   output logic [4*VW-1:0] rdata
 );
 
@@ -89,24 +95,44 @@ module m1_quad_payload #(
   logic [4*VW-1:0] q_lo, q_hi;
   logic            sel_hi;
 
+  // Reply FIFO, so more than one read can be outstanding. This backing answers
+  // in one cycle so only one is ever in flight, but the interface must not say
+  // so - m1_ddram_payload puts many in flight behind the same signals.
+  localparam int unsigned DW = (DEPTH > 1) ? $clog2(DEPTH) : 1;
+  logic [4*VW-1:0] fifo [DEPTH];
+  logic [DW:0]     wptr, rptr;
+  wire  [DW:0]     fill  = wptr - rptr;
+  wire             empty = (fill == '0);
+  logic            inflight;
+
+  assign ready = (fill + {{DW{1'b0}}, inflight}) < (DW+1)'(DEPTH);
+  assign valid = !empty;
+  assign rdata = fifo[rptr[DW-1:0]];
+
   always_ff @(posedge clk) begin
     if (we) begin
       if (in_hi(waddr)) pay_hi[hi_a(waddr)] <= wdata;
       else              pay_lo[lo_a(waddr)] <= wdata;
     end
-    // Free-running reads: both halves every cycle, the half chosen on the way
-    // out. Gating them on `req` would add a mux into the address path for no
-    // saving - a block RAM read costs nothing when its result is discarded.
+    // Both halves read every cycle, the half chosen on the way out. A block
+    // RAM read costs nothing when its result is discarded, and gating the
+    // address would put a mux in front of the memory for no saving.
     q_lo   <= pay_lo[lo_a(raddr)];
     q_hi   <= pay_hi[hi_a(raddr)];
     sel_hi <= in_hi(raddr);
   end
 
-  assign rdata = sel_hi ? q_hi : q_lo;
-
   always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) valid <= 1'b0;
-    else        valid <= req;
+    if (!rst_n) begin
+      wptr <= '0; rptr <= '0; inflight <= 1'b0;
+    end else begin
+      inflight <= req && ready;
+      if (inflight) begin
+        fifo[wptr[DW-1:0]] <= sel_hi ? q_hi : q_lo;
+        wptr <= wptr + 1'b1;
+      end
+      if (valid && take) rptr <= rptr + 1'b1;
+    end
   end
 
 endmodule
