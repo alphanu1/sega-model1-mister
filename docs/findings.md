@@ -20,6 +20,42 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-10 (7) — SHARING AN ADDER SAVES 7%, NOT A LOT: THE OPTIMISATION RANKING WAS WRONG
+
+**Instrument:** `quartus/microbench/addr_separate.sv` vs `addr_shared.sv`,
+identical function, `make quartus MOD=addr_separate` / `MOD=addr_shared`.
+
+| arm | ALM |
+|---|---|
+| 8 separate 32-bit adders + an 8-way result mux | 471 |
+| 1 adder with 8-way operand muxes | 438 |
+
+**33 ALM, about 7%.** Sharing pays, but barely - because on Cyclone V an adder
+is a carry chain at roughly half an ALM per bit, while every mux input costs
+LUTs. Moving the muxing from after the adders to before them is close to a
+wash.
+
+**This corrects a ranking made earlier the same day.** The yosys census found
+140 `$add` cells and 14,798 `$mux`, and "a shared address datapath" was called
+the highest-return, highest-risk optimisation on the strength of the adder
+count. The adder count was never converted into area. The V60 has about 52
+WIDE (32-bit) arithmetic sites - `dbus_addr` 10, `str_src` 9, `pc` 9, `ea_addr`
+8, `str_faddr` 5, `str_dst` 4, and a long tail - so at this rate the whole
+refactor is worth **150-250 ALM**, against **764 measured** for stubbing the
+unused instruction groups.
+
+It is therefore the SMALLEST of the three candidates and still the riskiest: it
+touches the core's address path in dozens of places and needs the 29/29 unit
+suite plus `v60_trace` on three games before it can go near hardware.
+
+Also worth keeping from the same measurement: **most of the 53 `dbus_addr`
+assignment sites carry no arithmetic at all.** They are plain register reads -
+`sp_m4`, `task_addr`, `str_dst`, `op2`, `str_src` - so `dbus_addr` is a wide
+MUX, and only about ten of its sites contain a `+`. The earlier description of
+"53 sites each with its own adder" was wrong.
+
+---
+
 ## 2026-09-10 (6) — THE USART/IRQ-3 FIX IS ON HARDWARE: NO REGRESSION, AND IT DOES NOT FIX VF'S ARENA
 
 Build `ef8cfa103ecb26648273fa57f40859d4`, 41,473/41,910 ALM (99%), 553/553 M10K,

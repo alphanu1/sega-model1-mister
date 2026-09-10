@@ -150,6 +150,9 @@ SRCS_m1_listwalk    := rtl/video/m1_listwalk.sv
 SRCS_m1_loader_harness := $(SRCS_m1_rom_loader) $(SRCS_m1_sdram) $(SRCS_sdram_model) sim/io/m1_loader_harness.sv
 # Top module is s32_v60; the Quartus target keys off MOD, so the .qsf needs the
 # module name to match. Built standalone for area only, not integrated yet.
+# Microbenchmarks for the "share the adder" question - see docs/findings.md.
+SRCS_addr_separate := quartus/microbench/addr_separate.sv
+SRCS_addr_shared   := quartus/microbench/addr_shared.sv
 SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
