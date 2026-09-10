@@ -169,10 +169,23 @@ module m1_quad_store #(
   localparam int unsigned NLO = (NQ > 2048) ? 2048 : NQ;
   localparam int unsigned NHI = (NQ > 2048) ? NQ - 2048 : 1;
   localparam int unsigned LW  = (NLO > 1) ? $clog2(NLO) : 1;
-  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx0_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx0_hi [NHI];
-  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx1_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx1_hi [NHI];
-  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx2_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx2_hi [NHI];
-  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx3_lo [NLO];  (* ramstyle = "M10K" *) logic [VW-1:0]   vtx3_hi [NHI];
+  // THE VERTICES LIVE IN m1_quad_payload, behind a request/valid interface, so
+  // that their backing can move off-chip without this pipeline changing again.
+  // They are 56 of this bank's 98 M10K and the only part of the store whose
+  // access pattern suits external memory - see that module's header.
+  logic            pay_we;
+  logic [IW-1:0]   pay_waddr;
+  logic [4*VW-1:0] pay_wdata;
+  logic            pay_req;
+  logic [IW-1:0]   pay_raddr;
+  logic            pay_valid;
+  logic [4*VW-1:0] pay_rdata;
+
+  m1_quad_payload #(.NQ(NQ), .IW(IW), .VW(VW)) u_pay (
+    .clk(clk), .rst_n(rst_n),
+    .we(pay_we), .waddr(pay_waddr), .wdata(pay_wdata),
+    .req(pay_req), .raddr(pay_raddr), .valid(pay_valid), .rdata(pay_rdata)
+  );
   (* ramstyle = "M10K" *) logic [AT_W-1:0] att_lo  [NLO];  (* ramstyle = "M10K" *) logic [AT_W-1:0] att_hi  [NHI];
   (* ramstyle = "M10K" *) logic [31:0]     key_lo  [NLO];  (* ramstyle = "M10K" *) logic [31:0]     key_hi  [NHI];
   // Two index arrays, ping-ponged by the radix passes.
@@ -189,6 +202,18 @@ module m1_quad_store #(
   function automatic [LW-1:0] hi_a(input logic [IW-1:0] a);
     hi_a = LW'(a - IW'(NLO));
   endfunction
+
+  // The payload write mirrors the accept: same cycle, same index, one packed
+  // word. `has_room` and `in_valid` are the store's own accept condition.
+  always_comb begin
+    pay_we    = in_valid && has_room && !clear;
+    pay_waddr = count[IW-1:0];
+    pay_wdata = {{sat_y(in_y3), sat_x(in_x3)}, {sat_y(in_y2), sat_x(in_x2)},
+                 {sat_y(in_y1), sat_x(in_x1)}, {sat_y(in_y0), sat_x(in_x0)}};
+  end
+
+  // The payload as it came back, held across P_OUT.
+  logic [VW-1:0] pv0, pv1, pv2, pv3;
 
   logic [IW:0]  count;
   assign dbg_count = {{(16-IW-1){1'b0}}, count};
@@ -282,18 +307,10 @@ module m1_quad_store #(
         // RGB565, the same bits the band buffer keeps (m1_raster3d's
         // span_565), so nothing is lost between here and the screen.
         if (in_hi(count[IW-1:0])) begin
-          vtx0_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y0), sat_x(in_x0)};
-          vtx1_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y1), sat_x(in_x1)};
-          vtx2_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y2), sat_x(in_x2)};
-          vtx3_hi[hi_a(count[IW-1:0])] <= {sat_y(in_y3), sat_x(in_x3)};
           att_hi[hi_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
           key_hi[hi_a(count[IW-1:0])]  <= sort_key(in_z);
         end else begin
-          vtx0_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y0), sat_x(in_x0)};
-          vtx1_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y1), sat_x(in_x1)};
-          vtx2_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y2), sat_x(in_x2)};
-          vtx3_lo[lo_a(count[IW-1:0])] <= {sat_y(in_y3), sat_x(in_x3)};
           att_lo[lo_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
           key_lo[lo_a(count[IW-1:0])]  <= sort_key(in_z);
@@ -528,7 +545,7 @@ module m1_quad_store #(
   // not with ord_idx itself. Re-registering ord_idx into another stage instead
   // shifts the quad one place against its own attributes, which draws every quad
   // exactly once and in the wrong order.
-  typedef enum logic [1:0] { P_IDLE, P_RUN, P_OUT } pstate_t;
+  typedef enum logic [1:0] { P_IDLE, P_RUN, P_WAIT, P_OUT } pstate_t;
   pstate_t p_st;
 
   logic [IW:0]   pi;
@@ -575,11 +592,6 @@ module m1_quad_store #(
     // Addressed by q2, which is the hit quad's index during the hit cycle
     // itself, so the vertices are in these registers by the first P_OUT
     // cycle - when `q <= q2` then `vtx[q]` used to deliver them.
-    v0_q_lo <= vtx0_lo[lo_a(q2)]; v0_q_hi <= vtx0_hi[hi_a(q2)];
-    v1_q_lo <= vtx1_lo[lo_a(q2)]; v1_q_hi <= vtx1_hi[hi_a(q2)];
-    v2_q_lo <= vtx2_lo[lo_a(q2)]; v2_q_hi <= vtx2_hi[hi_a(q2)];
-    v3_q_lo <= vtx3_lo[lo_a(q2)]; v3_q_hi <= vtx3_hi[hi_a(q2)];
-    vtx_sel_hi <= in_hi(q2);
   end
 
   always_ff @(posedge clk or negedge rst_n) begin
@@ -590,6 +602,8 @@ module m1_quad_store #(
       out_x0 <= '0; out_y0 <= '0; out_x1 <= '0; out_y1 <= '0;
       out_x2 <= '0; out_y2 <= '0; out_x3 <= '0; out_y3 <= '0;
       out_col <= '0; out_moire <= 1'b0;
+      pay_req <= 1'b0; pay_raddr <= '0;
+      pv0 <= '0; pv1 <= '0; pv2 <= '0; pv3 <= '0;
     end else begin
       if (adv) begin
         q2      <= ord_idx;
@@ -609,18 +623,33 @@ module m1_quad_store #(
 
         P_RUN: begin
           if (hit) begin
+            // ASK FOR THE VERTICES, do not assume they are already here. They
+            // used to be, from a free-running read of an on-chip array; the
+            // whole point of the payload module is that a caller must not
+            // depend on that. P_WAIT costs one cycle per emission against this
+            // backing and any number against another.
+            pay_req   <= 1'b1;
+            pay_raddr <= q2;
             // 565 back to 888 with the low bits clear; the band takes the top
             // bits again, so the round trip is exact.
             out_col   <= {att_rd[15:11], 3'b000, att_rd[10:5], 2'b00, att_rd[4:0], 3'b000};
             out_moire <= att_rd[16];
-            p_st      <= P_OUT;
+            p_st      <= P_WAIT;
           end else if (!v0 && !v1 && !v2) begin
             p_st <= P_IDLE;              // drained
           end
         end
 
-        // The vertex memories are registered, so the quad's data is ready the
-        // cycle after q settles.
+        // Hold until the payload answers. One cycle with the on-chip backing.
+        P_WAIT: begin
+          pay_req <= 1'b0;
+          if (pay_valid) begin
+            {pv3, pv2, pv1, pv0} <= pay_rdata;
+            p_st <= P_OUT;
+          end
+        end
+
+        // The payload is in pv0..pv3 by the time P_OUT runs.
         //
         // ONE READ PER ARRAY, NOT TWO. `vtx0[q][15:0]` and `vtx0[q][31:16]` are
         // two separate reads of the same array at the same address as far as
@@ -638,10 +667,10 @@ module m1_quad_store #(
           // one statement duplicated every vertex memory (vtx0_rtl_0 and
           // _rtl_1 in the fit report, 9 blocks where 5 would do), the same
           // trap the comment above describes.
-          {out_y0, out_x0} <= widen(vtx_sel_hi ? v0_q_hi : v0_q_lo);
-          {out_y1, out_x1} <= widen(vtx_sel_hi ? v1_q_hi : v1_q_lo);
-          {out_y2, out_x2} <= widen(vtx_sel_hi ? v2_q_hi : v2_q_lo);
-          {out_y3, out_x3} <= widen(vtx_sel_hi ? v3_q_hi : v3_q_lo);
+          {out_y0, out_x0} <= widen(pv0);
+          {out_y1, out_x1} <= widen(pv1);
+          {out_y2, out_x2} <= widen(pv2);
+          {out_y3, out_x3} <= widen(pv3);
           out_valid <= 1'b1;
           if (out_valid && out_ready) begin
             out_valid <= 1'b0;

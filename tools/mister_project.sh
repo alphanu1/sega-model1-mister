@@ -96,6 +96,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_planes.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_clip.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geometry.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listwalk.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_payload.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_store.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_recip_rom.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_div.sv
