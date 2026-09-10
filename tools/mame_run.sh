@@ -22,8 +22,15 @@
 #                  so this does not reach any measurement here - but SAY SO
 #                  when reporting a result from a run made this way.
 #
+# THE GAME IS A VARIABLE, NOT A CONSTANT. This ran `vr` unconditionally until
+# 2026-09-10, which is the fourth tool found doing that in one day - the others
+# were v60_trace.sh and v60_strip_isr.py's ENTRY and EXIT. Every one of them
+# failed SILENTLY on another title: they produced output, it was just output
+# about the wrong machine. Pass GAME=vf, or set it in the environment.
+#
 # Usage:
 #   tools/mame_run.sh <script>.lua              # run an instrument
+#   GAME=vf tools/mame_run.sh <script>.lua      # ...on another title
 #   tools/mame_run.sh --seconds 4 -- -debug ... # anything else, args passed on
 set -euo pipefail
 
@@ -52,7 +59,7 @@ if [ $# -gt 0 ] && [ "${1##*.}" = "lua" ]; then script="$1"; shift; fi
 
 cd "$here/build/mamerun"    # MAME drops cfg/, nvram/ and snap/ where it starts
 set +e
-mame vr -rompath "$roms;$overlay" \
+mame "${GAME:-vr}" -rompath "$roms;$overlay" \
         -skip_gameinfo -autoboot_delay 0 -sound none -nothrottle \
         ${script:+-autoboot_script "$here/$script"} \
         "$@"
