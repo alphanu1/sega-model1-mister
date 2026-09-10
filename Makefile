@@ -128,6 +128,7 @@ SRCS_m1_video := rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv rtl/vide
 # 501 and its packing is worth watching on its own, even though the standalone
 # figure never predicts the in-core one.
 SRCS_m1_geo_clip := rtl/video/m1_geo_clip.sv
+SRCS_m1_ddram_payload := rtl/video/m1_ddram_payload.sv
 SRCS_m1_quad_store := rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv
 SRCS_m1_raster_div := rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv
 SRCS_m1_raster_fill := rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv rtl/video/m1_raster_fill.sv
@@ -170,7 +171,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -361,6 +362,11 @@ test_lightbank:
 	  rtl/video/m1_lightbank.sv sim/video/tb_m1_lightbank.cpp \
 	  -o tb_lightbank --Mdir obj_lightbank
 	./obj_lightbank/tb_lightbank
+
+test_ddram_payload:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ddram_payload \
+	  $(SRCS_m1_ddram_payload) sim/video/tb_m1_ddram_payload.cpp -o tb_ddram_payload --Mdir obj_ddram_payload
+	./obj_ddram_payload/tb_ddram_payload
 
 test_quad_store:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_quad_store \
