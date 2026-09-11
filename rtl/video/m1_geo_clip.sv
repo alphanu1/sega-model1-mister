@@ -195,10 +195,42 @@ module m1_geo_clip (
   // sp, pop reads entry sp-1, and every flop keeps a plain enable. The read mux
   // an addressed stack needs is five-deep and costs a fraction of what the
   // shift network did.
-  logic [2:0]         sk_lvl [NSTK];
-  logic [31:0]        sk_x [NSTK][4], sk_y [NSTK][4], sk_z [NSTK][4];
+  // AND IT IS A SMALL RAM, NOT 1,920 FLIP-FLOPS (2026-09-11).
+  //
+  // Making it addressed stopped the stack MOVING, which was the first and
+  // larger win. It did not stop it being 1,920 registers, and at the ALM
+  // utilisation this core runs at the fitter charges about one ALM per
+  // register - so those flops cost more here than the same flops would in a
+  // half-empty design.
+  //
+  // An MLAB is 32 deep by 20 wide whether or not you fill it, and five levels
+  // of four vertices is exactly 20 entries - so {level, vertex} is a 5-bit
+  // address with the depth free. 96 bits wide is five MLABs, about 50 ALMs
+  // against 1,920 registers and the muxes that read them.
+  //
+  // The price is that an MLAB has ONE write port and a registered read, so a
+  // push writes one vertex a cycle and a pop reads one a cycle. The clipper
+  // only pushes and pops for a polygon a plane actually cuts, so the cycles
+  // are nothing. Model 2's m2_geo_clip made the same move first; this follows
+  // its shape, including the five-cycle pop.
+  (* ramstyle = "MLAB" *) logic [95:0] sk_mem [NSTK*4];   // {z, y, x}
+  logic [95:0]        sk_rd;
   logic [2:0]         sp;
   wire  [2:0]         sp_top = sp - 3'd1;   // the entry a pop reads
+
+  // sk_lvl STAYS IN REGISTERS. Its read address exists only in the cycle it is
+  // used - the pop tests sk_lvl[sp_top] to choose its next state on the same
+  // edge it consumes it - and it is 15 bits, so a RAM would buy nothing and
+  // cost a cycle.
+  logic [2:0]         sk_lvl [NSTK];
+
+  logic [1:0]         sv_i;                 // the vertex being pushed
+  logic [2:0]         pcnt;                 // the pop's vertex counter, 0..4
+
+  // Vertex 0 of the top level while the pop is being entered, vertex pcnt after.
+  wire  [1:0]         pop_va     = (kst == K_POP) ? 2'd0 : pcnt[1:0];
+  wire  [4:0]         sk_rd_addr = {sp_top, pop_va};
+  always_ff @(posedge clk) sk_rd <= sk_mem[sk_rd_addr];
 
   // ------------------------------------------------------------ the plane
   wire [31:0] plane_a = (lvl == 3'd0) ? a_bottom :
@@ -220,7 +252,7 @@ module m1_geo_clip (
   // ---------------------------------------------------------------- states
   typedef enum logic [3:0] {
     K_IDLE, K_POP, K_TEST, K_TESTW, K_ROT, K_SET,
-    K_CLIP, K_CLIPW, K_CHILD, K_EPROJ, K_EPROJW, K_EMIT
+    K_CLIP, K_CLIPW, K_CHILD, K_EPROJ, K_EPROJW, K_EMIT, K_POPR
   } kstate_t;
   kstate_t kst;
 
@@ -364,12 +396,11 @@ module m1_geo_clip (
         qx[si] <= '0; qy[si] <= '0; qz[si] <= '0; qsx[si] <= '0; qsy[si] <= '0;
         tx[si] <= '0; ty[si] <= '0; tz[si] <= '0;
       end
-      for (si = 0; si < NSTK; si = si + 1) begin
-        sk_lvl[si] <= '0;
-        for (sv = 0; sv < 4; sv = sv + 1) begin
-          sk_x[si][sv] <= '0; sk_y[si][sv] <= '0; sk_z[si][sv] <= '0;
-        end
-      end
+      sv_i <= 2'd0; pcnt <= 3'd0;
+      // sk_mem is NOT cleared: an MLAB has no reset, and clearing it would
+      // force it back into flip-flops - the whole saving. Nothing reads an
+      // entry that a push has not written, because sp gates every read.
+      for (si = 0; si < NSTK; si = si + 1) sk_lvl[si] <= '0;
     end else begin
       case (kst)
         K_IDLE: if (in_valid) begin
@@ -384,17 +415,26 @@ module m1_geo_clip (
         end
 
         // Pop: the top is entry sp-1. Nothing moves; the pointer does.
+        // Pop: the top is entry sp-1. Nothing moves; the pointer does - and
+        // the four vertices come back one a cycle. K_POP issues vertex 0's
+        // read, K_POPR consumes the word that landed and issues the next.
         K_POP: if (sp == 3'd0) kst <= K_IDLE;
         else begin
-          lvl <= sk_lvl[sp_top];
-          for (sv = 0; sv < 4; sv = sv + 1) begin
-            qx[sv] <= sk_x[sp_top][sv];
-            qy[sv] <= sk_y[sp_top][sv];
-            qz[sv] <= sk_z[sp_top][sv];
-          end
-          sp  <= sp - 3'd1;
-          ti  <= '0;
-          kst <= (sk_lvl[sp_top] == 3'd4) ? K_EPROJ : K_TEST;
+          pcnt <= 3'd1;
+          kst  <= K_POPR;
+        end
+
+        K_POPR: begin
+          qx[pcnt[1:0] - 2'd1] <= sk_rd[31:0];
+          qy[pcnt[1:0] - 2'd1] <= sk_rd[63:32];
+          qz[pcnt[1:0] - 2'd1] <= sk_rd[95:64];
+          if (pcnt == 3'd4) begin
+            lvl  <= sk_lvl[sp_top];
+            sp   <= sp - 3'd1;
+            ti   <= '0;
+            pcnt <= 3'd0;
+            kst  <= (sk_lvl[sp_top] == 3'd4) ? K_EPROJ : K_TEST;
+          end else pcnt <= pcnt + 3'd1;
         end
 
         K_TEST:  if (mul_gnt) kst <= K_TESTW;
@@ -498,22 +538,29 @@ module m1_geo_clip (
           // it ever does, dropping is what the old code did too, at the other
           // end.
           if (sp < 3'(NSTK)) begin
-            sk_lvl[sp] <= lvl + 3'd1;
-            for (sv = 0; sv < 4; sv = sv + 1) begin
-              automatic logic [2:0] k;
-              // second_child, NOT its inverse: on the first pass this selects
-              // MAME's SECOND child, so it sits deeper in the stack and is
-              // popped last - the order MAME's recursion emits in.
-              k = kid(ccase, second_child, 2'(sv));
-              sk_x[sp][sv]  <= k[2] ? tx[k[1:0]]  : qx[k[1:0]];
-              sk_y[sp][sv]  <= k[2] ? ty[k[1:0]]  : qy[k[1:0]];
-              sk_z[sp][sv]  <= k[2] ? tz[k[1:0]]  : qz[k[1:0]];
-            end
-            sp <= sp + 3'd1;
+            automatic logic [2:0] k;
+            // second_child, NOT its inverse: on the first pass this selects
+            // MAME's SECOND child, so it sits deeper in the stack and is
+            // popped last - the order MAME's recursion emits in.
+            k = kid(ccase, second_child, sv_i);
+            // ONE VERTEX A CYCLE: the MLAB has a single write port.
+            sk_mem[{sp[2:0], sv_i}] <= {k[2] ? tz[k[1:0]] : qz[k[1:0]],
+                                        k[2] ? ty[k[1:0]] : qy[k[1:0]],
+                                        k[2] ? tx[k[1:0]] : qx[k[1:0]]};
+            if (sv_i == 2'd3) begin
+              sk_lvl[sp] <= lvl + 3'd1;
+              sp   <= sp + 3'd1;
+              sv_i <= 2'd0;
+              if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
+                second_child <= 1'b1;
+              else kst <= K_POP;
+            end else sv_i <= sv_i + 2'd1;
+          end else begin
+            // A full stack drops the newest, as the addressed version did.
+            if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
+              second_child <= 1'b1;
+            else kst <= K_POP;
           end
-          if ((ccase == 2'd2 || ccase == 2'd3) && !second_child)
-            second_child <= 1'b1;
-          else kst <= K_POP;
         end
 
         K_EMIT: if (out_ready) begin
