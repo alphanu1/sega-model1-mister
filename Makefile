@@ -161,6 +161,18 @@ SRCS_rf_word := sim/microbench/rf_word.sv
 SRCS_rf_1w := sim/microbench/rf_1w.sv
 SRCS_v60_fp_addonly := sim/microbench/v60_fp_addonly.sv
 SRCS_v60_fp_mulonly := sim/microbench/v60_fp_mulonly.sv
+# ---------------------------------------------------------------- sound (M4)
+# Model 2's m2_sound_board IS the Model 1 sound board - model2.cpp instantiates
+# SEGAM1AUDIO for model2o, the same device model1.cpp uses - so it is brought
+# over whole rather than rewritten. fx68k stays byte-for-byte upstream, which is
+# what -Wno-BLKANDNBLK in the lint flags is for.
+JT12_RTL := $(wildcard rtl/sound/jt12/*.v)
+SRCS_m2_sound_board := rtl/sound/fx68k/fx68k.sv rtl/sound/fx68k/fx68kAlu.sv \
+            rtl/sound/fx68k/uaddrPla.sv rtl/sound/m2_i8251.sv \
+            $(JT12_RTL) \
+            rtl/sound/m2_multipcm.sv rtl/sound/m2_pcm_fetch.sv \
+            rtl/sound/m2_pcm_rate.sv rtl/sound/m2_sound_board.sv
+
 SRCS_s32_v60 := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 SRCS_m1_sdram_harness := $(SRCS_m1_sdram) $(SRCS_sdram_model) $(SRCS_bw_monitor) sim/mem/m1_sdram_harness.sv
 SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
