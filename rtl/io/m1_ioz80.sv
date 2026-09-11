@@ -449,7 +449,32 @@ module m1_ioz80 #(
   // defaults, and writes them back -- so WRITE/ERASE/EWEN are implemented, not
   // just READ. Contents are volatile here; persistence can ride the NVRAM
   // mechanism later if board-local settings turn out to matter.
-  logic [15:0] ee  [64];
+  // THE EEPROM'S 64 WORDS ARE AN MLAB, NOT 1,024 FLIP-FLOPS (2026-09-11).
+  //
+  // A 93C46 is bit-banged: every access here happens on a rising edge of
+  // ee_clk, which the firmware produces thousands of system cycles apart. So a
+  // registered read costs nothing that can be observed, and 1,024 registers
+  // become two MLABs - about 20 ALM against 1,024, at a utilisation where the
+  // fitter charges roughly an ALM per register.
+  //
+  // ONE WRITE PORT. An MLAB has one, and this array had three writers: the
+  // download's preload, ERASE and WRITE. They are mutually exclusive - the
+  // preload only runs while ee_ready is low, before the Z80 is released - so
+  // they are muxed into a single write below rather than left as three sites,
+  // which synthesis would otherwise answer by duplicating the memory.
+  (* ramstyle = "MLAB" *) logic [15:0] ee  [64];
+  logic [5:0]  ee_wa;      // the single write port
+  logic [15:0] ee_wd;
+  logic        ee_we;
+  logic [5:0]  ee_ra;      // the registered read
+  logic [15:0] ee_q;
+  // TWO cycles, not one. ee_ra is registered, so the cycle after the command
+  // the MLAB is still fetching the PREVIOUS address; ee_q only holds the word
+  // on the cycle after that. Reading it one cycle early gave the firmware a
+  // stale word and the boot trace parted from MAME at instruction 24,825 -
+  // the same identity-block failure the dummy-bit bug produced, from a
+  // different cause.
+  logic [1:0]  ee_rd_pend;
   logic        ee_do;
   logic  [8:0] ee_sh;         // start + opcode + address collector
   logic  [3:0] ee_nbits;
@@ -475,12 +500,24 @@ module m1_ioz80 #(
       ee_do <= 1'b1; ee_sh <= 9'd0; ee_nbits <= 4'd0; ee_out <= 17'd0;
       ee_in <= 16'd0; ee_wcnt <= 5'd0; ee_ewen <= 1'b0; ee_addr <= 6'd0;
       ee_st <= EE_CMD; ee_clk_d <= 1'b0;
+      ee_ra <= 6'd0; ee_rd_pend <= 2'd0;
     end else begin
+      ee_we = 1'b0; ee_wa = 6'd0; ee_wd = 16'd0;
       // The download's write into the array. It happens only while ee_ready is
       // low, which is before the Z80 has been released, so it can never race
       // the firmware's own WRITE/ERASE.
-      if (ee_ld_we) ee[ee_ld_a] <= ee_ld_d;
+      if (ee_ld_we) begin ee_we = 1'b1; ee_wa = ee_ld_a; ee_wd = ee_ld_d; end
       ee_clk_d <= ee_clk;
+
+      // The READ command's word arrives a cycle after its address; the next
+      // ee_clk edge is thousands of cycles away, so it is always here in time.
+      if (ee_rd_pend != 2'd0) begin
+        ee_rd_pend <= ee_rd_pend + 2'd1;
+        if (ee_rd_pend == 2'd2) begin
+          ee_out     <= {ee_q, 1'b0};
+          ee_rd_pend <= 2'd0;
+        end
+      end
       if (!ee_cs) begin
         ee_st <= EE_CMD; ee_nbits <= 4'd0; ee_sh <= 9'd0; ee_do <= 1'b1;
       end else if (ee_clk && !ee_clk_d) begin
@@ -512,9 +549,14 @@ module m1_ioz80 #(
                   // uninitialised-board branch. See docs/findings.md.
                   2'b10: begin ee_st <= EE_READ;
                                ee_do  <= 1'b0;
-                               ee_out <= {ee[{ee_sh[4:0], ee_di}], 1'b0}; end
+                               // Address now, word next cycle - see ee_rd_pend.
+                               ee_ra      <= {ee_sh[4:0], ee_di};
+                               ee_rd_pend <= 2'd1; end
                   2'b01: begin ee_st <= EE_WRITE; ee_wcnt <= 5'd0; end
-                  2'b11: begin if (ee_ewen) ee[{ee_sh[4:0], ee_di}] <= 16'hffff;
+                  2'b11: begin if (ee_ewen) begin
+                                 ee_we = 1'b1; ee_wa = {ee_sh[4:0], ee_di};
+                                 ee_wd = 16'hffff;
+                               end
                                ee_st <= EE_DONE; end
                   2'b00: begin ee_ewen <= (ee_sh[4:3] == 2'b11);
                                ee_st <= EE_DONE; end
@@ -530,7 +572,9 @@ module m1_ioz80 #(
             ee_in   <= {ee_in[14:0], ee_di};
             ee_wcnt <= ee_wcnt + 5'd1;
             if (ee_wcnt == 5'd15) begin
-              if (ee_ewen) ee[ee_addr] <= {ee_in[14:0], ee_di};
+              if (ee_ewen) begin
+                ee_we = 1'b1; ee_wa = ee_addr; ee_wd = {ee_in[14:0], ee_di};
+              end
               ee_st <= EE_DONE;
             end
           end
@@ -538,6 +582,10 @@ module m1_ioz80 #(
           default: ee_st <= EE_CMD;
         endcase
       end
+
+      // ONE write site, and the MLAB's registered read.
+      if (ee_we) ee[ee_wa] <= ee_wd;
+      ee_q <= ee[ee_ra];
     end
   end
 
