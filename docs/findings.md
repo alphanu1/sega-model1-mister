@@ -67,11 +67,22 @@ far past any plausible gap and invisible against a download that already takes
 seconds. Being too long costs nothing observable; being too short reinstates the
 fault silently.
 
-**Not yet confirmed on hardware.** Simulation cannot reproduce the fault -- the
-bench's inter-stream gap is whatever the bench chooses -- so this entry records
-a mechanism established from framework source plus a fix, not a measured cure.
-`LED_USER` now carries the loader's sticky FIFO-overflow flag as the independent
-check: if words are ALSO being dropped, a bad load lights the user LED.
+**CONFIRMED ON HARDWARE, 2026-09-16.** Loaded several times on the DE10-Nano,
+all working as expected -- where before the same core and the same MRA gave
+stalls at 0%, loads with no 3D, and clean loads unpredictably. Repeated loads
+are what settles this: a single good load proves nothing about an intermittent
+fault.
+
+Simulation could not reproduce it and could not have. The bench's inter-stream
+gap is whatever the bench chooses, so the fault is invisible there by
+construction -- the mechanism had to be read out of the framework source and the
+cure had to be measured on the board. Another entry for "simulation proves the
+design runs; the board answers what it does".
+
+`LED_USER` now carries the loader's sticky FIFO-overflow flag as an independent
+check that came along with the fix: the loader drops words silently when its
+FIFO fills and that flag went nowhere visible. It did not light, so words were
+not also being dropped -- the reset releases were the whole fault.
 
 ---
 

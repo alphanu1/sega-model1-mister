@@ -1,3 +1,52 @@
+# THE INTERMITTENT ROM LOADING IS FIXED, AND SOUND WORKS (2026-09-16)
+
+**Confirmed on hardware.** Virtua Fighter boots with sound, and the core now
+loads cleanly across repeated loads -- where the same core and the same MRA
+previously stalled at 0%, came up with no 3D, or worked, unpredictably.
+
+**The cause was the V60 being released from reset three times mid-load.**
+`sys/hps_io.sv` clears `ioctl_download` at the end of EVERY MRA part, and
+`m1_rom_loader` keyed `rom_loaded` off that signal. The VF MRA sends index 4,
+then 0 (main ROM), 1 (TGP microcode), 2 (I/O firmware), 5 (8.5 MB of sound) --
+so the V60 came out of reset after the main ROM with no TGP microcode under it,
+and that release lasted the whole sound download: seconds of a CPU running real
+game code on a ROM that is not all there, scribbling work RAM and the EEPROM
+image before being reset again.
+
+`CPU_SETTLE` (80,000,000 cycles, one second) holds `rom_loaded` stable before it
+reaches the CPU. The first value tried was 800,000 -- 10 ms -- and was WRONG:
+the gap being waited out is the HPS opening a zip member, tens of milliseconds,
+so 10 ms sat inside the range it was meant to exclude and would have looked
+fixed. Read `findings.md` 2026-09-16.
+
+**Simulation could not have found this** and could not reproduce it: the bench's
+inter-stream gap is whatever the bench chooses. The mechanism came from reading
+the framework source; the cure was measured on the board.
+
+**The first audio ever captured out of the RTL** is `build/vf_attract.wav` --
+17 s at 44.1 kHz stereo, silent until 11 s then six seconds of clean audio at
+about -19 dBFS, no clipping, genuinely stereo. The 11-second onset matches the
+reference, which is why every shorter capture returned silence and read like a
+dead sound chain. `tb_m1_frame` now warns for both that case and VR's silent
+attract rather than reporting either as a finding.
+
+Measured, seed 11, Quartus 17.0, 0 errors: **41,288/41,910 ALM (99%), 551/553
+M10K, 54/112 DSP, and EVERY clock positive** including the framework's
+`pll_hdmi` at +0.034, which had been negative in nearly every build on record.
+clk_3d +0.692, clk_sys +1.593, clk_cpu +3.597, hold +0.223 throughout. Archived
+as `build/Model1_settle_seed11_41288.rbf`. Seeds 29 and 3 each had one negative
+path -- a single seed is not a measurement.
+
+## Still open
+
+- **SWA does not load.** Its MRA verifies byte for byte and the packer knows its
+  shape (one 512 KB boot ROM at 0xf80000, no banked data at 0x1000000), but it
+  has never been simulated successfully. Untouched by the loading fix.
+- **The quad store still drops** on busy stretches; the real fix is the quad
+  payload in SDRAM. M10K is 551/553.
+
+---
+
 # THE DISPLAY-LIST MOVE IS REVERTED. VIDEO WORKS, SOUND FIXES KEPT (2026-09-13)
 
 **Everything was working except sound. Moving the display lists to SDRAM to free
