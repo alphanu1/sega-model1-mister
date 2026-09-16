@@ -1,3 +1,142 @@
+# THE DISPLAY-LIST MOVE IS REVERTED. VIDEO WORKS, SOUND FIXES KEPT (2026-09-13)
+
+**Everything was working except sound. Moving the display lists to SDRAM to free
+54 M10K broke the 3D, and it is reverted.** Four real bugs were found and fixed
+inside the move, each with a negative control that fails when reverted, and the
+picture still did not come back. That is the point at which it should have been
+reverted -- hours went into defending a resource optimisation.
+
+Verified after the revert, `tb_m1_frame` at 560 M cycles / frame 426:
+
+    25 passes with objects, f=233        (known-good control: f=232)
+
+`make test` clean across 58 suites.
+
+## What is KEPT -- all seven sound fixes
+
+| | |
+|---|---|
+| `m1_sdram` `TAGW = $clog2(NP)` | the tag fix, the actual cause of the silence |
+| `SND_INDEX = 5`, `snd_loaded` | the loader and the 68000's gate |
+| ROM byte swap, `TICK_NUM(20)`, PCM address x4 | the board |
+| MRA sound ROMs, +6 dB mix | |
+
+## What is PRESERVED, not thrown away
+
+`build/dlist_work/` holds the whole move with its tests: four verified bug
+fixes, a `m1_dlist_sdram` bench at 6,971 checks, a `tb_m1_listwalk` with a
+parameterised memory latency, and a `tb_m1_frame` that wires the port. Worth
+finishing for the M10K -- but as its own piece of work, never bundled with
+something that has to keep working. `docs/findings.md` 2026-09-13 has the four
+bugs and the two claims I withdrew.
+
+## NEW: `make elab`, and run it before every Quartus build
+
+`make lint`, `make test` and every bench instantiate **m1_integrated**, never
+`Model1.sv`, and the `m1_frame` target passes `-Wno-PINMISSING`. A port
+`Model1.sv` connects that `m1_integrated` no longer has is therefore invisible
+to simulation and fails six seconds into a 25-minute build. Three of those in
+one day: a module missing from the staged qsf, then `snd_tx_data`/`snd_tx_stb`,
+then `snd_loaded_o` -- the last two deleted by a wholesale
+`git checkout -- rtl/m1_integrated.sv` that was meant to revert only the
+display lists.
+
+`make elab` stages the project and elaborates `emu` against the real source
+list. `build/seedbuild.sh` runs it as a gate. **Its first version was broken and
+reported success** -- it linted the repo copy, died on `sys/emu_ports.vh` and
+`build_id.v`, matched none of its own grep patterns and exited 0. It now fails
+on any `%Error` except a NAMED list of Quartus megafunctions, and it was
+verified by deliberately deleting a port.
+
+**Never `git checkout --` a file carrying two unrelated pieces of work.**
+
+---
+
+
+# SOUND: SEVEN BUGS FOUND AND FIXED, BLOCKED ONLY BY PLACEMENT (2026-09-13)
+
+**The Model 1 sound board has never made a sound, and now every reason is known
+and fixed in source.** What is left is not a bug: the design will not PLACE at
+553/553 M10K and 99% ALM. Seed 3 missed by ONE LAB.
+
+## The seven, in the order they were found
+
+| # | fault | found by |
+|---|---|---|
+| 1 | the MRA sent no sound ROMs at all | reading `mra/Virtua Racing.mra` -- its own comment said the blocks "do not exist in the core", true when written, stale since the board landed |
+| 2 | `m1_rom_loader` had no index for them | reading the loader's index routing |
+| 3 | the 68000 was released before its ROM arrived | `rom_loaded` latches when the FIRST stream ends, and index 0 precedes index 5. Same bug the TGP had. Fixed with `snd_loaded` |
+| 4 | the ROM was byte-swapped for a big-endian CPU | diffing `Model2.sv:2155` -- Ben's steer to compare with Model 2 |
+| 5 | the whole board ran at HALF SPEED | `TICK_NUM(10)/TICK_DEN(80)` gives 10 MHz of enables on an 80 MHz clock; the board wants 20 (two per phase of a 10 MHz 68000). Model 2 takes the default 20/50 |
+| 6 | PCM sample addresses were not scaled | `pcm*_rom_addr` is `[21:3]`, a 64-bit LINE index; SDRAM is word-addressed, so it needs `<< 2`. Every fetch landed at a quarter of the right address |
+| 7 | **`m1_sdram` tagged in-flight reads with `grant[2:0]` in a TEN-port controller** | **an LED wired to `p_ack[8] && p_dout[8] != 0`** |
+
+**Number 7 is why it was silent.** Ports 8 and 9 are the two MULTIPCM sample
+streams; their tags wrapped onto ports 0 and 1, so every sample read was
+delivered to the V60's fetch port and the chips read zeros forever. Port 7 (the
+sound 68000) is `3'b111` and still fitted, which is why the CPU ran perfectly
+while nothing played.
+
+## Plus a separate, real defect: the board is 6 dB quiet
+
+`segam1audio.cpp` routes the MULTIPCMs at **0.5**; `m2_sound_board` sums all
+three chips and applies **one >> 2, i.e. 0.25**. Three measurements agree: MAME's
+own capture peaks at -48.2 dBFS, our board simulates at -53.9, and Ben measured
+Model 2 as "too quiet by 52%". Fixed with `>> 1` while the FM is stubbed --
+**put it back to `>> 2` if jt12 returns**, and scale the YM separately (MAME uses
+0.30) or it will sit 4.4 dB hot.
+
+## What the LEDs said, and why the first reading misled
+
+Three bits, LATCHING (an earlier decaying version gave a reading that sent the
+diagnosis the wrong way for hours):
+
+    DISK  = snd_ready              : ROM stream completed
+    POWER = a PCM port got a non-zero word back from SDRAM
+    USER  = |snd_l| exceeded 16
+
+The last hardware reading was **DISK on, POWER off, USER off** -- the ROM loads
+and no sample data has EVER reached the chips, which is fault 7 exactly.
+
+## Where it is stuck (updated 04:30, 2026-09-13)
+
+**Everything for sound is done and tested. The blocker is timing, and it is a
+named path, not a lottery.**
+
+Two builds exist, both carrying all seven sound fixes and the +6 dB mix:
+
+| build | M10K | worst setup | note |
+|---|---|---|---|
+| `32660bfcec` (seed 11) | 553/553 | **-0.240** | best timing found |
+| `c41cde692e` | **499/553** | -0.650 | display lists off-chip, 54 blocks free |
+| `2ae0152a64` | 553/553 | -0.240 | **on the board now, NO tag fix -- still silent** |
+
+**ELEVEN SEEDS ACROSS TWO DESIGNS NEVER CLOSED IT.** Both distributions centre
+below zero, so it is a slow path:
+
+- `pll_hdmi -0.838` is **inside ascal**, the framework's polyphase filter. Not
+  ours, and it has shipped negative twice before on builds that ran.
+- `clk_sys -0.650` IS ours and is always the same path:
+  `m1_video_timing|vcnt` -> `m1_mainram|u_pram` port B address. The tile fetch
+  and mixer sit between them with no register. **The fix is a pipeline stage on
+  `pal_addr` (m1_video.sv:814), which shifts the picture one pixel unless
+  compensated -- a design change, needs a decision.**
+
+## What to do first in the morning
+
+**Flash `32660bfcec` and read the three LEDs.** It has the tag fix; the build on
+the board does not. Negative setup is a shipping question, not a functional one,
+and hold is clean on every build -- by Ben's own rule that makes it testable.
+
+    DISK  = snd_ready            ROM stream completed
+    POWER = a PCM port got real data back from SDRAM
+    USER  = |snd_l| exceeded 16
+
+**POWER is the test.** It was dark on the last reading, which is fault 7
+exactly. If it lights, the diagnosis is confirmed end to end.
+
+---
+
 # HANDOFF
 
 ## 2026-09-10 — THE VF V60 DIVERGENCE IS ANSWERED, AND IT WAS NOT THE CPU

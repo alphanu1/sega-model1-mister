@@ -104,14 +104,6 @@ module v60_shift (
     wire [5:0] sh = (mag >= 8'd32) ? 6'd32 : {1'b0, mag[4:0]};
     wire       big = (sh >= 6'd32);
 
-    wire [31:0] shl_left  = big ? 32'd0 : (xz << sh[4:0]);
-    wire [31:0] shl_right = big ? 32'd0 : (xz >> sh[4:0]);
-    wire [31:0] sha_left  = big ? 32'd0 : (xs << sh[4:0]);
-    // arithmetic right: logical shift, then paint the vacated top bits with the
-    // sign. `32'hffffffff >> 0` is all ones so the mask is empty at zero shift.
-    wire [31:0] sha_right = big ? {32{sfill}}
-                          : ((xs >> sh[4:0]) |
-                             (sfill ? ~(32'hffff_ffff >> sh[4:0]) : 32'd0));
 
     // rotate distance, reduced modulo the width, exactly as rot_res does
     wire [5:0] rot_sh  = (d==2'd0) ? {3'b0, mag[2:0]}
@@ -119,8 +111,38 @@ module v60_shift (
                        :             {1'b0, mag[4:0]};
     wire [5:0] rot_amt = left ? rot_sh : (w[5:0] - rot_sh);
 
+    // ONE LEFT SHIFTER AND ONE RIGHT SHIFTER, WHICH IS WHAT THE COMMENT ABOVE
+    // ALWAYS CLAIMED. It described the intent; the code had SIX variable 32-bit
+    // barrel shifters -- xz<<sh, xz>>sh, xs<<sh, xs>>sh and the two the rotate
+    // builds -- and Quartus will not share logic across distinct expressions.
+    // 993 combinational ALUTs against TWO registers said so.
+    //
+    // is_shl, is_sha and is_rot are mutually exclusive, so the operand and the
+    // distance are chosen BEFORE the shifter instead of one shifter per opcode.
+    // SHL and ROT take the zero-extended operand, SHA the sign-extended one;
+    // the sign FILL stays separate because it is a mask, not a shift, and with
+    // a constant operand it reduces to a decoder rather than a barrel.
+    //
+    // The rotate needs both directions at once, which is exactly what a shared
+    // left/right pair gives it.
+    wire [5:0] rot_ramt = w[5:0] - rot_amt;
+    wire [4:0] l_amt  = is_rot ? rot_amt[4:0]  : sh[4:0];
+    wire [4:0] r_amt  = is_rot ? rot_ramt[4:0] : sh[4:0];
+    wire [31:0] sh_in = is_sha ? xs : xz;
+    wire [31:0] l_res = sh_in << l_amt;
+    wire [31:0] r_res = sh_in >> r_amt;
+
+    wire [31:0] shl_left  = big ? 32'd0 : l_res;
+    wire [31:0] shl_right = big ? 32'd0 : r_res;
+    wire [31:0] sha_left  = big ? 32'd0 : l_res;
+    // arithmetic right: logical shift, then paint the vacated top bits with the
+    // sign. `32'hffffffff >> 0` is all ones so the mask is empty at zero shift.
+    wire [31:0] sha_right = big ? {32{sfill}}
+                          : (r_res |
+                             (sfill ? ~(32'hffff_ffff >> sh[4:0]) : 32'd0));
+
     wire [31:0] rot_r = (rot_sh == 0) ? (xz & mask)
-                      : (((xz << rot_amt) | (xz >> (w[5:0] - rot_amt))) & mask);
+                      : ((l_res | r_res) & mask);
 
     wire [31:0] shl_r = left ? shl_left : shl_right;
     wire [31:0] sha_r = left ? sha_left : sha_right;

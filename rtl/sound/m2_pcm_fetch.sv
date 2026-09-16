@@ -70,6 +70,13 @@ module m2_pcm_fetch #(
   // in registers: 32 x 20 bits, and the valid bits must clear at reset.
   (* ramstyle = "MLAB" *) logic [63:0] buf_q [32];
   logic [63:0] buf_rd;
+  // MLAB, NOT FLOPS. 32 x 19 bits is 608 registers per fetcher and there are
+  // two of them -- about 300 ALM for the pair, on a design at 99%. buf_q beside
+  // it is already an MLAB; the tag was left in logic. The read at `hit` below
+  // is combinational and an MLAB is LUT RAM, so it serves that directly.
+  // PLAIN, MATCHING MODEL 2. The MLAB attribute here was an area saving added
+  // while chasing the fit; it is not what Model 2 ships and the sound is worth
+  // more than the ALM.
   logic [21:3] tag_q [32];
   logic [31:0] val_q;
   logic        m_req_r, c_ack_r;

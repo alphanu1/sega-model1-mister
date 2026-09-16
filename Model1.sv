@@ -43,6 +43,10 @@ module emu
   // as /dev/ttyS0. It was tied to zero and never considered; the core now
   // reports its own game speed there once a second.
   assign {UART_RTS, UART_DTR} = 0;
+  // BOTH IDLE HIGH, so a wired-AND shares the line. UART_REPORT is 0 (M10K is
+  // full), which ties core_uart_tx to 1, so only the sound monitor transmits.
+  // If the speed report is ever turned back on, only one of the two may be
+  // enabled at a time.
   assign UART_TXD = core_uart_tx;
   wire core_uart_tx;
   assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
@@ -58,13 +62,63 @@ module emu
   assign HDMI_BOB_DEINT = 0;
 
   // No sound yet: the 68000, YM3438 and two MultiPCMs are M4.
-  assign AUDIO_S   = 0;
-  assign AUDIO_L   = 0;
-  assign AUDIO_R   = 0;
+  // SIGNED, because the sound board's mixer produces signed samples and
+  // AUDIO_S tells the framework how to read them. Tying it to 0 with signed
+  // data would fold the negative half of every waveform to the top of the
+  // range - loud, and wrong in a way that sounds like a broken DAC.
+  assign AUDIO_S   = 1;
+  // ---------------------------------------------------------------- VOLUME
+  //
+  // UNITY. NO GAIN. MEASURED AGAINST MAME, 2026-09-14, and this reverses an
+  // earlier x16 that was actively making the sound worse.
+  //
+  // MAME's own output for vr over 75 seconds, in five-second windows:
+  //
+  //     0-35 s   peak   ~100   zero-x ~125 Hz    idle
+  //    35-40 s   peak 16,330   zero-x  395 Hz    the attract audio
+  //    40-65 s   peak   ~100                     idle
+  //    65-70 s   peak 16,322                     the next burst
+  //
+  // THE REFERENCE IS NEARLY SILENT FOR THIRTY-FIVE SECONDS AT A TIME, and it
+  // produces the same low-level ~125 Hz drone we do while it waits. The real
+  // audio is -6 dBFS and needs nothing added.
+  //
+  // The x16 came from measuring -54 dBFS on the board and sizing a gain to it.
+  // That reading was taken during the IDLE window: it amplified the drone to
+  // audibility -- the "constant rumble" -- and saturated the 16,330 peaks into
+  // clipping, which is the "static". Both symptoms were manufactured by the
+  // gain, not revealed by it.
+  //
+  // If the board ever measures genuinely quiet DURING a burst, size a gain
+  // against THAT window and not against silence.
+  assign AUDIO_L = snd_l;
+  assign AUDIO_R = snd_r;
   assign AUDIO_MIX = 0;
 
-  assign LED_DISK  = 0;
-  assign LED_POWER = 0;
+  // (The DISK bit stays: snd_ready is cheap and worth seeing.)
+  // TWO FREE DIAGNOSTIC BITS, because the UART is compiled out to make the
+  // design fit and the sound board is silent for a reason simulation cannot
+  // reproduce. b[1]=1 takes sole control of the LED; b[0] is the value.
+  //
+  // The sound board boots correctly in `make test_m1_sndboard` against the real
+  // ROM -- 1.25 M instructions, MAME's own main loop at PC 0x1100, both
+  // MultiPCMs driven, and it survives SDRAM latency from 12 to 100 cycles. So
+  // the board is right and the fault is in the integration. These two bits ask
+  // the only questions left that the board can answer:
+  //
+  //   DISK  solid  = snd_ready asserted, so the 68000 was released at all
+  //   POWER blinks = the 68000 is writing the MultiPCMs, so it is ALIVE
+  //
+  // Off/off means the sound stream never completed. Solid/dark means it was
+  // released and then died. Both lit means it is running and the fault is
+  // downstream, in the mix or the audio output.
+  assign LED_DISK  = {1'b1, snd_ready};
+  // THE V60'S COMMANDS, which is the FIRST question in the chain and the one
+  // no reading so far has answered. LED_POWER was tied to ZERO here, so the
+  // "power on" seen on the board was the framework's own default LED and said
+  // nothing about our design -- it was read as "sample data arrived", which it
+  // never meant.
+  assign LED_POWER = {1'b1, v60_cmd_seen};
   assign BUTTONS   = 0;
 
   // 496x384 is close to 4:3; let the framework letterbox rather than stretch.
@@ -423,6 +477,12 @@ module emu
   // reported ready until the loader had finished. rom_ready is brought out for
   // the overlay only.
   wire rom_ready;
+  // The sound board waits for ITS OWN stream, not for rom_ready. rom_ready
+  // latches when index 0 finishes and the sound ROMs come later in the MRA, so
+  // gating on it releases the 68000 onto SDRAM that has not been written yet --
+  // it fetches a garbage reset vector and is never heard from again. That is
+  // the coprocessor's old bug (CLAUDE.md) in a new place.
+  wire snd_ready;
 
   // ioctl_download is deliberately NOT in this reset. Holding the game side
   // through the download also holds m1_video, which leaves vid_hb and vid_vb
@@ -446,12 +506,12 @@ module emu
 
   // ------------------------------------------------------------------ SDRAM
   wire        sdr_req, sdr_we, sdr_ack;
-  wire [24:1] sdr_addr;
+  wire [25:1] sdr_addr;
   wire [15:0] sdr_din;
   wire  [1:0] sdr_be;
 
   wire        ifp_req;
-  wire [24:1] ifp_addr;
+  wire [25:1] ifp_addr;
 
   // ONE character port, and it is the RIGHT number. The tile engine pays a
   // round trip once per column, 248 times a line, and the way that was fixed
@@ -473,7 +533,7 @@ module emu
   wire [31:0] char_data;
 
   wire        ldr_wr_req, ldr_wr_ack;
-  wire [24:1] ldr_wr_addr;
+  wire [25:1] ldr_wr_addr;
   wire [15:0] ldr_wr_din;
   wire  [1:0] ldr_wr_be;
 
@@ -486,22 +546,155 @@ module emu
   // no longer existed. It was harmless only by luck: the width truncation
   // happened to select p_dout[1][31:0] and p_ack[1], which is what the single
   // port wanted anyway. It still cost arbiter and mux area in every build.
-  wire [6:0]       p_req, p_we, p_ack;
-  wire [6:0][24:1] p_addr;
-  wire [6:0][15:0] p_din;
-  wire [6:0][1:0]  p_be;
-  wire [6:0][63:0] p_dout;
+  // TEN PORTS. Seven were the main board; 7, 8 and 9 are the sound board -
+  // the 68000's memory (its ROM and work RAM share one port because a 68000
+  // has one bus), and the two MultiPCM sample streams.
+  // ELEVEN PORTS. Widened with NP: the sound 68000's work RAM moved off port 7
+  // onto port 10 so its program ROM no longer shares a bus with it.
+  wire [10:0]       p_req, p_we, p_ack;
+  wire [10:0][25:1] p_addr;
+  wire [10:0][15:0] p_din;
+  wire [10:0][1:0]  p_be;
+  wire [10:0][63:0] p_dout;
+
+  // THE SOUND BOARD'S ROMS, above the I/O firmware in the existing 32 MB map.
+  //
+  // No widening was needed: vr's sound ROMs are epr-14870a.7 (128 KB of 68000
+  // program), mpr-14873.32 and mpr-14876.4 (2 MB of PCM each) - 4.125 MB, and
+  // there is ~6 MB free above IOFW_BASE. CLAUDE.md's "8 MB of PCM" is sized
+  // for the largest Model 1 game, not this one; that assumption sent a whole
+  // session into widening the controller to 64 MB for nothing.
+  // FOUR MEGABYTES PER MULTIPCM, 2026-09-15. One layout for every Model 1 game.
+  //
+  // vr and vformula carry 2 MB per sample chip; vf, swa and wingwar carry FOUR
+  // (netmerc is 4 + 2). Sizing the map to the small pair meant the four games
+  // with big sample sets could never have sound at all, and their MRAs simply
+  // omitted the stream. Now the core allocates 4 MB per chip always and the
+  // small games are zero-padded to fill it, so one core and one layout serve
+  // all six.
+  //
+  // THE ROOM CAME FROM TWO OVER-ALLOCATIONS, both measured against MAME rather
+  // than assumed:
+  //
+  //   polygons     declared 16 MB, largest game actually uses 14 MB   -> 2.00
+  //   copro_data   declared  2 MB, largest game actually uses  0.5 MB -> 1.50
+  //   free above the old SND_PCM2                                     -> 1.50
+  //                                                            total    5.00 MB
+  //
+  // against 4.125 MB needed (+2 MB per chip, two chips, plus the 68000 program
+  // going 128 KB -> 256 KB for vf and wingwar). One megabyte spare.
+  //
+  // THE DATAPATH ALREADY SUPPORTED IT. `snd_pcm1_addr` is [21:3], a 4 MB byte
+  // address, because the chip's upper window banks across four 1 MB pages. The
+  // only thing confining it to 2 MB was the `snd_pcm1_addr[21] ? 64'd0` mask
+  // below, which existed because only 2 MB was ever loaded. That mask is gone.
+  //
+  // PCM1 AND PCM2 MUST STAY CONTIGUOUS: m1_rom_loader splits the sound stream
+  // TWO ways, not three, because one linear mapping covers both sample sets.
+  // 0xB80000 + 4 MB of words (0x200000) is exactly 0xD80000.
+  // FOUR MB PER MULTIPCM, 2026-09-16, IN SPACE THAT ONLY EXISTS BECAUSE OF THE
+  // 64 MB CONTROLLER.
+  //
+  // vr and vformula carry 2 MB per sample chip; vf, swa and wingwar carry FOUR.
+  // At 2 MB those four games could not have sound at all, and their MRAs simply
+  // omitted the stream.
+  //
+  // NOTHING BELOW MOVES. The previous attempt at this (2026-09-15, reverted)
+  // tried to find 4 MB inside the 32 MB map by sliding POLY_BASE, COPRO_TBL_BASE
+  // and TGP_RAM_BASE downward. The packer and the MRA kept writing the polygon
+  // data, copro tables and TGP RAM at the OLD offsets, so the 3D read empty
+  // memory and the screen went black on hardware. The regions the packer fills
+  // are load-bearing constants shared with tools/build_rom_image.py and the
+  // MRA; they must not move without moving those in the same change.
+  //
+  // Here every sound region is placed ABOVE 32 MB, which was unaddressable
+  // before COL_BITS went to 10. The map below 32 MB is byte-for-byte what it
+  // was, so the packer, the MRA and the 3D are untouched.
+  //
+  //   SND_ROM   32.00 MB   512 KB  (netmerc's is a SINGLE 512 KB ROM; vf and
+  //                                  wingwar have two 128 KB ones; vr has one)
+  //   SND_RAM   32.50 MB    64 KB
+  //   SND_PCM1  33.00 MB     4 MB
+  //   SND_PCM2  37.00 MB     4 MB   ends at 41 MB of 64
+  //
+  // PCM1 AND PCM2 MUST STAY CONTIGUOUS: m1_rom_loader splits the sound stream
+  // TWO ways, not three, because one linear mapping covers both sample sets.
+  // 0x1080000 + 4 MB of words (0x200000) is exactly 0x1280000.
+  localparam logic [25:1] SND_ROM_BASE  = 25'h1000000;   // 32.0 MB, 512 KB
+  localparam logic [25:1] SND_RAM_BASE  = 25'h1040000;   // 32.5 MB, 64 KB
+  localparam logic [25:1] SND_PCM1_BASE = 25'h1080000;   // 33.0 MB, 4 MB
+  localparam logic [25:1] SND_PCM2_BASE = 25'h1280000;   // 37.0 MB, 4 MB
+  // THE TWO DISPLAY LISTS, 16 K words each. Off-chip since 2026-09-12: they
+  // were 64 of the 553 M10K blocks and M10K was exhausted. Sits above the PCM
+  // samples (which end at word 0xF3FFFF) and below the V60's work RAM at
+  // 0xF80000 -- 32 K words, so 0xF40000..0xF47FFF.
+
+  // The 68000's ROM and work RAM share one port: it has one bus.
+  wire        snd_rom_req,  snd_ram_req,  snd_ram_we;
+  wire [17:1] snd_rom_addr;
+  wire [15:1] snd_ram_addr;
+  wire [1:0]  snd_ram_be;
+  wire [15:0] snd_ram_wdata;
+  // ROM ON PORT 7, WORK RAM ON PORT 10. THEY DO NOT SHARE.
+  //
+  // They did, and the arbitration was combinational: every field -- address,
+  // write enable, byte enables and the acknowledge routing -- muxed on the
+  // current value of `snd_ram_req`. A ROM fetch in flight when the RAM asked
+  // had its address changed under it and its acknowledge delivered to the
+  // wrong master. Latching ownership fixed the corruption but kept the
+  // serialisation: the 68000 has one bus and every RAM access still blocked a
+  // prefetch.
+  //
+  // An eleventh port removes the question. `NP=11 is BROKEN` stood in CLAUDE.md
+  // as an unexplained controller fault -- it was tb_m1_sdram driving port 10's
+  // REQUEST onto port 9 while reading port 10's ACKNOWLEDGE, so the port was
+  // never asked and never answered. The controller is fine at eleven ports:
+  // 68,873 checks, 0 fails, p10 serving 2,116 transactions.
+  //
+  // Model 2 runs eleven ports with working sound and textures on a heavier 3D
+  // path, which is what said the sharing was a choice rather than a necessity.
+  // Port 7 answers the ROM, port 10 the work RAM. Separate acknowledges and
+  // separate data: nothing is shared and nothing can be delivered to the wrong
+  // master.
+  wire        snd_mem_ack  = p_ack[7];
+  wire [15:0] snd_mem_data = p_dout[7][15:0];      // ROM, byte-swapped below
+  wire [15:0] snd_ram_data = p_dout[10][15:0];     // work RAM, not swapped
+
+  // THE 68000'S ROM IS BYTE-SWAPPED ON THE WAY IN, AND ITS WORK RAM IS NOT.
+  //
+  // MiSTer hands the loader 16-bit words LITTLE-endian (hps_io.sv:692,
+  // `ioctl_dout <= io_din`), which is what the little-endian V60 wants and what
+  // every other region here is written as. The sound CPU is a 68000 and wants
+  // BIG-endian, so its program lands in SDRAM with the halves the wrong way
+  // round: it reads SP=F000FEFF, PC=00000002, jumps into nothing and is never
+  // heard from again. On the board that is the sound board released and
+  // immediately dead -- LED_DISK solid, LED_POWER dark, which is exactly what
+  // it did (2026-09-12).
+  //
+  // Model 2 has the same line and it is why their sound works:
+  //     Model2.sv:2155  wire [15:0] snd_rom_q = {snd_rom_w[7:0], snd_rom_w[15:8]};
+  //
+  // NOT the work RAM. That is written and read by the same CPU through the same
+  // path, so it is self-consistent either way, and `ram_be` already maps UDS to
+  // the upper byte. Swapping it would only have to be undone on the write side.
+  //
+  // tb_m1_sndboard could not catch this: it feeds the board words from the ROM
+  // file directly, so it models the CHIP and not the path that fills it.
+  wire [15:0] snd_rom_data = {snd_mem_data[7:0], snd_mem_data[15:8]};
+
+  wire        snd_pcm1_req, snd_pcm2_req;
+  wire [21:3] snd_pcm1_addr, snd_pcm2_addr;
 
   // The I/O board Z80's firmware fetch, from m1_integrated. IOFW_BASE in
   // m1_rom_loader is where the loader put it, and the two must agree - a
   // mismatch is a Z80 executing whatever else is at that address.
-  localparam logic [24:1] IOFW_BASE = 24'hD00000;
+  localparam logic [25:1] IOFW_BASE = 25'hD00000;
   wire        iofw_req;
   wire [13:0] iofw_word;
 
   // The 3D layer's two masters, from m1_integrated in the clk_sys domain.
   wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
-  wire [24:1] r3d_rom_addr, r3d_tex_addr;
+  wire [25:1] r3d_rom_addr, r3d_tex_addr;
   wire [15:0] r3d_tex_din;
 
   // Port map per docs/00-decisions.md D8: p0 CPU data, p1 character RAM,
@@ -510,9 +703,34 @@ module emu
   // it against the SDRAM model. Port 4 was tied off; it carries the sweep.
   // p5 bursts the polygon models, p6 carries tgp_ram and is the only port
   // besides p0 that writes - display-list command 4 uploads colour words.
+  // ---- PORT 4 CARRIES TWO MASTERS: the I/O board's firmware fetch and the
+  // display lists.
+  //
+  // The lists moved off-chip to free 64 M10K (m1_mainram's u_dl0/u_dl1), and
+  // they SHARE a port rather than adding an eleventh. Two reasons:
+  //
+  //   1. They do not need one. tools/dl_census.lua over 400 reference frames
+  //      measures 3,032 writes a frame, 16,418 at peak, and ZERO READS -- one
+  //      write every 85 cycles at worst, against a port that is otherwise a
+  //      Z80 fetching firmware.
+  //   2. NP=11 is BROKEN. tb_m1_sdram at TB_NP=11 reports "port 10 never
+  //      acknowledged": the eleventh port serves one read and then stalls.
+  //      Unexplained, and not worth solving to gain a port we do not need.
+  //
+  // PORT 4 IS THE I/O BOARD'S FIRMWARE FETCH, and only that.
+  //
+  // The display lists shared it while they lived in SDRAM. That move is
+  // REVERTED -- see docs/HANDOFF.md, 2026-09-13. It bought 54 M10K and cost
+  // the 3D layer, and four real bugs fixed inside it did not bring the picture
+  // back. The work is preserved in build/dlist_work/ with its tests.
+  assign iofw_ack = p_ack[4];
+
+
   // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
-  assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-  assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+  assign p_req  = {snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
+                   r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+  assign p_we   = {snd_ram_we,  1'b0,         1'b0,         1'b0,
+                   r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -526,12 +744,40 @@ module emu
 // p5's address is aligned DOWN to its 4-word burst boundary here. It does NOT
 // pick a half - m1_integrated takes the full 64 bits of r3d_rom_dout - and a
 // note here previously said it did, which was wrong.
-assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+// THE MULTIPCM ADDRESSES ARE 64-BIT LINES AND SDRAM IS WORD-ADDRESSED, SO THEY
+// SHIFT LEFT BY TWO. `snd_pcm1_addr` is [21:3] -- a line index -- and a line is
+// four 16-bit words. Zero-extending it instead of scaling it put every sample
+// fetch at a QUARTER of the address the chip asked for, inside the first 512 KB
+// of a 2 MB region, so the chips read busily and returned the wrong bytes:
+// LED_DISK solid, LED_POWER blinking, and silence.
+//
+// Model 2 has the scaling and says why it matters (Model2.sv:770): a port width
+// mismatch there "was making everything unlistenable" (their R94).
+assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
+                 SND_PCM2_BASE + 25'({snd_pcm2_addr, 2'b00}),
+                 SND_PCM1_BASE + 25'({snd_pcm1_addr, 2'b00}),
+                 SND_ROM_BASE + {7'd0, snd_rom_addr},
+                 // EVERY ELEMENT HERE MUST BE EXACTLY 25 BITS.
+                 //
+                 // Concatenation operands are SELF-DETERMINED: a short element
+                 // is not zero-extended into its slot, it shifts everything
+                 // BELOW it. `{r3d_rom_addr[24:2], 1'b0}` was 24 bits when the
+                 // address went to [25:1], which slid ifp_addr -- the V60's
+                 // instruction fetch -- one bit down and halted the CPU 520
+                 // cycles after reset. The unit benches all passed; only a
+                 // bench that boots the CPU sees it.
+                 r3d_tex_addr, {r3d_rom_addr[25:2], 1'b0},
                  IOFW_BASE + {10'd0, iofw_word},
                  tgp_mem_addr, ifp_addr,
-                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-  assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-  assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 25'hFA8000 + {6'd0, char_addr}, sdr_addr};
+  assign p_din  = {snd_ram_wdata, 16'd0, 16'd0, 16'd0,
+                   r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+  assign p_be   = {snd_ram_be, 2'b11, 2'b11, 2'b11,
+                   2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+
+  // One master per port: no arbitration, no ownership, nothing to get wrong.
+  assign snd_rom_ack = p_ack[7];
+  assign snd_ram_ack = p_ack[10];
 
   assign sdr_ack   = p_ack[0];
   assign char_ack  = p_ack[1];
@@ -559,7 +805,159 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   // model needs, which is what the measured shift implies.
   wire [7:0] sdram_occ, sdram_wait1;
 
-  m1_sdram #(.T_REFI(600)) sdram (
+  // ------------------------------------------------------------ SOUND BOARD
+  // Model 2's m2_sound_board IS the Model 1 board - see rtl/sound/README.md.
+  // It runs on clk_sys and divides to a 10 MHz 68000 with a phase accumulator,
+  // so the ratio is given as a fraction rather than a divisor: an integer
+  // divide of 80 MHz would give 8 or 11.4, and a 4% tempo error is audible.
+  wire [7:0]  snd_tx_data;
+  wire        snd_tx_stb;
+
+  // The byte crosses from clk_cpu to clk_sys and must be HELD until the board
+  // takes it - a pulse would be missed outright, which is the same handshake
+  // fault that has bitten this project twice (see docs/HANDOFF.md).
+  wire        snd_rx_ack;
+  reg  [7:0]  snd_rx_data;
+  reg         snd_rx_valid;
+  reg         snd_stb_a, snd_stb_b, snd_stb_c;
+  always @(posedge clk_sys) begin
+    snd_stb_a <= snd_tx_stb_tog;
+    snd_stb_b <= snd_stb_a;
+    snd_stb_c <= snd_stb_b;
+    if (snd_stb_b != snd_stb_c) begin
+      snd_rx_data  <= snd_tx_data_h;
+      snd_rx_valid <= 1'b1;
+    end else if (snd_rx_ack) snd_rx_valid <= 1'b0;
+    if (!rst_n) begin snd_rx_valid <= 1'b0; snd_rx_data <= 8'd0; end
+  end
+  // Toggle on the CPU side, so a single-cycle strobe survives the crossing.
+  reg        snd_tx_stb_tog;
+  reg  [7:0] snd_tx_data_h;
+  always @(posedge clk_cpu) begin
+    if (snd_tx_stb) begin
+      snd_tx_stb_tog <= ~snd_tx_stb_tog;
+      snd_tx_data_h  <= snd_tx_data;
+    end
+    if (!rst_n) begin snd_tx_stb_tog <= 1'b0; snd_tx_data_h <= 8'd0; end
+  end
+
+  // THE SOUND BOARD'S COUNTERS, out over the printf UART once a second.
+  // Every one of these was left unconnected, which is why the board reaching
+  // hardware with DISK and POWER lit and USER dark could not be taken further
+  // than "somewhere between the samples arriving and the mix". See
+  // rtl/sound/m1_snd_report.sv.
+
+  // Bytes the V60 has actually pushed into the uPD71051C. If this stays at
+  // zero the game is not commanding the board at all and nothing the sound
+  // board reports about itself matters.
+  reg  [15:0] sb_v60_bytes;
+  always @(posedge clk_cpu) begin
+    if (!rst_n)            sb_v60_bytes <= 16'd0;
+    else if (snd_tx_stb && !(&sb_v60_bytes)) sb_v60_bytes <= sb_v60_bytes + 16'd1;
+  end
+
+  // Two latching bits, both free, both on clocks that already exist.
+  reg v60_cmd_seen, mix_seen;
+  always @(posedge clk_cpu) begin
+    if (!rst_n)          v60_cmd_seen <= 1'b0;
+    else if (snd_tx_stb) v60_cmd_seen <= 1'b1;
+  end
+
+  wire signed [15:0] snd_l, snd_r;
+  wire        snd_rom_ack, snd_ram_ack;
+
+  // PCM_CACHE(1) -- MODEL 2'S SETTING, AND IT STAYS.
+  //
+  // This was 0 to save ~864 ALM, argued on the grounds that the cache is a
+  // LATENCY fix and tb_m1_sndboard measured no underruns without it. THAT
+  // ARGUMENT WAS WRONG and it is worth recording why: the bench acknowledged
+  // every PCM fetch on the SAME CYCLE as the request -- ACK_HOLD set how long
+  // the ack stayed up, not how long it took to arrive -- so fetch latency was
+  // ZERO, and a cache whose whole purpose is hiding latency measured as free.
+  // A null result from an instrument that cannot see the effect is not
+  // evidence against it. (tb_m1_sndboard has a PCM_LAT knob now.)
+  //
+  // Model 2 sets it deliberately (Model2.sv:2423) after measuring that they
+  // need it, and their sound works. Our port 8/9 wait tens of cycles on a
+  // controller shared with the V60, the tile fetch, the TGP and the 3D
+  // renderer -- strictly worse than the case Model 2 measured.
+  //
+  // The cost is paid down by putting m2_pcm_fetch's tag array in MLAB: 32 x 19
+  // bits per fetcher was 608 flip-flops each, and buf_q beside it was already
+  // an MLAB.
+  m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
+    .clk(clk_sys), .rst_n(rst_n && snd_ready),
+    .rx_data(snd_rx_data), .rx_valid(snd_rx_valid), .rx_ack(snd_rx_ack),
+    .tx_data(), .tx_valid(), .tx_ack(1'b1),      // the game never reads back
+    .rom_req(snd_rom_req), .rom_addr(snd_rom_addr),
+    .rom_ack(snd_rom_ack), .rom_data(snd_rom_data),
+    .ram_req(snd_ram_req), .ram_addr(snd_ram_addr), .ram_we(snd_ram_we),
+    .ram_be(snd_ram_be),   .ram_wdata(snd_ram_wdata),
+    .ram_ack(snd_ram_ack), .ram_data(snd_ram_data),
+    .pcm1_rom_req(snd_pcm1_req), .pcm1_rom_addr(snd_pcm1_addr),
+    // THE ZEROING MUX IS GONE, AND THE BEHAVIOUR IT PROTECTED IS NOT.
+    //
+    // This used to be `snd_pcm1_addr[21] ? 64'd0 : p_dout[8]`, because
+    // `pcm1_rom_addr` is [21:3] -- a 4 MB span -- while only 2 MB was allocated
+    // per chip. Without the mask the top half of PCM1's reach landed in PCM2's
+    // samples and the top half of PCM2's landed in the DISPLAY LISTS, geometry
+    // rewritten every frame and read as PCM. On the board that was a constant
+    // rumble and crackle that resembled no sound effect.
+    //
+    // It also reproduced the reference: model1.cpp gives each MULTIPCM a
+    // 0x400000 region and loads 0x200000 into it for vr, so a voice addressing
+    // the top half reads ZEROS in MAME.
+    //
+    // As of 2026-09-15 each chip really has its 4 MB and the mask is
+    // unnecessary. **MAME EQUIVALENCE IS PRESERVED BY THE MRA, NOT BY LOGIC**:
+    // vr and vformula are zero-padded to fill the 4 MB slot (`<part
+    // repeat="2097152">00</part>`), so the upper half holds actual zeros and a
+    // voice reading it gets what the reference gets. That is why the pad fill
+    // is 00 and not the FF used elsewhere in those files -- FF would be
+    // full-scale noise exactly where MAME is silent.
+    .pcm1_rom_data(p_dout[8]), .pcm1_rom_ack(p_ack[8]),
+    .pcm2_rom_req(snd_pcm2_req), .pcm2_rom_addr(snd_pcm2_addr),
+    .pcm2_rom_data(p_dout[9]), .pcm2_rom_ack(p_ack[9]),
+    .snd_l(snd_l), .snd_r(snd_r),
+    .dbg_pc(sb_pc), .dbg_insns(sb_insns), .dbg_ym_writes(sb_ym_wr),
+    .dbg_pcm_writes(sb_pcm_wr),
+    .dbg_pcm_samples(sb_pcm_smp), .dbg_pcm_lat(), .dbg_pcm_miss(),
+    // LEFT UNCONNECTED DELIBERATELY. Connecting a debug output stops Quartus
+    // pruning it AND everything that feeds it; these two instrument the rate
+    // stage's buffers and brought 8 M10K back with them, which on a design at
+    // 553/553 spills into logic and fails the fit. The chain below -- r i y p
+    // s m -- is what names the broken stage; these two only characterise a
+    // stage that is already known to be running.
+    .dbg_pcm_under(), .dbg_pcm_level()
+  );
+
+  always @(posedge clk_sys) begin
+    if (!rst_n)                            mix_seen <= 1'b0;
+    else if (snd_l > 16'sd64 || snd_l < -16'sd64) mix_seen <= 1'b1;
+  end
+
+  // LED_USER IS THE OUT-OF-RANGE FLAG NOW, not the mix level -- the mix is
+  // known to carry audio, and the open question is whether a voice reaches
+  // past the 2 MB that is actually loaded. If this lights, the zeroing above
+  // is doing real work and the rumble was PCM2's samples and the display
+  // lists being played as audio.
+  // IS THE SOUND 68000 RUNNING THE REAL DRIVER? Nothing has ever answered
+  // this on hardware -- every LED so far reported the V60 side or the ROM
+  // load. tb_m1_sndboard settles at pc=0x00116e, inside MAME's main loop at
+  // page 0x001100, after 901,005 instructions. If the 68000 ever reaches that
+  // page it is executing the real program and the fault is downstream; if it
+  // never does, it is lost in its own ROM and everything it writes to the
+  // MULTIPCMs is noise -- which is what a continuous rumble that does not stop
+  // for silence sounds like.
+  wire [31:0] sb_pc, sb_insns, sb_pcm_smp;
+  wire [15:0] sb_ym_wr, sb_pcm_wr;
+  reg  snd_mainloop_seen;
+  always @(posedge clk_sys) begin
+    if (!rst_n)                        snd_mainloop_seen <= 1'b0;
+    else if (sb_pc[23:8] == 16'h0011)  snd_mainloop_seen <= 1'b1;
+  end
+
+  m1_sdram #(.NP(11), .T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
     // OSD POSITION IS NOT CL+n. m1_sdram's own encoding is CL+n now, but the
     // OSD list cannot be, because position 0 is what an all-zero status gives
@@ -632,7 +1030,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   wire [23:0] dbg_copro_rd_csum;
   wire [23:0] dbg_rd_a0, dbg_rd_a1, dbg_rd_a2, dbg_rd_a3;
   wire        rb_req;
-  wire [24:1] rb_addr;
+  wire [25:1] rb_addr;
   wire [23:0] dbg_rb_csum, dbg_rb_csum0;
   wire [12:0] dbg_rb_n;
   wire [11:0] dbg_ucode_words;
@@ -641,7 +1039,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   wire [15:0] dbg_ucode_csum;
   wire [23:0] dbg_sdram_csum, dbg_sdram_words;
   wire        tgp_mem_req;
-  wire [24:1] tgp_mem_addr;
+  wire [25:1] tgp_mem_addr;
   wire [15:0] dbg_tgp_retires, dbg_tgp_pc;
   wire        dbg_tgp_unimpl;
   wire  [7:0] dbg_fetches;
@@ -696,8 +1094,9 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
     .mon_req_in(5'd0), .mon_grant_in(5'd0),
 
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
+    .snd_tx_data(snd_tx_data), .snd_tx_stb(snd_tx_stb),
     .dbg_io_replies(dbg_io_replies),
-    .rom_loaded_o(rom_ready), .ldr_overflow(ldr_overflow),
+    .rom_loaded_o(rom_ready), .snd_loaded_o(snd_ready), .ldr_overflow(ldr_overflow),
     .dbg_fetches(dbg_fetches), .dbg_overruns(dbg_overruns),
     .dbg_layer_px(dbg_layer_px), .uart_tx(core_uart_tx), .dbg_ctrl(dbg_ctrl),
     .dbg_layer_have(dbg_layer_have),
@@ -812,7 +1211,7 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   // data rows say whether it was given the wrong bytes or given the right ones
   // and mis-executed them.
   localparam int unsigned NFETCH = 8;
-  reg [24:1] fa [NFETCH];
+  reg [25:1] fa [NFETCH];
   reg [31:0] fd [NFETCH];
   reg [3:0]  fn;
   reg [31:0] r_if_count;
@@ -1058,13 +1457,24 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   // delivered the right bytes in the right order, and the coprocessor's bad
   // reads are a READ-side fault; a mismatch means the data never arrived and no
   // amount of capture-phase tuning will help.
-  assign dw[7]  = {8'h07, dbg_rd_a1};   // coprocessor read #64
+  // ROWS 07, 0B, 0E AND 1B WERE COPROCESSOR READ ADDRESSES. They answered that
+  // question long ago and have shown constants since. The sound board is the
+  // live unknown and NOTHING on hardware reports it: three LEDs cannot show a
+  // count, and the UART monitor needs 8 M10K this design does not have. The
+  // overlay is already built and costs nothing to fill.
+  //
+  // 07: the sound 68000's PC. tb_m1_sndboard settles in MAME's main loop at
+  //     0x00116e. A PC anywhere else, or one that never moves, means the CPU
+  //     is lost in its own ROM and everything it programs is noise.
+  assign dw[7]  = {8'h07, sb_pc[23:0]};
   assign dw[8]  = {8'h08, fd[1][23:0]};            // reset vector, low 24
   // Tags 09 and 0A — the data words of fetches 4 and 5 — are GONE, to stay under
   // the 24-row ceiling. They were boot forensics: they proved ROM contents were
   // arriving, which a core that now boots and runs proves better. Their
   // ADDRESSES survive as tags 06 and 07.
-  assign dw[9]  = {8'h0B, dbg_rd_a2};   // coprocessor read #256
+  // 0B: 68000 instructions retired. The bench does 901,005 in half a second;
+  //     a count that is tiny or static is a dead or looping CPU.
+  assign dw[9]  = {8'h0B, sb_insns[23:0]};
   // Fetch deadline misses against the worst layer's fetch count for the last
   // line. If the picture is shifting and tearing, this says whether the
   // renderer is failing or merely running out of scanline.
@@ -1096,7 +1506,10 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   // reads correctly every frame. Row 0C is the math tables at 0x400000.
   //   0E right, 0C wrong  the fault is specific to the high region
   //   both wrong          the read path or the sweep itself is at fault
-  assign dw[12] = {8'h0E, dbg_rd_a0};   // coprocessor read #0
+  // 0E: YM register writes (left 12) and MULTIPCM register writes (right 12).
+  //     The bench does 342 and 479 in half a second with no V60 driving it.
+  //     Both zero means the driver never reaches its output stage.
+  assign dw[12] = {8'h0E, sb_ym_wr[11:0], sb_pcm_wr[11:0]};
   // M2 telemetry, one value per row. A retire count that moves means the
   // coprocessor is executing real microcode; the PC says where it stopped if it
   // did. These two were packed into one row each with a second value and both
@@ -1156,7 +1569,10 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
   //
   // Rows 1B is the last one available: 24 rows at 16 pixels is 384 lines, the
   // whole visible field.
-  assign dw[23] = {8'h1B, dbg_rd_a3};   // coprocessor read #512
+  // 1B: sample slots the first MULTIPCM has produced. Two readings a second
+  //     apart give the rate directly, against the chip's own 44,643 Hz -- the
+  //     number that was 71,456 before the rate stage was told the clock.
+  assign dw[23] = {8'h1B, sb_pcm_smp[23:0]};
 
   wire [7:0] dg_r, dg_g, dg_b;
 
@@ -1221,6 +1637,33 @@ assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
 
   // Lit while the ROM set is loading, so a failed load is visible without a
   // screen — the first thing to check when a board shows nothing.
-  assign LED_USER  = ioctl_download;
+// THE DIAGNOSTIC LEDS ARE GONE, AND THEY EARNED THEIR KEEP. With the debug
+  // UART compiled out to make the design fit, three free bits localised the
+  // sound fault that four hardware round trips of inference had not:
+  //
+  //   LED_DISK  = snd_ready              -> the ROM stream completed
+  //   LED_POWER = p_ack[8] && p_dout[8]  -> SDRAM returned sample data
+  //   LED_USER  = snd_l != 0             -> the mix produced audio
+  //
+  // DISK solid / POWER dark said the 68000 ran and the sample reads came back
+  // ZERO, which is what found m1_sdram tagging in-flight reads with grant[2:0]
+  // in a ten-port controller: ports 8 and 9 wrapped onto 0 and 1. Two 22-bit
+  // counters and a 64-bit compare, removed now the answer is in hand -- the
+  // design needs the ~40 ALM back. Reinstate them from git if sound regresses.
+  //
+  // REWIRED 2026-09-13. The two latches described above were deleted by a
+  // wholesale revert, LED_POWER was left tied to 0, and the board was then read
+  // as "DISK on, POWER on" -- which was the FRAMEWORK lighting POWER, not us.
+  //
+  //   LED_DISK  = snd_ready       -> the sound ROM stream completed
+  //   LED_POWER = v60_cmd_seen    -> the V60 has pushed a byte into the USART
+  //   LED_USER  = snd_mainloop_seen -> the sound 68000 reached MAME's main loop
+  //
+  // v60_cmd_seen is the one that matters. The uPD71051C path (snd_tx_data /
+  // snd_tx_stb) was deleted by that same revert and restored by hand; if the
+  // game never commands the board, nothing downstream can make a sound and no
+  // amount of gain will help. It costs two flip-flops and no M10K, which the
+  // UART monitor did not -- that needed 8 blocks against 553/553.
+  assign LED_USER  = snd_mainloop_seen;
 
 endmodule

@@ -11,7 +11,7 @@ module pll (
 		output wire  outclk_0, // outclk0.clk
 		output wire  outclk_1, // outclk1.clk
 		output wire  outclk_2, // outclk2.clk — SDRAM_CLK, tunable phase
-		output wire  outclk_3, // outclk3.clk — the 3D layer, 45.714 MHz
+		output wire  outclk_3, // outclk3.clk — the 3D layer, 58.95 MHz
 		output wire  locked    //  locked.export
 	);
 

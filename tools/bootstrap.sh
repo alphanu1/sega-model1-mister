@@ -183,6 +183,8 @@ if [ "$DO_MAME" = 1 ]; then
       '/src/mame/sega/model1*' \
       '/src/mame/sega/315_5338a.*' \
       '/src/mame/sega/segaic24*' \
+      '/src/mame/shared/segam1audio.*' \   # Model 1's sound board device
+      '/src/devices/sound/ym2612.*' \
       '/src/devices/sound/multipcm.*' \
       '/src/devices/machine/mb8421.*' \
       '/src/devices/machine/gen_fifo.*' \

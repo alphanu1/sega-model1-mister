@@ -60,7 +60,7 @@ if [ $# -gt 0 ] && [ "${1##*.}" = "lua" ]; then script="$1"; shift; fi
 cd "$here/build/mamerun"    # MAME drops cfg/, nvram/ and snap/ where it starts
 set +e
 mame "${GAME:-vr}" -rompath "$roms;$overlay" \
-        -skip_gameinfo -autoboot_delay 0 -sound none -nothrottle \
+        -skip_gameinfo -autoboot_delay 0 -sound portaudio -nothrottle \
         ${script:+-autoboot_script "$here/$script"} \
         "$@"
 rc=$?

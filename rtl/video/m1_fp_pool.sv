@@ -80,7 +80,8 @@ module m1_fp_pool #(
   output logic [31:0]         div_res
 );
 
-  localparam int unsigned CW = (NC > 1) ? $clog2(NC) : 1;
+  localparam int unsigned CW   = (NC > 1) ? $clog2(NC) : 1;
+  localparam int unsigned SUMW = CW + 1;
 
   // ------------------------------------------------------------- arbiters
   // Rotating pointer: the client after the last winner gets first refusal.
@@ -89,20 +90,51 @@ module m1_fp_pool #(
   // The winner is chosen with a plain priority chain over a ROTATED request
   // vector, walked from the last index down so the lowest rotated index wins.
   // No loop-with-break: yosys rejects it (docs/rtl-conventions.md).
+  // ROTATE THE REQUEST VECTOR ONCE, THEN PRIORITISE ON CONSTANTS.
+  //
+  // The obvious way to walk a rotated vector is to compute the rotated index
+  // inside the loop and read `req[idx]`. That is what stood here, and it is
+  // quadratic: the loop is unrolled NC times, `idx` is a VARIABLE in every one
+  // of them, so each iteration builds its own NC:1 mux to read `req[idx]` on
+  // top of its own add, compare and conditional subtract. NC of those per
+  // arbiter, and there are THREE arbiters (multiply, add, divide).
+  //
+  // Rotating first collapses it. `{req, req} >> first` is a single barrel
+  // shifter whose bit k is `req[(first + k) % NC]`, so the priority chain that
+  // follows indexes with k CONSTANT - no mux at all, just a chain of CW-bit
+  // selects - and the wrap arithmetic happens ONCE on the winner instead of NC
+  // times on every candidate.
+  //
+  // One barrel shifter plus one adder per arbiter, against NC muxes plus NC
+  // adders plus NC subtractors. The behaviour is identical: same rotation, same
+  // priority order, same fallback to `first` when nothing is requesting.
+  //
+  // No loop-with-break here either - yosys rejects it, see
+  // docs/rtl-conventions.md - so the chain still walks DOWN from NC-1 and lets
+  // the lowest rotated index win by writing last.
   function automatic [CW-1:0] rr_pick(input logic [NC-1:0] req, input logic [CW-1:0] first);
-    logic [CW-1:0] best;
-    logic          found;
-    best  = first;
-    found = 1'b0;
+    logic [2*NC-1:0] dbl;
+    logic [NC-1:0]   rot;
+    logic [CW-1:0]   best_k;
+    logic [CW:0]     sum;
+    logic            found;
+
+    dbl    = {req, req};
+    rot    = dbl[first +: NC];
+    best_k = '0;
+    found  = 1'b0;
     for (int k = NC - 1; k >= 0; k--) begin
-      int unsigned idx;
-      idx = (int'(first) + k) % NC;
-      if (req[idx]) begin
-        best  = CW'(idx);
-        found = 1'b1;
+      if (rot[k]) begin
+        best_k = CW'(k);
+        found  = 1'b1;
       end
     end
-    rr_pick = found ? best : first;
+    // A CONDITIONAL SUBTRACT, NOT A MODULO. `first` and `best_k` are both
+    // 0..NC-1, so the sum never exceeds 2*NC-2 and one subtract wraps it
+    // exactly. `% NC` with a non-constant operand synthesises a divider.
+    sum     = {1'b0, first} + {1'b0, best_k};
+    rr_pick = found ? ((sum >= SUMW'(NC)) ? CW'(sum - SUMW'(NC)) : CW'(sum))
+                    : first;
   endfunction
 
   wire [CW-1:0] mul_win = rr_pick(mul_req, mul_rr);

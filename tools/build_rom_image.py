@@ -137,6 +137,84 @@ def load(zf, name):
                 return zf.read(n)
         raise SystemExit(f"missing {name} in the archive")
 
+# ---------------------------------------------------------------- sound board
+# THE SOUND STREAM, index 5. Same contract as pack_stream above: one
+# definition shared by the simulation preload and tools/verify_mra.py, because
+# an MRA and a packer that disagree mean the core boots in one and not the
+# other.
+#
+# FOUR MB PER SAMPLE CHIP, 2026-09-15. Every game presents the same shape and
+# the small ones are zero-padded, so one core layout serves all six:
+#
+#   0x000000  68000 program   512 KB  (netmerc's is one 512 KB ROM)
+#   0x080000  MultiPCM 1        4 MB
+#   0x480000  MultiPCM 2        4 MB
+#   0x880000  end
+#
+# Names and offsets read out of MAME's model1.cpp rather than typed by hand.
+SND_SETS = {
+    'vr': {
+        'prog': [('epr-14870a.7', 0x000000)],
+        'pcm1': [('mpr-14873.32', 0x000000)],
+        'pcm2': [('mpr-14876.4',  0x000000)],
+    },
+    'vformula': {
+        'prog': [('epr-14870a.7', 0x000000)],
+        'pcm1': [('mpr-14873.32', 0x000000)],
+        'pcm2': [('mpr-14876.4',  0x000000)],
+    },
+    'vf': {
+        'prog': [('epr-16120.7', 0x000000), ('epr-16121.8', 0x020000)],
+        'pcm1': [('mpr-16122.32', 0x000000), ('mpr-16123.33', 0x200000)],
+        'pcm2': [('mpr-16124.4', 0x000000), ('mpr-16125.5', 0x200000)],
+    },
+    'swa': {
+        'prog': [('epr-16470.7', 0x000000)],
+        'pcm1': [('mpr-16486.32', 0x000000), ('mpr-16487.33', 0x200000)],
+        'pcm2': [('mpr-16484.4', 0x000000), ('mpr-16485.5', 0x200000)],
+    },
+    'wingwar': {
+        'prog': [('epr-17126.7', 0x000000), ('epr-16752.8', 0x020000)],
+        'pcm1': [('mpr-16753.32', 0x000000), ('mpr-16754.33', 0x200000)],
+        'pcm2': [('mpr-16755.4', 0x000000), ('mpr-16756.5', 0x200000)],
+    },
+    'netmerc': {
+        'prog': [('epr-18121.ic7', 0x000000)],
+        'pcm1': [('mpr-18134.ic32', 0x000000), ('mpr-18135.ic33', 0x200000)],
+        'pcm2': [('mpr-18136.ic4', 0x000000)],
+    },
+}
+
+SND_PROG_END, SND_PCM1_OFF, SND_PCM2_OFF, SND_TOTAL = 0x80000, 0x80000, 0x480000, 0x880000
+
+
+def pack_snd_stream(zip_path, game):
+    """The index-5 sound stream for `game`, or None if we have no table for it.
+
+    THE FILL IS ZERO, NOT 0xFF, and that is load-bearing. Model1.sv used to mask
+    MultiPCM reads above 2 MB to zero, matching MAME (which gives each chip a
+    4 MB region and loads 2 MB into it for vr). The mask is gone now the space
+    is really allocated, so the zeros have to be in the data - 0xFF there would
+    be full-scale noise exactly where the reference is silent.
+    """
+    if game not in SND_SETS:
+        return None
+    out = bytearray(SND_TOTAL)          # zero-filled
+    with zipfile.ZipFile(zip_path) as zf:
+        for name, off in SND_SETS[game]['prog']:
+            d = load(zf, name)
+            # ROM_LOAD16_WORD_SWAP in MAME: byte-swap each 16-bit word.
+            sw = bytearray(len(d))
+            sw[0::2] = d[1::2]
+            sw[1::2] = d[0::2]
+            out[off:off+len(sw)] = sw
+        for key, base in (('pcm1', SND_PCM1_OFF), ('pcm2', SND_PCM2_OFF)):
+            for name, off in SND_SETS[game][key]:
+                d = load(zf, name)
+                out[base+off:base+off+len(d)] = d
+    return bytes(out)
+
+
 def pack_stream(zip_path, game):
     """The packed ioctl stream, exactly as m1_rom_loader expects to receive it.
 
@@ -322,6 +400,19 @@ def main():
         with open(binp, 'wb') as f:
             f.write(stream)
         print(f"{binp}: {len(stream)} bytes, polygons at 0x840000")
+
+    # The sound board's stream, so simulation can boot the real 68000 off the
+    # real ROM instead of a synthetic probe pattern.
+    snd = pack_snd_stream(args.zip, args.game)
+    if snd is None:
+        print(f"note: no sound ROM table for '{args.game}'; skipping the sound stream")
+    else:
+        sndp = os.path.join(args.out, f'{args.game}_snd.bin')
+        with open(sndp, 'wb') as f:
+            f.write(snd)
+        nz = sum(1 for b in snd[:SND_PROG_END] if b)
+        print(f"{sndp}: {len(snd):,} bytes "
+              f"(256 KB program + 2 x 4 MB samples, {nz:,} non-zero program bytes)")
 
     vec = 0x100000 + (0xfffff0 - 0xf80000)
     print("reset vector 0xfffffff0 -> stream 0x%06x -> bytes %s" %

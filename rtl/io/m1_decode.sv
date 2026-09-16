@@ -83,7 +83,7 @@ module m1_decode (
   output logic        sel_glue,       // irq control, bank, timer
 
   // SDRAM word address for ROM reads. Only meaningful when sel_rom is set.
-  output logic [24:1] rom_addr
+  output logic [25:1] rom_addr
 );
 
   // Region compares are written against the same address slices MAME's map

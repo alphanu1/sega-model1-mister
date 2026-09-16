@@ -29,7 +29,7 @@ module m1_sdram_harness (
 
   // ROM download
   input  logic        wr_req,
-  input  logic [24:1] wr_addr,
+  input  logic [25:1] wr_addr,
   input  logic [15:0] wr_din,
   input  logic [1:0]  wr_be,
   output logic        wr_ack,
@@ -37,14 +37,22 @@ module m1_sdram_harness (
   // p0 V60 (read/write), p1 tile char, p2 polygon/TGP, p3 sound 68000,
   // p4 MultiPCM. See docs/00-decisions.md D8.
   input  logic        p0_req, p1_req, p2_req, p3_req, p4_req, p5_req, p6_req,
+  // PORTS 7..9 EXIST ONLY IN THE WIDE BUILD. They are the sound 68000's memory
+  // and the two MULTIPCM sample streams, and nothing drove them here while the
+  // top level instantiated NP(10) -- which is how a three-bit read tag survived
+  // in a ten-port controller and silenced the sound board.
+  input  logic        p7_req, p8_req, p9_req, p10_req,
   input  logic        p6_we,
   input  logic [15:0] p6_din,
   input  logic        p0_we,
-  input  logic [24:1] p0_addr, p1_addr, p2_addr, p3_addr, p4_addr, p5_addr, p6_addr,
+  input  logic [25:1] p0_addr, p1_addr, p2_addr, p3_addr, p4_addr, p5_addr, p6_addr,
+  input  logic [25:1] p7_addr, p8_addr, p9_addr, p10_addr,
   input  logic [15:0] p0_din,
   input  logic [1:0]  p0_be,
   output logic [63:0] p0_dout, p1_dout, p2_dout, p3_dout, p4_dout, p5_dout, p6_dout,
+  output logic [63:0] p7_dout, p8_dout, p9_dout, p10_dout,
   output logic        p0_ack, p1_ack, p2_ack, p3_ack, p4_ack, p5_ack, p6_ack,
+  output logic        p7_ack, p8_ack, p9_ack, p10_ack,
 
   // Device model observability
   output int unsigned violations,
@@ -65,7 +73,18 @@ module m1_sdram_harness (
   // SEVEN. p5 is the 3D layer's polygon-model fetch, which BURSTS, and p6 its
   // tgp_ram access. Adding them to the controller without adding them here would
   // leave the burst configuration - the part most likely to be wrong - untested.
-  localparam int unsigned NP    = 7;
+  // PORT COUNT IS A PARAMETER AND THE SUITE BUILDS IT TWICE, for exactly the
+  // reason bw_monitor and m1_diag are built twice: a narrow build cannot reach
+  // the paths a wide one has.
+  //
+  // This was a hard-coded 7 while Model1.sv instantiates NP(10). The controller
+  // tagged in-flight reads with `grant[2:0]` into a `[2:0]` field, so ports 8
+  // and 9 -- the two MULTIPCM sample streams -- WRAPPED onto ports 0 and 1.
+  // Every sample read was delivered to the wrong port, the PCM ports read zeros
+  // forever, and the sound board played silence while the 68000 ran perfectly.
+  // Seven ports could never expose it. Keep this equal to what the top level
+  // instantiates.
+  parameter int unsigned NP = 7;
   localparam int unsigned T_RCD = 2;
   localparam int unsigned T_RP  = 2;
   localparam int unsigned T_RC  = 7;
@@ -78,12 +97,40 @@ module m1_sdram_harness (
   localparam int unsigned INIT_NOP = 600;
 
   logic [NP-1:0]       p_req, p_we, p_ack;
-  logic [NP-1:0][24:1] p_addr;
+  logic [NP-1:0][25:1] p_addr;
   logic [NP-1:0][15:0] p_din;
   logic [NP-1:0][1:0]  p_be;
   logic [NP-1:0][63:0] p_dout;
   logic [NP-1:0]       dbg_req, dbg_grant;
 
+  // A FULL-WIDTH MIRROR of the read data, so the fan-out below can be written
+  // once whatever NP this build uses. Reading p_dout[10] in an NP=10 build is
+  // an ELABORATION error, not a runtime one, so a `NP > 10 ?` guard does not
+  // help -- the index is checked whether or not the branch is taken. Ports the
+  // build does not have read as zero.
+  localparam int unsigned NMAX = 11;
+  logic [NMAX-1:0][63:0] dout_w;
+  always_comb begin
+    dout_w = '0;
+    for (int i = 0; i < NP; i++) dout_w[i] = p_dout[i];
+  end
+
+  generate if (NP > 7) begin : g_wide
+    assign p_req  = {p10_req, p9_req, p8_req, p7_req, p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
+    assign p_addr = {p10_addr, p9_addr, p8_addr, p7_addr, p6_addr, p5_addr, p4_addr, p3_addr, p2_addr, p1_addr, p0_addr};
+    assign p_we   = {4'b0000, p6_we, 5'b00000, p0_we};
+    assign p_din  = {64'd0, p6_din, 80'd0, p0_din};
+    assign p_be   = {8'hff, 2'b11, 10'd0, p0_be};
+    assign {p10_ack, p9_ack, p8_ack, p7_ack, p6_ack, p5_ack, p4_ack, p3_ack, p2_ack, p1_ack, p0_ack} = p_ack;
+    assign p7_dout = dout_w[7];
+    assign p8_dout = dout_w[8];
+    assign p9_dout = dout_w[9];
+    assign p10_dout = dout_w[10];
+  end else begin : g_narrow
+    assign p7_dout = 64'd0; assign p8_dout = 64'd0; assign p9_dout = 64'd0;
+    assign p10_dout = 64'd0;
+    assign p7_ack  = 1'b0;  assign p8_ack  = 1'b0;  assign p9_ack  = 1'b0;
+    assign p10_ack = 1'b0;
   assign p_req  = {p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
   // p6 WRITES TOO. It carries tgp_ram, which display-list command 4 uploads, and
   // it was the only write path in the design that no test ever exercised - the
@@ -94,6 +141,7 @@ module m1_sdram_harness (
   assign p_be   = {2'b11, 10'd0, p0_be};
 
   assign {p6_ack, p5_ack, p4_ack, p3_ack, p2_ack, p1_ack, p0_ack} = p_ack;
+  end endgenerate
   assign p0_dout = p_dout[0];
   assign p1_dout = p_dout[1];
   assign p2_dout = p_dout[2];
@@ -127,7 +175,7 @@ module m1_sdram_harness (
   // The same timing numbers, so the checker is checking the clock the
   // controller was built for.
   sdram_model #(
-    .COL_BITS(9),
+    .COL_BITS(10),   // 64 MB, matching m1_sdram since 2026-09-15
     .T_RCD(T_RCD), .T_RP(T_RP), .T_RC(T_RC), .T_RAS(T_RAS), .T_WR(T_WR),
     .CL(CL), .T_REFI(781), .REFI_SLACK(9)
   ) device (

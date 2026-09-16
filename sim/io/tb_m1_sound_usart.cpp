@@ -28,7 +28,13 @@
 #include <cstdint>
 
 // Must match the RTL default: 10 bits at 31.25 kbit/s against a 16 MHz V60.
-static const int CHAR_CLKS = 5120;
+// MUST MATCH rtl/io/m1_sound_usart.sv's default. It went 5,120 -> 9,430 on
+// 2026-09-16: 5,120 is one character time at the real board's 16 MHz V60, and
+// we clock ours at 29.47 MHz with ce tied high, so the transmitter was freeing
+// itself 1.84x too early and the CPU could outrun a sound board that runs at
+// real speed. Written out rather than read from the RTL so a change to the
+// design has to be agreed here too.
+static const int CHAR_CLKS = 9430;
 
 struct Usart {
   Vm1_sound_usart* d;

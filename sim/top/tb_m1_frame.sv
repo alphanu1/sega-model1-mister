@@ -65,6 +65,12 @@ module tb_m1_frame #(
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
     // draws no 3D at all.
     parameter string  STREAMBIN  = "build/rom/vr_stream.bin",
+    // THE REAL SOUND ROM, streamed on index 5 like the hardware does.
+    // Empty string = fall back to the 12-word probe pattern, which only proves
+    // the loader's boundaries and cannot boot the 68000.
+    parameter string  SNDBIN     = "",
+    // Set by the Makefile so a silent run can say whether silence is expected.
+    parameter bit     GAME_IS_VR = 1'b1,
     parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
     parameter string  PPMOUT     = "build/frame.ppm",
     parameter string  TRAMOUT    = "build/frame_tram.hex",
@@ -186,11 +192,11 @@ end
 
 // ------------------------------------------------------------------ memory
 wire        sdr_req, sdr_we;
-wire [24:1] sdr_addr;
+wire [25:1] sdr_addr;
 wire [15:0] sdr_din;
 wire  [1:0] sdr_be;
 wire        ifp_req;
-wire [24:1] ifp_addr;
+wire [25:1] ifp_addr;
 wire        char_req;
 wire [17:0] char_addr;
 
@@ -207,24 +213,48 @@ wire [17:0] char_addr;
 // divergence docs/mister-integration.md warns about, and it hid for as long as
 // it did because the missing piece produced NO OUTPUT rather than wrong output.
 wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
-wire [24:1] r3d_rom_addr, r3d_tex_addr;
+wire [25:1] r3d_rom_addr, r3d_tex_addr;
 wire [15:0] r3d_tex_din;
 
 // EIGHT PORTS, matching Model1.sv: p7 is the I/O board Z80's firmware fetch.
-localparam logic [24:1] IOFW_BASE = 24'hD00000;
+// MUST MATCH Model1.sv AND m1_rom_loader. Moved to 22.5 MB by the 4 MB-per-
+// MultiPCM relayout of 2026-09-15, and this copy was missed.
+//
+// WHAT THAT LOOKED LIKE, because it did not look like an address: the loader
+// wrote the I/O firmware to 0xB40000 and the Z80 fetched from 0xD00000, which
+// is unwritten and reads FFFF. 0xFF is Z80 `RST 38h`, so EVERY fetch trapped
+// to 0x0038 and pushed a return address -- the trace reads
+//   0000 fffe fffd 0038 fffc fffb 0038 fffa fff9 0038 ...
+// a stack walking downward forever. The I/O board then never answered the boot
+// handshake, the V60 sat in its poll loop at fe022c/fe0232 for 250 M cycles,
+// and never reached the code that sends sound bytes. It presented as a SOUND
+// fault three layers away from the actual cause.
+localparam logic [25:1] IOFW_BASE = 25'hD00000;
 wire        iofw_req;
 wire [13:0] iofw_word;
 
-wire [6:0]       p_req, p_we, p_ack;
-wire [6:0][24:1] p_addr;
-wire [6:0][15:0] p_din;
-wire [6:0][1:0]  p_be;
-wire [6:0][63:0] p_dout;
+// ELEVEN PORTS, NOT SEVEN, SO THE SOUND BOARD IS REALLY HERE (2026-09-15).
+//
+// This bench drove m1_integrated only, which is the MAIN board -- the sound
+// board is instantiated one level up in Model1.sv. So no bench in this project
+// had the loader, the SDRAM and the sound chips together: tb_m1_sndboard has
+// the chips and a fake memory, this had a real memory and no chips. Sound
+// could only ever be debugged on hardware, which is what it cost.
+//
+// Ports 7-10 are the sound board's, wired exactly as Model1.sv wires them:
+// 7 = 68000 ROM, 8/9 = the MultiPCM sample streams, 10 = 68000 work RAM.
+wire [10:0]       p_req, p_we, p_ack;
+wire [10:0][25:1] p_addr;
+wire [10:0][15:0] p_din;
+wire [10:0][1:0]  p_be;
+wire [10:0][63:0] p_dout;
 
 // Port 4 carries the I/O board's firmware fetch, not the read-back sweep -
 // that fed the debug overlay's row 4, which is off. See Model1.sv.
-assign p_req  = {r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+assign p_req  = {snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
+                 r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+assign p_we   = {snd_ram_we,  1'b0,        1'b0,         1'b0,
+                 r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -235,12 +265,28 @@ assign p_we   = {r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,
 // is; m1_integrated keeps bit 1 to pick which 32-bit half of the burst it
 // wanted. Aligning it any earlier destroys that bit and every odd model word
 // returns the even one's data.
-assign p_addr = {r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},
+// The sound bases, IDENTICAL to Model1.sv's. Written out rather than imported
+// so a divergence between bench and design shows up as a failed probe.
+localparam logic [25:1] SND_ROM_BASE  = 25'h1000000;  // 32.0 MB, 512 KB
+localparam logic [25:1] SND_RAM_BASE  = 25'h1040000;  // 32.5 MB, 64 KB
+localparam logic [25:1] SND_PCM1_BASE = 25'h1080000;  // 33.0 MB, 4 MB
+localparam logic [25:1] SND_PCM2_BASE = 25'h1280000;  // 37.0 MB, 4 MB
+
+assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
+                 SND_PCM2_BASE + 25'({snd_pcm2_addr, 2'b00}),
+                 SND_PCM1_BASE + 25'({snd_pcm1_addr, 2'b00}),
+                 SND_ROM_BASE  + {7'd0, snd_rom_addr},
+                 // EVERY ELEMENT MUST BE EXACTLY 25 BITS -- concatenation operands
+                 // are self-determined, so a short one shifts everything below
+                 // it rather than zero-extending. See Model1.sv's copy.
+                 r3d_tex_addr, {r3d_rom_addr[25:2], 1'b0},
                  IOFW_BASE + {10'd0, iofw_word},
-                 {tgp_mem_addr[24:2], 1'b0}, ifp_addr,
-                 24'hFA8000 + {6'd0, char_addr}, sdr_addr};
-assign p_din  = {r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-assign p_be   = {2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 {tgp_mem_addr[25:2], 1'b0}, ifp_addr,
+                 25'hFA8000 + {6'd0, char_addr}, sdr_addr};
+assign p_din  = {snd_ram_wdata, 16'd0, 16'd0, 16'd0,
+                 r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+assign p_be   = {snd_ram_be,  2'b11, 2'b11, 2'b11,
+                 2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -248,7 +294,7 @@ reg         ioctl_download = 0, ioctl_wr = 0;
 reg  [26:0] ioctl_addr = 0;
 reg  [15:0] ioctl_dout = 0;
 wire        ldr_wr_req, ldr_wr_ack;
-wire [24:1] ldr_wr_addr;
+wire [25:1] ldr_wr_addr;
 wire [15:0] ldr_wr_din;
 wire  [1:0] ldr_wr_be;
 wire        loader_done;
@@ -261,7 +307,7 @@ wire        dq_oe_c, dq_oe_m;
 wire [15:0] v_flags;
 wire        mem_ready;
 
-m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
+m1_sdram #(.NP(11), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .rd_lat_sel(3'd3),   // CL+3: sdram_model presents data on the same edge
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
@@ -281,7 +327,7 @@ m1_sdram #(.NP(7), .INIT_NOP(600)) sdram (
 // POLY_WORDS covers the whole packed image, not just the polygon field: the
 // coprocessor's data ROM and tables sit below it and the same argument applies
 // to them.
-sdram_model #(.COL_BITS(9), .DEFAULT_DATA(DOWNLOAD ? 16'hFFFF : 16'h0000),
+sdram_model #(.COL_BITS(10), .DEFAULT_DATA(DOWNLOAD ? 16'hFFFF : 16'h0000),
               .BACKING_FILE(STREAMBIN), .BACKING_BASE(0),
               .BACKING_WORDS(STREAM_WORDS)) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
@@ -385,15 +431,331 @@ m1_integrated core (
 
     .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_fp_trap(dbg_fp_trap),
     .dbg_io_replies(dbg_io_replies),
-    .rom_loaded_o(loader_done), .dbg_fetches(), .dbg_overruns(dbg_overruns)
+    .rom_loaded_o(loader_done), .snd_loaded_o(snd_ready),
+    .snd_tx_data(snd_tx_data), .snd_tx_stb(snd_tx_stb),
+    .dbg_fetches(), .dbg_overruns(dbg_overruns)
 );
+
+// ===================================================================== SOUND
+// THE REAL SOUND BOARD, on the real SDRAM, fed by the real loader.
+//
+// Added 2026-09-15 because sound could previously only be debugged on
+// hardware: tb_m1_sndboard had the chips against a hand-written memory model
+// (which for a long time did not answer at all), and this bench had a real
+// memory and no chips. Neither could show the 68000 booting from ROM the
+// loader actually wrote.
+wire        snd_ready;
+wire [7:0]  snd_tx_data;
+wire        snd_tx_stb;
+
+wire        snd_rom_req,  snd_ram_req,  snd_ram_we;
+wire [17:1] snd_rom_addr;
+wire [15:1] snd_ram_addr;
+wire [1:0]  snd_ram_be;
+wire [15:0] snd_ram_wdata;
+wire        snd_pcm1_req, snd_pcm2_req;
+wire [21:3] snd_pcm1_addr, snd_pcm2_addr;
+wire signed [15:0] snd_l, snd_r;
+wire [31:0] sb_pc, sb_insns;
+wire [15:0] sb_ym_wr, sb_pcm_wr;
+
+// The 68000 ROM is byte-swapped on the way out, exactly as Model1.sv does it.
+wire [15:0] snd_mem_data = p_dout[7][15:0];
+wire [15:0] snd_rom_data = {snd_mem_data[7:0], snd_mem_data[15:8]};
+wire [15:0] snd_ram_data = p_dout[10][15:0];
+wire        snd_rom_ack  = p_ack[7];
+wire        snd_ram_ack  = p_ack[10];
+
+// THE BYTE CROSSES clk_cpu -> clk AND MUST BE HELD, not pulsed. Same handshake
+// rule that has bitten this project repeatedly; Model1.sv uses this exact
+// toggle-and-hold and the bench must not invent a different one, or it proves
+// nothing about the design.
+reg        snd_tx_stb_tog;
+reg  [7:0] snd_tx_data_h;
+always @(posedge clk_cpu) begin
+    if (snd_tx_stb) begin
+        snd_tx_stb_tog <= ~snd_tx_stb_tog;
+        snd_tx_data_h  <= snd_tx_data;
+    end
+    if (!rst_n) begin snd_tx_stb_tog <= 1'b0; snd_tx_data_h <= 8'd0; end
+end
+
+wire       snd_rx_ack;
+reg [7:0]  snd_rx_data;
+reg        snd_rx_valid;
+reg        snd_stb_a, snd_stb_b, snd_stb_c;
+always @(posedge clk) begin
+    snd_stb_a <= snd_tx_stb_tog;
+    snd_stb_b <= snd_stb_a;
+    snd_stb_c <= snd_stb_b;
+    if (snd_stb_b != snd_stb_c) begin
+        snd_rx_data  <= snd_tx_data_h;
+        snd_rx_valid <= 1'b1;
+    end else if (snd_rx_ack) snd_rx_valid <= 1'b0;
+    if (!rst_n) begin snd_rx_valid <= 1'b0; snd_rx_data <= 8'd0; end
+end
+
+m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
+    .clk(clk), .rst_n(rst_n && snd_ready),
+    .rx_data(snd_rx_data), .rx_valid(snd_rx_valid), .rx_ack(snd_rx_ack),
+    .tx_data(), .tx_valid(), .tx_ack(1'b1),
+    .rom_req(snd_rom_req), .rom_addr(snd_rom_addr),
+    .rom_ack(snd_rom_ack), .rom_data(snd_rom_data),
+    .ram_req(snd_ram_req), .ram_addr(snd_ram_addr), .ram_we(snd_ram_we),
+    .ram_be(snd_ram_be),   .ram_wdata(snd_ram_wdata),
+    .ram_ack(snd_ram_ack), .ram_data(snd_ram_data),
+    .pcm1_rom_req(snd_pcm1_req), .pcm1_rom_addr(snd_pcm1_addr),
+    .pcm1_rom_data(p_dout[8]), .pcm1_rom_ack(p_ack[8]),
+    .pcm2_rom_req(snd_pcm2_req), .pcm2_rom_addr(snd_pcm2_addr),
+    .pcm2_rom_data(p_dout[9]), .pcm2_rom_ack(p_ack[9]),
+    .snd_l(snd_l), .snd_r(snd_r),
+    .dbg_pc(sb_pc), .dbg_insns(sb_insns), .dbg_ym_writes(sb_ym_wr), .dbg_pcm_writes(sb_pcm_wr),
+    .dbg_pcm_samples(), .dbg_pcm_lat(), .dbg_pcm_miss(),
+    .dbg_pcm_under(), .dbg_pcm_level()
+);
+
+// ------------------------------------------------- the audio capture
+// A WAV OF WHAT THE CORE ACTUALLY OUTPUTS, so sound is debugged here and not
+// on a board. Raw signed 16-bit LE stereo; tools/raw2wav.py adds the header.
+//
+// DECIMATED TO 44,100 Hz. clk is 80 MHz, so one frame every 1814 cycles. The
+// first version of the sound-board bench pushed one frame per CLOCK, which
+// turned milliseconds of audio into a drone stretched over seconds - the exact
+// artefact being investigated, and it would have been mistaken for the fault.
+integer      wavf = 0;
+integer      wavdiv = 0;
+longint unsigned snd_nz_l = 0, snd_nz_r = 0;
+integer      snd_peak_l = 0, snd_peak_r = 0;
+initial wavf = $fopen("build/frame_snd.raw", "wb");
+always @(posedge clk) begin
+    if (rst_n) begin
+        if (snd_l !== 16'sd0) snd_nz_l = snd_nz_l + 1;
+        if (snd_r !== 16'sd0) snd_nz_r = snd_nz_r + 1;
+        if ((snd_l > 0 ? snd_l : -snd_l) > snd_peak_l) snd_peak_l = (snd_l > 0 ? snd_l : -snd_l);
+        if ((snd_r > 0 ? snd_r : -snd_r) > snd_peak_r) snd_peak_r = (snd_r > 0 ? snd_r : -snd_r);
+        wavdiv = wavdiv + 1;
+        if (wavdiv >= 1814) begin
+            wavdiv = 0;
+            if (wavf) begin
+                $fwrite(wavf, "%c%c%c%c", snd_l[7:0], snd_l[15:8], snd_r[7:0], snd_r[15:8]);
+            end
+        end
+    end
+end
+
+// THE BOARD'S THREE LEDS, IN SIMULATION. On hardware these are all we get:
+//   DISK  = snd_ready          -> the sound ROM stream completed
+//   POWER = v60_cmd_seen       -> the V60 pushed a byte into the USART
+//   USER  = snd_mainloop_seen  -> the 68000 reached MAME's main loop
+// Reading them here instead of off a board is the whole point of this bench.
+reg v60_cmd_seen = 0, snd_mainloop_seen = 0;
+// SPLIT "the CPU is dead" FROM "the memory never answers". insns=0 alone
+// cannot tell those apart, and they need opposite fixes.
+longint unsigned snd_rst_cycles = 0, snd_rom_reqs = 0, snd_rom_acks = 0;
+// DOES THE V60 EVEN TOUCH THE USART? v60_cmd_seen only rises on tx_stb, which
+// needs tx_enabled, which needs the command byte written first -- so a zero
+// there cannot distinguish "never addressed the USART" from "addressed it but
+// never enabled the transmitter". MAME says the real V60 writes the control
+// register at frame 6 (00 00 00 40 4e 37) and data straight after.
+longint unsigned uart_ctrl_wr = 0, uart_data_wr = 0;
+// IS THE SOUND INTERRUPT EVER RAISED? The game is interrupt-driven: TxRDY
+// raises IRQ3 through m1_glue (MAME: `if ((txrdy_r()||rxrdy_r()) &&
+// !BIT(m_irq_mask,3)) irq_raise(3)`), and the handler writes the next byte.
+// control=6 with data=0 is precisely what a never-raised IRQ3 looks like, so
+// these three say which half is missing: the event, the level, or the mask.
+longint unsigned irq3_raises = 0, ready_evs = 0;
+// DID THE 68000 ACTUALLY RECEIVE THE BYTES? The V60 sending and the sound CPU
+// receiving are different claims, and the link between them is a CDC with a
+// held handshake -- exactly the shape that has failed silently on this project
+// before. Counting the bytes the board ACKS closes that gap: sent-but-never-
+// acked is a link fault, acked-but-no-chip-writes is a firmware/protocol one.
+longint unsigned snd_bytes_acked = 0;
+always @(posedge clk) if (snd_rx_valid && snd_rx_ack) snd_bytes_acked <= snd_bytes_acked + 1;
+
+// WHY IT STOPS AFTER ONE. The board takes a byte on IRQ2 (autovectored, MAME's
+// segam1audio does set_input_line(M68K_IRQ_2)), so "acked once and never
+// again" is either an RxRDY that does not re-arm or a 68000 that stops
+// servicing the interrupt. These separate the two.
+longint unsigned snd_irq2 = 0, snd_rx_offers = 0, snd_uart_wr = 0;
+// THE SOUND 68000's WORK RAM. Its PC ends up outside its own memory map every
+// run (0x312000, 0x349fde, 0x8d272a ...), which is a CPU that has lost its
+// stack, and its stack lives in this RAM. If the requests are not being served
+// the return addresses are garbage and it wanders.
+longint unsigned sram_req = 0, sram_ack = 0, sram_wr = 0;
+// WHO WRITES ABOVE 32 MB? The sound ROM is correct after the download and
+// corrupt by the end of the run, so a master is writing over it. Catch the
+// port and the address the first time it happens.
+longint unsigned hi_writes = 0;
+int hi_port = -1;
+longint unsigned hi_addr = 0;
+// The LOADER's write port is not one of p_addr[] -- it is the separate wr_*
+// channel into m1_sdram -- so a monitor over the ports alone reports zero while
+// the download itself is scribbling.
+longint unsigned ldr_hi = 0;
+longint unsigned ldr_hi_first = 0;
+reg ldr_seen = 0;
+always @(posedge clk) begin
+    if (ldr_wr_req && (ldr_wr_addr >= 25'h1000000)) begin
+        ldr_hi <= ldr_hi + 1;
+        if (!ldr_seen) begin ldr_seen <= 1'b1; ldr_hi_first <= {ldr_wr_addr, 1'b0}; end
+    end
+end
+
+always @(posedge clk) begin
+    for (int q = 0; q < 11; q++)
+        if (p_req[q] && p_we[q] && (p_addr[q] >= 25'h1000000)) begin
+            hi_writes <= hi_writes + 1;
+            if (hi_port < 0) begin hi_port <= q; hi_addr <= {p_addr[q], 1'b0}; end
+        end
+end
+reg sram_req_d = 0;
+always @(posedge clk) begin
+    sram_req_d <= snd_ram_req;
+    if (snd_ram_req && !sram_req_d) begin
+        sram_req <= sram_req + 1;
+        if (snd_ram_we) sram_wr <= sram_wr + 1;
+    end
+    if (snd_ram_ack) sram_ack <= sram_ack + 1;
+end
+reg snd_uwr_d = 0;
+always @(posedge clk) begin
+    snd_uwr_d <= u_snd.sel_uart & u_snd.we;
+    if ((u_snd.sel_uart & u_snd.we) && !snd_uwr_d) snd_uart_wr <= snd_uart_wr + 1;
+end
+reg snd_irq2_d = 0, snd_rxv_d = 0;
+always @(posedge clk) begin
+    snd_irq2_d <= u_snd.uart_irq_rx;
+    if (u_snd.uart_irq_rx && !snd_irq2_d) snd_irq2 <= snd_irq2 + 1;
+    snd_rxv_d <= snd_rx_valid;
+    if (snd_rx_valid && !snd_rxv_d) snd_rx_offers <= snd_rx_offers + 1;
+end
+reg irq3_d = 0;
+always @(posedge clk_cpu) begin
+    irq3_d <= core.main.glue.irq_status[3];
+    if (core.main.glue.irq_status[3] && !irq3_d) irq3_raises <= irq3_raises + 1;
+    if (core.main.usart_ready_ev) ready_evs <= ready_evs + 1;
+end
+wire uart_wr = core.main.sel_uart && core.main.m_req && core.main.m_we;
+reg  uart_wr_d = 0;
+always @(posedge clk_cpu) begin
+    uart_wr_d <= uart_wr;
+    if (uart_wr && !uart_wr_d) begin
+        if (core.main.m_addr[1]) uart_ctrl_wr <= uart_ctrl_wr + 1;
+        else                     uart_data_wr <= uart_data_wr + 1;
+    end
+end
+reg snd_rom_req_d = 0;
+always @(posedge clk) begin
+    if (rst_n && snd_ready) snd_rst_cycles <= snd_rst_cycles + 1;
+    snd_rom_req_d <= snd_rom_req;
+    if (snd_rom_req && !snd_rom_req_d) snd_rom_reqs <= snd_rom_reqs + 1;
+    if (snd_rom_ack) snd_rom_acks <= snd_rom_acks + 1;
+end
+always @(posedge clk_cpu) if (snd_tx_stb) v60_cmd_seen <= 1'b1;
+always @(posedge clk) if (sb_pc == 32'h00001100) snd_mainloop_seen <= 1'b1;
+
+// WHAT THE SOUND 68000 ACTUALLY SEES AT RESET.
+// tb_m1_sndboard reads the ROM straight from the file and reports
+// SP=00f0fffe PC=00000200, and its CPU runs. Here the same ROM arrives through
+// the packer's byte swap, hps_io's little-endian packing, SDRAM, and the core's
+// swap on read -- four transforms that should cancel. If the CPU wanders only
+// in this path, the first thing to check is whether they do.
+task automatic report_snd_rom;
+    logic [15:0] w0, w1, w2, w3;
+    begin
+        w0 = device.read_at(64'h1000000 + 0);
+        w1 = device.read_at(64'h1000000 + 1);
+        w2 = device.read_at(64'h1000000 + 2);
+        w3 = device.read_at(64'h1000000 + 3);
+        $display("SNDROM: SDRAM at SND_ROM_BASE = %04h %04h %04h %04h", w0, w1, w2, w3);
+        $display("SNDROM: -> the 68000 sees SP=%04h%04h PC=%04h%04h (swapped on read)",
+                 {w0[7:0],w0[15:8]}, {w1[7:0],w1[15:8]},
+                 {w2[7:0],w2[15:8]}, {w3[7:0],w3[15:8]});
+        $display("SNDROM: tb_m1_sndboard reads the same ROM as SP=00f0fffe PC=00000200");
+        $display("SNDROM: port writes above 32 MB = %0d (port %0d)   LOADER writes above 32 MB = %0d, first at byte %08h",
+                 hi_writes, hi_port, ldr_hi, ldr_hi_first);
+        // WHERE DID IT ACTUALLY LAND? Probe the old base too: if the ROM is
+        // there, something is still using the pre-move address.
+        $display("SNDROM: at the OLD base 0xD10000: %04h %04h %04h %04h",
+                 device.read_at(64'h0D10000+0), device.read_at(64'h0D10000+1),
+                 device.read_at(64'h0D10000+2), device.read_at(64'h0D10000+3));
+        $display("SNDROM: at PCM1 base 0x1080000: %04h %04h   at 0x1000100: %04h %04h",
+                 device.read_at(64'h1080000+0), device.read_at(64'h1080000+1),
+                 device.read_at(64'h1000100+0), device.read_at(64'h1000100+1));
+        $fflush;
+    end
+endtask
+
+task automatic report_audio;
+    begin
+        $display("SNDLED: snd_ready=%0d (ROM stream done)  v60_cmd_seen=%0d (V60 talking)  mainloop=%0d (68000 running)",
+                 snd_ready, v60_cmd_seen, snd_mainloop_seen);
+        $display("SNDCPU: 68000 pc=%06h insns=%0d   ym_writes=%0d  pcm_writes=%0d",
+                 sb_pc, sb_insns, sb_ym_wr, sb_pcm_wr);
+        $display("SNDRST: out of reset for %0d cycles   rom fetches req=%0d ack=%0d",
+                 snd_rst_cycles, snd_rom_reqs, snd_rom_acks);
+        $display("SNDUART: V60 writes to the USART -- control=%0d data=%0d  (MAME: control at frame 6, then data)",
+                 uart_ctrl_wr, uart_data_wr);
+        $display("SNDLINK: bytes the sound board ACKED = %0d  (V60 sent %0d data bytes)",
+                 snd_bytes_acked, uart_data_wr);
+        $display("SNDRX:  offers to the board = %0d   its RX interrupts (IRQ2) = %0d",
+                 snd_rx_offers, snd_irq2);
+        // irq_rx = rxrdy && cmd_r[2], and cmd_r[2] is the i8251's RxE bit. So a
+        // zero IRQ2 count with bytes arriving is either "rxrdy never set" or
+        // "the 68000 never enabled its receiver". These say which.
+        $display("SNDRAM: work-RAM requests=%0d (writes %0d)  acks=%0d   ROM fetches req=%0d ack=%0d",
+                 sram_req, sram_wr, sram_ack, snd_rom_reqs, snd_rom_acks);
+        $display("SNDI8251: cmd_r=%02h (RxE=%0d TxEN=%0d)  rxrdy=%0d  uart writes seen=%0d",
+                 u_snd.u_uart.cmd_r, u_snd.u_uart.cmd_r[2], u_snd.u_uart.cmd_r[0],
+                 u_snd.u_uart.rxrdy, snd_uart_wr);
+        $display("SNDIRQ: ready_ev pulses=%0d  IRQ3 raises=%0d  txrdy=%0d  irq_mask[3]=%0d",
+                 ready_evs, irq3_raises, core.main.usart_txrdy, core.main.glue.irq_mask[3]);
+        if (wavf) begin $fclose(wavf); wavf = 0; end
+        $display("AUDIO: non-zero L=%0d R=%0d cycles, peak |l|=%0d |r|=%0d  -> build/frame_snd.raw",
+                 snd_nz_l, snd_nz_r, snd_peak_l, snd_peak_r);
+        if (snd_nz_l == 0 && snd_nz_r == 0) begin
+            $display("AUDIO: FLAT ZERO -- the core produced no audio at all");
+            // AND SAY WHETHER THAT MEANS ANYTHING. Virtua Racing's attract mode
+            // is near-silent on the REFERENCE -- MAME measures it quiet for 35
+            // seconds at a stretch and its level only rises in gameplay -- so a
+            // silent VR run is the EXPECTED result and proves nothing about the
+            // audio path. Several diagnostic runs were spent on exactly that
+            // mistake on 2026-09-15, with the reason already written down.
+            //
+            // Virtua Fighter has audio during attract. Use it.
+            if (GAME_IS_VR)
+                $display("AUDIO: ...but this is Virtua Racing, whose ATTRACT MODE IS SILENT on the");
+            if (GAME_IS_VR)
+                $display("AUDIO:    reference too. This result is EXPECTED and proves nothing.");
+            if (GAME_IS_VR)
+                $display("AUDIO:    Re-run with GAME=vf, which has attract audio.");
+            // AND THE OTHER WAY TO GET A MEANINGLESS ZERO: stopping before the
+            // game makes any sound. Measured in MAME, 2026-09-15, Virtua
+            // Fighter's USART traffic is 9 writes at 2 s, 12 at 6 s, 27 at 10 s
+            // and 81 at 14 s -- it does not START until about ten seconds in.
+            // A run shorter than that reports silence for a core that is
+            // working, which is the same false negative as testing VR.
+            //
+            // 80 MHz, so ten seconds is 800 M cycles. This warns below 900 M.
+            if (RUN_CYCLES < 64'd900000000)
+                $display("AUDIO:    NOTE: this run is %0d cycles (%.1f s). Virtua Fighter makes no",
+                         RUN_CYCLES, $itor(RUN_CYCLES) / 80.0e6);
+            if (RUN_CYCLES < 64'd900000000)
+                $display("AUDIO:    sound until ~10 s even on the reference, so a zero here is");
+            if (RUN_CYCLES < 64'd900000000)
+                $display("AUDIO:    EXPECTED, not a fault. Use FRAME_CYCLES=1300000000 or more.");
+        end
+        $fflush;
+    end
+endtask
+
 
 // ----------------------------------------------------- getting the ROM in
 reg [15:0] rom [0:PRELOAD_WORDS-1];
 reg [31:0] ucode [0:2047];
 
 wire        tgp_mem_req;
-wire [24:1] tgp_mem_addr;
+wire [25:1] tgp_mem_addr;
 wire [15:0] f_tgp_retires, f_tgp_pc, f_pushes, f_returns;
 // WHAT THE COPROCESSOR POPS FROM THE COMMAND FIFO.
 //
@@ -822,7 +1184,7 @@ wire [23:0] f_rd_csum;   // board row 06
 wire [23:0] f_rd_a0, f_rd_a1, f_rd_a2, f_rd_a3;   // board rows 0C 0E 07 0B
 wire [23:0] f_sd_csum, f_sd_words;   // board rows 07 and 0B
 wire        rb_req;
-wire [24:1] rb_addr;
+wire [25:1] rb_addr;
 wire [23:0] f_rb_csum;               // board row 0C
 wire [23:0] f_rb_csum0;              // board row 0E, the control sweep
 wire [12:0] f_rb_n;
@@ -892,6 +1254,11 @@ integer dl_words = 0;
 task automatic run_download;
     integer w;
     begin
+        @(posedge clk);
+        // EXPLICIT, not inherited. Depending on the initial value made this
+        // task order-sensitive, and adding a download before it silently
+        // remapped the whole main ROM.
+        ioctl_index    <= 16'd0;
         @(posedge clk);
         ioctl_download <= 1'b1;
         @(posedge clk);
@@ -1013,6 +1380,160 @@ endtask
 // the bench had contents to get wrong and the board never did.
 reg [7:0] eerom [0:127];
 integer   ee_ok = 0;
+// ------------------------------------- THE SOUND STREAM, END TO END (index 5)
+//
+// THIS PATH HAS NEVER BEEN TESTED. Every piece is verified in isolation --
+// verify_mra expands the MRA byte for byte, tb_m1_rom_loader probes all seven
+// address boundaries, tb_m1_sdram serves eleven ports -- and NOTHING has ever
+// put sound data in through the real loader and read it back out through the
+// real controller. tb_m1_frame downloads indices 0, 1, 2 and 4 and has never
+// downloaded index 5 at all.
+//
+// A KNOWN PATTERN rather than the real ROM: the packer does not emit the sound
+// stream as a file, and a pattern derived from the address catches a shift, a
+// swap, a dropped word or a wrong base just as well -- better, because every
+// word is distinguishable from every other.
+// PROBES, NOT A BULK STREAM. A 70,000-word sequential download wedged the
+// loader's FIFO; the addresses are what matter, not the volume, and
+// tb_m1_rom_loader proves the same way. One word at each boundary of the
+// three-way split plus a few in between.
+integer snd_np;
+integer snd_off  [0:11];
+logic [15:0] snd_val [0:11];
+
+task automatic run_snd_probes;
+    integer k;
+    begin
+        snd_np = 12;
+        // FOUR MB PER SAMPLE CHIP as of 2026-09-15: the program is 256 KB and
+        // each sample set is 4 MB, so every boundary here moved. The probes sit
+        // ON the boundaries deliberately -- an off-by-one at either one sends
+        // samples to the wrong chip, which is silence or noise on hardware and
+        // not an error anywhere.
+        snd_off[0]  = 32'h000000; snd_off[1]  = 32'h000002;
+        snd_off[2]  = 32'h07FFFE;                            // last program word
+        snd_off[3]  = 32'h080000; snd_off[4]  = 32'h080002;  // first PCM1
+        snd_off[5]  = 32'h081FFE; snd_off[6]  = 32'h240000;  // mid PCM1
+        snd_off[7]  = 32'h47FFFE;                            // last PCM1
+        snd_off[8]  = 32'h480000; snd_off[9]  = 32'h480002;  // first PCM2
+        snd_off[10] = 32'h640000;                            // mid PCM2
+        snd_off[11] = 32'h87FFFE;                            // last PCM2
+        @(posedge clk);
+        ioctl_index    <= 16'd5;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (k = 0; k < snd_np; k = k + 1) begin
+            snd_val[k] = 16'hC000 | 16'(k * 16'h0111);
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= snd_off[k];
+            ioctl_dout <= snd_val[k];
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            repeat (8) @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        repeat (400) @(posedge clk);
+        $display("download: %0d sound probe words streamed on index 5", snd_np);
+        $fflush;
+    end
+endtask
+
+// THE REAL SOUND ROM, so the 68000 boots from what the loader actually wrote.
+//
+// The probe task above streams twelve known words to prove the loader's
+// boundaries. That is necessary and not sufficient: it cannot boot the sound
+// CPU, so nothing downstream of the loader -- the 68000, the YM, the MULTIPCMs,
+// the mixer -- was ever exercised in a full-RTL simulation. Sound could only be
+// debugged on a board. Added 2026-09-15.
+integer sndf, sndn, sndrc;
+reg [7:0] sndbyte [0:1];
+task automatic run_snd_download;
+    integer w;
+    begin
+        sndf = $fopen(SNDBIN, "rb");
+        if (sndf == 0) begin
+            $display("download: SNDBIN '%s' not found -- falling back to probes", SNDBIN);
+            run_snd_probes();
+        end else begin
+            @(posedge clk);
+            ioctl_index    <= 16'd5;
+            ioctl_download <= 1'b1;
+            @(posedge clk);
+            sndn = 0;
+            for (w = 0; w < 4325376; w = w + 1) begin
+                sndrc = $fread(sndbyte, sndf);
+                if (sndrc < 2) w = 4325376;
+                else begin
+                    while (ioctl_wait) @(posedge clk);
+                    ioctl_wr   <= 1'b1;
+                    ioctl_addr <= w * 2;
+                    ioctl_dout <= {sndbyte[1], sndbyte[0]};
+                    @(posedge clk);
+                    ioctl_wr   <= 1'b0;
+                    @(posedge clk);
+                    sndn = sndn + 1;
+                    // THE STALL WATCHDOG WATCHES dl_words. It fires after
+                    // 200,000 cycles with no progress, and without this the
+                    // sound download -- which is 4.3 M words and touches
+                    // nothing the main task counts -- reads as a hung loader
+                    // and kills the run with $fatal.
+                    dl_words = dl_words + 1;
+                end
+            end
+            $fclose(sndf);
+            @(posedge clk);
+            ioctl_download <= 1'b0;
+            // RESTORE THE INDEX. run_download() does not set ioctl_index -- it
+            // relies on the initial value of 0 -- so leaving 5 here routed the
+            // MAIN ROM through the loader's SOUND mapping and wrote its first
+            // 512 KB straight over the sound program at SND_ROM_BASE. The
+            // symptom was a sound 68000 fetching main-board code (SP=040a2000)
+            // and wandering, which reads exactly like a broken sound board.
+            ioctl_index    <= 16'd0;
+            @(posedge clk);
+            $display("download: %0d sound words streamed on index 5 from %s", sndn, SNDBIN);
+            // PROBE IT HERE, not just at the end of the run: if it is right now
+            // and wrong later, something overwrites it; if it is wrong now, the
+            // loader put it somewhere else.
+            $display("SNDROM-AFTER-DL: %04h %04h %04h %04h  (want f000 feff 0000 0002)   loader writes >=32MB=%0d",
+                     device.read_at(64'h1000000+0), device.read_at(64'h1000000+1),
+                     device.read_at(64'h1000000+2), device.read_at(64'h1000000+3), ldr_hi);
+            $fflush;
+        end
+    end
+endtask
+
+task automatic check_snd_stream;
+    integer k, bad;
+    longint unsigned wa;
+    logic [15:0] got;
+    begin
+        bad = 0;
+        for (k = 0; k < snd_np; k = k + 1) begin
+            // Written out, not derived from the RTL's parameters: a bench that
+            // computes its expectation the same way the design does cannot
+            // catch the design being wrong.
+            if (snd_off[k] < 32'h80000) wa = 64'h1000000 + (snd_off[k] >> 1);
+            else                        wa = 64'h1080000 + ((snd_off[k] - 32'h80000) >> 1);
+            got = device.read_at(wa);
+            if (got !== snd_val[k]) begin
+                $display("SNDCHK: byte %06h -> SDRAM word %07h: got %04h want %04h",
+                         snd_off[k], wa, got, snd_val[k]);
+                bad = bad + 1;
+            end
+        end
+        if (snd_np == 0)
+            $display("SNDCHK: skipped -- the real sound ROM was streamed, not the probe pattern");
+        else if (bad == 0)
+            $display("SNDCHK: all %0d probes landed correctly -- loader and SDRAM carry sound data", snd_np);
+        else
+            $display("SNDCHK: %0d of %0d probes WRONG -- the sound data path is broken", bad, snd_np);
+        $fflush;
+    end
+endtask
+
 task automatic run_ee_download;
     integer w;
     begin
@@ -1772,7 +2293,7 @@ end
 // side by side. The board reports the V60's first fetch landing at SDRAM word
 // 0 rather than the boot vector; this says what it does here, on identical
 // RTL, and a difference is the divergence worth chasing.
-reg [24:1] if_addr_first;
+reg [25:1] if_addr_first;
 reg [31:0] if_data_first;
 reg        if_seen = 0, d_ifack = 0;
 integer    ifetch_n = 0;
@@ -2354,6 +2875,31 @@ initial begin
     for (pass_i = 0; pass_i < 32; pass_i = pass_i + 1) pass_len_hist[pass_i] = 0;
     for (pass_i = 0; pass_i < 16; pass_i = pass_i + 1) cadence_hist[pass_i]  = 0;
 end
+// ---------------------------------------- THE GLYPH FETCH'S REDUNDANCY
+//
+// Model 2 put a 64 KB glyph cache in front of its character fetch on the
+// strength of a census: 71,605,920 fetches against 7,883 distinct words, a
+// redundancy of 9,084x. At ~59 M10K out of 241 free that was cheap insurance
+// there. THIS core has 553 of 553 M10K spent, so the same cache is not
+// available and the question is whether a much smaller one would capture most
+// of the traffic -- which is a question about the WORKING SET, not the fetch
+// count.
+//
+// So: count accepted fetches, count distinct addresses, and report the span.
+// An associative array is free in simulation and tells us the three numbers
+// that size a cache honestly. Nothing here synthesises.
+longint unsigned cc_fetch = 0;
+int unsigned     cc_seen [longint unsigned];
+longint unsigned cc_min = 64'hffffffff, cc_max = 0;
+always @(posedge clk) if (loader_done && char_req && p_ack[1]) begin
+    cc_fetch = cc_fetch + 1;
+    // The line is what one transaction returns, so count LINES, not words:
+    // char_addr is a word address and the port bursts two.
+    cc_seen[longint'(char_addr) >> 1] = 1;
+    if (longint'(char_addr) < cc_min) cc_min = char_addr;
+    if (longint'(char_addr) > cc_max) cc_max = char_addr;
+end
+
 // The 3D ROM port's wait, the same way the character fetch is measured:
 // total cycles with rom_req up over the number of requests.
 longint r3rom_wait = 0, r3rom_n = 0;
@@ -2518,9 +3064,22 @@ initial begin
 
     if (DOWNLOAD) begin
         run_gameid_download(8'd0);   // 0 = Virtua Racing
+        // THE SOUND STREAM, END TO END. Nothing has ever tested it.
+        if (SNDBIN != "") run_snd_download(); else run_snd_probes();
+        check_snd_stream();
         run_download();
+        // WHICH DOWNLOAD EATS THE SOUND ROM? It is correct immediately after
+        // its own download and corrupt by the end of the run, with ZERO port
+        // writes above 32 MB -- so one of the later downloads is landing on it.
+        $display("SNDROM-AFTER-MAIN: %04h %04h  (want f000 feff)   loader writes >=32MB so far=%0d, first byte %08h",
+                 device.read_at(64'h1000000+0), device.read_at(64'h1000000+1),
+                 ldr_hi, ldr_hi_first);
         run_ucode_download();
+        $display("SNDROM-AFTER-UCODE: %04h %04h",
+                 device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
         if (iofw_ok) run_iofw_download();
+        $display("SNDROM-AFTER-IOFW: %04h %04h",
+                 device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
         if (ee_ok)   run_ee_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
@@ -2878,6 +3437,10 @@ initial begin
         $write("\n");
         $display("FRAME: vertex coordinate range over the run: %0d .. %0d; quads with vertex 0 off-screen = %0d",
                  qmin, qmax, qoff);
+        $display("FRAME: glyph fetch: %0d accepted, %0d distinct 64-bit lines (%0d bytes), span %0d words, redundancy %0.0fx",
+                 cc_fetch, cc_seen.size(), cc_seen.size()*8,
+                 (cc_max >= cc_min) ? (cc_max - cc_min + 1) : 0,
+                 cc_seen.size() ? real'(cc_fetch) / real'(cc_seen.size()) : 0.0);
         $display("FRAME: 3D ROM port: %0d requests, mean wait %0d clk_sys cycles",
                  r3rom_n, (r3rom_n > 0) ? r3rom_wait / r3rom_n : 0);
     end
@@ -3146,6 +3709,8 @@ initial begin
         $display("FRAME: wrote %s", PPMOUT);
     report_census();
     end
+    report_snd_rom();
+    report_audio();
     $finish;
 end
 

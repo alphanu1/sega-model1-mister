@@ -253,6 +253,14 @@ module m1_copro_if #(
   logic [31:0] pop_r;    // the word the last low FIFO access popped
 
   // ------------------------------------------------------------------- FIFOs
+  // DO NOT TAG THIS `ramstyle = "logic"` TO RECLAIM ITS M10K BLOCK. Measured
+  // 2026-09-12: tagging this and m1_copro_if's `fin` together cost **+795 ALM**
+  // (41,534 -> 42,329) and the M10K count went UP, 555 -> 563. The storage is
+  // cheap; the READ MUX is not -- 64 deep by 8 wide is a 64:1 mux, and that is
+  // the same thing that made every V60 mux experiment fail the same day.
+  // `ramstyle = "MLAB"` is worse still at this density: an MLAB is a LAB used
+  // as memory, and the fit dies with "Error (170012): Fitter requires 4236
+  // LABs ... device contains only 4191".
   logic [31:0] fin  [FIFO_DEPTH];
   logic [31:0] fout [FIFO_DEPTH];
   logic [FW:0] fin_wr, fin_rd, fout_wr, fout_rd;

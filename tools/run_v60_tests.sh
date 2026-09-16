@@ -101,8 +101,15 @@ for tb in $ORDER; do
       sed -e 's/cpu\.fb\[/cpu.u_ifetch.fb[/g' "$src" > "$bdir/${tb}.sv"
       src="$bdir/${tb}.sv"
   fi
+  # tb_v60_fp's expectations come from numpy.float32 -- the MAME host-float
+  # contract -- so it must be built against the IEEE denormal path. The SHIPPED
+  # core flushes denormals to zero and is 353 ALM smaller for it; see the header
+  # of rtl/cpu/v60/v60_fp.sv. A 29/29 here therefore verifies the IEEE
+  # configuration, NOT the one that ships.
+  tbdefs=""
+  [ "$tb" = "tb_v60_fp" ] && tbdefs="-DV60_IEEE_DENORM"
   if is_icarus "$tb"; then
-    if ! iverilog -g2012 -Wno-timescale ${IDEFS:-} -o "$bdir/$tb.vvp" -s "$tb" $CPU "$src" > "$bdir.log" 2>&1; then
+    if ! iverilog -g2012 -Wno-timescale ${IDEFS:-} $tbdefs -o "$bdir/$tb.vvp" -s "$tb" $CPU "$src" > "$bdir.log" 2>&1; then
       echo "BUILDFAIL $tb (icarus)  (see $bdir.log)"; fail=$((fail+1)); failed="$failed $tb"; continue
     fi
     out="$(cd "$bdir" && timeout 300 vvp "$tb.vvp" 2>&1)"
@@ -138,7 +145,7 @@ if [ -x "$OUT/tb_v60_smc/tb_v60_smc" ]; then
 fi
 
 echo "======================================================"
-echo "V60 UNIT (our rtl/cpu/v60): $pass passed, $fail failed, $skip skipped${failed:+ -> FAILED:$failed}"
+echo "V60 UNIT (our rtl/cpu/v60) [tb_v60_fp built -DV60_IEEE_DENORM; shipped core flushes]: $pass passed, $fail failed, $skip skipped${failed:+ -> FAILED:$failed}"
 [ "$fail" -eq 0 ]
 
 rm -rf "$OUT/tb_v60_smc"

@@ -59,9 +59,9 @@ module m1_main #(
   parameter bit IOBOARD = 1'b1,
 
   // SDRAM word addresses, from the byte layout above.
-  parameter logic [24:1] WRAM_BASE = 24'hF80000,   // 0x1F00000 >> 1
-  parameter logic [24:1] NVRAM_BASE = 24'hFA0000,  // 0x1F40000 >> 1
-  parameter logic [24:1] CHAR_BASE = 24'hFA8000    // 0x1F50000 >> 1
+  parameter logic [25:1] WRAM_BASE = 25'hF80000,   // 0x1F00000 >> 1
+  parameter logic [25:1] NVRAM_BASE = 25'hFA0000,  // 0x1F40000 >> 1
+  parameter logic [25:1] CHAR_BASE = 25'hFA8000    // 0x1F50000 >> 1
 ) (
   input  logic        clk,
   input  logic        ce,          // V60 clock enable
@@ -122,6 +122,9 @@ module m1_main #(
   input  logic        tgp_dat_ack,
 
   output logic [15:0] dbg_tgp_retires,
+  // The uPD71051C's transmitted bytes, to the sound board.
+  output logic  [7:0] snd_tx_data,
+  output logic        snd_tx_stb,
   output logic [15:0] dbg_tgp_pc,
   output logic        dbg_tgp_unimpl,
   // Coprocessor FIFO traffic, both directions, for the on-screen instrument.
@@ -137,7 +140,7 @@ module m1_main #(
   // SDRAM data port (p0): ROM, work RAM, NVRAM, character RAM.
   output logic        sdr_req,
   output logic        sdr_we,
-  output logic [24:1] sdr_addr,
+  output logic [25:1] sdr_addr,
   output logic [15:0] sdr_din,
   output logic [1:0]  sdr_be,
   input  logic [15:0] sdr_dout,
@@ -157,7 +160,7 @@ module m1_main #(
   // It looks exactly like a CPU that will not start.
   output logic        if_req,
   output logic [23:0] if_addr,
-  output logic [24:1] if_sdram_addr,
+  output logic [25:1] if_sdram_addr,
   input  logic [63:0] if_data,
   input  logic        if_ack,
 
@@ -285,7 +288,7 @@ module m1_main #(
   logic sel_listctl, sel_tileram, sel_charram, sel_vsync, sel_palette;
   logic sel_colxlat, sel_dpram, sel_uart, sel_copro_adr, sel_copro_ram;
   logic sel_copro_fifo, sel_fifo_stat, sel_glue;
-  logic [24:1] dec_rom_addr;
+  logic [25:1] dec_rom_addr;
 
   m1_decode decode (
     .addr({m_addr, 1'b0}), .rom_bank(rom_bank),
@@ -303,7 +306,7 @@ module m1_main #(
   // The fetch address takes the same route. A second decode instance rather
   // than a shared one, because the fetch and the data port are asking about
   // different addresses at the same time.
-  logic [24:1] if_rom_word;
+  logic [25:1] if_rom_word;
   m1_decode if_decode (
     .addr(if_addr), .rom_bank(rom_bank),
     .sel_rom(), .sel_rom_void(), .sel_nvram(), .sel_wram(),
@@ -315,11 +318,11 @@ module m1_main #(
   );
   // Align to the 4-word burst. The ROM bases are 8-byte aligned, so aligning
   // in mapped space is the same line as aligning in CPU space.
-  assign if_sdram_addr = {if_rom_word[24:3], 2'b00};
+  assign if_sdram_addr = {if_rom_word[25:3], 2'b00};   // [25:3] since the address went 25-bit
 
   // Which targets live in SDRAM, and where.
   logic        to_sdram;
-  logic [24:1] sdram_word;
+  logic [25:1] sdram_word;
   assign to_sdram = sel_rom | sel_wram | sel_nvram | sel_charram;
 
   always_comb begin
@@ -587,7 +590,9 @@ module m1_main #(
     .sel(sel_uart), .we(m_req && m_we), .a(m_addr[1]),
     .be(m_be), .wdata(m_wdata), .rdata(usart_rdata),
     .txrdy(usart_txrdy), .ready_ev(usart_ready_ev),
-    .tx_data(), .tx_stb()
+    // OUT TO THE SOUND BOARD. These were unconnected when the USART was built
+    // -- it existed for its interrupt, and the bytes were discarded.
+    .tx_data(snd_tx_data), .tx_stb(snd_tx_stb)
   );
 
   m1_glue glue (

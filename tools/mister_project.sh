@@ -18,15 +18,104 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-stage="$root/build/mister"
+stage="${MISTER_STAGE:-$root/build/mister}"
 tpl="$root/third_party/template"
 
 [ -d "$tpl/sys" ] || { echo "third_party/template missing — run ./tools/bootstrap.sh"; exit 1; }
 
 mkdir -p "$stage"
-ln -sfn "$tpl/sys"  "$stage/sys"
+# A COPY, NOT A SYMLINK, AND THE PATCHES GO TO THE COPY.
+#
+# This symlinked the shared template's sys/ into every staging directory, and
+# the IHRES/OHRES patches below then sed-edited that ONE sys_top.v. Three
+# parallel seed builds therefore rewrote the same file while the others were
+# synthesising from it, which Quartus reports as
+#
+#   Error (125085): The Quartus Prime Settings File changed outside of the
+#   Quartus Prime software and contains errors.
+#
+# -- an error that names the qsf and is really a race on sys/. It cost a seed
+# on 2026-09-15 and had been intermittent before that.
+#
+# It also means the framework edits are per-build and temporary rather than
+# accumulating in third_party/, which is the right side of "never modify the
+# framework" as well.
+rm -rf "$stage/sys"
+cp -r "$tpl/sys" "$stage/sys"
 ln -sfn "$root/rtl" "$stage/rtl"
 ln -sfn "$root/Model1.sv" "$stage/Model1.sv"
+
+# ------------------------------------------------------------ ascal IHRES
+# The scaler's input line buffers are sized by IHRES and DEFAULT TO 2048.
+# This core's picture is 496 pixels wide (m1_video_timing.sv:37 — MAME's
+# set_raw(XTAL(16MHz), 656, 0, 496, 424, 0, 384)), so half of every one of
+# those buffers is never addressed. IHRES must be a power of two and 1024
+# clears 496 with room to spare.
+#
+# Model 2 already sets this and records why: "frees M10K blocks, which are the
+# binding resource here". M10K is what the sound build fails on — 582 of 553,
+# Error (170048) — and ascal holds 42 blocks of it (docs/findings.md
+# 2026-09-11 (3)).
+#
+# Patched in place rather than vendored: the note above explains why sys/ is a
+# symlink into the gitignored template, and this keeps that true. It is
+# idempotent, and bootstrap.sh re-cloning the template simply means it is
+# applied again on the next build.
+# 512 is the FLOOR for this core: IHRES must be a power of two and the picture
+# is 496 active pixels (VGA_DE = ~(vid_hb|vid_vb), hblank at H_VISIBLE=496), so
+# 256 would wrap the buffer and corrupt the line. Model 2 uses 1024 for the same
+# 496 width; 1024 measured 582 -> 556 M10K here, and 512 is the next step down.
+ihres=${IHRES:-512}
+# OHRES sizes ascal's EIGHT output line buffers (o_line0..3, o_linf0..3) and
+# defaults to 2304. The framework never sets it. Legal values are 1024, 2048,
+# 2304, 2560, 4096; 2048 covers 1080p output (1920 wide) with margin, and this
+# core's scaler never drives anything wider. IHRES 2048->512 was worth 27 M10K
+# on the input side; this is the same lever on the output side, and M10K is what
+# the design is pinned against (553/553).
+#
+# IF THE PICTURE TEARS OR REPEATS HORIZONTALLY AT A WIDE OUTPUT RESOLUTION,
+# THIS IS THE FIRST THING TO PUT BACK: ohres=2304.
+# ORDER MATTERS: IHRES BEFORE OHRES.
+#
+# A pristine sys_top.v has NEITHER parameter -- both are ours. The IHRES
+# insertion anchors on `.N_DW(128),`, which exists; the OHRES insertion anchors
+# on `.IHRES(...)`, which does NOT until IHRES has been put in. Running OHRES
+# first silently did nothing and the build took ascal's 2304 default, losing the
+# eight M10K the 2048 setting is worth -- with no error anywhere.
+#
+# It only surfaced when third_party/template was restored to pristine; before
+# that the template already carried both lines from an earlier run, so the
+# grep found them and the order never mattered.
+
+ohres=${OHRES:-2048}
+
+# IHRES FIRST. It anchors on `.N_DW(128),`, which a pristine sys_top.v has.
+if grep -q '\.IHRES(' "$stage/sys/sys_top.v"; then
+  sed -i "s/^\t\t\.IHRES([0-9]*),$/\t\t.IHRES($ihres),/" "$stage/sys/sys_top.v"
+else
+  sed -i "s/^\t\t\.N_DW(128),$/\t\t.IHRES($ihres),\n\t\t.N_DW(128),/" "$stage/sys/sys_top.v"
+fi
+echo "  sys_top.v: ascal IHRES = $ihres (default 2048)"
+
+# THEN OHRES, which anchors on the .IHRES line just inserted.
+if grep -q '\.OHRES(' "$stage/sys/sys_top.v"; then
+  sed -i "s/^\t\t\.OHRES([0-9]*),$/\t\t.OHRES($ohres),/" "$stage/sys/sys_top.v"
+else
+  sed -i "s/^\t\t\.IHRES([0-9]*),$/\t\t.OHRES($ohres),\n\t\t.IHRES($ihres),/" "$stage/sys/sys_top.v"
+fi
+echo "  sys_top.v: ascal OHRES = $ohres (default 2304)"
+
+# BOTH MUST BE PRESENT. Silently taking a default costs eight M10K on a design
+# at 553/553 and there is no error to notice.
+grep -q '\.OHRES(' "$stage/sys/sys_top.v" && grep -q '\.IHRES(' "$stage/sys/sys_top.v" || {
+  echo "  sys_top.v: FAILED to set IHRES/OHRES -- ascal would take its defaults"; exit 1; }
+
+if grep -q '\.IHRES(' "$stage/sys/sys_top.v"; then
+  sed -i "s/^\t\t\.IHRES([0-9]*),$/\t\t.IHRES($ihres),/" "$stage/sys/sys_top.v"
+else
+  sed -i "s/^\t\t\.N_DW(128),$/\t\t.IHRES($ihres),\n\t\t.N_DW(128),/" "$stage/sys/sys_top.v"
+fi
+echo "  sys_top.v: ascal IHRES = $ihres (default 2048)"
 
 # Every source below emu, in the order Quartus wants nothing in particular but
 # a human reading it does: memory, then I/O, then video, then the board.
@@ -43,6 +132,76 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/bw_monitor.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_glue.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_sound_usart.sv
+
+# ---- sound board (M4): Model 2's, which IS the Model 1 board ----
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_i8251.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m1_ym_timer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_multipcm.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_pcm_fetch.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_pcm_rate.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_sound_board.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_sound_link.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/uaddrPla.sv
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt03.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt03_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_dbrom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_drvA.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_drvB.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_dt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcm_gain.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcma_lut.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcmb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcmb_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcmb_gain.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_adpcmb_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt10_cen_burst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_csr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_div.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_dout.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_cnt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_final.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_pure.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_eg_step.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_exprom.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_kon.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_lfo.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_logsin.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_mmr.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_mod.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_op.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pcm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pcm_interpol.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_comb.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_dt.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_inc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pg_sum.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_pm.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_reg.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_reg_ch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh24.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sh_rst.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_single_acc.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_sumch.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_timers.v
+set_global_assignment -name VERILOG_FILE rtl/sound/jt12/jt12_top.v
+
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_ioboard.sv
 set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_alu.v
 set_global_assignment -name VERILOG_FILE rtl/cpu/tv80/tv80_reg.v
@@ -129,6 +288,64 @@ EOF
 # close paths that the synchronisers exist to make meaningless, and either
 # fails timing on them or wastes effort avoiding a problem that is not real.
 cat > "$stage/Model1.sdc" <<'EOF'
+# ---------------------------------------------------------------- the FM
+# jt12 RUNS AT ONE CYCLE IN TEN AND MUST BE TOLD SO.
+#
+# The YM3438 is instantiated on clk_sys (80 MHz) and enabled by `ym_cen`, which
+# is high once every ten cycles because 80/10 is the chip's 8 MHz. Its internal
+# register-to-register paths therefore have TEN clock periods to settle, but
+# with no constraint TimeQuest holds them to one.
+#
+# Measured, seed 3, 2026-09-15: the design missed clk_sys by **-0.085 ns with a
+# TNS of -0.085** -- a single failing endpoint -- and every one of the six worst
+# paths was inside jt12, all converging on
+#
+#     jt12_pg:u_pg|phinc_II[13]      the phase generator's increment
+#
+# fed by jt12_lfo's modulation and jt12_reg's current operator/channel. That is
+# the FM's own datapath, not ours, and it is not actually slow: it is analysed
+# ten times faster than it runs.
+#
+# FOUR, NOT TEN. The enable is 1-in-10 so ten would be formally allowed, but a
+# multicycle that wide stops catching real breakage inside the block, and four
+# is already far more headroom than the 0.085 ns being missed. Conservative on
+# purpose.
+#
+# REGISTER-TO-REGISTER INSIDE jt12 ONLY. Its inputs are latched on the same
+# enable, and its outputs feed the mixer, which is NOT enable-gated -- so a
+# blanket clock-domain multicycle would relax paths that really do run every
+# cycle. Scoping it to jt12's own registers keeps everything outside honest.
+set_multicycle_path -setup -end 4 \
+  -from [get_registers {*jt12*}] -to [get_registers {*jt12*}]
+set_multicycle_path -hold  -end 3 \
+  -from [get_registers {*jt12*}] -to [get_registers {*jt12*}]
+
+# ---------------------------------------------------- the rest of the board
+# THE WHOLE SOUND BOARD IS CLOCK-ENABLED, not just the FM.
+#
+# With jt12 constrained, the worst paths moved one module across and kept the
+# same shape (seed 23, 2026-09-15):
+#
+#     fx68k|excUnit|aob[19]  ->  m2_multipcm:u_pcm1|pitch_step~*
+#
+# the 68000's address bus reaching the sample chip's pitch computation -- a
+# register write. Neither end runs at 80 MHz: `ce_pcm1` is 1-in-4 (20 MHz, the
+# rate m2_pcm_rate issues) and the 68000 advances on its own tick enable, and
+# the 68000 holds address and data for a whole bus cycle regardless. So this is
+# analysed at four times the rate it can occur.
+#
+# TWO, WHICH IS HALF WHAT THE ENABLE ALLOWS. The 1-in-4 enable would justify
+# four; two still leaves the analysis twice as strict as reality and keeps real
+# breakage visible. The FM above gets four because its enable is 1-in-TEN.
+#
+# SCOPED TO THE SOUND BOARD'S OWN REGISTERS. Its audio output feeds the mixer,
+# which is not enable-gated, and the USART link into it crosses from clk_cpu --
+# neither is relaxed by this.
+set_multicycle_path -setup -end 2 \
+  -from [get_registers {*m2_sound_board*}] -to [get_registers {*m2_sound_board*}]
+set_multicycle_path -hold  -end 1 \
+  -from [get_registers {*m2_sound_board*}] -to [get_registers {*m2_sound_board*}]
+
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Sega Model 1 core for MiSTer FPGA - Copyright (C) 2026 alphanu1
 #
@@ -404,7 +621,16 @@ sed -e 's/^source files.qip$/source files.qip/' \
 # miss, and seed 3 puts it at +0.141 with no negative setup or hold slack
 # anywhere. A marginal miss is a placement outcome, not a design fault - try a
 # seed before changing logic.
-M1_SEED="${M1_SEED:-5}"
+# SEED 1 AS OF 2026-09-12, and the sweep that chose it is worth recording.
+# Identical RTL, one build each, worst setup slack:
+#     seed 1  -0.397   and the only negative path is pll_hdmi, the FRAMEWORK's
+#                      HDMI PLL -- every clock of OURS is positive
+#     seed 7  -0.896   clk_3d
+#     seed 3  -1.228   clk_3d
+#     seed 5  -2.480   clk_sys, tile RAM -> m1_video mask_r
+# A 6x spread from placement alone, at 99% ALM and 553/553 M10K. That is the
+# Kaneko16 finding above in our own numbers: try a seed before changing logic.
+M1_SEED="${M1_SEED:-1}"
 # FRAMEWORK BUILD OPTIONS, off unless asked for.
 #
 # sys/ carries six MISTER_* macros and this project set none of them. They are

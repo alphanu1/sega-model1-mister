@@ -87,6 +87,39 @@ module m2_pcm_rate #(
 
   localparam int unsigned PW = $clog2(DEPTH);
 
+  // MLAB -- AND IT NEEDED THE DEBUG CHANNEL TURNED OFF FIRST.
+  //
+  // These are 16 x 16, 256 bits each, four across the two instances, and
+  // Quartus gives every one a whole 10 Kbit M10K block: four blocks for 1,024
+  // bits, out of the 553 the sound build fails on.
+  //
+  // THE FIRST ATTEMPT FAILED AND THE REASON MATTERS. An MLAB IS a LAB used as
+  // memory, so it competes with logic for the same LABs. At 99% ALM there were
+  // none spare and the fit died with
+  //     Error (170012): Fitter requires 4236 LABs ... device contains only 4191
+  // UART_REPORT=0 (rtl/m1_integrated.sv) freed ~350 ALM, and that headroom is
+  // what makes this affordable. MLAB IS NOT FREE WHEN LOGIC IS FULL.
+  //
+  // `ramstyle = "logic"` is worse again: tagging m1_uart_tx's FIFO and
+  // m1_copro_if's `fin` that way cost +795 ALM and pushed M10K UP, because the
+  // storage is cheap and the READ MUX is not.
+  //
+  // The shape was always right for inference: ONE write port (`fl[wp] <= s_l`)
+  // and a REGISTERED read (`o_l <= fl[rp]`), both in the same always_ff.
+  // `no_rw_check` because the 2'b11 arm writes and reads in one cycle; wp and
+  // rp are separated by `lvl` there, so they are never the same address.
+  // NO ramstyle ATTRIBUTE, MATCHING MODEL 2, WHOSE SOUND WORKS.
+  //
+  // These carried `ramstyle = "MLAB, no_rw_check"` here and nowhere else.
+  // `no_rw_check` tells Quartus that a read and a write never address the same
+  // location in the same cycle, so it REMOVES the read-during-write bypass. If
+  // they ever do collide the device returns something the simulator does not,
+  // which is precisely the shape of a fault that passes every bench and fails
+  // on the board.
+  //
+  // This is a sample FIFO written by the chip and drained at a fixed rate; its
+  // pointers meet whenever it runs empty or full. Model 2 leaves these as
+  // plain arrays and its sound works.
   logic signed [15:0] fl [DEPTH];
   logic signed [15:0] fr [DEPTH];
   logic [PW-1:0] wp, rp;

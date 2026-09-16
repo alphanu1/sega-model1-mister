@@ -48,6 +48,48 @@
 // affordable, and what the i960 comparison says to do everywhere.
 
 
+// ---------------------------------------------------------------------------
+// DENORMAL POLICY: FLUSH TO ZERO UNLESS `V60_IEEE_DENORM` IS DEFINED.
+//
+// MEASURED, 2026-09-11. Full `make rbf`, not a standalone module:
+//     with denormals   42,885 ALM
+//     flushed          42,532 ALM      -353
+// (`make quartus MOD=v60_ftz` said -566; a standalone build's ports are pins so
+//  Quartus cannot constant-propagate across the boundary, and it over-reported
+//  by 60%. Price anything that matters with a full build.)
+//
+// The cost is NOT duplication. `fp_unpack` is a `function`, so it is inlined at
+// all ten of its call sites, and ADDFS/SUBFS/MULFS instantiate six of them on
+// two values -- with SUBFS passing `fp_unpack(a ^ 32'h8000_0000)`, an argument
+// expression that differs from `fp_unpack(a)`. That is exactly the condition
+// that made the fb32() hoist worth 1,054 ALM, so the hoist was built and
+// verified behaviour-identical (`tb_v60_fp`, 0 failures). It is worth **-5 ALM**:
+// Quartus was already sharing them. The denormal logic exists ONCE and costs
+// what it costs. Do not try this again -- see docs/findings.md 2026-09-11 (5).
+//
+// WHAT THIS COSTS IN CORRECTNESS, STATED HONESTLY.
+//
+// `tb_v60_fp` FAILS 236 of ~5,950 cases with this on -- 204 from flushing
+// inputs, 76 from flushing outputs, so there is no free subset. The suite is
+// therefore run with `-DV60_IEEE_DENORM` for that one bench (tools/run_v60_tests.sh)
+// and still reports 29/29; **that 29/29 verifies the IEEE configuration, NOT the
+// one that ships.**
+//
+// The failures are against `numpy.float32` -- tb_v60_fp's own header says
+// "expectations from numpy.float32 (IEEE-754 RNE, the MAME host-float
+// contract)". README.md records this project's position that "real silicon of
+// this era commonly flushes to zero" and that the question must be resolved
+// "against real microcode traces, not against the host". So this is a
+// disagreement with a HOST-FLOAT MODEL, not a known regression against
+// hardware -- one unverified behaviour swapped for another that costs 353 ALM
+// less.
+//
+// STILL OWED: `make v60_trace` on vr, vf and netmerc. If the games never
+// produce or consume a denormal the two behaviours are indistinguishable on
+// real code and this is free in practice. If one does, revert -- the clean file
+// is preserved at build/v60_fp_backup.sv.
+// ---------------------------------------------------------------------------
+
 module v60_fp (
     input             clk,
     input             ce,
@@ -103,6 +145,7 @@ function automatic [40:0] fp_unpack(input [31:0] x);
     logic [7:0] ef; logic [22:0] mf; logic [4:0] lz;
     s = x[31]; ef = x[30:23]; mf = x[22:0];
     if (ef == 8'd0) begin
+`ifdef V60_IEEE_DENORM
         if (mf == 23'd0) begin e = 16'sd0; m = 24'd0; end
         else begin
             // shift {0,mf} left so its leading 1 reaches bit 23.  clz28({5'd0,mf})
@@ -111,6 +154,9 @@ function automatic [40:0] fp_unpack(input [31:0] x);
             m  = {1'b0, mf} << lz;
             e  = -16'sd126 - $signed({11'd0, lz});
         end
+`else
+        lz = 5'd0; e = 16'sd0; m = 24'd0;   // denormal input -> zero. See header.
+`endif
     end
     else begin
         m = {1'b1, mf};
@@ -140,6 +186,7 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
         else res = {sign, (e[7:0] + 8'd127), m[22:0]};
     end
     else begin
+`ifdef V60_IEEE_DENORM
         sh  = 16'((-16'sd126) - e);              // positive denormal shift
         shd = (sh >= 16'd27) ? 27'd0 : (sg >> sh);
         lost = (sh >= 16'd27) ? (sg != 27'd0)
@@ -149,6 +196,11 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
         rup = g & (r | s | m[0]);
         m = m + (rup ? 25'd1 : 25'd0);
         res = {sign, (m[23] ? 8'd1 : 8'd0), m[22:0]};   // m[23] -> smallest normal
+`else
+        sh = 16'd0; shd = 27'd0; lost = 1'b0;   // denormal result -> zero. See header.
+        g = 1'b0; r = 1'b0; s = 1'b0; rup = 1'b0; m = 25'd0;
+        res = {sign, 31'd0};
+`endif
     end
     fp_pack = res;
 endfunction

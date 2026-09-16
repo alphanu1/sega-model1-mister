@@ -165,9 +165,40 @@ make m1_frame GAME="$game" FRAME_TRACE=0 FRAME_CYCLES="$cycles" V60_PCTRACE=1 \
      V60_PCTRACE_MAX="${PCTRACE_MAX:-40000000}" \
   > "$out/ours.log" 2>&1 || true
 grep '^PCT ' "$out/ours.log" | awk '{print $2}' > "$out/our_pc_raw.txt"
-# Align on the first ROM instruction; our trace starts at the reset vector.
+# Align on the LAST boot start, not the first. Our trace begins at the reset
+# vector, and the core is restarted ONCE PER DOWNLOAD STREAM: the loader clears
+# rom_loaded whenever ioctl_download rises (m1_rom_loader.sv), and rst_cpu is
+# ~rst_n | ~rom_loaded, so every MRA part holds the V60 in reset and then
+# releases it again. Virtua Racing's MRA has six parts since the sound ROMs were
+# added, against five before, so our stream carries several passes through
+# 0xfffff0 -> the entry point before the run that matters.
+#
+# Aligning on the FIRST occurrence keeps those aborted passes in the stream and
+# the diff then reports "DIVERGES at instruction 2" for a core that agrees with
+# the reference for millions of instructions afterwards. That is what this
+# instrument did between the sound ROMs landing and 2026-09-15, and it reads
+# exactly like a CPU regression. The restarts are benign - each executes the
+# single jmp at the entry point and is reset again before it touches anything -
+# but they are real, so they are COUNTED AND REPORTED rather than silently
+# dropped.
+#
+# Only restarts inside the boot preamble are skipped. A reset vector reached
+# later in the run would be a watchdog or a genuine fault, and must NOT be
+# swallowed by the aligner, so the search is bounded.
 first=$(head -1 "$out/mame_pc.txt")
-awk -v f="$first" '$0==f{s=1} s' "$out/our_pc_raw.txt" > "$out/our_pc_aligned.txt"
+preamble="${PREAMBLE_MAX:-1000}"
+starts=$(head -"$preamble" "$out/our_pc_raw.txt" | grep -c '^fffff0$' || true)
+late=$(tail -n +"$((preamble+1))" "$out/our_pc_raw.txt" | grep -c '^fffff0$' || true)
+echo "  boot restarts (reset-vector passes in the first $preamble): $starts"
+if [ "${late:-0}" != "0" ]; then
+    echo "  WARNING: $late reset-vector passes AFTER the preamble - the CPU restarted"
+    echo "           mid-run. That is not a loader artefact; investigate it."
+fi
+# Last reset-vector line within the preamble, then the first entry point after it.
+cut=$(head -"$preamble" "$out/our_pc_raw.txt" | grep -n '^fffff0$' | tail -1 | cut -d: -f1)
+[ -n "$cut" ] || cut=0
+tail -n +"$((cut+1))" "$out/our_pc_raw.txt" \
+  | awk -v f="$first" '$0==f{s=1} s' > "$out/our_pc_aligned.txt"
 python3 "$root/tools/v60_strip_isr.py" "$out/our_pc_aligned.txt" "$out/our_noisr.txt"
 python3 "$root/tools/v60_collapse.py" "$out/our_noisr.txt" "$out/our_pc.txt" \
   --counts "$out/our_loops.txt"

@@ -38,6 +38,7 @@ module m1_loader_harness (
 
   // Loader status
   output logic        rom_loaded,
+  output logic        snd_loaded,
   output logic        overflow,
 
   // TGP program memory write port, observed directly
@@ -54,7 +55,7 @@ module m1_loader_harness (
 
   // Verification read port (p0)
   input  logic        p0_req,
-  input  logic [24:1] p0_addr,
+  input  logic [25:1] p0_addr,
   output logic [63:0] p0_dout,
   output logic        p0_ack,
 
@@ -70,7 +71,7 @@ module m1_loader_harness (
   localparam int unsigned T_WR  = 2, CL = 2, T_REFI = 700, INIT_NOP = 600;
 
   logic        wr_req, wr_ack;
-  logic [24:1] wr_addr;
+  logic [25:1] wr_addr;
   logic [15:0] wr_din;
   logic [1:0]  wr_be;
 
@@ -82,7 +83,7 @@ module m1_loader_harness (
     .sdr_wr_req(wr_req), .sdr_wr_addr(wr_addr), .sdr_wr_din(wr_din),
     .sdr_wr_be(wr_be), .sdr_wr_ack(wr_ack),
     .tgp_wr(tgp_wr), .tgp_addr(tgp_addr), .tgp_din(tgp_din),
-    .rom_loaded(rom_loaded), .overflow(overflow),
+    .rom_loaded(rom_loaded), .snd_loaded(snd_loaded), .overflow(overflow),
     .ucode_words(ucode_words), .ucode_csum(ucode_csum)
   ,
     // Added with the SDRAM write-side census. Named rather than left out:
@@ -91,7 +92,7 @@ module m1_loader_harness (
   );
 
   logic [NP-1:0]       p_req, p_we, p_ack;
-  logic [NP-1:0][24:1] p_addr;
+  logic [NP-1:0][25:1] p_addr;
   logic [NP-1:0][15:0] p_din;
   logic [NP-1:0][1:0]  p_be;
   logic [NP-1:0][63:0] p_dout;
@@ -128,7 +129,7 @@ module m1_loader_harness (
   );
 
   sdram_model #(
-    .COL_BITS(9), .T_RCD(T_RCD), .T_RP(T_RP), .T_RC(T_RC), .T_RAS(T_RAS),
+    .COL_BITS(10), .T_RCD(T_RCD), .T_RP(T_RP), .T_RC(T_RC), .T_RAS(T_RAS),
     .T_WR(T_WR), .CL(CL), .T_REFI(781), .REFI_SLACK(9)
   ) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),

@@ -160,3 +160,13 @@ Thumbs.db
 # 4.6 MB build artefact. Its md5 and the README that says how to rebuild it ARE
 # committed, so the binary can always be reproduced from 61e383e.
 known_good/*.rbf
+
+# fx68k microcode, copied to the repo root so m1_frame's simulator finds it
+# (fx68k.sv $readmemb's them by bare filename, relative to the CWD).
+microrom.mem
+nanorom.mem
+
+# Audio captures from the benches (build output, and snd.wav can be large)
+*.raw
+snd.wav
+build/frame_snd.wav

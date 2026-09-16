@@ -93,12 +93,46 @@ module m1_rom_loader #(
   // baked into the RTL: hard rule 2, and a simulation-only $readmemh is worse
   // than nothing, because it makes the bench pass while the board reads a
   // blank part.
+  // THE SOUND BOARD'S THREE REGIONS, ON ONE INDEX. The 68000's program and the
+  // two MultiPCM sample sets are a separate download like the TGP's microcode,
+  // and for the same reason the comment above gives: their bases are at 26 MB
+  // and beyond, so carrying them on index 0 would mean padding ~26 MB of filler
+  // through the HPS to reach the offset.
+  //
+  // One index, three destinations, because the bases are NOT contiguous --
+  // the 68000's 64 KB of work RAM sits between the program and PCM1. The MRA
+  // packs the stream as program, then PCM1, then PCM2, and this splits it.
+  //
+  // Sizes are Virtua Racing's, from MAME's ROM_START( vr ): epr-14870a.7 is
+  // 0x20000, mpr-14873.32 and mpr-14876.4 are 0x200000 each -- 4.125 MB, which
+  // is what Model1.sv's memory map was sized for.
+  // INDEX 5, NOT 4. Index 4 is GAMEID_INDEX (Model1.sv:194), the two-byte game
+  // selector the shared bitstream needs before the ROM arrives. Using 4 here
+  // would have had the sound stream read as game ids and the game id written
+  // into SDRAM at the sound base.
+  parameter logic [15:0] SND_INDEX     = 16'd5,
+  // FOUR MB PER SAMPLE CHIP, 2026-09-15. The index-5 stream is now
+  //
+  //   0x000000  68000 program   256 KB   -> SND_ROM_BASE
+  //   0x040000  MultiPCM 1        4 MB   -> SND_PCM1_BASE
+  //   0x440000  MultiPCM 2        4 MB   -> contiguous with PCM1
+  //   0x840000  end
+  //
+  // The program grew 128 KB -> 256 KB because vf and wingwar carry two 128 KB
+  // 68000 ROMs; vr and vformula carry one and are zero-padded to fill the slot,
+  // so every game presents the same stream shape.
+  parameter logic [26:0] SND_PROG_END  = 27'h0_80000,    // 512 KB, 68000 program
+  parameter logic [26:0] SND_PCM2_END  = 27'h8_80000,    // end of both sample sets
+  parameter logic [25:1] SND_ROM_BASE  = 25'h1000000,
+  parameter logic [25:1] SND_PCM1_BASE = 25'h1080000,
+  // No SND_PCM2_BASE: PCM2 follows PCM1 contiguously in SDRAM (PCM1's last
+  // word is 0xE3FFFF, PCM2 begins 0xE40000), so one linear map covers both.
   parameter logic [15:0] EE_INDEX      = 16'd3,
   parameter logic [15:0] EE_END        = 16'd128,    // 64 words of 16 bits
-  parameter logic [24:1] EE_WOFF       = 24'h002000, // word offset from IOFW_BASE
+  parameter logic [25:1] EE_WOFF       = 25'h002000, // word offset from IOFW_BASE
   // Word address. The polygon region ends at word 0xC20000 and the V60's work
   // RAM begins at 0xF80000, so this sits in the gap between them.
-  parameter logic [24:1] IOFW_BASE     = 24'hD00000,
+  parameter logic [25:1] IOFW_BASE     = 25'hD00000,
   parameter logic [26:0] TGP_PROG_END  = 27'h0_2000,   // 8 KB of microcode
 
   // Write buffer depth, in 16-bit words, and how many in-flight transfers to
@@ -147,7 +181,7 @@ module m1_rom_loader #(
   // SDRAM download write port. Contract is one transaction per rising edge of
   // req, single outstanding — see m1_sdram.sv.
   output logic        sdr_wr_req,
-  output logic [24:1] sdr_wr_addr,
+  output logic [25:1] sdr_wr_addr,
   output logic [15:0] sdr_wr_din,
   output logic [1:0]  sdr_wr_be,
   input  logic        sdr_wr_ack,
@@ -159,6 +193,21 @@ module m1_rom_loader #(
 
 
   output logic        rom_loaded,
+  // SEPARATE READY FOR THE SOUND STREAM, and the reason is a bug this project
+  // has already paid for once. `rom_loaded` latches when the FIRST stream ends,
+  // and in the MRA index 0 precedes 1, 2, 3 and 5 -- so gating the sound board
+  // on it releases the 68000 while its OWN rom is still being written into
+  // SDRAM. It fetches a reset vector from unwritten memory, runs garbage and
+  // never recovers, which on hardware is simply silence.
+  //
+  // That is exactly what happened to the coprocessor: "m1_main wired the TGP to
+  // the raw rst_n while the V60 was gated on rom_loaded, so the coprocessor
+  // executed its program RAM while the HPS was still streaming ROMs into it"
+  // (CLAUDE.md). One character fixed that one too.
+  //
+  // Stays low for a game whose MRA sends no sound stream, which holds the board
+  // in reset -- silence rather than a 68000 loose in whatever SDRAM holds.
+  output logic        snd_loaded,
   output logic        overflow,     // buffer was written while full
 
   // DID THE MICROCODE ACTUALLY ARRIVE? Nothing measured this, and its absence
@@ -197,7 +246,7 @@ module m1_rom_loader #(
   // 20,480 flip-flops, which Quartus builds without complaint — the same silent
   // fallback documented in rtl/m1_mainram.sv. The ramstyle makes a regression a
   // build error rather than half the device.
-  (* ramstyle = "M10K" *) logic [24:1] fifo_addr [FIFO_DEPTH];
+  (* ramstyle = "M10K" *) logic [25:1] fifo_addr [FIFO_DEPTH];
   (* ramstyle = "M10K" *) logic [15:0] fifo_data [FIFO_DEPTH];
   logic [AW:0]        wptr, rptr;          // one extra bit distinguishes full
   logic [AW:0]        level;
@@ -228,9 +277,10 @@ module m1_rom_loader #(
   assign ioctl_wait = ioctl_download &
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
-  logic is_sdram, is_tgp, is_iofw, is_ee;
+  logic is_sdram, is_tgp, is_iofw, is_ee, is_snd;
   // Routed by index, not by address. Every stream starts at byte 0.
-  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee;
+  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee || is_snd;
+  assign is_snd   = (ioctl_index == SND_INDEX) && (27'(ioctl_addr) < SND_PCM2_END);
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
   assign is_iofw  = (ioctl_index == IOFW_INDEX) && (ioctl_addr < 25'(IOFW_END));
   assign is_ee    = (ioctl_index == EE_INDEX)   && (ioctl_addr < 25'(EE_END));
@@ -239,7 +289,8 @@ module m1_rom_loader #(
   // Any of these indices is a stream we accept; which one decides where it goes.
   assign stream_ok = ioctl_download &&
                      ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX) ||
-                      (ioctl_index == IOFW_INDEX) || (ioctl_index == EE_INDEX));
+                      (ioctl_index == IOFW_INDEX) || (ioctl_index == EE_INDEX) ||
+                      (ioctl_index == SND_INDEX));
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -249,6 +300,7 @@ module m1_rom_loader #(
   assign sdr_wr_req  = req_q;
   assign sdr_wr_be   = 2'b11;               // whole-word writes only
 
+  logic snd_seen;   // the sound stream has delivered at least one word
   logic sok_d;      // stream_ok, delayed, for end-of-stream detection
   logic dl_done;    // stream has ended, waiting for the buffer to drain
   logic [15:0] tgp_lo;
@@ -260,6 +312,7 @@ module m1_rom_loader #(
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
       rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
+      snd_loaded <= 1'b0; snd_seen <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
       sdram_csum <= 24'd0; sdram_words <= 24'd0;
       // THE ARRAYS ARE DELIBERATELY NOT CLEARED HERE.
@@ -286,11 +339,23 @@ module m1_rom_loader #(
             // download starting at byte 0, so it needs an offset rather than
             // the raw ioctl address. IOFW_BASE is above the polygon region
             // and below the V60's work RAM.
-            fifo_addr[wptr[AW-1:0]] <= is_ee   ? (IOFW_BASE + EE_WOFF + 24'(ioctl_addr[24:1]))
-                                     : is_iofw ? (IOFW_BASE + 24'(ioctl_addr[24:1]))
-                                               : ioctl_addr[24:1];
+            fifo_addr[wptr[AW-1:0]] <=
+                is_ee   ? (IOFW_BASE + EE_WOFF + 25'(ioctl_addr[25:1]))
+              : is_iofw ? (IOFW_BASE + 25'(ioctl_addr[25:1]))
+              // TWO WAYS, NOT THREE. The two sample sets are CONTIGUOUS in
+              // SDRAM -- PCM1's last word is 0xE3FFFF and PCM2 begins at
+              // 0xE40000 -- so one linear mapping covers both and only the
+              // 68000's program needs splitting off, because its 64 KB of work
+              // RAM sits between. The three-way form cost two 27-bit compares
+              // and two 27-bit subtracts, and at 99% ALM the fitter reported
+              // "Info (170134): Cannot fit design in device -- retrying".
+              : is_snd  ? ((27'(ioctl_addr) < SND_PROG_END)
+                             ? (SND_ROM_BASE  + 25'(ioctl_addr[25:1]))
+                             : (SND_PCM1_BASE + 24'((27'(ioctl_addr) - SND_PROG_END) >> 1)))
+                        : ioctl_addr[25:1];
             fifo_data[wptr[AW-1:0]] <= ioctl_dout;
             wptr <= wptr + 1'b1;
+            if (is_snd) snd_seen <= 1'b1;
             // Rotate then XOR, so a reordering does not cancel.
             sdram_csum  <= {sdram_csum[22:0], sdram_csum[23]}
                          ^ {8'd0, ioctl_dout};
@@ -354,6 +419,8 @@ module m1_rom_loader #(
         if (dl_done && fifo_empty && !busy) begin
           rom_loaded <= 1'b1;
           dl_done    <= 1'b0;
+          // The sound stream has both arrived and drained to SDRAM.
+          if (snd_seen) snd_loaded <= 1'b1;
         end
       end
     end

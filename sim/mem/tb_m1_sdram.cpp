@@ -38,7 +38,20 @@
 // p1-p3, and p6 is its tgp_ram access, which is single-word. The burst
 // configuration is the part of a new port most likely to be wrong, so both are
 // driven here rather than added to the controller and left unexercised.
-static const int NP = 7;
+// PORT COUNT FROM THE BUILD, NOT HARD-CODED. Model1.sv instantiates NP(10) --
+// ports 8 and 9 are the two MULTIPCM sample streams -- and this bench drove
+// seven, so the top two were never exercised. The controller was tagging
+// in-flight reads with `grant[2:0]` into a three-bit field, so port 8 wrapped
+// onto port 0 and port 9 onto port 1: every sample read was delivered to the
+// wrong port. On the board that was silence with a healthy-looking 68000, and
+// it took an LED wired to `p_ack[8] && p_dout[8] != 0` to see it.
+//
+// The Makefile builds this at 7 and at 10. Keep the wide one equal to the top
+// level's NP.
+#ifndef TB_NP
+#define TB_NP 7
+#endif
+static const int NP = TB_NP;
 
 // Burst length per port, mirroring blen() in m1_sdram.sv.
 // MUST MATCH blen() IN m1_sdram.sv. It said 1 and 2 while the RTL had said
@@ -51,9 +64,16 @@ static const int NP = 7;
 // letting a half-length burst reach hardware, where it would have presented as
 // corrupt tile characters. p1 is 2 because the tile engine consumes exactly
 // two 16-bit words per column - see the note on blen() in m1_sdram.sv.
+// MUST MATCH m1_sdram.sv's blen(). It did not: ports 8 and 9 -- the two
+// MULTIPCM sample streams -- burst FOUR there and this said one, so the wide
+// build mis-extracted their data and reported failures that were the model's,
+// not the controller's. Keep the two in step.
 static int burst_of(int p) {
-  if (p == 1 || p == 3) return 2;
-  return (p == 2 || p == 5) ? 4 : 1;
+  if (p == 1 || p == 3) return 2;          // tile characters; coprocessor
+  if (p == 2 || p == 5) return 4;          // sound 68000 path; polygon fetch
+  if (p == 8 || p == 9) return 4;          // MULTIPCM sample lines, 64 bits
+  if (p == 10) return 1;                   // display lists, one 16-bit word
+  return 1;
 }
 
 struct Harness {
@@ -96,13 +116,25 @@ struct Harness {
   }
   ~Harness() { delete d; }
 
+  // EVERY PORT IS EXPLICIT, NOT `default`. Ports 7..9 used to fall into the
+  // port-6 case, so the wide build drove p6 three extra times and read p6 back
+  // for all of them -- which looks exactly like a controller fault and is not.
+  //
+  // PORT 10 HAD THE SAME BUG AND IT WAS BLAMED ON THE CONTROLLER. The setters
+  // below kept `default: p9`, so a request for port 10 drove p9, while getAck
+  // and getDout already read p10 -- which never acknowledged, because it was
+  // never asked. CLAUDE.md recorded that as "NP=11 is BROKEN ... the eleventh
+  // port serves one read and then stalls. Unexplained." It was this, and the
+  // controller is fine at eleven ports.
   void setReq(int p, int v) {
     switch (p) {
       case 0: d->p0_req = v; break; case 1: d->p1_req = v; break;
       case 2: d->p2_req = v; break; case 3: d->p3_req = v; break;
       case 4: d->p4_req = v; break;
-      case 5: d->p5_req = v; break;
-      default: d->p6_req = v; break;
+      case 5: d->p5_req = v; break; case 6: d->p6_req = v; break;
+      case 7: d->p7_req = v; break; case 8: d->p8_req = v; break;
+      case 9: d->p9_req = v; break;
+      default: d->p10_req = v; break;
     }
   }
   void setAddr(int p, uint32_t a) {
@@ -110,8 +142,10 @@ struct Harness {
       case 0: d->p0_addr = a; break; case 1: d->p1_addr = a; break;
       case 2: d->p2_addr = a; break; case 3: d->p3_addr = a; break;
       case 4: d->p4_addr = a; break;
-      case 5: d->p5_addr = a; break;
-      default: d->p6_addr = a; break;
+      case 5: d->p5_addr = a; break; case 6: d->p6_addr = a; break;
+      case 7: d->p7_addr = a; break; case 8: d->p8_addr = a; break;
+      case 9: d->p9_addr = a; break;
+      default: d->p10_addr = a; break;
     }
   }
   bool getAck(int p) {
@@ -120,7 +154,9 @@ struct Harness {
       case 2: return d->p2_ack; case 3: return d->p3_ack;
       case 4: return d->p4_ack;
       case 5: return d->p5_ack;
-      default: return d->p6_ack;
+      case 6: return d->p6_ack; case 7: return d->p7_ack;
+      case 8: return d->p8_ack; case 9: return d->p9_ack;
+      default: return d->p10_ack;
     }
   }
   uint64_t getDout(int p) {
@@ -129,7 +165,9 @@ struct Harness {
       case 2: return d->p2_dout; case 3: return d->p3_dout;
       case 4: return d->p4_dout;
       case 5: return d->p5_dout;
-      default: return d->p6_dout;
+      case 6: return d->p6_dout; case 7: return d->p7_dout;
+      case 8: return d->p8_dout; case 9: return d->p9_dout;
+      default: return d->p10_dout;
     }
   }
 
@@ -246,10 +284,17 @@ int main(int argc, char** argv) {
   // shifts wrong puts the shadow memory and the device at different
   // locations, which looks exactly like a broken read path.
   auto pick_addr = [&](std::mt19937& r) -> uint32_t {
+    // GEOMETRY MUST MATCH m1_sdram's, which went to TEN column bits and 64 MB
+    // on 2026-09-15. The word address [25:1] decodes as
+    //     bank = a[24:23]   row = a[22:10]   col = a[9:0]
+    // Building addresses to the old 9-bit map still exercises the controller --
+    // writes and reads agree either way -- but it stops the test from reaching
+    // the top half of the device at all, which is the part that only exists
+    // now and the part most likely to be decoded wrongly.
     uint32_t bank = r() & 3;
     uint32_t row  = r() % 6;          // few rows, so conflicts are common
-    uint32_t col  = r() & 0x1ff;      // 9 column bits on a 32 MB module
-    return (bank << 22) | (row << 9) | col;
+    uint32_t col  = r() & 0x3ff;      // 10 column bits, 64 MB module
+    return (bank << 23) | (row << 10) | col;
   };
 
   printf("test: ROM download writes, then read back through every port\n");
@@ -268,7 +313,16 @@ int main(int argc, char** argv) {
 
     for (int p = 0; p < NP; p++) {
       for (size_t k = 0; k < addrs.size(); k += 7) {
-        while (h.port[p].busy) h.step();
+        // BOUNDED. An unbounded wait turns a port that never acknowledges into
+        // a hung test, which is strictly worse than a failing one: it burns a
+        // timeout and reports nothing at all.
+        long guard = 0;
+        while (h.port[p].busy && guard++ < 200000) h.step();
+        if (h.port[p].busy) {
+          printf("  FAIL port %d never acknowledged - stalled after %zu reads\n", p, k);
+          h.fails++;
+          break;
+        }
         h.issue(p, addrs[k], false, 0);
         h.step();
       }

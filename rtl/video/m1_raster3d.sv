@@ -119,7 +119,7 @@ module m1_raster3d #(
   // fix: a peak frame offers more than this and the honest answer is the quad
   // payload in SDRAM, which stores everything and hands back all 138 M10K. This
   // is what the freed blocks will buy today.
-  parameter int unsigned NQ     = 3584
+  parameter int unsigned NQ     = 3072
 ) (
   input  logic        clk,            // the 3D clock, 45.714 MHz
   input  logic        rst_n,

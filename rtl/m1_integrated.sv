@@ -95,7 +95,7 @@ module m1_integrated (
   // SDRAM data port and instruction fetch
   output logic        sdr_req,
   output logic        sdr_we,
-  output logic [24:1] sdr_addr,
+  output logic [25:1] sdr_addr,
   output logic [15:0] sdr_din,
   output logic [1:0]  sdr_be,
   input  logic [15:0] sdr_dout,
@@ -104,19 +104,19 @@ module m1_integrated (
   // The 3D layer's two SDRAM masters, in the clk_sys domain like the others.
   // p5 bursts the polygon models, p6 carries tgp_ram.
   output logic        r3d_rom_req,
-  output logic [24:1] r3d_rom_addr,
+  output logic [25:1] r3d_rom_addr,
   input  logic [63:0] r3d_rom_dout,
   input  logic        r3d_rom_ack,
   output logic        r3d_tex_req,
   output logic        r3d_tex_we,
-  output logic [24:1] r3d_tex_addr,
+  output logic [25:1] r3d_tex_addr,
   output logic [15:0] r3d_tex_din,
   input  logic [15:0] r3d_tex_dout,
   input  logic        r3d_tex_ack,
 
   output logic        if_req,
   output logic [23:0] if_addr,
-  output logic [24:1] if_sdram_addr,
+  output logic [25:1] if_sdram_addr,
   input  logic [63:0] if_data,
   input  logic        if_ack,
 
@@ -134,7 +134,7 @@ module m1_integrated (
   input  logic [15:0] ioctl_dout,
   output logic        ioctl_wait,
   output logic        ldr_wr_req,
-  output logic [24:1] ldr_wr_addr,
+  output logic [25:1] ldr_wr_addr,
   output logic [15:0] ldr_wr_din,
   output logic [1:0]  ldr_wr_be,
   input  logic        ldr_wr_ack,
@@ -143,7 +143,7 @@ module m1_integrated (
   // The coprocessor's read-only SDRAM port, in the FAST domain. 64-bit burst
   // read like the instruction fetch, because a 32-bit fetch is two words.
   output logic        tgp_mem_req,
-  output logic [24:1] tgp_mem_addr,
+  output logic [25:1] tgp_mem_addr,
   input  logic [63:0] tgp_mem_dout,
   input  logic        tgp_mem_ack,
 
@@ -157,7 +157,7 @@ module m1_integrated (
   // value through THE SAME LOGIC, which also retires my hand-written assumption
   // about burst word order (neither it nor its reverse matches the board).
   output logic        rb_req,
-  output logic [24:1] rb_addr,
+  output logic [25:1] rb_addr,
   input  logic [63:0] rb_dout,
   input  logic        rb_ack,
   output logic [23:0] dbg_rb_csum,     // math tables, word 0x400000
@@ -184,10 +184,16 @@ module m1_integrated (
   input  logic [4:0]  mon_grant_in,
 
   output logic [23:0] dbg_pc,
+  output logic  [7:0] snd_tx_data,     // to the sound board
+  output logic        snd_tx_stb,
   output logic        dbg_halted,
   output logic        dbg_fp_trap,
   output logic [15:0] dbg_io_replies,
   output logic        rom_loaded_o,
+  // Separate from rom_loaded_o on purpose: that one latches when the FIRST
+  // stream ends, which is index 0, and the sound ROMs arrive later. See the
+  // note on snd_loaded in m1_rom_loader.sv. The 68000 is gated on THIS.
+  output logic        snd_loaded_o,
   // Set, and stuck, if the loader ever had to drop a word the HPS sent after
   // ioctl_wait went up. Brought out because a dropped word is a corrupt ROM
   // that reports a successful load and fails much later as a CPU fault.
@@ -307,18 +313,23 @@ module m1_integrated (
 
   // ------------------------------------------------------------- slow domain
   logic        cpu_sdr_req, cpu_sdr_we;
-  logic [24:1] cpu_sdr_addr;
+  logic [25:1] cpu_sdr_addr;
   logic [15:0] cpu_sdr_din, cpu_sdr_dout;
   logic [1:0]  cpu_sdr_be;
   logic        cpu_sdr_ack;
 
   logic        cpu_if_req, cpu_if_ack;
   logic [23:0] cpu_if_addr;
-  logic [24:1] cpu_if_sdram_addr;
+  logic [25:1] cpu_if_sdram_addr;
   logic [63:0] cpu_if_data;
 
   m1_main main (
     .clk(clk_cpu), .ce(ce_cpu), .rst_n(rst_n_cpu),
+    // The uPD71051C's bytes, out to the sound board. Restoring these after a
+    // wholesale `git checkout --` of this file took them out with the display
+    // lists is why the Quartus build failed and simulation did not: the bench
+    // leaves the port unconnected and the m1_frame target passes -Wno-PINMISSING.
+    .snd_tx_data(snd_tx_data), .snd_tx_stb(snd_tx_stb),
     // THE COPROCESSOR RUNS AT 2:1, which is what the board does - 40 MHz TGP
     // against a 16 MHz V60 - where we had 1:1. clk_3d is 47.059 MHz, EXACTLY
     // twice clk_cpu and from the same PLL, so the edges are phase-aligned at an
@@ -399,8 +410,8 @@ module m1_integrated (
   // Word bases follow the packer: copro_data at SDRAM word 0x300000, tables at
   // 0x400000, both immediately above the V60 image so the download stream stays
   // contiguous. Each is a 32-bit fetch, which is TWO 16-bit SDRAM words.
-  localparam logic [24:1] COPRO_DAT_BASE = 24'h300000;
-  localparam logic [24:1] COPRO_TBL_BASE = 24'h400000;
+  localparam logic [25:1] COPRO_DAT_BASE = 25'h300000;
+  localparam logic [25:1] COPRO_TBL_BASE = 25'h400000;
 
   logic        t_tbl_req, t_tbl_ack, t_dat_req, t_dat_ack;
   logic [15:0] t_tbl_addr;
@@ -432,7 +443,7 @@ module m1_integrated (
     else            t_prev_tbl <= t_tbl_req;
   wire         t_owner_change = (t_tbl_req != t_prev_tbl);
   wire         t_mem_req  = (t_tbl_req || t_dat_req) && !t_owner_change;
-  wire [24:1]  t_mem_addr = t_tbl_req
+  wire [25:1]  t_mem_addr = t_tbl_req
                           ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
                           : (COPRO_DAT_BASE + {4'd0, t_dat_addr, 1'b0});
 
@@ -471,7 +482,7 @@ module m1_integrated (
   logic        rb_region;                          // 0 = V60 ROM, 1 = math tables
   logic [23:0] rb_n;
   assign dbg_rb_n = rb_n[12:0];
-  wire [24:1] rb_region_base = rb_region ? 24'h400000 : 24'h000000;
+  wire [25:1] rb_region_base = rb_region ? 25'h400000 : 25'h000000;
 
   // THE FAST DOMAIN. The SDRAM ports are clk_sys; clocking this sweep on clk_cpu
   // missed the acknowledge and completed exactly ONE burst of 4096, which is how
@@ -585,7 +596,7 @@ module m1_integrated (
   // driven by nothing and every read returned zero — with the accesses
   // completing normally, which is what made it look like an address fault. The
   // two captured data words are what localised it.
-  m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) u_tgp_mem_cdc (
+  m1_cdc_port #(.AW(25), .DW(32), .BEW(2)) u_tgp_mem_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(t_mem_req), .a_we(1'b0), .a_addr(t_mem_addr),
     .a_din(32'd0), .a_be(2'b11),
@@ -605,7 +616,7 @@ module m1_integrated (
   // ------------------------------------------------------------- the crossings
   logic cpu_sdr_busy;
 
-  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_data_cdc (
+  m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_data_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(cpu_sdr_req), .a_we(cpu_sdr_we), .a_addr(cpu_sdr_addr),
     .a_din(cpu_sdr_din), .a_be(cpu_sdr_be),
@@ -648,8 +659,8 @@ module m1_integrated (
   // 4 while the game runs. It is far too large for M10K - 12.6 Mbit against the
   // device's 5.5 - and declaring it as an array would have Quartus build it from
   // flip-flops without saying so.
-  localparam logic [24:1] POLY_BASE    = 24'h420000;
-  localparam logic [24:1] TGP_RAM_BASE = 24'hC20000;
+  localparam logic [25:1] POLY_BASE    = 25'h420000;
+  localparam logic [25:1] TGP_RAM_BASE = 25'hC20000;
 
   // The coprocessor's reset, on its new clock. It MUST keep the rom_loaded
   // gate: wiring the TGP to the raw reset once let it execute program RAM while
@@ -676,10 +687,10 @@ module m1_integrated (
   // exactly what must not be sampled directly.
   logic frame_start_3d;
   // The I/O board Z80's firmware fetch, CPU side and the crossed address.
-  localparam logic [24:1] IOFW_BASE = 24'hD00000;
+  localparam logic [25:1] IOFW_BASE = 25'hD00000;
   logic        m_iofw_req, m_iofw_ack;
   logic [13:0] m_iofw_word;
-  wire  [24:1] iofw_addr_sys;
+  wire  [25:1] iofw_addr_sys;
   m1_cdc_pulse u_frame_pulse (
     .a_clk(clk_sys), .a_rst_n(rst_n_sys), .a_pulse(vblank_irq_sys),
     .b_clk(clk_3d),  .b_rst_n(rst_n_3d),  .b_pulse(frame_start_3d)
@@ -806,7 +817,7 @@ module m1_integrated (
   // p3 has always done it the other way and this was meant to copy it: the whole
   // address goes through the CDC, bit 1 still carries the model word's low bit,
   // and Model1.sv aligns down with {addr[24:2], 1'b0} on the way to the port.
-  wire [24:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr, 1'b0};
+  wire [25:1] rom_sdram_addr = POLY_BASE + {r3_rom_addr, 1'b0};
 
   // ONE BURST IS TWO MODEL WORDS, SO KEEP BOTH.
   //
@@ -823,10 +834,10 @@ module m1_integrated (
   // access at all, which halves the polygon traffic outright.
   wire [63:0] rom_burst;
   wire        rom_burst_ack;
-  wire [24:1] rom_tag = {rom_sdram_addr[24:2], 1'b0};
+  wire [25:1] rom_tag = {rom_sdram_addr[25:2], 1'b0};   // [25:2] since the address went 25-bit
 
   logic [63:0] rom_cache;
-  logic [24:1] rom_cache_tag;
+  logic [25:1] rom_cache_tag;
   logic        rom_cache_ok;
   logic        rom_hit_ack;
 
@@ -853,7 +864,7 @@ module m1_integrated (
   assign r3_rom_data  = rom_sdram_addr[1] ? rom_src[63:32] : rom_src[31:0];
   assign r3_rom_valid = rom_hit_ack || rom_burst_ack;
 
-  m1_cdc_port #(.AW(24), .DW(64), .BEW(2)) u_r3d_rom_cdc (
+  m1_cdc_port #(.AW(25), .DW(64), .BEW(2)) u_r3d_rom_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
     .a_req(r3_rom_req && !rom_hit), .a_we(1'b0), .a_addr(rom_sdram_addr),
     .a_din(64'd0), .a_be(2'b11),
@@ -867,7 +878,7 @@ module m1_integrated (
 
   // ---- tgp_ram, through p6. Single word, and writable: display-list command 4
   // uploads colour words into it.
-  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_r3d_tex_cdc (
+  m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_r3d_tex_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
     .a_req(r3_tex_req), .a_we(r3_tex_we),
     .a_addr(TGP_RAM_BASE + {4'd0, r3_tex_addr}),
@@ -892,7 +903,7 @@ module m1_integrated (
   // Everything else that crosses here already goes through this module; this
   // one now does too. Read-only, so the write side is tied off.
   logic [15:0] iofw_dout_cpu;
-  m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) u_iofw_cdc (
+  m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_iofw_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(m_iofw_req), .a_we(1'b0),
     .a_addr(IOFW_BASE + {10'd0, m_iofw_word}),
@@ -993,7 +1004,17 @@ module m1_integrated (
   //
   // The counters it reads are pruned with it, so the saving is larger than the
   // two modules alone.
-  localparam bit UART_REPORT = 1;
+  // OFF, and this is a FIT decision, measured 2026-09-13.
+  //
+  // m1_speed_report is 507 ALM in the full build and the design was 474 ALM
+  // over the device with the sound board in. m1_uart_tx is only 36 ALM, and it
+  // STAYS: the printf channel out of the fabric still works, so a targeted
+  // event can be sent at any time. What is gone is the automatic 40-field
+  // telemetry line, not the ability to print.
+  //
+  // Turn it back on whenever a fault needs measuring -- and expect not to fit
+  // until something else comes out.
+  localparam bit UART_REPORT = 0;
 
   generate
   if (UART_REPORT) begin : g_speed
@@ -1046,7 +1067,7 @@ module m1_integrated (
     .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
     .ucode_words(dbg_ucode_words), .ucode_csum(dbg_ucode_csum),
     .sdram_csum(dbg_sdram_csum), .sdram_words(dbg_sdram_words),
-    .rom_loaded(rom_loaded_o), .overflow(ldr_overflow)
+    .rom_loaded(rom_loaded_o), .snd_loaded(snd_loaded_o), .overflow(ldr_overflow)
   );
 
   bw_monitor #(.MASTERS(5), .CW(24), .BW(8)) mon (

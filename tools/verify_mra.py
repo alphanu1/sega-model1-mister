@@ -185,6 +185,65 @@ def main():
         return 1
     print(f"index 1 microcode  {parts[0].get('name')}, {len(u):,} bytes  OK")
 
+    # Index 5, the sound board. The SAME class of silent fault as the two above:
+    # the core has the 68000 and both MultiPCMs in the fabric, so a missing or
+    # misordered stream is silence, not an error. The MRA carried NO sound parts
+    # at all until 2026-09-12 -- the comment in it still said "those blocks do
+    # not exist in the core", which stopped being true when the board landed.
+    snd = [r for r in root.iter('rom') if r.get('index') == '5']
+    if snd:
+        # LAYOUT, NOT A FILE LIST. This used to hardcode Virtua Racing's three
+        # parts and a 0x420000 total, which made it useless for every other
+        # game and wrong the moment the map went to 4 MB per sample chip
+        # (2026-09-15). What the core actually requires is three regions at
+        # fixed offsets; how many files and pads fill each is the game's
+        # business.
+        #
+        #   0x000000  68000 program   512 KB   -> SND_ROM_BASE
+        #   0x080000  MultiPCM 1        4 MB   -> SND_PCM1_BASE
+        #   0x480000  MultiPCM 2        4 MB   -> contiguous with PCM1
+        #   0x880000  end
+        #
+        # vr and vformula carry one 128 KB program ROM and one 2 MB sample ROM
+        # per chip and are zero-padded to fill; vf, swa and wingwar carry two of
+        # each and fill it outright.
+        PROG_END, PCM1_END, TOTAL = 0x80000, 0x480000, 0x880000
+        with zipfile.ZipFile(args.zip) as zf:
+            off = 0
+            first_swapped = None
+            for el in snd[0]:
+                if el.tag == 'part':
+                    b = part_bytes(zf, el); sw = False
+                elif el.tag == 'interleave':
+                    b = interleave_generic(zf, el, int(el.get("output")) // 8); sw = True
+                else:
+                    continue
+                if first_swapped is None:
+                    first_swapped = sw
+                # No part may straddle a region boundary: a stream that does is
+                # one whose regions land at the wrong SDRAM base.
+                for bound, nm in ((PROG_END, '68000 program'), (PCM1_END, 'MultiPCM 1')):
+                    if off < bound < off + len(b):
+                        print(f"FAIL index 5: a part straddles the {nm} boundary at "
+                              f"0x{bound:06x} (part covers 0x{off:06x}-0x{off+len(b):06x}) "
+                              f"-- regions must start exactly on their offsets")
+                        return 1
+                off += len(b)
+            total = off
+        if not first_swapped:
+            print("FAIL index 5: the 68000 program must come first and be byte-swapped "
+                  "-- MAME loads it ROM_LOAD16_WORD_SWAP, so it needs "
+                  '<interleave output="16"> with map="12"')
+            return 1
+        if total != TOTAL:
+            print(f"FAIL index 5 is {total:,} bytes, expected {TOTAL:,} "
+                  f"(256 KB program + 4 MB + 4 MB; pad short games with "
+                  f'<part repeat="N">00</part>)')
+            return 1
+        print(f"index 5 sound      512 KB program + 2 x 4 MB sample sets, {total:,} bytes  OK")
+    else:
+        print("WARN  no <rom index=\"5\"> -- the sound board would be silent")
+
     # Index 3, the I/O board's settings EEPROM, when the game set carries one.
     # Only vr.zip does. The first word must be the "SEGA" signature: the V60
     # compares it at FE078E and, failing it, decides the board is unconfigured

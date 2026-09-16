@@ -168,13 +168,13 @@ always @(posedge clk_cpu or negedge rst_n_cpu)
     else            mem_ready_cpu <= {mem_ready_cpu[0], mem_ready};
 
 wire        sdr_req, sdr_we;
-wire [24:1] sdr_addr;
+wire [25:1] sdr_addr;
 wire [15:0] sdr_din, sdr_dout;
 wire  [1:0] sdr_be;
 wire        sdr_ack;
 wire        if_req, if_ack;
 wire [23:0] if_addr;
-wire [24:1] if_sdram_addr;
+wire [25:1] if_sdram_addr;
 wire [63:0] if_data;
 wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
@@ -468,8 +468,8 @@ end
 // and the SDRAM model in the fast one, so this crosses the same way the CPU's
 // data port does. One port for both regions: the TGP holds its request until
 // ack, so it can only have one outstanding.
-localparam [24:1] COPRO_DAT_BASE = 24'h300000;
-localparam [24:1] COPRO_TBL_BASE = 24'h400000;
+localparam [25:1] COPRO_DAT_BASE = 25'h300000;
+localparam [25:1] COPRO_TBL_BASE = 25'h400000;
 wire        t_tbl_req, t_dat_req;
 wire [15:0] t_tbl_addr;
 wire [18:0] t_dat_addr;
@@ -500,10 +500,10 @@ reg         t_prev_tbl = 1'b0;
 always @(posedge clk_cpu) t_prev_tbl <= t_tbl_req;
 wire        t_owner_change = (t_tbl_req != t_prev_tbl);
 wire        t_mem_req  = (t_tbl_req || t_dat_req) && !t_owner_change;
-wire [24:1] t_mem_addr = t_tbl_req ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
+wire [25:1] t_mem_addr = t_tbl_req ? (COPRO_TBL_BASE + {7'd0, t_tbl_addr, 1'b0})
                                    : (COPRO_DAT_BASE + {4'd0, t_dat_addr, 1'b0});
 wire        tgp_mem_req;
-wire [24:1] tgp_mem_addr;
+wire [25:1] tgp_mem_addr;
 
 // Are the coprocessor's reads actually being served, and with the right data?
 // The first two data-ROM words are a free check against the reference — see
@@ -515,7 +515,7 @@ reg [31:0]  first_dat0 = 32'hxxxxxxxx, first_dat1 = 32'hxxxxxxxx;
 // PREVIOUS value — which produced a half-right pair and read exactly like a data
 // path fault.
 reg         dat_ack_d = 0;
-reg [24:1]  dat_addr_d = 0;
+reg [25:1]  dat_addr_d = 0;
 always @(posedge clk_cpu) begin
     dat_ack_d  <= t_dat_ack;
     if (t_dat_ack) dat_addr_d <= t_mem_addr;
@@ -542,7 +542,7 @@ end
 // low 32 bits are exactly that. a_dout is the requester's data; b_dout is the
 // input from the far side. Connecting those the wrong way round returned zero on
 // every read while the accesses completed normally.
-m1_cdc_port #(.AW(24), .DW(32), .BEW(2)) tgp_mem_cdc (
+m1_cdc_port #(.AW(25), .DW(32), .BEW(2)) tgp_mem_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(t_mem_req), .a_we(1'b0), .a_addr(t_mem_addr),
     .a_din(32'd0), .a_be(2'b11),
@@ -637,13 +637,13 @@ m1_cdc_pulse vblank_cdc (
 );
 
 wire [4:0]       p_req, p_we, p_ack;
-wire [4:0][24:1] p_addr;
+wire [4:0][25:1] p_addr;
 wire [4:0][15:0] p_din;
 wire [4:0][1:0]  p_be;
 wire [4:0][63:0] p_dout;
 
 wire        ifp_req;
-wire [24:1] ifp_addr;
+wire [25:1] ifp_addr;
 assign p_req  = {1'b0, tgp_mem_req, ifp_req, 1'b0, m_sdr_req};
 assign p_we   = {4'b0000, m_sdr_we};   // every added port is read-only
 // p3 aligned down to its burst boundary, as at the top level.
@@ -653,11 +653,11 @@ assign p_be   = {2'd0, 2'd0, 2'd0, 2'd0, m_sdr_be};
 // The V60's data port crosses here rather than being wired straight to the
 // controller, which is the whole point of this configuration.
 wire        m_sdr_req, m_sdr_we, m_sdr_ack, m_sdr_busy;
-wire [24:1] m_sdr_addr;
+wire [25:1] m_sdr_addr;
 wire [15:0] m_sdr_din;
 wire  [1:0] m_sdr_be;
 
-m1_cdc_port #(.AW(24), .DW(16), .BEW(2)) data_cdc (
+m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) data_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
     .a_req(sdr_req), .a_we(sdr_we), .a_addr(sdr_addr),
     .a_din(sdr_din), .a_be(sdr_be),
@@ -694,7 +694,7 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
     .dbg_req(dbg_req_v), .dbg_grant(dbg_grant_v), .dbg_occ(), .dbg_wait1()
 );
 
-sdram_model #(.COL_BITS(9)) device (
+sdram_model #(.COL_BITS(10)) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
     .we_n(we_n), .ba(ba), .a(a), .dqm(dqm),
     .dq_i(dq_c2m), .dq_oe_i(dq_oe_c), .dq_o(dq_m2c), .dq_oe_o(dq_oe_m),

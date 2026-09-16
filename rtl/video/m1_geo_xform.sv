@@ -171,11 +171,38 @@ module m1_geo_xform #(
   wire [2:0] a_comp  = 3'(ac % 4'(A_STRIDE));
   wire       a_slot  = (a_comp <= 3'd2);
 
-  wire [3:0]  ra    = 4'({1'd0, a_comp} * 4'd3);
-  assign add_a = (a_round == 2'd0) ? r[sum_bank][ra] : t[a_comp[1:0]];
-  assign add_b = (a_round == 2'd0) ? r[sum_bank][ra + 4'd1] :
-                 (a_round == 2'd1) ? r[sum_bank][ra + 4'd2]
-                                   : mat[4'd9 + {2'd0, a_comp[1:0]}];
+  // SELECT THE TRIPLE, NOT THE ELEMENT. `ra` was a COMPUTED index (0, 3 or 6)
+  // and r[sum_bank][ra], [ra+1] and [ra+2] were three variable-index reads of a
+  // 9-deep array - three 16:1 32-bit muxes, because nothing tells the fitter
+  // that ra only ever takes three values. Picking the triple with a
+  // constant-index case makes each one a 3:1 mux instead, and `ra` and its
+  // multiply disappear.
+  //
+  // a_comp[1:0] == 3 cannot occur where these matter: add_req is gated on
+  // a_slot = (a_comp <= 2). The old form relied on that too and was less safe
+  // about it - a_comp == 3 would have indexed r[sum_bank][9], one past the end.
+  logic [31:0] rsel0, rsel1, rsel2, matsel;
+  always_comb begin
+    case (a_comp[1:0])
+      2'd0: begin
+        rsel0 = r[sum_bank][0]; rsel1 = r[sum_bank][1]; rsel2 = r[sum_bank][2];
+        matsel = mat[9];
+      end
+      2'd1: begin
+        rsel0 = r[sum_bank][3]; rsel1 = r[sum_bank][4]; rsel2 = r[sum_bank][5];
+        matsel = mat[10];
+      end
+      default: begin
+        rsel0 = r[sum_bank][6]; rsel1 = r[sum_bank][7]; rsel2 = r[sum_bank][8];
+        matsel = mat[11];
+      end
+    endcase
+  end
+
+  assign add_a = (a_round == 2'd0) ? rsel0 : t[a_comp[1:0]];
+  assign add_b = (a_round == 2'd0) ? rsel1 :
+                 (a_round == 2'd1) ? rsel2
+                                   : matsel;
   assign add_sub = 1'b0;
 
   wire        add_out_valid = add_rsp;

@@ -73,6 +73,14 @@ module m1_uart_tx #(
   localparam int unsigned DIV = CLK_HZ / BAUD;
   localparam int unsigned AW  = $clog2(DEPTH);
 
+  // DO NOT TAG THIS `ramstyle = "logic"` TO RECLAIM ITS M10K BLOCK. Measured
+  // 2026-09-12: tagging this and m1_copro_if's `fin` together cost **+795 ALM**
+  // (41,534 -> 42,329) and the M10K count went UP, 555 -> 563. The storage is
+  // cheap; the READ MUX is not -- 64 deep by 8 wide is a 64:1 mux, and that is
+  // the same thing that made every V60 mux experiment fail the same day.
+  // `ramstyle = "MLAB"` is worse still at this density: an MLAB is a LAB used
+  // as memory, and the fit dies with "Error (170012): Fitter requires 4236
+  // LABs ... device contains only 4191".
   logic [7:0]   fifo [DEPTH];
   logic [AW:0]  wptr, rptr;
   wire          empty = (wptr == rptr);

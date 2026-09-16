@@ -273,12 +273,32 @@ module v60_ifetch #(
                 // -- the same simple (i-fb_wr_r)*8 index the legacy 4-byte path uses.
                 // navail = bytes from the frontier to the line end (1..8).
                 logic [4:0]  foff, navail, ncom;
+                logic [7:0]  line_rot [8];
                 foff    = {2'b0, pf_addr[2:0]};
                 navail  = 5'd8 - foff;
                 ncom    = ((fb_wr_r + navail) > 5'd24) ? (5'd24 - fb_wr_r) : navail;
+                // EIGHT BYTE MUXES, NOT TWENTY-FOUR.
+                //
+                // fb[i] takes if_data_i byte (i - fb_wr_r), and the enable
+                // restricts that difference to 0..7 - so the select is really
+                // (i - fb_wr_r) & 7, which depends on fb_wr_r[2:0] and the
+                // CONSTANT i and nothing else. fb[i] and fb[i+8] and fb[i+16]
+                // therefore select the SAME source byte.
+                //
+                // Written as 24 independent variable part-selects that is 24
+                // 8:1 byte muxes. Rotating the 8-byte line ONCE by fb_wr_r[2:0]
+                // and then indexing it with i&7 - a constant - makes it eight,
+                // and the placement below becomes a plain wire per byte.
+                //
+                // The rotation is exactly the old arithmetic, not an
+                // approximation: for the bytes the enable admits,
+                // (i - fb_wr_r) is already in 0..7, so masking to 3 bits
+                // changes nothing. The enable itself is untouched.
+                for (int j = 0; j < 8; j++)
+                    line_rot[j] = if_data_i[(((j - int'(fb_wr_r[2:0])) & 3'd7))*8 +: 8];
                 for (int i = 0; i < 24; i++)
                     if (i >= fb_wr_r && i < fb_wr_r + ncom)
-                        fb[i] <= if_data_i[(i - fb_wr_r)*8 +: 8];
+                        fb[i] <= line_rot[i & 3'd7];
                 fb_wr_r    <= fb_wr_r + ncom;
                 fb_valid_r <= fb_wr_r + ncom;
             end

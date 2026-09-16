@@ -322,6 +322,169 @@ int main(int argc, char** argv) {
            at_assert, want_writes, bad);
   }
 
+  printf("test: the sound stream (index 5) splits to its three bases\n");
+  {
+    // ONE STREAM, THREE DESTINATIONS, and the boundaries are the whole point.
+    // m1_rom_loader splits index 5 by byte offset because the sound bases are
+    // NOT contiguous -- the 68000's work RAM sits between the program and PCM1
+    // -- so an off-by-one at either boundary sends samples to the wrong chip,
+    // which on hardware is silence or noise rather than an error.
+    //
+    // FOUR MB PER SAMPLE CHIP as of 2026-09-15, and the bases moved with it:
+    //
+    //   0x000000  68000 program  512 KB  -> word 0x1000000
+    //   0x080000  MultiPCM 1       4 MB  -> word 0x1080000
+    //   0x480000  MultiPCM 2       4 MB  -> word 0x1280000
+    //   0x880000  end
+    //
+    // PCM1's last word is 0xD7FFFF and PCM2 begins at 0xD80000, so those two
+    // ARE contiguous -- which is what lets the loader split TWO ways rather
+    // than three. Only the program is separated, by the work RAM.
+    //
+    // THESE NUMBERS ARE THE POINT OF THIS TEST, so they are written out rather
+    // than derived from the RTL's parameters: a bench that computes its
+    // expectation the same way the design does cannot catch the design being
+    // wrong. When the map moves, both sides move by hand and the difference is
+    // deliberate. The relayout of 2026-09-15 was caught here, in simulation,
+    // before it reached a board.
+    //
+    // Index 5 and not 4: index 4 is GAMEID_INDEX, the byte telling this shared
+    // bitstream which of the six games it is.
+    struct Probe { uint32_t byte_off; uint32_t want_word; const char* what; };
+    const Probe probes[] = {
+      { 0x000000u, 0x1000000u, "program, first word"      },
+      { 0x07FFFEu, 0x103FFFFu, "program, last word"       },
+      { 0x080000u, 0x1080000u, "PCM1, first word"         },
+      { 0x081FFEu, 0x1080FFFu, "PCM1, early word"         },
+      { 0x47FFFEu, 0x127FFFFu, "PCM1, last word"          },
+      { 0x480000u, 0x1280000u, "PCM2, first word"         },
+      { 0x87FFFEu, 0x147FFFFu, "PCM2, last word"          },
+    };
+    Loader g;
+    g.reset();
+    g.d->ioctl_download = 1;
+    g.d->ioctl_index = 5;
+    for (auto& pr : probes) {
+      uint16_t data = (uint16_t)(0xA000u + (pr.byte_off & 0xfff));
+      g.d->ioctl_addr = pr.byte_off;
+      g.d->ioctl_dout = data;
+      g.d->ioctl_wr = 1; g.tick(); g.d->ioctl_wr = 0;
+      for (int k = 0; k < 8; k++) g.tick();
+    }
+    g.d->ioctl_download = 0;
+    for (int i = 0; i < 4000; i++) g.tick();
+
+    for (auto& pr : probes) {
+      uint16_t want = (uint16_t)(0xA000u + (pr.byte_off & 0xfff));
+      uint16_t got  = read_word(g, pr.want_word);
+      h.checks++;
+      if (got != want) {
+        printf("  FAIL %-22s byte 0x%06x -> word 0x%06x: got %04x want %04x\n",
+               pr.what, pr.byte_off, pr.want_word, got, want);
+        h.fails++;
+      }
+    }
+    // And the stream must stop at the end of PCM2 rather than running on.
+    uint16_t before_oob = read_word(g, 0xE60000u);
+    g.d->ioctl_download = 1; g.d->ioctl_index = 5;
+    g.d->ioctl_addr = 0x880000u + 0x40000u;   // past SND_PCM2_END
+    g.d->ioctl_dout = 0xDEAD;
+    g.d->ioctl_wr = 1; g.tick(); g.d->ioctl_wr = 0;
+    for (int k = 0; k < 64; k++) g.tick();
+    g.d->ioctl_download = 0;
+    for (int i = 0; i < 1000; i++) g.tick();
+    h.checks++;
+    if (read_word(g, 0xE60000u) != before_oob) {
+      printf("  FAIL a byte past SND_PCM2_END was written anyway\n");
+      h.fails++;
+    }
+    // snd_loaded MUST NOT follow rom_loaded. In the MRA index 0 precedes
+    // index 5, so a sound board gated on rom_loaded is released while its own
+    // ROM is still streaming -- the 68000 then fetches a reset vector from
+    // unwritten SDRAM and is never heard from again. That is the coprocessor's
+    // old bug and it is why this signal exists.
+    {
+      Loader q;
+      q.reset();
+      std::mt19937 r3(4242u);
+      stream(q, r3, 0x0000000, 200, 1);      // index 0, the game ROM
+      finish_download(q);
+      h.checks++;
+      if (!q.d->rom_loaded) { printf("  FAIL rom_loaded low after index 0\n"); h.fails++; }
+      h.checks++;
+      if (q.d->snd_loaded) {
+        printf("  FAIL snd_loaded asserted after index 0 with no sound stream\n");
+        h.fails++;
+      }
+      // now the sound stream
+      q.d->ioctl_download = 1; q.d->ioctl_index = 5;
+      for (int i = 0; i < 64; i++) {
+        q.d->ioctl_addr = i * 2; q.d->ioctl_dout = (uint16_t)(0x5000 + i);
+        q.d->ioctl_wr = 1; q.tick(); q.d->ioctl_wr = 0; q.tick();
+      }
+      q.d->ioctl_download = 0;
+      for (int i = 0; i < 4000; i++) q.tick();
+      h.checks++;
+      if (!q.d->snd_loaded) {
+        printf("  FAIL snd_loaded still low after the sound stream drained\n");
+        h.fails++;
+      }
+      printf("  snd_loaded waits for index 5, not index 0\n");
+    }
+    printf("  three bases reached, boundaries exact, overrun rejected\n");
+  }
+
+  printf("test: a BULK sound transfer lands without dropping words\n");
+  {
+    // The probe test above writes seven words. The real stream is 4.3 MB, and
+    // the loader FIFO can overflow: `overflow` exists for exactly that. A drop
+    // anywhere in the sample region is silence on the board with every other
+    // signal looking healthy -- the chips fetch, the mix runs, and what comes
+    // back is whatever SDRAM held.
+    Loader g;
+    g.reset();
+    g.d->ioctl_download = 1;
+    g.d->ioctl_index = 5;
+    const uint32_t N = 40000;              // words, spanning the program/PCM1 edge
+    std::mt19937 rr(999u);
+    std::vector<uint16_t> sent(N);
+    for (uint32_t i = 0; i < N; i++) {
+      uint32_t byte_off = 0x07FF00u + i * 2;     // starts in program, crosses 0x40000
+      uint16_t v = (uint16_t)rr();
+      sent[i] = v;
+      // HONOUR ioctl_wait, as the HPS does. Without this the bench overruns the
+      // loader's FIFO and reports dropped words that the real transfer never
+      // drops -- a bench fault that reads exactly like an RTL one.
+      while (g.d->ioctl_wait) { g.d->ioctl_wr = 0; g.tick(); }
+      g.d->ioctl_addr = byte_off; g.d->ioctl_dout = v; g.d->ioctl_wr = 1;
+      g.tick(); g.d->ioctl_wr = 0;
+      if ((rr() & 7) == 0) g.tick();            // occasional gap, as a real transfer has
+    }
+    g.d->ioctl_download = 0;
+    for (int i = 0; i < 200000; i++) g.tick();
+
+    h.checks++;
+    if (g.d->overflow) { printf("  FAIL loader overflowed during the bulk transfer\n"); h.fails++; }
+
+    long bad = 0;
+    for (uint32_t i = 0; i < N; i += 97) {
+      uint32_t byte_off = 0x07FF00u + i * 2;   // starts in program, crosses 0x40000
+      uint32_t word = (byte_off < 0x80000u)
+                    ? (0x1000000u + (byte_off >> 1))
+                    : (0x1080000u + ((byte_off - 0x80000u) >> 1));
+      uint16_t got = read_word(g, word);
+      if (got != sent[i]) {
+        if (bad < 4) printf("  FAIL byte 0x%06x -> word 0x%06x: got %04x want %04x\n",
+                            byte_off, word, got, sent[i]);
+        bad++;
+      }
+    }
+    h.checks++;
+    if (bad) { printf("  FAIL %ld of %u sampled words wrong after a bulk transfer\n",
+                      bad, N/97); h.fails++; }
+    else printf("  %u words across the program/PCM1 boundary, none dropped\n", N);
+  }
+
   printf("test: a foreign ioctl index is ignored\n");
   {
     // Other indices carry NVRAM images and similar. Writing them into ROM

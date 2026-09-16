@@ -45,6 +45,7 @@ SRCS_m1_sdram := rtl/mem/m1_sdram.sv
 SRCS_m1_cdc_port := rtl/mem/m1_cdc_port.sv
 SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 # Everything the top level instantiates below emu, in dependency order.
+SND_RTL := $(wildcard rtl/sound/*.sv) $(wildcard rtl/sound/fx68k/*.sv) $(wildcard rtl/sound/jt12/*.v)
 SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv \
@@ -153,8 +154,26 @@ SRCS_m1_loader_harness := $(SRCS_m1_rom_loader) $(SRCS_m1_sdram) $(SRCS_sdram_mo
 # Microbenchmarks for the "share the adder" question - see docs/findings.md.
 SRCS_addr_separate := sim/microbench/addr_separate.sv
 SRCS_addr_shared   := sim/microbench/addr_shared.sv
+SRCS_mux_wide      := sim/microbench/mux_wide.sv
+SRCS_mux_coded     := sim/microbench/mux_coded.sv
+SRCS_fsm_binary    := sim/microbench/fsm_binary.sv
+SRCS_fsm_onehot    := sim/microbench/fsm_onehot.sv
+SRCS_v60_onehot    := rtl/cpu/v60/v60_bus.sv sim/microbench/v60_onehot.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_v60_nolen     := rtl/cpu/v60/v60_bus.sv sim/microbench/v60_nolen.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_v60_ftz       := rtl/cpu/v60/v60_bus.sv sim/microbench/v60_ftz.sv sim/microbench/v60_fp_ftz.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_v60_fphoist   := rtl/cpu/v60/v60_bus.sv sim/microbench/v60_fphoist.sv sim/microbench/v60_fp_hoist.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_rfmux       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_rfmux.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_ops       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_ops.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_ea       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_ea.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_bitops       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_bitops.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_strops       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_strops.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_pc       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_pc.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_exc       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_exc.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
+SRCS_p_dbusaddr       := rtl/cpu/v60/v60_bus.sv sim/microbench/p_dbusaddr.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 SRCS_v60_fp := rtl/cpu/v60/v60_fp.sv
 SRCS_rf_flops := sim/microbench/rf_flops.sv
+SRCS_mlab_async := sim/microbench/mlab_async.sv
+SRCS_mlab_flops := sim/microbench/mlab_flops.sv
 SRCS_rf_lane := sim/microbench/rf_lane.sv
 SRCS_rf_merge := sim/microbench/rf_merge.sv
 SRCS_rf_word := sim/microbench/rf_word.sv
@@ -170,6 +189,7 @@ JT12_RTL := $(wildcard rtl/sound/jt12/*.v)
 SRCS_m2_sound_board := rtl/sound/fx68k/fx68k.sv rtl/sound/fx68k/fx68kAlu.sv \
             rtl/sound/fx68k/uaddrPla.sv rtl/sound/m2_i8251.sv \
             $(JT12_RTL) \
+            rtl/sound/m1_ym_timer.sv \
             rtl/sound/m2_multipcm.sv rtl/sound/m2_pcm_fetch.sv \
             rtl/sound/m2_pcm_rate.sv rtl/sound/m2_sound_board.sv
 
@@ -182,7 +202,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -265,7 +285,7 @@ lint_top:
 	  echo "third_party/template missing — run ./tools/bootstrap.sh"; exit 1; }
 	@verilator --lint-only -Wno-fatal +incdir+third_party/template \
 	  +incdir+build/lintinc --top-module emu \
-	  Model1.sv $(SRCS_TOP_CORE) \
+	  Model1.sv $(SRCS_TOP_CORE) $(SND_RTL) \
 	  third_party/template/sys/hps_io.sv > build/lintinc/top.log 2>&1; \
 	 grep "%Error" build/lintinc/top.log | grep -vE "altera_pll|'pll'" \
 	   | grep -v "Exiting due to" > build/lintinc/real.log; \
@@ -290,7 +310,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -311,11 +331,23 @@ test_sdram_model:
 # Data integrity and protocol compliance in one run: the shadow memory catches
 # address decode and burst ordering, the device model catches the timing
 # faults that simulate perfectly and then fail on real silicon.
+# BUILT TWICE, at NP 7 and NP 10, for the same reason bw_monitor and m1_diag
+# are. The harness hard-coded 7 while Model1.sv instantiates 10, so ports 8 and
+# 9 were never driven -- and the controller was tagging in-flight reads with
+# `grant[2:0]` into a three-bit field, wrapping 8 onto 0 and 9 onto 1. That is
+# the two MULTIPCM sample streams delivered to the V60's fetch port, and it was
+# silence on the board with every other signal healthy. Keep the wide build
+# equal to what the top level instantiates.
+
 test_m1_sdram:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sdram_harness \
 	  $(SRCS_m1_sdram_harness) sim/mem/tb_m1_sdram.cpp \
 	  -o tb_m1sdram --Mdir obj_m1sdram
 	./obj_m1sdram/tb_m1sdram
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sdram_harness \
+	  -GNP=11 -CFLAGS -DTB_NP=11 $(SRCS_m1_sdram_harness) sim/mem/tb_m1_sdram.cpp \
+	  -o tb_m1sdram11 --Mdir obj_m1sdram11
+	./obj_m1sdram11/tb_m1sdram11
 
 # Loaded against the real SDRAM controller, not a stub write port: the
 # download contract is one transaction per request rising edge, and a loader
@@ -536,6 +568,49 @@ test_glue:
 # TxRDY is IRQ level 3 and the games pump their sound queues on it, so this is
 # checked as an interrupt source rather than as a serial port. Its absence read
 # as a V60 divergence on vf - see the module header.
+SNDB_RTL := $(SRCS_m2_sound_board) sim/sound/m1_sndboard_harness.sv
+
+obj_sndboard_nc/Vm1_sndboard_nc: $(SNDB_RTL) sim/sound/tb_m1_sndboard.cpp
+	verilator --binary --timing -j 0 -Wno-fatal -CFLAGS "-O2" -GPCM_CACHE=0 \
+	  --top-module m1_sndboard_harness -Irtl/sound/jt12 \
+	  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-WIDTHEXPAND -Wno-SYNCASYNCNET \
+	  -Wno-PINCONNECTEMPTY -Wno-VARHIDDEN -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE \
+	  -Wno-UNOPTFLAT -Wno-MULTIDRIVEN -Wno-LATCH \
+	  -Wno-BLKANDNBLK -Wno-ALWCOMBORDER --no-assert-case \
+	  -Wno-WIDTH -Wno-UNSIGNED -Wno-CMPCONST -Wno-REALCVT -Wno-SELRANGE \
+	  -Wno-IMPLICIT -Wno-ASCRANGE -Wno-SIDEEFFECT -Wno-EOFNEWLINE \
+	  -Wno-PROCASSINIT -Wno-GENUNNAMED \
+	  --Mdir obj_sndboard_nc -o Vm1_sndboard_nc \
+	  $(SNDB_RTL) sim/sound/tb_m1_sndboard.cpp
+
+test_m1_sndboard_nc: obj_sndboard_nc/Vm1_sndboard_nc
+	@echo "== m1_sndboard with PCM_CACHE=0 -- the CONTRAST build, NOT what hardware runs"
+	@echo "   Model1.sv instantiates PCM_CACHE(1'b1); test_m1_sndboard is the hardware config."
+	@cp -f rtl/sound/fx68k/microrom.mem rtl/sound/fx68k/nanorom.mem obj_sndboard_nc/
+	cd obj_sndboard_nc && ./Vm1_sndboard_nc
+
+obj_sndboard/Vm1_sndboard_harness: $(SNDB_RTL) sim/sound/tb_m1_sndboard.cpp
+	verilator --binary --timing -j 0 -Wno-fatal -CFLAGS "-O2" \
+	  --top-module m1_sndboard_harness -Irtl/sound/jt12 \
+	  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-WIDTHEXPAND -Wno-SYNCASYNCNET \
+	  -Wno-PINCONNECTEMPTY -Wno-VARHIDDEN -Wno-WIDTHTRUNC -Wno-CASEINCOMPLETE \
+	  -Wno-UNOPTFLAT -Wno-MULTIDRIVEN -Wno-LATCH \
+	  -Wno-BLKANDNBLK -Wno-ALWCOMBORDER --no-assert-case \
+	  -Wno-WIDTH -Wno-UNSIGNED -Wno-CMPCONST -Wno-REALCVT -Wno-SELRANGE \
+	  -Wno-IMPLICIT -Wno-ASCRANGE -Wno-SIDEEFFECT -Wno-EOFNEWLINE \
+	  -Wno-PROCASSINIT -Wno-GENUNNAMED \
+	  --Mdir obj_sndboard -o Vm1_sndboard_harness \
+	  $(SNDB_RTL) sim/sound/tb_m1_sndboard.cpp
+
+# Does the sound board's 68000 boot? Not in `make test`: it needs the game ROM.
+test_m1_sndboard: obj_sndboard/Vm1_sndboard_harness
+	@echo "== m1_sndboard (68000 boot, against MAME's PC 0x1100 oracle)"
+	@# fx68k $readmem's its microcode by bare filename, so it must sit beside
+	@# the binary. Without them the CPU retires nothing and the bench reports a
+	@# dead 68000 that is really a missing file.
+	@cp -f rtl/sound/fx68k/microrom.mem rtl/sound/fx68k/nanorom.mem obj_sndboard/
+	cd obj_sndboard && ./Vm1_sndboard_harness
+
 test_sound_usart:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sound_usart \
 	  $(SRCS_m1_sound_usart) sim/io/tb_m1_sound_usart.cpp -o tb_sound_usart --Mdir obj_sound_usart
@@ -602,6 +677,13 @@ test_uart_tx:
 # The telemetry line, decoded off the serial pin. Built at a small CLK_HZ and
 # BAUD so a bit is ten cycles - at the real 80 MHz a line is 1.3 M cycles and
 # the decode says nothing extra. PERIOD 2 so a report comes out promptly.
+test_snd_report:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_snd_report \
+	  -GCLK_HZ=11520 -GBAUD=1152 \
+	  rtl/io/m1_uart_tx.sv rtl/sound/m1_snd_report.sv \
+	  sim/sound/tb_m1_snd_report.cpp -o tb_snd_report --Mdir obj_snd_report
+	./obj_snd_report/tb_snd_report
+
 test_speed_report:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_speed_report \
 	  -GCLK_HZ=11520 -GBAUD=1152 -GPERIOD=2 \
@@ -769,7 +851,54 @@ else
   QUARTUS_BIN := $(QUARTUS_MATCH)
 endif
 
-.PHONY: render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
+# ELABORATE THE REAL TOP LEVEL, which `make lint` and every bench do NOT.
+#
+# The benches instantiate m1_integrated, never Model1.sv, and the m1_frame
+# target passes -Wno-PINMISSING. So a port Model1.sv connects that
+# m1_integrated no longer HAS is invisible to simulation and fails six seconds
+# into a 25-minute Quartus build, with an error that does not name the cause.
+# Three of those on 2026-09-13: a module missing from the staged qsf, and
+# snd_tx_data/snd_tx_stb then snd_loaded_o removed by a wholesale
+# `git checkout --` of m1_integrated.sv.
+#
+# KNOWN LIMIT: Verilator does NOT flag an out-of-range part-select that Quartus
+# errors on (`p_dout[10]` against a `[9:0]` declaration cost a build on
+# 2026-09-14, widening NP from 10 to 11). Widen the port ARRAYS whenever NP
+# changes; this check will not remind you.
+#
+# IT MUST RUN AGAINST THE STAGED TREE. Model1.sv includes sys/emu_ports.vh and
+# build_id.v, which only exist after staging. The first version of this target
+# linted the repo copy, died on those includes, matched none of its own grep
+# patterns and reported SUCCESS -- a check that passes because it never ran.
+# That is why this greps for %Error and not for a list of expected messages.
+#
+# The ONLY exclusion is Quartus megafunctions (pll, altera_*, cyclonev_*),
+# which Verilator genuinely cannot see. It is a NAMED list, not a blanket
+# MODMISSING suppression -- a missing module of ours must still fail.
+elab:
+	@mkdir -p $(TMPDIR)
+	@MISTER_STAGE=$(PWD)/build/elab bash tools/mister_project.sh > $(TMPDIR)/elab_stage.log 2>&1 \
+	  || { echo "elab: staging failed"; tail -5 $(TMPDIR)/elab_stage.log; exit 1; }
+	@printf '`define BUILD_DATE "000000"\n' > build/elab/build_id.v
+	@SRCS=$$(grep -hoP "(?<=SYSTEMVERILOG_FILE )\S+|(?<=VERILOG_FILE )\S+" build/elab/files.qip build/elab/sys/sys.qip 2>/dev/null \
+	  | grep -E '\.s?v$$' | while read f; do test -f "build/elab/$$f" && echo "$$f"; done | tr '\n' ' '); \
+	test -n "$$SRCS" || { echo "elab: NO SOURCES FOUND - the check would pass vacuously, which is worse than not running it"; exit 1; }; \
+	cd build/elab && verilator --lint-only -Wno-fatal -Wno-DECLFILENAME \
+	  -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-SYNCASYNCNET -Wno-UNSIGNED \
+	  -Wno-REALCVT -Wno-LATCH -Wno-IMPLICITSTATIC \
+	  -I. -Isys --top-module emu $$SRCS > $(TMPDIR)/elab.txt 2>&1; \
+	grep -E "^%Error|^%Warning-SELRANGE" $(TMPDIR)/elab.txt \
+	  | grep -vE "Cannot find file containing module: '(pll|pll_hdmi|altera_[a-z_0-9]*|cyclonev_[a-z_0-9]*|alt[a-z_0-9]*)'" \
+	  | grep -vE '^%Error: Exiting due to' \
+	  > $(TMPDIR)/elab_real.txt || true; \
+	if [ -s $(TMPDIR)/elab_real.txt ]; then \
+	  echo "ELABORATION FAILED - Quartus will fail on these:"; \
+	  head -10 $(TMPDIR)/elab_real.txt; exit 1; \
+	else echo "elab: Model1 elaborates, every port and module resolves"; fi
+
+.PHONY: test_v60_ifetch test_snd_report elab render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -877,18 +1006,28 @@ m1_frame:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-DECLFILENAME -Wno-PINMISSING -Wno-UNSIGNED -Wno-WIDTH \
 	  +define+SIMULATION $(FRAME_DEFS) --top-module tb_m1_frame \
+	  --no-assert-case -Irtl/sound/jt12 \
 	  -GPPMEVERY=$(FRAME_PPM) -GCE_NUM=$(FRAME_CE_NUM) -GCE_DEN=$(FRAME_CE_DEN) \
 	  -GROMHEX='"build/rom/$(GAME)_v60.hex"' \
 	  -GUCODEHEX='"build/rom/$(GAME)_tgp_prog.hex"' \
 	  -GIOFWHEX='"build/rom/$(GAME)_iofw.hex"' \
 	  -GEEHEX='"build/rom/$(GAME)_ee.hex"' \
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
+	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
 	  --Mdir build/m1frame -o m1frame \
-	  $(SRCS_TOP_CORE) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
+	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
+	@# THE 68000'S MICROCODE IS LOADED BY BARE FILENAME AT RUNTIME.
+	@# fx68k.sv does `$$readmemb("microrom.mem", uRam)` with no path, so it
+	@# resolves against the CWD of the SIMULATOR, not the source tree. The
+	@# sound-board benches `cd obj_sndboard` and copy the two files in; this
+	@# one runs from the repo root, so it found neither and the 68000 executed
+	@# ZERO instructions with no warning of any kind -- which reads exactly
+	@# like a dead sound CPU in the design. Copy them where the binary runs.
+	@cp -f rtl/sound/fx68k/microrom.mem rtl/sound/fx68k/nanorom.mem .
 	./build/m1frame/m1frame
 
 # PASSED AS A 64-BIT LITERAL. Verilator's -G parses a bare decimal as 32 bits
@@ -897,6 +1036,7 @@ m1_frame:
 # normal $finish and a frame summary. Declaring the parameter longint was not
 # enough; the literal needs its width. Reaching the attract state the board is
 # actually in takes about 3.6e9.
+FRAME_SNDBIN ?= build/rom/$(GAME)_snd.bin
 FRAME_CYCLES ?= 120000000
 
 # FRAME_TRACE=1 prints one line per frame: what share of the frame fell through
@@ -1009,6 +1149,13 @@ test_v60_shift:
 	  -Wno-UNUSEDSIGNAL -Wno-WIDTH --top-module tb_v60_shift --Mdir obj_v60_shift -o run \
 	  rtl/cpu/v60/v60_shift.sv sim/cpu/tb_v60_shift.sv
 	./obj_v60_shift/run | grep -E '^v60_shift:|FAIL'
+
+test_v60_ifetch:
+	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-PINMISSING +define+SIMULATION \
+	  --top-module tb_v60_ifetch --Mdir obj_v60_ifetch -o run \
+	  rtl/cpu/v60/v60_ifetch.sv sim/cpu/tb_v60_ifetch.sv
+	./obj_v60_ifetch/run | grep -E '^v60_ifetch:|FAIL'
 
 test_v60_in_mem:
 	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \

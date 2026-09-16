@@ -303,6 +303,25 @@ module mb86233_alu #(
   logic [4:0] shamt;
   assign shamt = sft[4:0];
 
+  // ONE LEFT SHIFTER AND ONE RIGHT SHIFTER FOR ALL FOUR SHIFT OPCODES.
+  //
+  // They were four separate expressions in four case arms -- and two of them,
+  // LSLD and ASLD, were BYTE-IDENTICAL. Quartus does not share logic across
+  // case arms, so that built four 32-bit barrel shifters where one pair does.
+  // 1,019 combinational ALUTs against 194 registers is what that looks like.
+  //
+  // The arithmetic right shift is the logical one plus a sign fill, which is a
+  // MASK and not a shifter: `32'hffffffff >> shamt` has a constant operand and
+  // reduces to a decoder. MAME keeps LSLD and ASLD as separate cases computing
+  // identical expressions, and the RESULT is still identical -- this changes
+  // how it is built, not what it produces. tb_mb86233_alu's 2,170,388 cases
+  // against MAME say so.
+  wire [31:0] shl_res  = reg_d << shamt;
+  wire [31:0] shr_log  = reg_d >> shamt;
+  wire [31:0] shr_fill = (reg_d[31] && (op == mb86233_pkg::ALU_ASRD))
+                       ? ~(32'hffff_ffff >> shamt) : 32'd0;
+  wire [31:0] shr_res  = shr_log | shr_fill;
+
   logic [31:0] int_result;
   always_comb begin
     unique case (op)
@@ -312,12 +331,13 @@ module mb86233_alu #(
       mb86233_pkg::ALU_NOTD: int_result = ~reg_d;
       mb86233_pkg::ALU_ADDD: int_result = reg_d + reg_a;
       mb86233_pkg::ALU_SUBD: int_result = reg_d - reg_a;
-      mb86233_pkg::ALU_LSRD: int_result = reg_d >> shamt;
-      // asld and lsld are the same operation on the bit pattern. MAME keeps
-      // them as separate cases computing identical expressions; so do we.
-      mb86233_pkg::ALU_LSLD: int_result = reg_d << shamt;
-      mb86233_pkg::ALU_ASLD: int_result = reg_d << shamt;
-      mb86233_pkg::ALU_ASRD: int_result = 32'($signed(reg_d) >>> shamt);
+      mb86233_pkg::ALU_LSRD: int_result = shr_res;
+      // asld and lsld are the same operation on the bit pattern -- MAME keeps
+      // them as separate cases computing identical expressions, and now they
+      // share the one shifter instead of building two.
+      mb86233_pkg::ALU_LSLD: int_result = shl_res;
+      mb86233_pkg::ALU_ASLD: int_result = shl_res;
+      mb86233_pkg::ALU_ASRD: int_result = shr_res;
       mb86233_pkg::ALU_CXFD: int_result = cxf_result;
       mb86233_pkg::ALU_CFXD: int_result = cfx_result;
       default:  int_result = 32'd0;

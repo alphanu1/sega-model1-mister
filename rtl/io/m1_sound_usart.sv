@@ -52,7 +52,26 @@
 `timescale 1ns/1ps
 
 module m1_sound_usart #(
-  parameter int unsigned CHAR_CLKS = 5120
+  // CHARACTER TIME IN clk CYCLES, AND THE V60 IS OVERCLOCKED.
+  //
+  // The real i8251 runs 31.25 kHz x 16 with 8N1, so a character is ten bits =
+  // 320 us. At the board's 16 MHz V60 that is 5,120 cycles, which is where the
+  // old default came from -- and it was right for 16 MHz and wrong for us.
+  //
+  // WE CLOCK THE V60 AT 29.47 MHz WITH ce TIED HIGH (Model1.sv: `.ce_cpu(1'b1)`),
+  // so 5,120 cycles is 173.7 us -- the transmitter frees itself 1.84x too early
+  // and the CPU may send bytes at 1.84x the real rate.
+  //
+  // THE SOUND BOARD IS NOT OVERCLOCKED TO MATCH. m2_sound_board runs
+  // TICK_NUM/TICK_DEN = 20/80, which is 20 MHz of enPhi enables and therefore a
+  // 68000 at its real 10 MHz. So the fast side talks to a real-time side, and
+  // the receiver misses bytes -- measured in tb_m1_frame as the V60 sending 63
+  // data bytes and the board acknowledging ONE.
+  //
+  // 9,430 = 29.47 MHz x 320 us, which restores REAL character timing. The
+  // overclock is deliberate elsewhere (the game runs 1.84x) but the serial link
+  // is a rate agreed with the other end, not a speed to be won.
+  parameter int unsigned CHAR_CLKS = 9430
 ) (
   input  logic        clk,
   input  logic        ce,        // CPU clock enable; the character timer runs on it

@@ -20,6 +20,1848 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-15 — jt12 WOULD NOT ROUTE, AND IT WAS m1_sdram's DUPLICATED MUXES
+
+**The design PLACED and then failed to route 2-4 wires, every seed, all of them
+`m1_sdram|Mux*`.** Collapsing two duplicated mux networks in that module fixed
+it. Adding the FM cost no ALM headroom at all -- there was 1,995 spare the whole
+time.
+
+**What the failure actually looked like**, and it is not what "cannot fit" reads
+like:
+
+    Info (170137): Fitter placement was successful          <- it FITS
+    Info (170138): Failed to route the following 2 signal(s)
+        Signal "emu:emu|m1_sdram:sdram|Mux44~1"
+        Signal "emu:emu|m1_sdram:sdram|Mux40~2"
+    Info (170141): Routing resource LAB Block interconnect (X73_Y27, I43)
+    Info (170134): Cannot fit design -- retrying with increased optimization
+    Internal Error: VPR20KMAIN ... altera_arch_cluster_slm.c:2961   <- CRASH
+
+Placement succeeds, a handful of wires will not route, and **Quartus 17.0 then
+crashes on the higher-effort retry**. The crash is a tool bug and it hides the
+real message, which is two lines earlier.
+
+**TWO WRONG DIAGNOSES, BOTH KILLED BY MEASUREMENT.**
+
+1. *"The device is full -- LABs are 4,188/4,191."* **Wrong, and Ben caught it.**
+   41,910 - 39,915 = **1,995 ALM genuinely spare**. "LABs 100%" counts every LAB
+   with *any* ALM in use; a LAB with 9 of 10 used still takes another. LAB
+   percentage is not a capacity figure.
+
+2. *"Contention with the Model 2 builds on the same machine."* Ben's hypothesis
+   and a reasonable one. **Disproved by running one seed with the machine
+   otherwise idle**: identical signals, identical routing resource (X73_Y27),
+   identical internal error. Bit-for-bit reproducible, so it is the design.
+
+**THE FIX, AND IT IS THE SAME DEFECT AS THE OTHER FOUR TODAY.** Variable-index
+reads written out more than once, each building its own NP:1 mux:
+
+* **Round 1** (did NOT fix it, but moved the failure informatively):
+  `we_p[arb_grant]` read at THREE sites -- the refresh guard, `is_write` and the
+  burst-length select -- plus `addr_p`/`din_p`/`be_p` indexed inline. Hoisted to
+  one wire each. The failing signals then moved to `p_dout[9][40]` and `dq_r[0]`
+  -- **the read-return path**, naming the next target.
+
+* **Round 2** (fixed it): `cap[tag_p[0]]` is an **11:1 mux of 64 bits** and was
+  written out **five times** across four case arms, which also each performed
+  their own variable-index write to `p_dout`. One `g_cap` wire and one assembled
+  `dout_n` written once.
+
+`cap` is `NP x 4 x 16` bits in FLIP-FLOPS (`ramstyle "logic"`), so those five
+muxes were pure duplicated routing in the densest module on the device.
+
+**Result, seed 3, Quartus 17.0, 0 errors: 41,150 / 41,910 ALM (98%), 534/553
+M10K, 54 DSP, and every one of our clocks positive** -- clk_3d +0.023, clk_sys
++0.107, clk_cpu +4.978. Only the framework's `pll_hdmi` at -0.539.
+
+**THE LESSON THAT GENERALISES.** A duplicated mux costs area, which is the
+obvious price and the one the earlier entries chased. It also costs **routing**,
+and that bill lands somewhere else entirely: not as "your module is too big" but
+as two unroutable wires and a fitter crash, in a design with 1,995 spare ALM.
+When a fit fails for routing rather than capacity, **read which module the
+signals are in and look for duplicated indexing there** before touching seeds,
+effort levels or the size of anything.
+
+**Still owed, and better than another mux hoist**: the sound 68000's work RAM is
+on SDRAM port 10, and `segam1audio.cpp:28` says the real PCB has **16 KB**
+(2 x 8 KB SRAMs), not the 64 KB we model -- our own bench agrees, touching 8,193
+words. 16 KB is 16 M10K against 19 free, so it can come on-chip, which deletes
+port 10, takes NP 11 -> 10, shrinks every mux in the module and removes the
+shared-SDRAM deviation from Model 2. That is the structural fix; the hoists are
+the cheap one.
+
+---
+
+## 2026-09-16 — THE SOUND 68000 WAS CRASHING, AND ITS WORK RAM WAS WHY
+
+**Every sound symptom chased for two sessions was downstream of a CPU executing
+garbage.** The sound board's work RAM had been moved to SDRAM port 10 to save
+M10K. Its stack lives there.
+
+### What it looked like
+
+    SNDCPU: 68000 pc=312000  insns=4759144   ym_writes=4  pcm_writes=0
+    SNDRAM: work-RAM requests=32768 (writes 32768) acks=65536   READS=0
+    SNDI8251: cmd_r=00 (RxE=0 TxEN=0)  rxrdy=1  uart writes seen=0
+
+The 68000 wrote **exactly 32,768 words** - the full 64 KB clear loop every 68000
+firmware runs at boot - **and then never read the RAM once**. It died on its
+first read, which for a 68000 is a stack access, and spent 4.7 M instructions in
+unmapped memory. The PC is different every run (312000, 349fde, 8d272a, dec1a4,
+747dac) and never inside its own map (ROM 0-0x3FFFF, RAM 0xF00000-0xF0FFFF).
+
+A CPU that lands somewhere different every run has lost its stack.
+
+### The fix, and it is Model 2's
+
+Model 2's `m2_sound_board` has **no external RAM port at all** - two byte-wide
+M10K arrays inside the module - and its sound works. Ben said so repeatedly
+before it was acted on.
+
+| | off-chip | on-chip |
+|---|---|---|
+| 68000 PC | wandering | **0x000104, in ROM** |
+| work-RAM writes | 32,768 then dead | **472,392** |
+| UART interrupts (IRQ2) | 6 | **2,040** |
+| ym_writes / pcm_writes | 4 / 0 | **342 / 479** |
+| `tb_m1_sndboard` | fails=1 | **fails=0** |
+
+**SIXTEEN KILOBYTES, NOT MODEL 2's SIXTY-FOUR.** `segam1audio.cpp` maps
+0xF00000-0xF0FFFF and says outright *"real PCB actually has 2x 8kBx8-bit SRAMs
+(16kB total)"*, so the upper three quarters of that window ALIAS on hardware.
+Our own bench agrees: `ram_words = 8193`, exactly 16 KB. 16 KB costs 16 M10K
+against 18 free; 64 KB would need 64.
+
+### THE BENCH REPORTED fails=0 THROUGHOUT
+
+`tb_m1_sndboard` has its **own** RAM model and never touched SDRAM port 10, so
+it could not see this fault. It passed while the board was silent.
+
+**That is the second time in two days this same bench gave a false pass** - it
+also never served its PCM sample ROMs (see 2026-09-15). A bench reporting
+`fails=0` on the exact subsystem that is broken is worse than no bench: it
+actively argues against looking there.
+
+The bench that found it is `tb_m1_frame`, which drives the REAL SDRAM, the real
+loader and now the real sound board. It did not exist for sound until this
+session.
+
+### Two of my own changes were the causes, not fixes
+
+* **work RAM to SDRAM port 10** - an M10K saving that crashed the sound CPU.
+* **the YM's IRQ wired at level 4** - `segam1audio.cpp` contains exactly one
+  `set_input_line`, the UART's `M68K_IRQ_2`; the YM3438's IRQ is not connected
+  to the 68000 on the real board, and Model 2 lists `ym_irq_n` in its unused
+  reduction. Level 4 outranks level 2, so it would have starved the UART. It was
+  added during the jt12 work, recorded in the same session as "a dead end", and
+  left wired in. **Removed - but measurement showed it was NOT the blocker**,
+  and saying so matters: the fix was claimed before it was tested.
+
+A third change was real but not the blocker either: `CHAR_CLKS` was 5,120, one
+character time at the board's 16 MHz V60, while we clock ours at 29.47 MHz with
+`ce` tied high - the link ran 1.84x fast into a sound board that is NOT
+overclocked (`TICK_NUM/TICK_DEN` puts its 68000 at the real 10 MHz). Now 9,430.
+Ben spotted that one.
+
+### The rule
+
+**An optimisation that moves a CPU's stack off-chip is not an optimisation.**
+The M10K saved was 16 blocks; the cost was two sessions of silence and three
+wrong diagnoses. When a CPU's PC is different every run, stop looking at what it
+talks to and look at where its stack lives.
+
+---
+
+## 2026-09-16 — 64 MB SDRAM, AND A CONCATENATION THAT SHIFTED THE V60's FETCH
+
+**The controller was right from the first build. The plumbing around it was
+wrong, it passed `make test`, it passed lint, and it was flashed to a board that
+showed a black screen.**
+
+### The change
+
+`m1_sdram` went from 9 column bits to 10: 8192 rows x 1024 columns x 4 banks of
+16-bit words = 25 address bits, 64 MB. Model 2 has run ten bits on this same
+hardware throughout (`Model2.sv`: `localparam SDR_COL = 10`), which is what
+settled that the module supports it.
+
+**Ten is the safe limit, not the dangerous one.** The note that stood in
+`m1_sdram` refused ten bits because it "overlaps bit 10 between row and column".
+The overlap it feared is between ADDRESS PINS: column bits map to A0..A9 and
+then SKIP A10, the auto-precharge flag, continuing at A11. Ten column bits land
+on A0..A9 exactly and never reach A10. The hazard begins at ELEVEN.
+
+Cost: **+14 ALM** (41,225 -> 41,239) for double the address space.
+
+### Three slices had to move, and two were missed
+
+    bank = xfer_addr[25:24]     row = xfer_addr[23:11]     col = xfer_addr[10:1]
+
+* `trow` kept the 32 MB slice `[22:10]`. That is not a wrong address but a wrong
+  DECISION: `trow` is what `bank_row[]` remembers and what the open-row check
+  compares, so the controller believed a row was already active, skipped the
+  ACTIVATE and read whatever row really was open.
+* `S_RD`'s bank slice kept `[24:23]` while `S_WR`'s moved, **because it had two
+  more spaces of indentation and my replacement string did not match it**.
+  Writes went to the new bank and reads to the old one, so bank 0 passed and
+  banks 1-3 returned zeros - which reads as a bank-decode fault and is not.
+
+**AND I SEARCHED FOR IT AND FOUND NOTHING**, because I piped the search through
+`head -12` and the match was on line 13. Do not truncate a search for a defect.
+
+### The one that cost the flash
+
+    r3d_tex_addr, {r3d_rom_addr[24:2], 1'b0},     <- 23 + 1 = 24 bits
+    IOFW_BASE + {10'd0, iofw_word},
+    tgp_mem_addr, ifp_addr,                       <- SHIFTED ONE BIT DOWN
+    24'hFA8000 + {6'd0, char_addr}, sdr_addr};
+
+**Concatenation operands are SELF-DETERMINED.** A short element is not
+zero-extended into its slot - it slides everything below it. One 24-bit element
+in a 25-bit slot corrupted `ifp_addr`, the V60's instruction fetch, and the CPU
+halted 520 cycles after reset with `pc=000003`. Four instances across
+`Model1.sv` and `tb_m1_frame.sv`.
+
+**EVERY ONE OF THESE IS WIDTH-LEGAL SYSTEMVERILOG. Lint was clean throughout.**
+
+### How it should have been caught, and was not
+
+`make test` passes: **no unit bench boots a CPU.** The bench that does -
+`tb_m1_frame` - reproduces the board exactly:
+
+    FRAME: cycles=520 halted=1  pc=000003        broken
+    FRAME: cycles=200000000 halted=0 pc=fe3dea   fixed
+
+It was sitting there and was not run before flashing. **A mechanical sweep over
+76 sites in seven files needs a BOOT test as its gate, not a lint and not a unit
+suite.**
+
+### And the first diagnosis was wrong
+
+The 64 MB geometry was blamed. An A/B disproved it in one run: with the **32 MB**
+controller restored and everything else unchanged, the V60 still halted (503
+cycles). `m1_sdram` passes both geometries with zero fails and zero violations.
+The controller was never the problem.
+
+### Found along the way, and real
+
+Every `m1_cdc_port` was hardcoded `AW(24)` - including `m1_fetch_bridge`'s, which
+carries the V60's instruction fetch, and `u_data_cdc`, which carries its data
+port. They would have truncated any address above 32 MB, silently defeating the
+entire point of the change. Now `AW(25)`.
+
+Also harness-side: every `sdram_model` instance was pinned to `COL_BITS(9)`, so
+four benches were modelling a 32 MB part against a 64 MB controller, and
+`tb_m1_sdram`'s `pick_addr` built addresses to the old geometry and never
+reached the top half of the device at all.
+
+---
+
+## 2026-09-15 — THE SOUND BENCH NEVER SERVED THE SAMPLE ROMS
+
+**Every PCM symptom this project has chased came from a missing servant in
+`tb_m1_sndboard`.** The chip was right the whole time.
+
+`sim/sound/tb_m1_sndboard.cpp` loads both real sample ROMs into `s1` and `s2`,
+prints their sizes -- and **never uses them**. `pcm1_ack`/`pcm2_ack` are assigned
+`0` once at init and never again; `pcm1_data`/`pcm2_data` are never driven at
+all. So every MULTIPCM fetch that missed the per-voice cache waited forever for
+an acknowledge that could not arrive.
+
+**The comment directly above the ROM load warned about this exact failure:**
+*"THE REAL SAMPLE ROMS. Feeding zeros here makes the mix flat zero no matter what
+the chips do, which looks exactly like the hardware fault and is not."* The load
+was wired. The servant was not.
+
+**Adding it, one change, nothing else touched:**
+
+| | ROMs unserved | served |
+|---|---|---|
+| rate | 20,202 Hz | **44,670 Hz** (chip wants 44,643) |
+| underruns | 12,220 | **0** |
+| chip advancing | 29.2% | **100.0%** |
+| descriptor fetches | started 1, **completed 0** | started 15, **completed 15** |
+| non-zero L / R | 1,440 / 1,440 | 12,560,432 / 21,362,710 |
+| descriptors resolved | *(none)* | `s000@020000 s001@0285f0 s004@04df60` |
+
+224.00 ce per sample against a nominal 224. L and R now differ, which is real
+stereo panning rather than a mono test tone.
+
+**WHAT THIS RETRACTS.** Anything measured about the PCM path with this bench is
+void, including:
+
+* "the chip is producing 45% of its samples" - it produces 100%
+* "the chip stalls on fetch latency" - `rom_req` is 0.0% of `ce`
+* "a descriptor fetch hangs" - 15 start, 15 complete
+* "PCM_CACHE makes no difference" - true, but because nothing reached memory
+* **"tb_m1_sndboard measures a peak of 20 at the mix with the real sample ROMs,
+  about -64 dB"** - this number is quoted in `m2_sound_board.sv` to justify
+  removing the mixer's `[17:2]` shift, and it came from a bench feeding the
+  chips nothing. **That justification is void.** The FM alone now peaks at
+  **1,136** against MAME's reference peak of 127, so the level argument may
+  point the OTHER way. Re-derive it; do not trust the comment.
+
+**HOW IT WAS FOUND, AND IT WAS NOT BY LOOKING AT THE BENCH.** Three hypotheses
+were raised and each killed by measurement - a halved divider (the output stage
+measured exactly 44,642 Hz), a wrong clock enable (20 MHz, correct by
+construction), fetch latency (`rom_req` 0.0%). The fourth measurement, three
+counters splitting `ce` into advancing / `rom_req` / `df_busy`, reported
+`started=1 completed=0` and 224.00 ce per sample **while advancing** -- a chip
+that is exactly on rate and then stops dead. A chip cannot both be perfect and
+be slow, so the instrument was wrong.
+
+**The general rule: when a measurement refuses to add up, suspect the
+instrument.** That is now twice in one day - `v60_trace` aligning on the wrong
+boot restart, and this. Both times the arithmetic gap was the signal, and both
+times it would have been easy to round it off and carry on.
+
+**The servant holds its ack until the request drops**, because `m2_pcm_fetch`
+clears `m_req` on `m_ack` and a pulse on the wrong cycle is the fault that has
+cost this project the most time - it cost `tb_v60_ifetch` a false 73,584
+failures earlier the same day. It also returns zero above 2 MB, matching
+`Model1.sv`'s `snd_pcm1_addr[21] ? 64'd0 : p_dout[8]`.
+
+---
+
+## 2026-09-15 — THE 20 kHz IS THE CHIP, NOT THE RATE STAGE, AND THE MUSIC PATH IS CLEAN
+
+`tb_m1_sndboard` prints `20202 Hz (chip wants 44643)`, which reads as a divider
+that is half what it should be. It is not. **Ben asked whether it should not be
+40-odd kHz, and taking the two numbers apart is what located the fault.**
+
+**THE OUTPUT STAGE IS EXACTLY RIGHT.** Every pop either delivers a sample or
+underruns, so the two counters sum to the output rate:
+
+    jt12       10,101 samples + 12,220 underruns = 22,321 in 0.5 s = 44,642 Hz
+    stubbed    10,031 samples + 12,290 underruns = 22,321 in 0.5 s = 44,642 Hz
+
+against the 44,643 the chip wants. `m2_pcm_rate` drains correctly. The 20,202 is
+`dbg_pcm_samples`, which counts `p1_stb` -- **samples the chip PRODUCES** -- not
+pops.
+
+**THE CLOCK ENABLE IS RIGHT TOO, and this was worth checking** given three Model
+2 clock assumptions had already been found wrong here. `ce` is
+`CE_NUM/CE_DEN * clk` = 20/80 * 80 MHz = **20 MHz**, the same as Model 2's
+20/50 * 50 MHz. `CE_DEN` is clk-in-MHz by construction, which makes `CE_NUM` the
+MHz figure directly, so it scales correctly and is NOT a fourth instance.
+
+**SO THE CHIP ITSELF IS SLOW.** A sample period is 28 slots x 8 ticks = **224
+`ce` nominal**; measured ~990. It spends about 77% of its time not advancing.
+
+**THE MECHANISM.** `m2_multipcm`'s slot loop is gated:
+
+        else if (df_busy) begin ... end
+        else if (!rom_req) begin
+            tick <= tick + 1'b1;
+            ... if (slot == 5'd27) sample_stb <= 1'b1;
+
+**The whole chip stops advancing while a ROM request is outstanding**, and a
+descriptor fetch (`df_busy`, twelve sequential byte reads) preempts the loop
+entirely. **The real YMW-258-F does not do this** - it reads sample data with
+fixed timing inside its slot and has no mechanism to stretch a sample period
+because memory was slow. The stall is ours, not the hardware's.
+
+**PCM_CACHE MAKES NO DIFFERENCE AT ALL**, which is the surprise. PCM_CACHE=1 and
+PCM_CACHE=0 give byte-identical output - same samples, same underruns, same
+peak. The two binaries were checked to be genuinely different (different md5,
+different size) and the harness does forward the parameter, so this is not a
+build that failed to take. **The per-voice fetch cache is not moving the stall.**
+
+**AND THE ARITHMETIC DOES NOT CLOSE. Saying so rather than dressing it up.** At
+`PCM_LAT=1` the bench's memory answers in a clock, and `rom_req` is cleared on
+`clk` rather than on `ce` (deliberately - see the comment at the clear). With 28
+active slots issuing one fetch each per sample period, the expected cost is
+roughly 28-56 `ce` on top of 224 -- **12-25% slower, not 340%**. Something else
+dominates and this entry does not name it.
+
+> **CORRECTED SAME DAY, AND THE GAP ABOVE IS WHY IT WAS FOUND.** The arithmetic
+> did not close because **none of this was real**. The bench never served the
+> PCM sample ROMs at all - see the entry above this one. The chip was correct
+> throughout; the instrument was not. Everything in this section from "SO THE
+> CHIP ITSELF IS SLOW" onwards describes a bench artefact. The reading is kept
+> visible because the shape of the mistake is the useful part: **three
+> successive hypotheses (a halved divider, a wrong clock enable, fetch-latency
+> stalling) were each disproved by measurement, and the fourth measurement
+> found the instrument.** The refusal to paper over the 12-25%-versus-340% gap
+> is what kept it going.
+
+The instrument that would: count `ce` cycles spent with `rom_req` high versus
+`df_busy` high versus advancing, per sample period, and print the three. That
+separates sample fetches from descriptor fetches from a third cause, and it is a
+handful of counters in the harness.
+
+**WHAT THIS DOES NOT AFFECT: THE MUSIC.** Ben's point, and the RTL agrees --
+`ym_l` goes straight from jt12's `snd_left` into the mixer and **never touches
+`m2_pcm_rate`**; only `p1_raw`/`p2_raw` do. Music is FM and is independent of all
+of the above. The A/B is direct evidence: with the FM stubbed the mix peaks at
+**0** and with jt12 at **1,136**, so in that window the starved PCM contributes
+nothing and every bit of the signal is FM.
+
+So the prediction for the board is **clean music, ragged effects** - and if that
+is what it sounds like, the two faults are cleanly separated.
+
+**A stale label fixed alongside**: `make test_m1_sndboard_nc` announced itself as
+"PCM_CACHE=0, the HARDWARE configuration". `Model1.sv:823` instantiates
+`PCM_CACHE(1'b1)`, so the *other* target is the hardware configuration and that
+echo would send the next reader to benchmark the wrong build.
+
+---
+
+## 2026-09-15 — THE SOUND BOARD FAILS ITS OWN BENCH, AND jt12 IS WHAT FIXES IT
+
+**`FAIL the mix is flat zero -- the chips play but nothing comes out`.**
+
+That is `tb_m1_sndboard` on the board as it stood, and it is the hardware
+symptom reproduced in simulation. It had been reported by the bench all along.
+
+**The A/B, same harness, one file swapped:**
+
+| | FM stubbed (`m1_ym_timer`) | `jt12` |
+|---|---|---|
+| peak \|l\| | **0** | **1,136** (-29.2 dBFS) |
+| snd_l non-zero | 0 cycles | 1,440 cycles |
+| IRQ4 (timer) | **0 times** | 1 |
+| IRQ2 (uart) | 1,697 | 6 |
+| bench | **fails=1** | **fails=0** |
+
+**RUN THE CONTROL.** "peak 1136, bench passes" on its own is a number. Against a
+control that measures **zero** on the same harness, it is a result. The control
+cost one bench run.
+
+**IRQ4 NEVER FIRED WITH THE STUB IN**, and the stub's stated reason for existing
+was *"sound effects, and the IRQ4 timebase the sound program sequences on"*. It
+was not providing the timebase. That is worth holding onto: a stub that is
+documented as preserving a behaviour had stopped preserving it, and nothing said
+so except a bench nobody had read the output of.
+
+**What the sample rate says, and it exonerates the change**: ~20,062 Hz stubbed
+against ~20,202 Hz with jt12, both against a chip that wants 44,643. **The rate
+fault is pre-existing and unrelated** - it did not arrive with the FM. Measuring
+it on both sides is the only reason that can be said.
+
+### What went in with it
+
+- **`ym_div` /6 -> /10.** Model 2's clk_sys is 48 MHz and 48/6 is 8 MHz exactly;
+  **Model 1 runs clk_sys at 80 MHz**, where /6 gives 13.3 MHz and the FM plays
+  **67% sharp**. The counter also had to widen to four bits - 0..9 does not fit
+  in three. This was the third Model 2 clock assumption inherited unchanged
+  (TICK_DEN and m2_pcm_rate's CE_DEN/OUT_DEN were the others) and all three were
+  wrong here. It was harmless only while the FM was stubbed.
+
+- **The mixer saturates but does NOT attenuate**, against the note in the file
+  that said to restore `[17:2]` and the saturation together. Only half of that
+  is right. The saturation is real protection - three live sources can exceed 16
+  bits and a wrap turns a loud passage into full-scale noise. The `[17:2]` is
+  **12 dB of attenuation** on a board already ~16 dB below the reference (MAME's
+  vr peaks at 127 of 32,767; our mix measured 20), and would put it back under
+  the noise floor - the "silent on the board, samples arriving the whole time"
+  state that already cost a session. The ~60 ALM the saturator costs did not fit
+  at 99% ALM and fits at 95%.
+
+- **`m1_quad_store` 3,584 -> 3,072 quads**, to free the 10 M10K. **A deliberate,
+  temporary regression of the 3D**, Ben's call: the design was at 553/553 with
+  nothing to reclaim, and it goes back up when the 3D path moves to DDR3. It
+  costs dropped scenery on busy stretches (measured on hardware: D=33, D=111).
+
+- **The harness stopped compiling** on `u_board.u_ym.reg_sel`, an internal of the
+  stub - an error naming a dotted path rather than the swap that caused it. The
+  register number is not the chip's secret: the 68000 writes it to the address
+  port and the value to the data port, so the harness now reconstructs it from
+  the bus and works against either chip.
+
+**NOT PROVEN YET.** The audio is non-zero for 1,440 cycles of a 0.5 s window and
+IRQ4 fires once. That is a long way from sustained music, and the 20 kHz rate
+fault is still open. What is established is that the mix is no longer flat zero
+and the bench no longer fails - not that the board will sing.
+
+---
+
+## 2026-09-15 — QUADRATIC MUX NETWORKS: -130 ALM MEASURED, THREE SEEDS
+
+**Measured, not estimated.** Same three seeds, same design, one change set:
+
+    seed 23   41,194 -> 41,061   -133
+    seed 19   41,171 -> 41,037   -134
+    seed  3   41,275 -> 41,161   -114
+
+All three moved together, which is what separates a real saving from fit noise.
+Our clocks stayed positive (seed 23 +0.158, seed 19 +0.083); only the
+framework's `pll_hdmi` is negative.
+
+**THE PATTERN, AND IT IS THE SAME ONE THREE TIMES NOW.** A loop that indexes an
+array with a COMPUTED index builds one full mux per iteration. It looks like one
+mux in the source and it is N of them in the fitter.
+
+**1. `m1_fp_pool.rr_pick`.** A rotating arbiter walked its request vector as
+
+    sum = first + k;  idx = (sum >= NC) ? sum - NC : sum;  if (req[idx]) ...
+
+unrolled NC times. `idx` is a variable in every one of them, so each iteration
+built its own NC:1 mux to read `req[idx]`, plus its own add, compare and
+subtract. NC of those per arbiter, and there are THREE arbiters. Rotating the
+vector ONCE - `{req, req} >> first`, whose bit k is `req[(first+k) % NC]` - makes
+the priority chain index with k CONSTANT, and the wrap arithmetic happens once on
+the winner instead of NC times on every candidate.
+
+**2. `v60.sv` fetch-buffer bytes.** Three offsets into `fb[]` are read at EIGHT
+sites - the `rf_raddr_a` decode and seven sequential arms. Each inline read built
+its own 24:1 byte mux. Three module-level wires now serve all eight.
+
+An earlier attempt muxed the INDEX on `st` and kept one byte mux. **That is
+worse, not better**: the sequential arms cannot use it, so they kept their seven
+muxes and the index mux was pure addition. Name the bytes; do not mux the index.
+
+**3. `v60_ifetch` fill network.** `fb[i] <= if_data_i[(i - fb_wr_r)*8 +: 8]` for
+i in 0..23 - twenty-four 8:1 byte muxes. But the enable restricts
+`i - fb_wr_r` to 0..7, so the select is `(i - fb_wr_r) & 7`, which depends only
+on `fb_wr_r[2:0]` and the constant i. **fb[i], fb[i+8] and fb[i+16] select the
+same source byte.** Rotating the 8-byte line once by `fb_wr_r[2:0]` and indexing
+with `i & 7` leaves EIGHT muxes and a plain wire per byte.
+
+**HOW TO FIND THEM.** Rank our modules by `Combinational ALUTs / Dedicated Logic
+Registers` from the fit report's entity table. `m1_fp_pool` stood at **10.17**
+(2,136 comb, 209 reg) against ~1.5 for a healthy datapath - the outlier by a
+factor of three, and the arbiters were exactly why.
+
+**AND THE RATIO STOPS YOU WASTING TIME TOO.** `m1_geo_xform` has the same
+computed-index pattern and a ratio of **0.18** - 231 combinational ALUTs in the
+whole module. The change there is correct and was kept, but it saves almost
+nothing. Check the ratio before optimising, not after.
+
+**What did NOT need touching, checked rather than assumed**: `s32_v60`'s two 32:1
+register-file read muxes are already minimal; `v60_ifetch`'s 4-byte realign shift
+is deliberate and measured (see its own comment - 8 was tried and reverted on
+timing); and the `FAST_IFETCH` legacy fill path is a parameter test, so Quartus
+constant-folds it away.
+
+---
+
+## 2026-09-15 — THE HELD-ACK TRAP BIT THE INSTRUMENT, NOT THE DESIGN
+
+**73,584 window mismatches, and the DUT was correct throughout.**
+
+`v60_ifetch` is 937 ALM, every instruction the CPU executes passes through it,
+and it had **no bench of its own** - hard rule 5 says every RTL module ships
+with one. It was split out of `v60.sv` as a pure refactor and has only ever been
+covered end-to-end, by the 29-test unit suite and by running real game code.
+Both say the CPU works; neither says the fetch window is correct, and neither
+can be aimed at a specific hazard.
+
+**The invariant that needs no reference model.** The fetch window has one
+complete correctness statement:
+
+    for every i < fb_valid:  fb_flat byte i == memory[fb_base + i]
+
+on EVERY cycle, not only when `fill_ready` - the decoder reads `fb_flat`
+combinationally, so a window that is briefly wrong is a window that can be read
+wrong. Checking an invariant against a golden memory beats diffing against a
+second implementation, because it cannot be wrong in the same direction as the
+DUT.
+
+**Plus liveness, which the invariant misses entirely.** A window that never
+fills satisfies it vacuously. The bench also fails if `fill_ready` has not
+asserted within a bounded number of cycles - a deadlocked fetch reads as a dead
+CPU, which is the shape that has cost this project the most time.
+
+**THE FIRST RUN REPORTED 73,584 FAILURES AND THEY WERE ALL MINE.** Stale bytes in
+the tail of the window, at a plausible depth, reproducible - it read exactly like
+a real fetch bug. The cause: the bench pulsed `if_ack` for one cycle. The CPU is
+`ce`-gated at one cycle in three, so most pulses are simply never seen.
+`m1_fetch_bridge.sv:20` states the protocol in as many words - *"`if_ack` must
+then stay high until `if_req` drops"* - and CLAUDE.md lists held-versus-pulsed
+acknowledges as the fault that has cost the most time here.
+
+With the ack held until the request drops: **checks=400000 fails=0 ready=24913
+seq=21905 jumps=3008 worst_stall=17**.
+
+**So it has now cost a session twice: once in the design, once in the
+instrument.** When a brand-new bench reports failures against RTL that real game
+code has been running for months, suspect the bench first - and check the
+handshake before anything else.
+
+**The liveness bound is measured, not guessed.** The first version used 400 ce
+cycles against a real worst case of 17 - loose enough to pass a fetch unit that
+had become twenty times slower. It is now 100: ~6x headroom against arbitrary
+reshuffling, and still far below a deadlock.
+
+**Not covered, and said out loud rather than implied**: the self-modifying-code
+guard. `dbus_req` is held low, so invalidate-on-overlapping-write is untested
+here - it needs the golden memory mutated in step with the DUT's view of the
+write, a race this bench does not yet resolve. `tb_v60_smc` in the unit suite
+exercises it.
+
+---
+
+## 2026-09-15 — `v60_trace` WAS BROKEN BY THE SOUND ROMS, NOT BY THE V60
+
+**The instrument reported `DIVERGES at instruction 2` and the CPU was correct.**
+
+**What it looked like.** `make v60_trace` — the strongest V60 verification there
+is, and what CLAUDE.md records as reporting *no mismatch at all* on 2026-09-08 —
+began failing at the second instruction:
+
+    v60_trace: DIVERGES at instruction 2
+    --- MAME, collapsed: FE104E: jmp FE0000[PC] ...
+    --- ours: fe104e fffff0 fe104e fe0000 fe000e fe0016 fe001d fe0020
+
+It surfaced while optimising `v60.sv`, which is the worst possible moment: a
+trace failure on the file you have just edited reads as your own bug.
+
+**The negative control is what saved the time.** Copying the *unmodified*
+`v60.sv` back over the working file and re-running produced the **identical**
+divergence, character for character. The edit was exonerated in one run, before
+any of it was unpicked. Run the control first; it costs one run and it decides
+whether you are debugging the change or the instrument.
+
+**The mechanism.** Our raw stream begins
+
+    000000 fffff0 fe104e fffff0 fe104e fe0000 fe000e ...
+
+The core passes the **reset vector twice**. `m1_rom_loader.sv` clears
+`rom_loaded` whenever `ioctl_download` rises, and `rst_cpu = ~rst_n |
+~rom_loaded` — so **every MRA part holds the V60 in reset and releases it
+again**. Each aborted pass executes the single `jmp` at the entry point and is
+reset before it touches anything, so the restarts are harmless; but they are in
+the trace.
+
+The aligner took the **first** occurrence of the entry point, which keeps the
+aborted passes in the stream, so the diff compared our restart against MAME's
+second real instruction.
+
+**What changed since the clean trace, and it was not the CPU.** Virtua Racing's
+MRA now has **six** download streams (indices 0-5) against five for every other
+game — indices 3 and 5 are the sound ROMs added this session. More parts, more
+restarts. **Adding a ROM stream broke the CPU verification instrument**, and
+nothing in either change is anywhere near the other.
+
+**The fix is in the instrument.** `tools/v60_trace.sh` now aligns on the **last**
+reset-vector pass inside a bounded boot preamble, **counts the restarts and
+prints them**, and **warns loudly** if a reset vector is reached after the
+preamble — that would be a watchdog or a real fault and must not be swallowed by
+an aligner. Bounding the search is the point: an unbounded "last occurrence"
+rule would silently discard a genuine mid-run restart, which is a worse failure
+than the one being fixed.
+
+Verified offline against the existing artefacts before re-running: aligned
+stream `fe104e fe0000 fe000e fe0016 fe001d fe0020 fe0027 fe002d` against MAME's
+identical `fe104e fe0000 fe000e fe0016 fe001d fe0020 fe0027 fe002d`.
+
+**The general lesson, and this file already carries three of these.** When a
+measurement changes, check what changed about the *instrument* before concluding
+something changed about the hardware. The V60 had not moved at all.
+
+---
+
+## 2026-09-15 — THE V60 FETCH-BUFFER HOIST, AND WHY THE TRACE COULD NOT VERIFY IT
+
+`v60.sv` reads its 24-byte fetch buffer `fb[]` at a **variable index** in 19
+places. In one `always @*` block, five case arms read it at three distinct
+computed indices, each synthesising its own 24:1 byte mux. Hoisted to one index
+mux feeding one byte mux:
+
+    logic [4:0] fb_ra_idx;
+    always @* begin
+        case (st)
+            S_STR_OP2:            fb_ra_idx = 5'd3 + len1 + len2;
+            S_DEC_OP2, S_BF_INS2: fb_ra_idx = 5'd2 + len1 + len2;
+            default:              fb_ra_idx = 5'd2 + len1;
+        endcase
+    end
+    wire [7:0] fb_ra_byte = fb[fb_ra_idx];
+
+**A first attempt grouped the states wrongly** — `S_DEC_OP2`/`S_BF_INS2` use
+`5'd2 + len1 + len2`, not `5'd3 + len1 + len2`. Caught by reading the arms
+again before building. Three distinct addresses, not two.
+
+**How it was verified, given the trace was down.** `v60_alu` 360,001 checks / 0
+fails, `v60_shift` 69,121 / 0, and the V60 unit suite 29 passed / 0 failed / 0
+skipped — but per-opcode fuzzing proves each instruction correct *for the state
+it was handed*, which is exactly the gap an operand-addressing change can fall
+through. So the change was run through **real game code**: `make m1_boot
+BOOT_CYCLES=60000000`, with and without the hoist, logs diffed.
+
+**Every line of simulation output identical over 60 million cycles.** The only
+difference between the two logs was Verilator warning text from a compile-cache
+miss. That is a far stronger statement than the two instructions the broken
+trace was managing, and it is the technique to reach for when a change is
+correct-by-fuzzing but unproven in situ.
+
+---
+
+## 2026-09-15 — DUPLICATED BARREL SHIFTERS: ~385 ALM, AND HOW TO FIND THEM
+
+A repeatable method, three modules, all verified by existing fuzz suites.
+
+**THE METHOD.** The fit report's entity table carries `Combinational ALUTs` and
+`Dedicated Logic Registers` per module. Rank OUR modules by the ratio:
+
+    s32_v60        10,869 own  16,049 comb   3,488 reg   4.60
+    v60_fp          1,447       2,524 comb     362 reg   6.97
+    m1_fp_pool      1,304       2,157 comb     212 reg  10.17
+    v60_shift         640         993 comb       2 reg  496
+    mb86233_alu       618       1,019 comb     194 reg   5.25
+
+A module that is nearly all combination and no registers is either genuinely
+combinational or is building the same structure several times. Read the worst.
+
+**WHAT IT FOUND.**
+
+1. **A non-constant modulo inside an unrolled loop.** `m1_fp_pool`'s round-robin
+   did `idx = (first + k) % NC` and `m1_sdram`'s arbiter did
+   `cand = (rr_next + j) % NP` -- a DIVIDER, unrolled NC and NP times, twice in
+   the pool. Both operands are 0..N-1, so the sum is at most 2N-2 and ONE
+   conditional subtract is exact. **~290 ALM**, and `m1_sdram`'s is on the path
+   its own comment calls "the worst path in the whole design".
+
+2. **`v60_shift` had SIX 32-bit barrel shifters where its comment claimed one
+   pair.** "One left shifter and one right shifter serve all three opcodes" was
+   the intent; the code had `xz<<sh`, `xz>>sh`, `xs<<sh`, `xs>>sh` and the two
+   the rotate builds. SHL/SHA/ROT are mutually exclusive, so the operand and
+   distance are chosen BEFORE the shifter. **47-165 ALM depending on the seed**,
+   69,121 fuzz checks unchanged.
+
+3. **`mb86233_alu` had four, and two were BYTE-IDENTICAL.** `ALU_LSLD` and
+   `ALU_ASLD` computed `reg_d << shamt` in separate case arms. The arithmetic
+   right shift is the logical one plus a sign MASK, and a mask with a constant
+   operand is a decoder rather than a barrel. **59 ALM**, 2,170,388 cases
+   against MAME unchanged.
+
+**THE RULE UNDERNEATH ALL THREE: Quartus does not share logic across case arms
+or across distinct expressions.** It will CSE within one expression scope and
+nowhere else. If two arms want the same shifter, the source has to hoist it.
+
+**WHERE THE SEAM RUNS OUT.** `v60_ifetch` has the same duplication -- two
+24-iteration variable part-selects in exclusive branches -- and NO unit bench,
+so it was left alone; write the bench first. `v60.sv`'s 28 variable shifts are
+mostly 2-bit element scales and `32'h1 << bit` decoders, which are already
+cheap. `v60_fp` is the biggest remaining at ratio 6.97, but `tb_v60_fp` fails
+236 of ~5,950 cases in the configuration that SHIPS, so a regression there
+would be invisible -- fix the bench before the module.
+
+## 2026-09-15 (b) — PARALLEL BUILDS RACED ON ONE sys_top.v
+
+`tools/mister_project.sh` did `ln -sfn "$tpl/sys" "$stage/sys"` -- every staging
+directory SYMLINKED the shared template -- and then sed-edited
+`$tpl/sys/sys_top.v` in place for IHRES/OHRES. Three parallel seeds therefore
+rewrote one file while the others synthesised from it. Quartus reports it as
+
+    Error (125085): The Quartus Prime Settings File changed outside of the
+    Quartus Prime software and contains errors.
+
+which names the **qsf** and is really a race on **sys/**. It cost a seed on
+2026-09-15 and had been intermittent before. Staging now copies `sys/` per
+build and patches the copy; `third_party/template` is back to pristine and
+stays that way, which is also the right side of "never modify the framework".
+
+
+## 2026-09-14 (e) — PORT 7 CHANGED HANDS MID-TRANSACTION, THE SAME BUG AS PORT 4
+
+Found because Ben refused a bad excuse. The working theory had become "the PCM
+starves under gameplay load", and the proposal was to rebuild the sound bench
+around the real V60 to prove it. His answer: **Model 2 runs ELEVEN ports with
+working sound AND textures on a heavier 3D path.** Capacity was never the
+problem, and the excuse was covering for not having looked.
+
+`Model1.sv`, port 7 -- the sound 68000's ENTIRE bus, program ROM and work RAM
+on one port:
+
+    snd_mem_req  = snd_rom_req | snd_ram_req;
+    snd_mem_addr = snd_ram_req ? RAM : ROM;
+    snd_mem_we   = snd_ram_req & snd_ram_we;
+    snd_mem_be   = snd_ram_req ? snd_ram_be : 2'b11;
+    snd_rom_ack  = snd_mem_ack && !snd_ram_req;
+    snd_ram_ack  = snd_mem_ack &&  snd_ram_req;
+
+Every field is a mux on the CURRENT value of `snd_ram_req`. A ROM fetch in
+flight when `snd_ram_req` rises has its address changed under it, its byte
+enables changed, and its acknowledge delivered to the RAM instead. The 68000
+executes whatever comes back.
+
+**THIS IS THE SAME DEFECT AS PORT 4, IN THE SAME FILE**, fixed earlier in the
+same session, with a comment beside it reading "a port is a single-transaction
+resource: pick an owner when nothing is in flight and hold it until the ack
+comes back". Port 7 was never checked.
+
+### Why every instrument missed it
+
+- **It is load-dependent.** In attract the driver sits in a tight loop and
+  rarely interleaves ROM and RAM; in a race it does both continuously. The
+  sound effects are in the race.
+- **tb_m1_sndboard gives the ROM and the RAM SEPARATE PORTS** with independent
+  acknowledges. The shared-port hazard cannot exist there, which is why the
+  board simulates perfectly -- register traffic byte-identical to MAME,
+  descriptors exact, rate within 0.06% -- and fails on hardware.
+- **The externalised work RAM is this core's own change.** Model 2 keeps the
+  68000's RAM on-chip, so it has no shared port to get wrong. Every comparison
+  against Model 2 was looking at a structure they do not have.
+
+### The cost of the detour
+
+Sizing a gain from an idle-window measurement, concluding the rumble was normal,
+concluding the audible content was FM -- three wrong turns, all from comparing
+ATTRACT-mode audio, and all corrected by Ben rather than by an instrument. The
+one that mattered: "sound effects should not be FM", which forced the gameplay
+measurement that showed MAME at full scale where we sit at 132.
+
+
+## 2026-09-14 (d) — WITHDRAWN: "the audible sound is FM". IT IS THE PCM.
+
+**This entry originally concluded the audible sound was FM. That was wrong, and
+it contradicted the data in the same entry.** Ben caught it: segam1audio routes
+all three chips to the speaker IN PARALLEL --
+
+    m_ym         -> speaker, 0.30
+    m_multipcm_1 -> speaker, 0.50
+    m_multipcm_2 -> speaker, 0.50
+
+-- so the PCM does not depend on the FM, and the measurement below shows PCM
+activity rising 2.5x into gameplay while the YM stays FLAT at 232 writes / 2 s.
+The full-scale audio tracks the PCM. The FM being stubbed costs the music; it
+does not explain missing sound effects.
+
+The original heading is kept so the reversal is visible rather than tidied away.
+
+## 2026-09-14 (d, as first written) — the measurements, which stand
+
+Measured, after verifying the entire PCM path against MAME and finding nothing
+wrong with it.
+
+`tools/mame_play_pcm.lua` inserts a coin and start, then reports write rates:
+
+    attract    PCM 4,408 / 2 s     YM 232 / 2 s    total audio peak ~100
+    gameplay   PCM 11,400 / 2 s    YM 232 / 2 s    total audio peak 16,000-31,883
+
+So gameplay audio is FULL SCALE and 250x louder than attract. **Every earlier
+comparison here used attract**, where MAME itself is nearly silent -- which is
+why -54 dBFS looked like "too quiet" and the idle drone looked like a fault.
+
+And `m1_sndboard`'s YM register trace shows what the driver is actually doing:
+
+    28=00..28=0b   key-on/off, all twelve FM channels
+    42,4a,46,4e    total level        52..7e   attack/decay
+    82..8e         release            b2, b6   algorithm, pan/LFO
+
+**It never writes 0x24-0x27**, the timer registers -- so the IRQ4 theory is
+dead, the driver does not use the YM timer. It does program FM voices
+continuously, and `m1_ym_timer` discards all of that, so the MUSIC is missing.
+But the YM write rate does NOT change between attract and gameplay while the
+PCM's does, and the audio level follows the PCM. **The sound effects are PCM
+and they are missing for a different reason.**
+
+### The PCM path is verified correct IN ATTRACT, and only there
+
+| | evidence |
+|---|---|
+| register programming | byte-identical to `tools/mame_pcm_tap.lua` |
+| slot map, register clamp | `v-(v>>3)`, `%8==7` invalid, `>7 -> 7` -- match `VALUE_TO_CHANNEL` |
+| descriptors | `s000@020000 s001@0285f0 s004@04df60`, decoded independently from the ROM |
+| sample rate | 44,645 Hz vs 44,643 |
+| address decode | `addr[23:3]==0x188000` = `0xC40000-7`, matching segam1audio |
+| idle character | ours peak 132 / 71 Hz against MAME's ~100 / 125 Hz |
+
+### A third inherited Model 2 clock assumption, not yet fixed
+
+`ym_div` counts 0..5 -- divide by six -- because 48/6 = 8 MHz on Model 2. At
+Model 1's 80 MHz that is 13.3 MHz and the FM will play **67% sharp** the moment
+jt12 returns. It needs a divide by TEN. Commented in place; harmless while the
+FM is stubbed.
+
+### What cannot currently be tested
+
+THIS IS THE GAP THAT MATTERS. `tb_m1_sndboard` has no V60, and replaying MAME's
+captured command stream (40 bytes for a whole race) does NOT reach the gameplay
+state -- `pcm_writes` stays
+at 479 with no commands, with attract commands and with gameplay commands,
+identically. So whether the PCM behaves correctly UNDER GAMEPLAY is untested,
+and the bench cannot answer it. That needs the sound board in `tb_m1_frame`,
+behind the real V60.
+
+
+## 2026-09-14 (c) — THE "RUMBLE AND STATIC" WAS THE GAIN I ADDED
+
+Recorded because three build cycles went into making this WORSE, and the
+measurement that settles it takes four minutes.
+
+The board produced a constant rumble with intermittent static, never resembling
+a sound effect. The working assumption was that samples were being fetched or
+decoded wrongly. **MAME says otherwise.** `mame vr -seconds_to_run 75
+-wavwrite`, in five-second windows:
+
+        0-35 s   peak    ~100   zero-x ~125 Hz    idle
+       35-40 s   peak  16,330   zero-x  395 Hz    the attract audio
+       40-65 s   peak    ~100                     idle
+       65-70 s   peak  16,322                     the next burst
+
+**THE REFERENCE IS NEARLY SILENT FOR THIRTY-FIVE SECONDS AT A TIME**, and while
+it waits it produces the same low-level ~125 Hz drone we do (ours: peak 132,
+71 Hz). The real audio is **-6 dBFS** and needs nothing added to it.
+
+The x16 gain came from reading -54 dBFS on the board and sizing a gain to it.
+**That reading was taken during the idle window.** The gain amplified the drone
+to audibility -- the "rumble" -- and saturated the 16,330 peaks -- the
+"static". Both symptoms were manufactured by the fix, not revealed by it.
+Unity restores the reference's own level.
+
+### What was verified while chasing the wrong thing
+
+None of it was wasted; all of it is now known-good rather than assumed:
+
+| | how |
+|---|---|
+| register programming | `tools/mame_pcm_tap.lua` taps segam1audio's 68000. Ours is BYTE-IDENTICAL: `bank=01 bank=01 1=00 2=09 0=0f 2=05 0=fe 2=04 0=00 1=01 ...` |
+| slot translation and register clamp | `v - (v>>3)`, `%8==7` invalid, `>7 -> 7` -- all match `VALUE_TO_CHANNEL` and `m_address` |
+| sample descriptors | traced out of the RTL and decoded from the ROM independently: `s000@020000 s001@0285f0 s004@04df60`, exact |
+| sample rate | 44,645 Hz against the chip's 44,643 |
+| address decode | `addr[23:3] == 0x188000` is exactly `0xC40000-7`, matching segam1audio's map |
+
+### The instrument lesson, for the third time this session
+
+**Do not size a correction from a measurement taken in the wrong window.** -54
+dBFS was real, and it described silence. The same error in a different costume
+as the display-list census and the zero-latency PCM bench: the number was
+right, what it was a number OF was wrong.
+
+And `third_party/mame`'s `multipcm.cpp` is **TRUNCATED** here -- 185 lines
+against the real ~700, with `update_step` called but never defined. Source
+reading against that copy is unreliable; run the binary instead.
+
+
+## 2026-09-14 (b) — THE SAMPLES PLAYED 1.6x TOO FAST: a 50 MHz default on an 80 MHz clock
+
+The first audio this core ever produced was, on the board, "a rumble and slight
+crackle constantly -- it does not resemble any SFX", at a correct level.
+
+**Ben's objection is what found it.** The working theory was that PCM reads
+above the loaded 2 MB were fetching the display lists. He pointed out that if
+only SOME voices were out of range, the in-range ones should still have played
+recognisably -- and none did. That rules out a partial fault and demands one
+that breaks EVERY sample.
+
+`m2_pcm_rate`'s parameters are written for Model 2's 50 MHz clk_sys:
+
+    parameter CE_NUM  = 20,    CE_DEN  = 50            // the chip's enable
+    parameter OUT_NUM = 44643, OUT_DEN = 50_000_000    // the drain
+
+and `m2_sound_board` instantiated it as `m2_pcm_rate #(.BYPASS(!PCM_RATE))` --
+forwarding NOTHING. It forwards TICK_NUM/TICK_DEN to the 68000 and stops there.
+On Model 1's 80 MHz clock the drain therefore ran at
+
+    80e6 x 44643 / 50e6 = 71,429 Hz      against the chip's own 44,643
+
+and the chip's own enable at 32 MHz instead of 20. Measured in
+`tb_m1_sndboard`: **71,456 samples/s**, and 80/50 is exactly that 1.60 ratio.
+Every sample played 60% fast, which is not "wrong pitch" so much as
+unrecognisable.
+
+TICK_DEN IS clk_sys IN MHz by construction, so it is the one number both stages
+need. Passing `.CE_DEN(TICK_DEN), .OUT_DEN(TICK_DEN * 1_000_000)` gives
+
+    before   71,456 Hz
+    after    44,670 Hz   (chip wants 44,643 -- 0.06% out), underruns 0
+
+and reproduces Model 2's existing defaults exactly when TICK_DEN is 50.
+
+### Four hypotheses died on the way, all by measurement
+
+| | how it died |
+|---|---|
+| PCM cache bypass starving the chip | identical rate and zero underruns at fetch latency 1, 40 and 80 |
+| MultiPCM banking | matches `segam1audio`'s `a < 0x100000 ? a : {bank_sel, a[19:0]}` exactly |
+| byte order in the 64-bit line | `m_data[7:0]` is file byte 0, matching the SDRAM burst assembly |
+| loader split and MRA layout | 7 boundary probes in `tb_m1_rom_loader`; `verify_mra` passes byte-for-byte |
+
+### And the instrument was blind twice before it worked
+
+**`tb_m1_sndboard` acked every PCM fetch on the SAME CYCLE as the request.**
+`ACK_HOLD` set how long the ack stayed up, not how long it took to arrive, so
+fetch latency was ZERO. Comparing PCM_CACHE 0 against 1 under that answered
+nothing -- a cache exists to hide latency. `PCM_LAT` now models the delay.
+
+**And the harness never passed TICK_DEN either**, so it ran the board at
+80 x 20/50 = 32 MHz. Fixing that changed the 68000's instruction count
+(1,159,595 -> 901,005) and left the sample rate untouched, which is what
+isolated the fault to the rate stage rather than the tick.
+
+**A bench that does not match the top level is measuring a machine nobody
+builds.** Both defaults were Model 2's, both were silently inherited, and
+neither was visible until the number they produced was compared against the
+hardware it claims to model.
+
+### Still true, and NOT the rumble
+
+PCM reads above the loaded 2 MB are now zeroed, which is what MAME's erased
+region does -- `model1.cpp` gives each chip 0x400000 and loads 0x200000. Bit 21
+is the BANK, not an overflow: the chip emits 2 MB and the upper megabyte is a
+window onto one of four 1 MB pages. For vr, banks 2 and 3 are MAME's zeros, so
+the masking is correct -- it just was not the fault.
+
+
+## 2026-09-14 — clk_sys CLOSED: the critical path was ONE path, and it was already named
+
+Every timing round on this core has been a seed lottery. Four seeds of the same
+design gave **-0.601, -0.747, -0.831 and -3.473** on `clk_sys`, and a
+distribution centred below zero is a slow path, not luck. So instead of buying
+a fifth ticket, the path was read:
+
+    quartus_sta -t paths.tcl   (get_timing_paths -setup -npaths 5)
+
+**All five worst paths in the design were the SAME path**, and it is the one
+`docs/HANDOFF.md` had already written down:
+
+    emu|m1_integrated|m1_video|m1_video_timing|vcnt[7]
+      -> m1_main|m1_mainram|m1_tdp_ram:u_pram|...|portb_address_reg0
+
+`assign pal_addr = mixed;` — the raster counter through the entire tile fetch
+and mixer priority resolution, combinationally, into an M10K's port B address.
+Deep logic AND a long route to wherever the fitter put the block.
+
+Registering `pal_addr` closed it:
+
+    before   clk_sys -0.601   clk_3d  +0.4    pll_hdmi -0.352
+    after    clk_sys +0.037   clk_3d  +0.418  pll_hdmi +0.495
+
+**Every clock in the design is positive for the first time**, the framework's
+HDMI PLL included — that had been negative in every build on record.
+
+**IT COSTS NO PICTURE SHIFT, and that is why it was safe to do.** `ce_pix` is
+**/6**: six core cycles per pixel, and this chain used one of them. Two still
+settles inside the dot period, and `m1_video`'s output stage latches on
+`ce_pix` rather than on a cycle count, so nothing downstream counts cycles.
+`tb_m1_video` passes 380,929 checks unchanged.
+
+**The lesson is the cheap one.** A Quartus build is 25-80 minutes and a seed
+sweep is four of them. `get_timing_paths` is three minutes and it named the
+fault, the module and the line. When the slack distribution across seeds is
+centred below zero, stop sweeping and read the path.
+
+
+## 2026-09-13 — the blue screen was FOUR bugs in the display-list move, and none was arbitration
+
+Moving the two display lists out of `m1_mainram`'s block RAM into SDRAM
+(`rtl/mem/m1_dlist_sdram.sv`, 64 M10K freed) produced a blue screen: the 2D
+layer drew, the 3D layer drew nothing at all. Sound was unaffected and
+confirmed working on the board throughout (DISK and POWER both solid).
+
+**The first suspect was wrong and cost a build cycle.** Port 4 is shared
+between the I/O firmware fetch and the display lists, and its arbitration was
+combinational, so ownership could switch mid-transaction. That is a real
+defect and it was fixed with a latched `p4_owner_dl`. **The blue screen
+survived it.** A plausible mechanism that is genuinely broken is still not
+evidence that it is THIS symptom's mechanism.
+
+### Bug 1: address bit 14 is an OUT-OF-RANGE FLAG, not the bank select
+
+`m1_integrated.sv` wired `m1_dlist_sdram`'s `rd_bank` from
+`dl_rd_addr_w[14]`. The original, at `m1_mainram.sv:224`:
+
+```
+  assign r3d_dl_data = r3d_dl_sel ? dl1_b_q : dl0_b_q;
+```
+
+with, twenty lines above it:
+
+```
+  wire dl_b_hi = r3d_dl_addr[14];
+  ...
+  assign dl0_b_q = dl_b_hi_q ? 16'h0000 : dl0_b_raw;
+```
+
+So the list is chosen by **`r3d_dl_sel`**, the reader's own buffer-select
+register, and bit 14 of the address means "at or above the 16,384 words a list
+holds" — a read there returns zero, and the walk relies on that zero to stop.
+Both meanings were collapsed onto one wire. The walker read list 0 every frame
+against a game that alternates, and out-of-range reads selected list 1 instead
+of terminating.
+
+The original module's comment says it outright — *"The buffer select is the
+reader's, and it is applied to the DATA rather than the address"* — and it was
+read past twice.
+
+The same flag exists on the write side (`a_we(dl0_we && !dl_a_hi)`, gated on
+`addr[15]`), and the replacement truncated instead of dropping, so an
+out-of-range write wrapped onto a live word. `m1_main` now exposes `dl_hi` and
+both sides reproduce the original behaviour.
+
+### Bug 2: the walk WITHDREW a request it had already issued
+
+This is the larger one, and it explains the symptom by itself.
+
+`m1_listwalk` had `assign mem_req = in_read && !rd_gap && !stall`, and
+`wire got = mem_req && mem_valid`. Against block RAM that was free: the old
+`m1_integrated` drove `r3_dl_valid <= r3_dl_req`, one cycle, unconditionally,
+so a request and its answer were adjacent cycles and abandoning one cost a
+cycle.
+
+Against SDRAM across a clock crossing the answer arrives tens of cycles later —
+and `m1_raster3d` asserts `lw_stall` for **the whole of every quad's
+transform** (`lw_stall = ((pst != P_WALK) && (pst != P_IDLE)) || w_tex_req`).
+So a stall lands inside nearly every read. `mem_req` dropped, the arriving word
+was discarded by `got`, and the walk re-ran the entire round trip. Measured in
+`tb_m1_listwalk` with the withdrawal restored, at 24 cycles of latency:
+
+```
+    request withdrawn   78,635,456 cycles / 43,289 words = 1,816 cycles/word
+    request held            43,958 cycles /  1,224 words =    35.9 cycles/word
+```
+
+**A 50x slowdown.** A 3,000-word list at 1,816 cycles a word is 5.4 M cycles —
+fourteen frames. No list ever completed, so nothing was ever drawn.
+
+The fix holds `mem_req` until the read is answered, latches the word whenever
+it lands, and hands it to the walk when the walk resumes. The
+one-outstanding-read discipline and the gap cycle are unchanged; only the
+withdrawal is gone.
+
+### Bug 3: the base address was added TWICE, putting the lists inside the ROM
+
+Found by the frame bench dumping both lists and getting 16,384 words of
+`ffff` -- the SDRAM model's default for never-written -- at the address the
+module claimed to use.
+
+`m1_dlist_sdram` forms an ABSOLUTE address: `mem_addr <= DL_BASE + {rd_bank,
+rd_addr}`. `Model1.sv` then did `p4_addr = DLIST_BASE + dlist_addr_r`, and a
+comment beside the port instantiation asserted the opposite of the truth --
+*"m1_dlist_sdram emits an offset within the 32 K-word region and DLIST_BASE is
+added outside"*.
+
+    module   DL_BASE     0xC40000  (its own default -- Model1's parameter was
+                                    declared and never passed)
+    Model1   DLIST_BASE  0xF40000
+    sum                 0x1B80000  -> 24 bits -> 0xB80000
+
+The polygon ROM image runs to word `0xC20000`, so **both display lists sat
+inside it**. Every list write corrupted polygon data, and reads came back from
+the corrupted region. The two bases being different is what made the sum wrap;
+had the parameter been passed, the double-add would have been `0xF40000 * 2`
+and equally wrong.
+
+The base is now added in exactly one place: `m1_integrated` takes `DLIST_BASE`
+as a parameter, passes it to `m1_dlist_sdram`'s `DL_BASE`, and the top level
+uses `dlist_addr_r` untouched.
+
+### Bug 4: a held write was enqueued once per CYCLE, not once per transaction
+
+`m1_main` holds `m_req` until `m_ack`, and holds `m_ack` until `m_req` drops --
+its own `B_ACK` comment explains why, and it is the rule this project has been
+bitten by twice. The V60 runs on a clk/3 enable, so **one write presents for
+three to six cycles**.
+
+`m1_mainram` consumed exactly that signal as a block-RAM write enable, where
+re-writing the same word at the same address for six cycles is free. A FIFO
+COUNTS. `wire cpu_wr = (cpu_sel0 | cpu_sel1) & cpu_we` enqueued every write
+three to six times over, filled the 64 entries, and refused the real traffic.
+
+Negative control, with the edge detect removed, 40 writes held six cycles each:
+
+    153 of 240 pushes refused, and the data lost
+
+The level is safe to re-read; the EDGE is the event. Same treatment for the
+read-back counter, which was counting cycles of the decode -- and `sel_dlist*`
+is combinational on `m_addr`, so it counts even when no request is outstanding
+at all. That is why the first read-back measurement read 977,784 and the
+correct one reads 32,840.
+
+### Bug 5 is WITHDRAWN: the V60 does NOT read its display lists
+
+Recorded here for a day as "32,840 completed read-backs in 426 frames", and it
+was wrong. The counter was placed in `m1_main`'s `B_LOCAL` else chain, at
+`else if (sel_dlist0) rdata_r <= dl0_q;`. **That chain runs for writes as well
+as reads** -- `rdata_r` is simply ignored when the access is a write -- so it
+counted list WRITES and called them reads.
+
+Re-gated on `!m_we`, the count is **zero**. `tools/dl_census.lua` was right:
+the game does not read its display lists back.
+
+The read path built on the strength of the wrong number is kept, because it is
+correct and costs nothing when nothing exercises it -- `m1_main` waits for
+`dl_rd_ack` the way it waits for the coprocessor, the module drains its posted
+writes before serving a read so ordering holds, and both are tested. If a game
+ever does read a list it will now get its data instead of zero. But it is not
+what blanked the screen, and this entry is here so the next session does not
+re-derive a fix for a problem that does not exist.
+
+**The lesson is the one directly above it, applied to my own instrument.** I
+wrote "when a measurement says never, check that the instrument could have seen
+it" into the entry for Bug 5, and then trusted a counter that could not tell a
+read from a write. A counter has to be placed where the thing it counts is the
+only thing that can reach it.
+
+It also cost a real bug of its own: `to_dlist` was `sel_dlist0 || sel_dlist1`
+with no `!m_we`, so a list WRITE entered the read branch and waited for an ack
+that could never arrive. The CPU hung with `m_req` and `m_we` stuck high, and
+the bench counted a list write offered on 556,962,710 of 560,000,000 cycles --
+every one of them. That number is what named it.
+
+### STILL OPEN: 92,232 writes commit, 18 words land
+
+With all four real bugs fixed, at 560 M cycles / frame 426:
+
+    writes offered   334,969 cycles, dropped 0
+    port 4 grants    lists 92,232, iofw 87,524      no starvation
+    words in SDRAM   18, in each list
+    passes with objects   0        (pre-move control at the same point: 45)
+
+The writes are accepted, granted the port and committed, and eighteen distinct
+words are visible at `DL_BASE`. Either the game is writing the same small
+header in a loop because it is waiting on something else, or the committed
+writes are not landing where the dump reads. That is the next measurement:
+the min, max and spread of the addresses `m1_dlist_sdram` actually drives.
+
+### THE MOVE IS REVERTED, and that is the finding
+
+Fixing four real bugs did not restore the picture. At 560 M cycles the tree
+still had 0 passes with objects against a pre-move control's 45, and the V60
+was issuing 77 list writes a frame against a census of 3,032 -- it was running
+different code, and after a day the reason was still unidentified.
+
+**The move was worth 54 M10K. It is a resource optimisation, not a feature, and
+it was bundled with the sound work that had to ship.** That bundling is the
+actual mistake: every measurement afterwards compared a tree with five
+unrelated changes against a tree with none, so nothing could be attributed. The
+`git worktree` control was built at HEAD, which differs by `v60_fp.sv`,
+`m1_rom_loader.sv`, `m1_sdram.sv`, `m1_copro_if.sv` and the whole sound board
+as well as the lists.
+
+Reverted, `tb_m1_frame` gives 25 passes with objects and f=233 against the
+control's f=232. The work is preserved in `build/dlist_work/` with its tests.
+
+**What the four fixes are still worth**: they are real, they have negative
+controls, and whoever picks the move up again needs all four before they start.
+They are not wasted -- but they were not the blocker, and continuing to fix
+bugs inside a change that had already failed its own acceptance test is what
+cost the day.
+
+### The control, and its confound
+
+Reasoning about which of five bugs was "the" one was worth nothing. A
+`git worktree` at HEAD -- the pre-move tree, with its own bench -- run to the
+same 560 M cycles as the fixed tree, on the same ROMs and the same inputs:
+
+    pre-move (block RAM)   45 passes with objects, obj=1 q=62   3D WORKS
+    SDRAM (the move)        0 passes with objects, obj=0 q=0    BLANK
+
+One command, twenty minutes, and it turned "I think the 3D is fixed" into a
+number. Build the control BEFORE the fix, not after.
+
+**But that control was CONFOUNDED and it took hours to notice.** HEAD differs
+from the working tree by every uncommitted change, not just the display lists.
+`v60_fp.sv`'s denormal flush was suspected on that basis and cleared only by a
+separate run with `+define+V60_IEEE_DENORM`, which came back byte-identical. A
+control that differs in five ways measures nothing. Revert to ONE difference,
+or the number is not evidence.
+
+### And the bench could not have caught any of it
+
+`tb_m1_frame` never wired `m1_integrated`'s `dlist_*` ports at all. The
+`m1_frame` target passes `-Wno-PINMISSING`, so elaboration said nothing:
+`dlist_ack` sat at zero, the posted-write FIFO filled, every write was dropped,
+and the walk read an empty list. The bench printed `obj=0 q=0` and read as a 3D
+bug.
+
+Three separate mechanisms hid these bugs, and they are the same mechanism:
+**a check that was silently not running.** `-Wno-PINMISSING` hid the missing
+port; `m1_dlist_sdram` was not in `make test`; the module was not in the
+Makefile's `SRCS_TOP_CORE` or in `tools/mister_project.sh`. Every one of those
+is a list that must be edited by hand when a module is added, and every one of
+them fails by omission rather than by error.
+
+### Why no test could see the first two
+
+`tb_m1_listwalk`'s memory model was a one-cycle synchronous RAM, *because the
+lists were block RAM*. It even has a test called "STALLING pauses the walk
+without losing anything" — which passes, and which cannot reach the window,
+because at one cycle of latency there is no window. The model now takes a
+latency parameter and there is a directed test at 24 cycles with stalls raised
+only while a read is in flight. It checks the decode against `model()` and,
+crucially, a **cycle budget**: a walk that refetches blows through it by 30x.
+Reverting the fix fails it immediately.
+
+`m1_dlist_sdram`'s own bench passed throughout and was never in `make test` —
+it tested the module against a dedicated port with flags the integration never
+set. It is in `make test` now, with directed coverage for both out-of-range
+paths.
+
+**The lesson is the one this file keeps recording.** A module that replaces
+another must reproduce what the original's ADDRESS DECODE did, not just what
+its storage held: block RAM whose address bus physically could not reach past
+16 K words encodes a behaviour that SDRAM's can. And a bench whose memory model
+was written to match the old implementation silently stops being a test of the
+new one — its latency was a property of the thing being replaced.
+
+## 2026-09-13 (b) — EIGHT M10K OVER COSTS ~570 ALM, SILENTLY
+
+The design stopped fitting after the display-list revert: 42,384 ALM (101%) and
+**M10K 561/553**. The obvious reading was "the sound board does not fit without
+the M10K the move freed". That was wrong, and it nearly cost a feature.
+
+`m1_sdram`'s `cap` array (`[NP-1:0][3:0][15:0]`) had been left unpinned during
+the sound work so it would land in M10K -- 8 blocks -- rather than cost ~16
+LABs. With the display lists back on-chip that took M10K to 561 of 553.
+
+**Quartus does not fail when M10K is oversubscribed. It builds the overflow out
+of flip-flops and keeps going.** CLAUDE.md already says so, for inference that
+fails; it applies just as much to inference that succeeds and then has nowhere
+to go. Forcing `cap` back to `ramstyle = "logic"`:
+
+    before   42,384 ALM (101%)   M10K 561/553    NO FIT
+    after    41,353 ALM ( 99%)   M10K 553/553    fits, all four seeds
+
+`cap` in logic costs about 160 ALM of its own, so the spill it was causing was
+roughly **570 ALM**. The ALM number was a SYMPTOM of the M10K overshoot, not an
+independent problem -- and an 8-block overshoot reads as a 500-ALM one.
+
+**Check M10K before believing an ALM figure.** Ben's correction ("it did fit, we
+have tested loads of times") is what forced the comparison against the morning's
+fitting build, and the two numbers together named the cause in minutes.
+
+### And the M10K itself is being wasted, badly
+
+From the same fit report, shallow-wide arrays mapped to M10K at ~0.3%
+efficiency:
+
+    m1_geo_clip sk_mem    20 x 96   ->  96 blocks for 1,920 bits
+    m2_multipcm desc_ram  32 x 55   ->  55 blocks each, x2
+    m2_multipcm pos_ram   32 x 38   ->  38 blocks each, x2
+    m2_pcm_rate fl/fr     16 x 16   ->  16 blocks each, x4  (256 bits!)
+
+About **346 blocks holding ~10 Kbit**. `m1_geo_clip` carries an explicit
+`(* ramstyle = "MLAB" *)` and Quartus **ignored it**. Fixing this is worth far
+more than the 54 blocks the display-list move was chasing, and it needs a small
+test case rather than a full build to settle -- CLAUDE.md's own advice on memory
+idioms. NOT attempted yet.
+
+
+## 2026-09-13 (2) — THE NEGATIVE SLACK IS TWO PATHS, AND ONE OF THEM IS NOT OURS
+
+**Instrument:** `quartus_sta` with `get_timing_paths -setup -npaths 40`, filtered
+for paths that do not touch `ascal`. Eleven seeds across two designs never closed
+it, which is what prompted looking at the path instead of re-rolling.
+
+### pll_hdmi, -0.838: entirely inside the framework
+
+```
+ascal|o_h_poly_t.r0[16]  ->  ascal|o_h_poly_pix.r[1]
+```
+
+The polyphase filter's horizontal interpolation. **No part of it is this
+project's logic.** pll_hdmi has shipped negative before (-0.096 on 2026-09-08,
+-0.338 on 2026-09-09) on builds that ran correctly.
+
+### clk_sys, -0.650: ours, and always the same path
+
+Every failing clk_sys path in the top forty is this one:
+
+```
+m1_video|m1_video_timing|vcnt[7]    (also [9])
+  ->  m1_mainram|u_pram|altsyncram|ram_block1a*~portb_address_reg0
+```
+
+The video timing's VERTICAL COUNTER feeding the PALETTE RAM's read address.
+`m1_video.sv:814` is `assign pal_addr = mixed;` -- the mixer's combinational
+output -- and it crosses into `m1_mainram.sv:146` as `.b_addr({1'b0,
+vid_pal_addr})` on a block RAM's registered address port. The whole tile
+fetch and mix sits in that path with no register between the counter and the
+memory.
+
+**The fix is a pipeline stage on `pal_addr`**, which is a DESIGN CHANGE and not
+a re-roll: it delays the palette read by one cycle and shifts the picture one
+pixel unless the compensation is made at the same time. Not attempted here.
+
+### Why seeds cannot fix it
+
+| design | seeds tried | best | clean? |
+|---|---|---|---|
+| 553 M10K | 1,3,5,7,9,11,2,13,17,23 | **-0.240** (seed 11) | no, 3 negative |
+| 499 M10K | 3,11,13,17 | -0.384 (seed 17) | no, 2 negative |
+
+Both distributions are centred below zero. That is a path that is too slow, not
+a placement lottery -- the distinction the Kaneko16 note in
+`tools/mister_project.sh` draws, and this is the other side of it.
+
+**Freeing 54 M10K made timing WORSE, not better** (see the entry above): the
+density that hurts placement here is ALM at 99%, not memory.
+
+---
+
+## 2026-09-13 — THE DISPLAY LISTS ARE OFF-CHIP: 553 -> 499 M10K, AND IT DID NOT HELP TIMING
+
+**Instrument:** `tools/dl_census.lua` for the traffic, `sim/mem/tb_m1_dlist_sdram.cpp`
+for the design, `make rbf` for the result.
+
+`m1_mainram`'s `u_dl0`/`u_dl1` were 16384x16 each -- **64 of the 553 M10K blocks**
+-- and M10K had been at 553/553 for the whole sound effort, with a one-bit
+signal widening costing eight blocks and failing the fit.
+
+**The traffic, measured before any code was written** (400 reference frames,
+a read tap AND a write tap on 0x600000/0x610000):
+
+| | |
+|---|---|
+| writes | 3,032 per frame mean, **16,418 at peak** |
+| **reads** | **ZERO. Not one, on either list.** |
+
+Zero reads is what makes it clean: every access is a write, so every access is
+POSTED and the V60 never waits, and there is no CPU read path to build. The
+replacement sustains **one write every 16 cycles** against a measured peak
+demand of one every 85 -- a 5x margin, measured by sweeping the rate until the
+FIFO refused (`tb_m1_dlist_sdram`, 6,877 checks).
+
+### It shares port 4 rather than adding an eleventh
+
+`NP=11` IS BROKEN and that is why. `tb_m1_sdram` at `TB_NP=11` reports **"port 10
+never acknowledged"**: the eleventh port serves one read and then stalls forever.
+Unexplained. The lists need one write per 85 cycles, so they ride the I/O
+board's firmware port behind a priority mux -- the Z80 wins because it is
+stalled waiting, the list writes are posted and can afford to queue.
+
+### The result, and the part that did NOT work
+
+| | before | after |
+|---|---|---|
+| M10K | 553 / 553 | **499 / 553** |
+| ALM | 41,418 | 41,409 |
+| worst setup | -0.219 | **-0.838** |
+
+**54 blocks freed, and timing got WORSE.** Freeing block RAM does not relieve
+`clk_sys`, because the density that hurts placement here is LOGIC: ALM is still
+99%. Seven seeds on the pre-move design clustered between -0.24 and -1.13, which
+is a distribution centred below zero rather than a placement lottery.
+
+**The lever for slack is not memory.** If a seed does not close it, the
+remaining option is pipelining the actual failing path, which is a design
+change and not a re-roll.
+
+### Two mechanical traps on the way in, both documented already
+
+- `m_addr` is `[23:1]` -- a WORD address with no bit 0. `m_addr[13:0]` is an
+  out-of-range slice that **Verilator accepts and Quartus rejects**.
+- A new RTL file must be added to `tools/mister_project.sh` or the hardware
+  build fails at elaboration with an error that does not name the missing file
+  (`Node instance "u_dlist" instantiates undefined entity`). CLAUDE.md warns
+  about this; it still happened.
+
+---
+
+## 2026-09-12 (2) — ascal's OHRES IS WORTH 8 M10K AT 2048, AND READING THE SOURCE SAID IT WAS WORTH NOTHING
+
+**Instrument:** `make rbf` with `OHRES` 2304 (the framework default) against 2048,
+everything else identical.
+
+| | M10K |
+|---|---|
+| OHRES 2304, `cap` in block RAM | **561 / 553** -- would not fit |
+| OHRES 2048, `cap` in block RAM | **553 / 553** -- fits |
+
+**Eight blocks, which was exactly what was needed.** `sys_top.v` never sets
+OHRES, so every MiSTer core takes the 2304 default.
+
+**I PREDICTED THIS WOULD GIVE NOTHING, FROM THE SOURCE, AND WAS WRONG.**
+ascal maps OHRES through case statements (`ascal.vhd:296-318`):
+
+```
+ohres_l: 1024 => 1024 | 2048|2304|2560 => 2048 | OTHERS => 4096
+ohres_m: 1024|2048|2304 => 256         | OTHERS => 512
+```
+
+`o_line0..3` are sized by OHRESL and `o_linf0..3` by OHRESM, and BOTH are
+unchanged between 2304 and 2048 -- which is why I said the line buffers do not
+shrink. They do not. Something else does: only `OHRESH` changes (4096 -> 2048),
+and it sizes counters rather than memory, yet the fit needs eight fewer blocks.
+The mechanism is not in those three functions and I have not run it down.
+
+**Take the measurement, not the derivation.** Ben pushed to build it after I had
+written the lever off on paper.
+
+### The values that are legal, and the trap
+
+Only 1024, 2048, 2304, 2560 are matched; ANYTHING ELSE falls to `OTHERS` and
+allocates 4096-wide buffers -- WORSE than the default. 1680 and 1920 are both in
+that trap, and both are also below 1920 or equal to it, so they would tear a
+1080p line as well.
+
+| OHRES | `o_line0..3` | good for |
+|---|---|---|
+| 1024 | 1024 | 720p and below ONLY |
+| **2048** | 2048 | **1080p -- what this core uses** |
+| 2304 | 2048 | 1080p, no benefit over 2048 |
+| 2560 | 2048 | 1440p |
+| 1680, 1920, other | **4096** | nothing -- silently the worst case |
+
+IHRES is the input side and is a separate lever, already at its floor of 512:
+this core's picture is 496 pixels wide (`m1_video_timing.sv:37`), so 512 is the
+smallest power of two that holds a line. That one was worth 27 blocks.
+
+**If the picture ever tears or repeats horizontally at a wide output
+resolution, OHRES is the first thing to put back to 2304.**
+
+---
+
+## 2026-09-12 — THE SHARED SOUND BOARD IS 6 dB QUIET, AND MAME SAYS WHY
+
+**Instrument:** MAME's own configuration for the Model 1 sound board, plus a
+captured reference and a simulation of our own board against the same ROMs.
+
+`third_party/mame/src/mame/shared/segam1audio.cpp` routes the three chips with
+DIFFERENT gains:
+
+```
+m_multipcm_1->add_route(0, "speaker", 0.5, 0);
+m_multipcm_2->add_route(0, "speaker", 0.5, 0);
+m_ym->add_route(0, "speaker", 0.30, 0);
+```
+
+`m2_sound_board.sv` sums all three and applies ONE shift:
+
+```
+wire signed [17:0] mix_l = ym_l + p1_l + p2_l;   // sign-extended
+assign snd_l = mix_l[17:2];                      // >> 2, i.e. 0.25 for everything
+```
+
+**So the MultiPCMs come out at 0.25 where MAME uses 0.5 -- exactly half.**
+
+Three independent measurements agree:
+
+| | |
+|---|---|
+| MAME reference, `vr`, 20 s captured to WAV | peak 127 of 32,767, **-48.2 dBFS** |
+| our board in `tb_m1_sndboard`, real sample ROMs, 5 s | peak 66, **-53.9 dBFS** |
+| Ben, comparing Model 2 against the reference | **"too quiet by 52%"** |
+
+-53.9 against -48.2 is 5.7 dB; a factor of two is 6.0 dB; 52% is a factor of
+two. The same number three ways.
+
+**The fix is `>> 1`, not `>> 2`**, and it is not a bodge -- it is what MAME's
+0.5 route gain says. The `>> 2` is headroom for summing three 16-bit sources
+without clipping, and with the FM stubbed (`m1_ym_timer` has no audio path, so
+`ym_l` is permanently zero) only two sources are live: two 16-bit signed values
+fit in 17 bits and the extra bit of headroom cannot be used.
+
+**CARRY THIS TO MODEL 2 WITH CARE.** It is the same `m2_sound_board.sv` and the
+same fault, but Model 2's FM is not stubbed. A bare `>> 1` puts the YM at 0.5
+where MAME uses 0.30, about 4.4 dB hot against the samples. Exact parity needs
+the YM scaled on its own -- `(ym * 5) >> 4` is 0.3125 -- rather than sharing the
+shift. Model 1 is unaffected while the FM is stubbed.
+
+**And this is NOT why the Model 1 board was silent.** Six dB does not turn audio
+into nothing. The silence was `m1_sdram` tagging in-flight reads with
+`grant[2:0]` in a ten-port controller, so the two MULTIPCM ports wrapped onto
+ports 0 and 1 and never received a word; see the entry below. The quietness is
+a separate, real defect that was found while chasing it.
+
+---
+
+## 2026-09-11 (5) — THE V60's DENORMAL SUPPORT COSTS 353 ALM IN-DESIGN, AND EVERY FREE WAY TO GET IT BACK MEASURES ZERO
+
+**Instrument:** `make quartus MOD=v60_ftz` / `MOD=v60_fphoist` against
+`MOD=s32_v60`, all `QOPT="Aggressive Area"`, then a full `make rbf`. FP
+correctness from `third_party/s32/verif/v60/tb_v60_fp.sv` under Icarus.
+
+`v60_fp` is 3,218 combinational ALUTs for 389 registers -- 8.3 comb per
+register, against the i960's FP units at about 1.2. It is built from
+SystemVerilog `function`s and has exactly ONE clocked block, at line 419 of 550.
+
+| change | standalone ALM | in-design ALM | tb_v60_fp |
+|---|---:|---:|---|
+| baseline | 15,057 | 42,885 | pass |
+| flush denormals in AND out | 14,491 (**-566**) | 42,532 (**-353**) | **236 fails of ~5,950** |
+| hoist the six operand unpacks to two | 15,052 (**-5**) | — | pass, 0 fails |
+
+**Two things are established here and both correct an assumption made in the
+same session.**
+
+**1. The standalone module over-reports a saving by 60%.** -566 ALM measured on
+`MOD=s32_v60` became **-353** in a full `make rbf`. The standalone build's ports
+are pins, so Quartus cannot constant-propagate across the boundary. Price
+anything that matters with a full build; Ben's instruction, and the numbers
+agree.
+
+**2. The duplication theory was wrong.** `fp_unpack` is a function, so it is
+inlined at all ten of its call sites, and ADDFS/SUBFS/MULFS instantiate SIX of
+them on two values -- with SUBFS passing `fp_unpack(a ^ 32'h8000_0000)`, whose
+argument expression differs from `fp_unpack(a)`. That is textbook the condition
+that made the `fb32()` hoist worth 1,054 ALM (2026-09-07), so the hoist was
+built: `fp_unpack(a ^ 0x8000_0000)` is EXACTLY sign-flipped `fp_unpack(a)`,
+because unpack takes `sign = x[31]` and derives e and m from `x[30:0]`.
+It is behaviour-identical -- `tb_v60_fp` passes with 0 failures -- and it is
+worth **-5 ALM**. Quartus was already sharing them. **The denormal logic exists
+ONCE and costs what it costs.** This is the third time hand-sharing has priced
+at approximately nothing; see 2026-09-07's rule.
+
+### The correctness position, stated carefully
+
+**A claim made earlier in this session was wrong and is withdrawn.** "The fuzz
+harnesses deliberately skip denormals, so this is unverified" is about the
+**TGP** -- `README.md:191-195` and the `FLUSH_DENORM_IN` parameter live on
+`rtl/tgp/fp_div.sv`, not on the V60. The V60 has its own suite and it covers
+denormals. Splitting the change shows both halves are exercised:
+
+| flushed | tb_v60_fp failures |
+|---|---:|
+| denormal INPUTS only | 204 |
+| denormal OUTPUTS only | 76 |
+| both | 236 |
+
+So there is no free subset. **But the failures are against `numpy.float32`** --
+`tb_v60_fp`'s header says "expectations from numpy.float32 (IEEE-754 RNE, the
+MAME host-float contract)" -- and `README.md` records the repo's own position
+that "real silicon of this era commonly flushes to zero" and that the question
+must be resolved "against real microcode traces, not against the host". The 236
+failures are therefore a disagreement with a HOST-FLOAT MODEL, not with measured
+hardware. Flush-to-zero is a different unverified guess, not a known regression.
+
+**What would settle it:** `make v60_trace` on vr, vf and netmerc. If the games
+never produce or consume a denormal, the two behaviours are observationally
+identical on real code and the 353 ALM is free in practice. Until that is run,
+the change stays out of the tree; `build/v60_fp_backup.sv` holds the clean file
+and `rtl/cpu/v60/v60_fp.sv` has been restored from it.
+
+### Where the V60's area actually is
+
+Structure pricing, each forcing a destination register constant so its mux tree
+and everything feeding only it folds away (standalone, baseline 15,057):
+
+| forced constant | ALM | delta |
+|---|---:|---:|
+| `str_src`/`str_cnt`/`str_faddr`/`str_fi` | 13,600 | **-1,457** |
+| `bit_val`/`bit_len`/`bam_off`/`bam_base` | 14,145 | **-912** |
+| `dbus_addr` | 14,177 | **-880** |
+| `ea_addr`/`ea_out` | 14,432 | **-625** |
+| `pc` | 14,559 | **-498** |
+| `exc_pushval`/`exc_vector`/`exc_retpc`/`exc_code`/`exc_extra` | 14,763 | **-294** |
+
+This is the first attribution of the top module's area; 2026-09-07 stopped at
+"the remaining ~12,700 is ... not one structure". **It is a map, not money.**
+`dbus_addr` is the proof: it prices at 880 and narrowing it measured EXACTLY
+ZERO the same day.
+
+### And the V60 cannot fix this build anyway
+
+The full `make rbf` fails on **two** errors, and ALM is the second one:
+
+```
+Error (170048): Selected device has 553 RAM location(s) of type M10K block.
+                However, the current design needs more than 553
+Error (11802):  Can't fit design in device.
+```
+
+**42,532/41,910 ALM (622 over) and 582/553 M10K (29 over). The V60 contains zero
+M10K**, so no amount of squeezing it produces a fitting build. The 29 blocks
+have to come from the display lists (64, see 2026-09-11 (3)) or the quad store
+(188).
+
+---
+
+## 2026-09-11 (4) — ONE-HOTTING THE V60's SEQUENCER IS WORTH 63 ALM, NOT THE 13.7% THE MICROBENCH PROMISED
+
+**Instrument:** `sim/microbench/v60_onehot.sv`, a scripted conversion of the
+whole core — `typedef enum logic [6:0]` to 91 index localparams, both
+`case (st)` blocks to `case (1'b1)` with `st[S_X]` arms (107 arms), 310 `oh()`
+sites, `bam_next()` widened. `make quartus MOD=v60_onehot QOPT="Aggressive Area"`
+against `MOD=s32_v60` in the same conditions.
+
+| | ALM | registers | own comb ALUTs |
+|---|---:|---:|---:|
+| binary `st` (shipping) | 15,057 | 4,413 | 16,237 |
+| one-hot `st` | 14,994 | 4,497 | 16,184 |
+| **delta** | **-63 (0.4%)** | +84 | -53 |
+
+**The reasoning was sound and the result is nothing.** `Model1.map.rpt`'s "State
+Machine" sections do list ten extracted FSMs in Model 2's i960 including its main
+sequencer `ts`, and do NOT list the V60's `st` — that part is true, and the cause
+is the subroutine pattern (`st <= st_after_fill`, `st <= st_after_ea`) which
+stops the tool proving a closed state set. What does not follow is that the
+binary encoding is costing anything: Quartus builds an efficient select network
+either way.
+
+**The microbench over-promised by 20x and that is the lesson.**
+`sim/microbench/fsm_binary.sv` vs `fsm_onehot.sv` — 64 states, two return
+registers, four wide destinations — measured 791 vs 683 ALM, a 13.7% saving, at
+identical register count. On the real core the same transformation is 0.4%. A
+synthetic FSM with four destinations does not predict a core with 131.
+
+**This is now the third V60 structural idea to price at approximately zero**,
+after mux narrowing (0%, same day) and adder sharing (7% on a bench, 150-250
+core-wide, 2026-09-10). Together with 2026-09-07's verdict — "no measurement
+taken here shows a path from 15,605 to 10,000" — the position is that **the only
+V60 lever that has ever measured positive is stubbing unused instruction groups
+at -764 ALM**, and the only structural one that ever paid was hoisting the
+runtime-offset fetch-buffer mux at +1,054, which is already taken.
+
+A census of what remains of that winning shape: `fb32()` now has **one** runtime
+call site and `fb16()` one; the `ea_ofs` window is hoisted. What is left is
+twelve SINGLE-BYTE reads at three `len1`/`len2` offsets, a quarter the width of
+the muxes that paid.
+
+---
+
+## 2026-09-11 (3) — WHERE THE 584 M10K BLOCKS GO, AND THE DISPLAY-LIST CLAIM CORRECTED
+
+**Instrument:** the "Fitter RAM Summary" table of
+`build/mister/output_files/Model1.fit.rpt` (the failed sound fit, 2026-09-11
+22:34), aggregated per module. 144 memories. This census had never been taken —
+the M10K figure was only ever known in total.
+
+| M10K | module |
+|---:|---|
+| **188** | `m1_quad_store` (two stores, five banks each) |
+| 64 | `m1_mainram` `u_tram` — tile RAM, 32768x16 |
+| 48 | `m1_mainram` `u_cxlat`, 24576x16 |
+| 42 | `ascal` (framework) |
+| 33 | `m1_copro_if`, 8192x32 |
+| 32 | `m1_mainram` `u_dl0` — display list 0, 16384x16 |
+| 32 | `m1_mainram` `u_dl1` — display list 1 |
+| 32 | `m1_video` |
+| 24 | `m1_raster_band` |
+| 16 | `m1_mainram` `u_pram` |
+| 13 | `m1_tgp` |
+| 10 | `m2_sound_board` (plus 214 MLAB cells) |
+| 9 | `osd` |
+| 8 | `m1_ioz80` (plus 32 MLAB) |
+| 7 | `altshift_taps`, 7 `m1_lightbank`, 4 `m1_raster_fill`, 2 `m1_geometry` |
+| **584** | **total, against 553 on the device — over by 31** |
+
+Implementation bits equal used bits across the whole table, so **there is no
+partial-block waste to reclaim.** Every block is full. The device is at 77% of
+its memory BITS in 105% of its blocks because the memories are wide and shallow,
+not because they are badly packed. Consolidating small arrays will not help;
+only moving a memory off-chip will.
+
+**Two corrections to what `CLAUDE.md` says about the display lists.** It reads
+"the two display lists (~52 M10K), which the walker already has an SDRAM read
+path for."
+
+- They are **64 M10K**, not ~52 — 32 each, `AW(14)`, 16384x16.
+- The walker does **not** have an SDRAM read path. `m1_listwalk.sv:84-90`
+  defines a held-request, latency-tolerant port (`mem_addr`/`mem_req`/
+  `mem_valid`/`mem_data`) and its comment says "the SDRAM path will need that
+  even though block RAM answers next cycle" — the interface was built in
+  ANTICIPATION of the path. The path itself does not exist, and the harder half
+  is not the read side at all: the display lists are true dual-port with the
+  **V60 writing port A at bus speed**, and that write traffic moving to SDRAM is
+  unmeasured.
+
+`MISTER_SMALL_VBUF` is not an M10K lever and was checked: `sys_top.v:717` uses
+it only to change ascal's `RAMSIZE` parameter, which is a DDR3 buffer.
+
+---
+
+## 2026-09-11 (2) — NARROWING THE V60's WIDEST MUX IS WORTH ZERO. QUARTUS ALREADY DOES IT
+
+**Instrument:** `sim/microbench/mux_wide.sv` vs `mux_coded.sv`,
+`make quartus MOD=mux_wide` / `MOD=mux_coded`.
+
+`dbus_addr` is the V60's widest mux: **62 assignment sites, 32 bits**, inside one
+95-state case, and only **23 distinct right-hand sides** feed it (`op2` 10 times,
+`sp_m4` 7, `str_dst` 6, `task_addr` 6, `op1` 4, and a tail of ones). The obvious
+transformation is to assign a small SOURCE CODE per state and mux the sources
+once — 62x32 = 1,984 mux-input-bits becoming 8x32 + 62x3 = 442.
+
+| arm | ALM |
+|---|---|
+| 64-way 32-bit mux, one source named per state | **634** |
+| 64-way 3-bit code feeding an 8-way 32-bit mux  | **634** |
+
+**Identical. The transformation is worth nothing** — Quartus's synthesis already
+recognises that a wide mux has few distinct sources and builds the encoded form
+itself. Hand-coding it changes only the source text.
+
+This is the second time this shape of idea has measured as a wash; see
+2026-09-10 (7), where sharing an adder was worth 7%. **The V60 is not losing
+area to naive datapath structure.** An independent yosys census of `v60.sv`
+alone confirms what it IS losing it to:
+
+```
+14873  $mux      613  $pmux     1106  $eq
+  140  $add       56  $sub         3  $lt
+```
+
+Mux- and comparator-bound, by a factor of a hundred over arithmetic. Any V60
+optimisation that targets adders or datapath sharing is aimed at 140 cells out
+of 16,000.
+
+---
+
+## 2026-09-11 — MODEL 1 AND MODEL 2 HAVE THE SAME REGISTER COUNT. THE WHOLE 6,287 ALM GAP IS COMBINATIONAL LOGIC, SO MLAB IS NOT THE LEVER
+
+Whole-project comparison, both from Quartus 17.0 fitter reports on the same part:
+`build/mister/output_files/Model1.fit.rpt` (2026-09-11 22:34, the failed sound fit)
+against `sega-model2-mister/build/fix3d/s14/output_files/Model2.fit.rpt`
+(2026-09-11 22:19, successful).
+
+|          | comb ALUTs | registers |    ALM | comb/ALM |
+|----------|-----------:|----------:|-------:|---------:|
+| Model 1  |     62,513 |    39,710 | 40,843 |     1.53 |
+| Model 2  |     51,141 |    39,543 | 34,556 |     1.48 |
+| delta    |    +11,372 |      +167 | +6,287 |          |
+
+**The register counts are the same to within 0.4%.** On Cyclone V an ALM holds
+four flops and two ALUTs, so 39,710 registers have a floor of 9,928 ALM against
+an actual 40,843, while 62,513 combinational ALUTs have a floor of 31,256.
+**Registers are nowhere near binding in either design; combinational logic is,
+in both.** Model 1 is at 1.31x its combinational floor and Model 2 at 1.35x, so
+the two are packed equally well — Model 1 simply has 11,372 more logic functions.
+
+**This corrects the working premise that Model 1 has registers to move to MLAB.**
+It does not, in bulk. The MLAB wins already taken were real and are consistent
+with this: an array in flops costs a **read mux**, which is combinational, and
+MLAB replaces that mux with the memory's own decoder. The flops themselves were
+never the cost. That is why `m1_geo_clip`'s stack paid 1,598 ALM (32 deep x 96
+bits, so a 32:1 mux 96 wide) and why a four-deep array pays nothing at all.
+**The payoff scales with depth x read width, not with bit count.** An array
+shallower than about 16 is not worth tagging.
+
+Remaining untagged arrays in `rtl/`, censused the same day: only `v60.sv r[0:31]`
+(multi-port, two writers), `v60_ifetch fb[24]`/`fb_prev[24]` (a parallel-read
+instruction window), `m1_copro_if fin/fout[16]`, `m1_video mem[128]` and
+`m1_quad_store hist/base[16]` are 16 deep or more. Everything else is 10 or
+fewer. There is no bulk MLAB left to take.
+
+### Where the 11,372 combinational ALUTs actually are
+
+Own-logic figures (the parenthesised column, excluding children):
+
+| Model 1              | own comb | own ALM |   | Model 2         | own comb | own ALM |
+|----------------------|---------:|--------:|---|-----------------|---------:|--------:|
+| `s32_v60`            |   16,015 |   8,336 |   | `i960_top`      |    4,496 |   2,867 |
+| `v60_fp`             |    3,161 |   1,561 |   | (7 FP children) |    2,232 |   1,534 |
+| `m1_fp_pool`         |    2,138 |   1,178 |   | `m2_fp_pool`    |    1,943 |   1,226 |
+| `v60_ifetch`         |    1,515 |     818 |   | `i960_icache`   |      ~   |     386 |
+
+**`s32_v60`'s own logic is 8,336 ALM in a single `always @(posedge clk)` block
+spanning lines 778-3188 of `rtl/cpu/v60/v60.sv` — 2,410 lines, 96 case items,
+228 `st <=` assignments and 396 `+`/`-` operators.** The i960's largest clocked
+block is 157 lines; it is decomposed into seventeen child modules sharing one
+ALU (469 ALM), one AGU (137) and one LSU (118). `AUTO_RESOURCE_SHARING` is `ON`
+in both projects and every other optimisation setting is identical between the
+two `.qsf` files, so the difference is structural, not a setting.
+
+### The geometry pipeline is the other half
+
+| Model 1 `m1_geometry` = 7,221 | ALM | | Model 2 `m2_geometry` = 4,609 | ALM |
+|---|---:|---|---|---:|
+| `m1_fp_pool`  | 1,784 | | `m2_fp_pool`   | 1,226 |
+| `m1_geo_clip` | 1,117 | | `m2_geo_clip`  | 1,078 |
+| `m1_geo_project` | 662 | | `m2_geo_project` | 343 |
+| `m1_geo_walk` | 1,505 | | `m2_geo_engine` | 1,709 |
+| `m1_geo_xform` | 662 | | " | |
+| `m1_geo_det`  |   491 | | " | |
+| `m1_geo_norm` |   450 | | " | |
+| `m1_geo_color`|   329 | | " | |
+| `m1_geo_planes`|   98 | | " | |
+
+Model 2 sequences walk, transform, determinant, normalise, colour and plane
+setup through **one** engine at 1,709 ALM. Model 1 gives each a dedicated unit,
+totalling 3,535. **~1,800 ALM is available there**, and it is the largest
+single lever measured that does not touch the V60.
+
+Caveat on the Model 1 column: it is read from a fit that **failed** to place
+(41,910/41,910), so the per-entity ALM figures are from a partial placement.
+The combinational-ALUT and register counts come from synthesis and are sound;
+treat the ALM split as indicative to a few percent.
+
+---
+
 ## 2026-09-10 (9) — THE LANE-ENABLE REGISTER FILE IS ON HARDWARE: -547 ALM, AND THE TRACE CAUGHT THE BUG THE FUZZERS DID NOT
 
 Build `5011fb4493ae56f603f09cbd8fe03ccf`, 0 errors.

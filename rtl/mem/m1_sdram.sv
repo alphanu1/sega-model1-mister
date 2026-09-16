@@ -127,7 +127,7 @@ module m1_sdram #(
   // ROM download. Highest priority while it is active; game logic is held in
   // reset during download, so starving the other ports costs nothing.
   input  logic                 wr_req,
-  input  logic [24:1]          wr_addr,
+  input  logic [25:1]          wr_addr,
   input  logic [15:0]          wr_din,
   input  logic [1:0]           wr_be,
   output logic                 wr_ack,
@@ -135,7 +135,7 @@ module m1_sdram #(
   // Masters. Word-addressed; a burst port's address must be burst-aligned.
   input  logic [NP-1:0]        p_req,
   input  logic [NP-1:0]        p_we,
-  input  logic [NP-1:0][24:1]  p_addr,
+  input  logic [NP-1:0][25:1]  p_addr,
   input  logic [NP-1:0][15:0]  p_din,
   input  logic [NP-1:0][1:0]   p_be,
   output logic [NP-1:0][63:0]  p_dout,
@@ -214,6 +214,12 @@ module m1_sdram #(
       1:          blen = 4'd2;   // tile characters: exactly what is consumed
       3:          blen = 4'd2;   // coprocessor: one 32-bit word, nothing more
       2, 5:       blen = 4'd4;
+      // p8, p9: the MultiPCM sample streams. m2_pcm_fetch asks for a 64-bit
+      // line and consumes all of it, so a 4-word burst is exactly right - the
+      // same shape as p5's polygon fetch.
+      8, 9:       blen = 4'd4;
+      // p7 is the sound 68000's memory: its program ROM and its work RAM, on
+      // one port because a 68000 has one bus and cannot have both in flight.
       default:    blen = 4'd1;
     endcase
   endfunction
@@ -288,16 +294,33 @@ module m1_sdram #(
 
   // ADDRESS DECODE
   //
-  // A 32 MB module is 8192 rows x 512 columns x 4 banks of 16-bit words, so
-  // 13 + 9 + 2 = 24 bits, which is exactly the [24:1] word address the ports
-  // supply. Column is therefore NINE bits.
+  // SIXTY-FOUR MEGABYTES, TEN COLUMN BITS, as of 2026-09-15.
   //
-  // s32's controller takes the column from [10:1] — ten bits — which with 13
-  // row bits and 2 bank bits needs 25 address bits and so overlaps bit 10
-  // between row and column. Copying that here would have aliased every
-  // address pair differing only in bit 10 onto one location, which reads as
-  // sporadic data corruption rather than as an address fault.
-  localparam int unsigned COL_BITS = 9;
+  //   8192 rows x 1024 columns x 4 banks of 16-bit words
+  //   = 13 + 10 + 2 = 25 bits, the [25:1] word address the ports now supply.
+  //
+  // This was NINE bits and 32 MB, with the note below explaining why ten was
+  // refused. That note was right about the hazard and wrong about the limit:
+  //
+  //   "s32's controller takes the column from [10:1] - ten bits - which with
+  //    13 row bits and 2 bank bits needs 25 address bits and so overlaps bit
+  //    10 between row and column."
+  //
+  // The overlap it feared is between the ADDRESS PINS, not the word address:
+  // column bits map to A0..A9 and then SKIP A10, which is the auto-precharge
+  // flag, continuing at A11. Ten column bits land on A0..A9 EXACTLY and never
+  // reach A10, so there is no aliasing. The hazard begins at ELEVEN bits.
+  // Model 2's controller has run ten bits on this hardware throughout
+  // (Model2.sv: `localparam SDR_COL = 10`), which is what settled it.
+  //
+  // WHY IT WAS WORTH CHANGING. At 32 MB the map was full: the V60 image,
+  // copro data, copro tables and 16 MB of polygons reach 24.25 MB, leaving
+  // 1.5 MB above the sound region. Virtua Fighter, Star Wars Arcade and Wing
+  // War carry 4 MB per MultiPCM against Virtua Racing's 2, needing 4.06 MB
+  // more than existed -- so four of the six games could not have sound at all.
+  // Trying to make room by MOVING regions instead broke the 3D outright: the
+  // bases moved and the packer kept writing the data where it always had.
+  parameter int unsigned COL_BITS = 10;
 
   logic [3:0]  cmd;
   assign {sd_cs_n, sd_ras_n, sd_cas_n, sd_we_n} = cmd;
@@ -321,12 +344,12 @@ module m1_sdram #(
   // Metadata is captured with the request because arbitration may delay a
   // port long after the producer moved on to its next address.
   logic [NP-1:0]        pend;
-  logic [NP-1:0][24:1]  addr_p;
+  logic [NP-1:0][25:1]  addr_p;
   logic [NP-1:0][15:0]  din_p;
   logic [NP-1:0][1:0]   be_p;
   logic [NP-1:0]        we_p;
   logic                 wr_pend;
-  logic [24:1]          wr_addr_p;
+  logic [25:1]          wr_addr_p;
   logic [15:0]          wr_din_p;
   logic [1:0]           wr_be_p;
 
@@ -382,6 +405,7 @@ module m1_sdram #(
   logic                  rr_valid;
 
   int unsigned j, cand;
+  integer csum;
   always_comb begin
     rr_valid = 1'b0;
     rr_grant = rr_next;
@@ -390,7 +414,12 @@ module m1_sdram #(
     // copies of the same priority chain and every copy is a chance to mistype
     // an index.
     for (j = 0; j < NP; j = j + 1) begin
-      cand = (rr_next + j) % NP;
+      // CONDITIONAL SUBTRACT, NOT MODULO. rr_next is 0..NP-1 and j is
+      // 0..NP-1, so the sum never exceeds 2*NP-2 and one subtract wraps it
+      // exactly. `% NP` against a non-constant synthesises a divider, and this
+      // loop is unrolled NP times -- eleven of them now.
+      csum = rr_next + j;
+      cand = (csum >= NP) ? csum - NP : csum;
       if (pend[cand] && !inflight[cand] && !rr_valid) begin
         rr_valid = 1'b1;
         rr_grant = ($clog2(NP))'(cand);
@@ -430,12 +459,32 @@ module m1_sdram #(
   end
   // Stale-proofing: the registered choice is only usable if that port is still
   // asking and still free.
+  // THE GRANTED PORT'S FIELDS, MUXED ONCE EACH.
+  //
+  // These were indexed inline at the issue site, and `we_p[arb_grant]` was
+  // indexed at THREE separate places (the refresh guard, `is_write`, and the
+  // burst-length select). Quartus does not share logic across distinct
+  // expressions -- established four times in this repo now -- so that built
+  // three independent NP:1 muxes for one bit.
+  //
+  // THIS IS A ROUTING FIX, NOT AN AREA ONE, AND THAT IS WHY IT MATTERS.
+  // With jt12 added the fitter failed to route 2-3 signals on EVERY seed and
+  // all of them were `m1_sdram|Mux*` -- different signals each seed, same
+  // module, which is local congestion rather than a capacity wall. Eleven
+  // ports times 24 address bits plus 16 data plus be plus we is a lot of
+  // wide muxing in one place, and duplicating any of it makes the region
+  // harder to route. Muxing once each is the cheapest thing that reduces it.
+  wire [25:1] g_addr = addr_p[arb_grant];
+  wire [15:0] g_din  = din_p[arb_grant];
+  wire [1:0]  g_be   = be_p[arb_grant];
+  wire        g_we   = we_p[arb_grant];
+
   wire arb_ok = arb_valid && pend[arb_grant] && !inflight[arb_grant];
 
   // ------------------------------------------------------------- transfer
   logic [$clog2(NP+1)-1:0] grant;
   logic                    grant_is_wr;
-  logic [24:1]             xfer_addr;
+  logic [25:1]             xfer_addr;
   logic [3:0]              rd_total, rd_issued, rd_captured;
   logic                    is_write;
   logic [15:0]             din_r;
@@ -461,8 +510,14 @@ module m1_sdram #(
 
   logic [1:0]  tbank;
   logic [12:0] trow;
-  assign tbank = xfer_addr[24:23];
-  assign trow  = xfer_addr[22:10];
+  assign tbank = xfer_addr[25:24];
+  // [23:11] WITH TEN COLUMN BITS. This kept the 32 MB slice [22:10] when the
+  // controller went to 64 MB, and the effect was not a wrong address but a
+  // wrong DECISION: trow is what bank_row[] remembers and what the open-row
+  // check compares, so the controller believed a row was already active and
+  // skipped the ACTIVATE, reading whatever row really was open. Banks 1-3
+  // failed and bank 0 passed, which reads as a bank-decode fault and is not.
+  assign trow  = xfer_addr[23:11];
 
   // A transfer whose bank and row are already open skips PRECHARGE and
   // ACTIVATE. This is the entire reason locality is worth anything: measured
@@ -498,10 +553,43 @@ module m1_sdram #(
   // buffers are what make that safe — a shared one would interleave two
   // masters' words into the same array.
   logic [RD_LAT-1:0]        tag_v;
-  logic [RD_LAT-1:0][2:0]   tag_p;      // port index
+  // PORT INDEX, WIDTH DERIVED FROM NP AND NOT HARD-CODED.
+  //
+  // This was `[2:0]` -- three bits, ports 0..7 -- while the design instantiates
+  // m1_sdram with NP(10). Ports 8 and 9 are the two MULTIPCM sample streams, and
+  // their tags WRAPPED: 8 became 0 and 9 became 1, so every sample read was
+  // delivered to the V60's fetch port and the character port instead. The PCM
+  // ports never saw an ack or a word, read zeros forever, and the sound board
+  // played silence while looking perfectly healthy -- the 68000 ran (port 7 is
+  // 3'b111 and still fitted), the chips issued requests, and the mix was flat.
+  //
+  // MEASURED ON THE BOARD 2026-09-12 with LED_POWER wired to
+  // `p_ack[8] && p_dout[8] != 0`: dark. Simulation could not see it -- the sound
+  // bench serves the PCM ports directly rather than through this controller.
+  //
+  // It arrived with the NP 7 -> 10 widening for sound and nothing checked it.
+  localparam int unsigned TAGW = $clog2(NP);
+  logic [RD_LAT-1:0][TAGW-1:0] tag_p;      // port index
   logic [RD_LAT-1:0][1:0]   tag_w;      // word index within the burst
   logic [RD_LAT-1:0]        tag_last;
-  logic [NP-1:0][3:0][15:0] cap;
+  // LEFT TO THE TOOL, which puts it in M10K now that there is M10K to spare.
+  //
+  // Widening tag_p from 3 to 4 bits makes Quartus size this for 16 entries and
+  // it lands in block RAM: 8 blocks. Pinning it to logic instead moves that cost
+  // onto LABs, and LABs were the binding constraint -- the fit asked for 4,207
+  // of 4,191. Freeing M10K elsewhere (ascal's OHRES and IHRES) is what lets the
+  // cost go back where it is cheap. M10K and LABs are separate pools and this
+  // array can be paid for out of either; put it in the one with room.
+  // IN LOGIC, NOT M10K, and that is a fit decision rather than a preference.
+  //
+  // Left unpinned Quartus put this in M10K -- 8 blocks for NP*64 bits -- and
+  // the design came out 561/553, eight over, while also being over on ALM. The
+  // eight blocks are the whole M10K overshoot. It costs about 16 LABs here and
+  // buys the fit.
+  (* ramstyle = "logic" *) logic [NP-1:0][3:0][15:0] cap;
+  // The capture slots of the port whose read is completing, muxed ONCE.
+  // See the assembly site for why this is hoisted rather than indexed inline.
+  wire [3:0][15:0] g_cap = cap[tag_p[0]];
 
   // Acks are per port now. A single shared hold counter was fine when only one
   // transfer existed at a time; with two ports in flight it would clear the
@@ -671,7 +759,7 @@ module m1_sdram #(
 
         // Read capture, driven entirely by the tag that travelled with the CAS.
         tag_v    <= {1'b0, tag_v[RD_LAT-1:1]};
-        tag_p    <= {3'd0, tag_p[RD_LAT-1:1]};
+        tag_p    <= {TAGW'(0), tag_p[RD_LAT-1:1]};
         tag_w    <= {2'd0, tag_w[RD_LAT-1:1]};
         tag_last <= {1'b0, tag_last[RD_LAT-1:1]};
         if (tag_v[0]) begin
@@ -688,17 +776,34 @@ module m1_sdram #(
             // exactly the slots that were written, so a short burst reads no
             // stale slot and the unused high words are zero rather than
             // whatever the previous transfer left.
+            // ONE MUX ON cap, ONE WRITE TO p_dout.
+            //
+            // `cap` is NP x 4 x 16 bits in FLIP-FLOPS (ramstyle "logic"), so
+            // `cap[tag_p[0]]` is an 11:1 mux of 64 bits -- and it was written
+            // out FIVE times across these arms, building five of them. The
+            // four arms also each performed their own variable-index write to
+            // `p_dout`.
+            //
+            // This is the congested module: with jt12 added the fitter failed
+            // to route 2 signals on every seed, all `m1_sdram|Mux*`, on one LAB
+            // (X73_Y27) -- reproduced identically with the machine otherwise
+            // idle, so it is the design and not contention. Five redundant
+            // 64-bit muxes in the read-return path is a large part of what
+            // makes that region dense.
+            //
+            // Bit-identical: `g_cap` is the same value every arm was reading,
+            // and assembling into a local before one write is the pattern this
+            // file already uses for `sel`.
+            logic [63:0] dout_n;
             case (tag_w[0])
-              2'd0: p_dout[tag_p[0]] <= {48'd0, dq_r};
-              2'd1: p_dout[tag_p[0]] <= {32'd0, dq_r,
-                                         cap[tag_p[0]][0]};
-              2'd2: p_dout[tag_p[0]] <= {16'd0, dq_r,
-                                         cap[tag_p[0]][1], cap[tag_p[0]][0]};
+              2'd0: dout_n = {48'd0, dq_r};
+              2'd1: dout_n = {32'd0, dq_r, g_cap[0]};
+              2'd2: dout_n = {16'd0, dq_r, g_cap[1], g_cap[0]};
               // Length 4, the unchanged path: bit-identical to what this
               // assembled before.
-              default: p_dout[tag_p[0]] <= {dq_r, cap[tag_p[0]][2],
-                                            cap[tag_p[0]][1], cap[tag_p[0]][0]};
+              default: dout_n = {dq_r, g_cap[2], g_cap[1], g_cap[0]};
             endcase
+            p_dout[tag_p[0]] <= dout_n;
             p_ack[tag_p[0]]    <= 1'b1;
             ack_cnt[tag_p[0]]  <= 2'(ACK_HOLD - 1);
           end
@@ -714,7 +819,7 @@ module m1_sdram #(
               state    <= S_PRE_REF;
             end else if (!ref_pend &&
                          ((wr_pend && !wr_inflight && !pipe_busy) ||
-                          (arb_ok && !(we_p[arb_grant] && pipe_busy)))) begin
+                          (arb_ok && !(g_we && pipe_busy)))) begin
               // No new transfer once a refresh is due. Refresh needs every
               // bank precharged and the read pipeline empty, and under
               // continuous traffic the pipeline is never empty — so without
@@ -728,7 +833,7 @@ module m1_sdram #(
               // A write drives DQ, so it may not be issued while read data is
               // still returning on the same wires. Reads have no such
               // restriction, which is what lets them overlap.
-              logic [24:1] sel;
+              logic [25:1] sel;
               if (wr_pend && !wr_inflight && !pipe_busy) begin
                 grant       <= ($clog2(NP+1))'(WIDX);
                 grant_is_wr <= 1'b1;
@@ -741,11 +846,11 @@ module m1_sdram #(
               end else begin
                 grant       <= ($clog2(NP+1))'(arb_grant);
                 grant_is_wr <= 1'b0;
-                sel         = addr_p[arb_grant];
-                din_r       <= din_p[arb_grant];
-                be_r        <= be_p[arb_grant];
-                is_write    <= we_p[arb_grant];
-                rd_total    <= we_p[arb_grant] ? 4'd1 : blen(arb_grant);
+                sel         = g_addr;
+                din_r       <= g_din;
+                be_r        <= g_be;
+                is_write    <= g_we;
+                rd_total    <= g_we ? 4'd1 : blen(arb_grant);
                 // Writes take it too: a port writing is equally in flight and
                 // equally must not be re-selected before it completes.
                 inflight[arb_grant] <= 1'b1;
@@ -797,8 +902,8 @@ module m1_sdram #(
 
           S_ACT: begin
             cmd       <= C_ACT;
-            sd_ba     <= xfer_addr[24:23];
-            sd_a      <= xfer_addr[22:10];
+            sd_ba     <= xfer_addr[25:24];
+            sd_a      <= xfer_addr[23:11];
             bank_row[tbank]  <= trow;
             bank_open[tbank] <= 1'b1;
             ras_cnt[tbank]   <= 4'(T_RAS - 1);
@@ -813,8 +918,8 @@ module m1_sdram #(
 
           S_WR: begin
             cmd      <= C_WRITE;
-            sd_ba    <= xfer_addr[24:23];
-            sd_a     <= {3'b000, 1'b0, xfer_addr[9:1]};  // A10 low: keep row open
+            sd_ba    <= xfer_addr[25:24];
+            sd_a     <= {2'b00, 1'b0, xfer_addr[10:1]};  // A10 low: keep row open
             sd_dq_o  <= din_r;
             sd_dq_oe <= 1'b1;
             sd_dqm   <= ~be_r;
@@ -843,18 +948,18 @@ module m1_sdram #(
             // One READ per cycle. The last one carries A10, requesting
             // auto-precharge, so the row closes without a separate command.
             cmd        <= C_READ;
-            sd_ba      <= xfer_addr[24:23];
+            sd_ba      <= xfer_addr[25:24];
             // A10 low: the row stays open so the next transfer to it can skip
             // PRECHARGE and ACTIVATE entirely. A10 is the auto-precharge bit
-            // and the column is nine bits, so A9 is padded explicitly — a
-            // packing of {3'b000, x, col} would land x on A9, which the device
-            // ignores.
-            sd_a       <= {2'b00, 1'b0, 1'b0, xfer_addr[9:1]};
+            // and the column is TEN bits, landing on A9..A0 exactly - so the
+            // padding above A10 is two bits now, not three, and nothing is
+            // padded between A10 and the column.
+            sd_a       <= {2'b00, 1'b0, xfer_addr[10:1]};
             // Injected at the selected depth, not at the top of the
             // pipeline: the tag reaches slot 0 after cap_depth cycles, which
             // is what decides which bus word is called word 0.
             tag_v[cap_depth-1]    <= 1'b1;
-            tag_p[cap_depth-1]    <= grant[2:0];
+            tag_p[cap_depth-1]    <= grant[TAGW-1:0];
             tag_w[cap_depth-1]    <= rd_issued[1:0];
             tag_last[cap_depth-1] <= (rd_issued + 1'b1 == rd_total);
             rd_bank_cnt[tbank]    <= cap_depth;

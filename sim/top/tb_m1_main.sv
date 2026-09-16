@@ -54,7 +54,7 @@ reg  [15:0] ioctl_dout = 0;
 wire        ioctl_wait, rom_loaded, ldr_overflow;
 
 wire        ldr_req, ldr_ack;
-wire [24:1] ldr_addr;
+wire [25:1] ldr_addr;
 wire [15:0] ldr_din;
 wire  [1:0] ldr_be;
 
@@ -71,7 +71,7 @@ m1_rom_loader loader (
 
 // ------------------------------------------------------------ main board
 wire        sdr_req, sdr_we;
-wire [24:1] sdr_addr;
+wire [25:1] sdr_addr;
 wire [15:0] sdr_din;
 wire  [1:0] sdr_be;
 wire [15:0] sdr_dout;
@@ -79,7 +79,7 @@ wire        sdr_ack;
 
 wire        if_req;
 wire [23:0] if_addr;
-wire [24:1] if_sdram_addr;
+wire [25:1] if_sdram_addr;
 wire [63:0] if_data;
 wire        if_ack;
 
@@ -105,13 +105,13 @@ m1_main #(.START_PC(PROG_PC), .FAST_IFETCH(FASTIF[0])) main (
 // p0 is the CPU's data port; p2 serves the wide instruction fetch as a 4-word
 // burst, which is exactly the 8-byte line FAST_IFETCH asks for.
 wire [4:0]        p_req, p_we, p_ack;
-wire [4:0][24:1]  p_addr;
+wire [4:0][25:1]  p_addr;
 wire [4:0][15:0]  p_din;
 wire [4:0][1:0]   p_be;
 wire [4:0][63:0]  p_dout;
 
 reg  ifp_req = 0;
-reg [24:1] ifp_addr = 0;
+reg [25:1] ifp_addr = 0;
 
 assign p_req  = {2'b00, ifp_req, 1'b0, sdr_req};
 assign p_we   = {4'b0000, sdr_we};
@@ -144,7 +144,7 @@ m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
 
 integer violations_i;
 wire [15:0] v_flags;
-sdram_model #(.COL_BITS(9)) device (
+sdram_model #(.COL_BITS(10)) device (
     .clk(clk), .cke(cke), .cs_n(cs_n), .ras_n(ras_n), .cas_n(cas_n),
     .we_n(we_n), .ba(ba), .a(a), .dqm(dqm),
     .dq_i(dq_c2m), .dq_oe_i(dq_oe_c), .dq_o(dq_m2c), .dq_oe_o(dq_oe_m),

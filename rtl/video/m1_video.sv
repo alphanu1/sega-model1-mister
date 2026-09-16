@@ -811,7 +811,30 @@ module m1_video #(
     .poly_won(poly_won)
   );
 
-  assign pal_addr = mixed;
+  // REGISTERED, AND THAT IS A TIMING FIX. Measured on seed 23, 2026-09-14:
+  // all five worst setup paths in the design were the same one, and it is the
+  // one docs/HANDOFF.md already named --
+  //
+  //   emu|m1_integrated|m1_video|m1_video_timing|vcnt[7]
+  //     -> m1_main|m1_mainram|m1_tdp_ram:u_pram|...|portb_address_reg0
+  //   slack -0.601 ns on clk_sys, and -0.831/-0.747/-3.473 on three other
+  //   seeds, so it is a slow path rather than placement luck.
+  //
+  // `mixed` is the tile fetch and the whole mixer priority resolution hanging
+  // off the raster counters, driven straight into an M10K's port B address --
+  // deep logic plus a long route to wherever the fitter placed the block.
+  // Splitting it lets the register sit next to the RAM.
+  //
+  // IT COSTS NO PICTURE SHIFT. ce_pix is /6 (m1_integrated: "exact 16 MHz dot
+  // clock at ce_pix = /6"), so there are six core cycles per pixel and this
+  // chain used one of them. Two still settles well inside the dot period, and
+  // the output stage below latches `pr` on ce_pix rather than on a cycle
+  // count, so nothing downstream is counting cycles. The one-pixel delay that
+  // the comment below compensates for is unchanged.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) pal_addr <= '0;
+    else        pal_addr <= mixed;
+  end
 
   logic       poly_won;
   logic [7:0] pr_t, pg_t, pb_t;

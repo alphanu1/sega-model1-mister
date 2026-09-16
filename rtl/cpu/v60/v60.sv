@@ -612,8 +612,23 @@ wire [2:0] modtop  = modval[7:5];
 // on "encoded GA2 SKPCUH R28" with the function form and passes with this one,
 // every other line identical. It cost a long bisect. Do not "tidy" these back
 // into fb32() calls.
-wire [31:0] fbw_ea1 = {fb[ea_ofs+4], fb[ea_ofs+3], fb[ea_ofs+2], fb[ea_ofs+1]};
-wire [31:0] fbw_ea2 = {fb[ea_ofs+5], fb[ea_ofs+4], fb[ea_ofs+3], fb[ea_ofs+2]};
+// FIVE DISTINCT BYTES, NOT EIGHT READS. The two words overlap in bytes +2, +3
+// and +4, and written as two independent concatenations each read builds its
+// own 24:1 byte mux - eight of them for five bytes. Naming the bytes once makes
+// the sharing explicit instead of hoping the fitter finds it; it does not
+// (docs/findings.md: Quartus does not share logic across distinct expressions,
+// found three times now). fb[ea_ofs+1] is also read in S_EA_MODE below and uses
+// the same wire.
+//
+// STILL CONTINUOUS ASSIGNMENTS READING fb[] DIRECTLY, which is the form the
+// warning above requires. This does not reintroduce fb32().
+wire [7:0] fb_ea1 = fb[ea_ofs+1];
+wire [7:0] fb_ea2 = fb[ea_ofs+2];
+wire [7:0] fb_ea3 = fb[ea_ofs+3];
+wire [7:0] fb_ea4 = fb[ea_ofs+4];
+wire [7:0] fb_ea5 = fb[ea_ofs+5];
+wire [31:0] fbw_ea1 = {fb_ea4, fb_ea3, fb_ea2, fb_ea1};
+wire [31:0] fbw_ea2 = {fb_ea5, fb_ea4, fb_ea3, fb_ea2};
 
 wire [7:0] modval2 = fbw_ea1[7:0];
 
@@ -666,6 +681,54 @@ always @* begin
     endcase
 end
 
+// ONE INDEXED READ OF THE FETCH BUFFER, NOT FIVE.
+//
+// The case below read the fetch buffer at a computed index in FIVE arms, at
+// three distinct addresses:
+//
+//     5'd2 + len1          S_STR_OP1, S_BF_EXT1, S_BS_SCH1, S_BS_MOV1
+//     5'd2 + len1 + len2   S_DEC_OP2, S_BF_INS2
+//     5'd3 + len1 + len2   S_STR_OP2
+//
+// Each is a 24-deep mux on eight bits, and Quartus does not share logic across
+// case arms, so five were built. Choosing the INDEX per state is a 5-bit mux;
+// choosing the BYTE is the expensive one. Hoist the byte mux out and mux the
+// index instead -- the same trade that paid in v60_shift and mb86233_alu.
+//
+// The three addresses are NOT interchangeable and a first attempt at this
+// folded S_DEC_OP2 and S_BF_INS2 into the 5'd3 group, which would have read the
+// wrong operand byte. They are listed above so the next reader can check them
+// against the arms rather than trusting the grouping.
+// THREE ADDRESSES, THREE MUXES, EIGHT READERS.
+//
+// These same three offsets into fb[] are read at EIGHT sites - the rf_raddr_a
+// decode below, and seven sequential arms (S_STR_OP1/OP2, S_DEC_OP2,
+// S_BF_EXT1, S_BF_INS2, S_BS_SCH1, S_BS_MOV1). Each one written inline built
+// its OWN 24:1 byte mux, because the index is computed from len1/len2 rather
+// than constant. Hoisting them to module scope leaves three muxes serving all
+// eight readers.
+//
+// An earlier version of this muxed the INDEX on `st` and kept one byte mux.
+// That is worse, not better: the sequential arms could not use it, so they kept
+// their own seven muxes and the index mux was pure addition. Naming the three
+// bytes lets every reader share.
+wire [7:0] fb_lenb_1  = fb[5'd2 + len1];         // length byte after op1
+wire [7:0] fb_lenb_12 = fb[5'd2 + len1 + len2];  // ...after op1 and op2
+wire [7:0] fb_lenb_3  = fb[5'd3 + len1 + len2];  // ...one further on (string ops)
+
+// THE THREE ARE NOT INTERCHANGEABLE. A first attempt folded S_DEC_OP2 and
+// S_BF_INS2 into the 5'd3 group, which would have read the wrong operand byte.
+// They are listed against their arms so the next reader can check rather than
+// trust the grouping.
+logic [7:0] fb_ra_byte;
+always @* begin
+    case (st)
+        S_STR_OP2:            fb_ra_byte = fb_lenb_3;
+        S_DEC_OP2, S_BF_INS2: fb_ra_byte = fb_lenb_12;
+        default:              fb_ra_byte = fb_lenb_1;
+    endcase
+end
+
 always @* begin
     rf_raddr_a = 5'd0;
     rf_raddr_b = 5'd0;
@@ -677,10 +740,10 @@ always @* begin
             rf_raddr_b = modval2[4:0];
         end
         S_PUSHM:   rf_raddr_a = pushm_index(op1);
-        S_STR_OP1: rf_raddr_a = fb[5'd2 + len1][4:0];
-        S_STR_OP2: rf_raddr_a = fb[5'd3 + len1 + len2][4:0];
+        S_STR_OP1: rf_raddr_a = fb_ra_byte[4:0];
+        S_STR_OP2: rf_raddr_a = fb_ra_byte[4:0];
         S_DEC_OP2: begin
-            rf_raddr_a = fb[5'd2 + len1 + len2][4:0];
+            rf_raddr_a = fb_ra_byte[4:0];
             rf_raddr_b = op2[4:0];
         end
         S_BAM_MODE: begin
@@ -688,9 +751,9 @@ always @* begin
             rf_raddr_b = modval2[4:0];
         end
         S_BF_EXT1, S_BS_SCH1, S_BS_MOV1:
-            rf_raddr_a = fb[5'd2 + len1][4:0];
+            rf_raddr_a = fb_ra_byte[4:0];
         S_BF_INS2:
-            rf_raddr_a = fb[5'd2 + len1 + len2][4:0];
+            rf_raddr_a = fb_ra_byte[4:0];
         S_TASK_ST_NEXT:
             if (task_phase >= 6'd5) rf_raddr_a = task_phase[4:0] - 5'd5;
 `ifndef S32_V60_NO_FP
@@ -1423,7 +1486,7 @@ else if (ce) begin
                     d1t = fbw_ea1;
                     d2t = {16'b0, fbw_ea1[15:0]};
                     case (ea_dim)
-                        2'd0: ea_out <= {24'b0, fb[ea_ofs+1]};
+                        2'd0: ea_out <= {24'b0, fb_ea1};
                         2'd1: ea_out <= d2t;
                         default: ea_out <= d1t;
                     endcase
@@ -2124,7 +2187,7 @@ else if (ce) begin
         // op1 = source address; read len1 byte then decode op2
         logic [7:0] lb;
         str_src <= op1;
-        lb = fb[5'd2 + len1];
+        lb = fb_lenb_1;
         str_len1 <= lb[7] ? rf_rdata_a : {24'b0, lb};
         // decode op2 at ofs = 3 + len1. F7a (MOVC/CMPC): address. F7b
         // (SCHC/SKPC 0x18-0x1B): search VALUE, and no len2 byte follows.
@@ -2165,7 +2228,7 @@ else if (ce) begin
         else begin
             logic [31:0] mn, off;
             logic [4:0]  shf1;
-            lb = fb[5'd3 + len1 + len2];
+            lb = fb_lenb_3;
             l2 = lb[7] ? rf_rdata_a : {24'b0, lb};
             str_len2 <= l2;
             mn  = (str_len1 < l2) ? str_len1 : l2;
@@ -2388,7 +2451,7 @@ else if (ce) begin
     S_DEC_OP2: begin
         // trailing ext byte (pattern), same reg-or-literal coding as lengths
         logic [7:0] xb;
-        xb = fb[5'd2 + len1 + len2];
+        xb = fb_lenb_12;
         dec_pat <= xb[7] ? rf_rdata_a[7:0] : xb;
         total_len <= 5'd3 + len1 + len2;
         if (subop[4:0] <= 5'h02) begin            // ADDDC/SUBDC/SUBRDC: RMW
@@ -2686,7 +2749,7 @@ else if (ce) begin
     // then op2 (normal AM) receives the word result
     S_BF_EXT1: begin
         logic [7:0] lb;
-        lb = fb[5'd2 + len1];
+        lb = fb_lenb_1;
         bit_len <= lb[7] ? rf_rdata_a : {24'b0, lb};
         ea_want_addr <= 1'b1;
         ea_dim  <= 2'd2;
@@ -2734,7 +2797,7 @@ else if (ce) begin
     end
     S_BF_INS2: begin
         logic [7:0] lb;
-        lb = fb[5'd2 + len1 + len2];
+        lb = fb_lenb_12;
         bit_len <= lb[7] ? rf_rdata_a : {24'b0, lb};
         str_dst <= bam_base + bitdiv8(bam_off);
         bam_off <= {29'b0, bam_off[2:0]};
@@ -2773,7 +2836,7 @@ else if (ce) begin
     S_BS_SCH1: begin
         logic [7:0] lb;
         logic [31:0] l;
-        lb = fb[5'd2 + len1];
+        lb = fb_lenb_1;
         l = lb[7] ? rf_rdata_a : {24'b0, lb};
         bit_len <= l;
         str_src <= bam_base + bitdiv8(bam_off);
@@ -2835,7 +2898,7 @@ else if (ce) begin
     // MOVBSU/MOVBSD: bit-string copy (subop bit0: 0=up, 1=down)
     S_BS_MOV1: begin
         logic [7:0] lb;
-        lb = fb[5'd2 + len1];
+        lb = fb_lenb_1;
         bit_len <= lb[7] ? rf_rdata_a : {24'b0, lb};
         bs_base1 <= bam_base;
         bs_off1  <= bam_off;

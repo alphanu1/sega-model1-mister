@@ -45,7 +45,7 @@ module m1_fetch_bridge (
   input  logic        cpu_rst_n,
   input  logic        if_req,          // level, held until if_ack
   input  logic [2:0]  if_off,          // byte offset of the wanted byte in the line
-  input  logic [24:1] if_sdram_addr,   // burst-aligned line address
+  input  logic [25:1] if_sdram_addr,   // burst-aligned line address
   output logic [63:0] if_data,
   output logic        if_ack,          // held until if_req drops
 
@@ -53,7 +53,7 @@ module m1_fetch_bridge (
   input  logic        mem_clk,
   input  logic        mem_rst_n,
   output logic        p_req,           // one-cycle pulse
-  output logic [24:1] p_addr,
+  output logic [25:1] p_addr,
   input  logic [63:0] p_dout,
   input  logic        p_ack
 );
@@ -131,7 +131,7 @@ module m1_fetch_bridge (
 
   // The crossing is the same two-phase handshake the data port uses; only the
   // width and the absence of a write side differ.
-  m1_cdc_port #(.AW(24), .DW(64), .BEW(1)) u_cdc (
+  m1_cdc_port #(.AW(25), .DW(64), .BEW(1)) u_cdc (
     .a_clk   (cpu_clk),
     .a_rst_n (cpu_rst_n),
     .a_req   (c_req),
