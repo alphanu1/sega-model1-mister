@@ -76,6 +76,20 @@ quoted as the Virtua Racing baseline and is a **Virtua Fighter** run; the
 differing PC and layer pixels it appeared to show were two different games, not
 a regression. Check what a log actually loaded before believing a diff of it.
 
+**CONFIRMED ON HARDWARE, 2026-09-16: ALL SIX SETS NOW BOOT.** Virtua Racing,
+Virtua Formula, Virtua Fighter, Star Wars Arcade, Wing War and Sega NetMerc all
+get past boot on the DE10-Nano with seed 29 (41,091 ALM, 551 M10K, every clock
+positive). Star Wars had never loaded before; Wing War had never been run on
+hardware at all.
+
+**NetMerc did NOT regress**, which was the flagged risk -- it boots today with
+ROMA void and was moved to mode 1 on MAME's authority alone, untested. It
+survived. The entry below that called that out as the first place to look if it
+broke can stand as a risk that did not materialise rather than one that did.
+
+**Booting is not working.** Three defects are open across the newly-booting
+sets; see `HANDOFF.md`. Getting past boot is the floor, not the goal.
+
 **STAR WARS IS UNBLOCKED, NOT FIXED.** It gets out of the reserved-opcode loop
 and into its own boot code. Whether it reaches a game is a separate question.
 Its TGP has retired 85 instructions and sits on an empty command FIFO at 40 M

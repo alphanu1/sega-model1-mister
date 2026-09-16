@@ -1,3 +1,109 @@
+# ALL SIX SETS BOOT (2026-09-16). THREE DEFECTS OPEN.
+
+**Confirmed on hardware**, seed 29 (41,091/41,910 ALM, 551/553 M10K, every
+clock positive, `build/Model1_roma_seed29_41091.rbf`, md5 70eb5327). Virtua
+Racing, Virtua Formula, Virtua Fighter, Star Wars Arcade, Wing War and Sega
+NetMerc all get past boot. Star Wars had never loaded; Wing War had never been
+run on hardware at all. The cause was ROMA -- see `findings.md` 2026-09-16 (b).
+
+**Booting is the floor, not the goal.** What follows is what is wrong now.
+
+## 1. NetMerc: audio is tiny, high-pitched and at the wrong speed
+
+Reported from the board. The sound board runs and produces output, but the
+output is wrong in **rate**, not merely in level -- "high-pitched and wrong
+speed" is a sample-clock symptom, so look at the rate divider before the mixer.
+
+Where to start, in order:
+
+- `m2_sound_board`'s `ce_pcm1` / `TICK_NUM` and the MultiPCM sample rate. These
+  were tuned against Virtua Fighter and have never been checked on another set.
+- NetMerc's sound program is a **different size**: `epr-18109.ic7` is loaded
+  into a region MAME declares `ROMREGION_BE|ROMREGION_16BIT`, and the packer
+  reports 518,532 non-zero program bytes against Virtua Fighter's 125,044. A
+  program that large may be driving the chips differently.
+- The MPCM sample sets differ per game; a wrong base or stride reads samples at
+  the wrong offset, which sounds like the wrong pitch rather than like silence.
+
+**Instrument before guessing**: `tb_m1_frame GAME=netmerc` captures a WAV the
+same way `build/vf_attract.wav` was made, and MAME playing the same set is the
+reference to diff against. Do not tune by ear on the board.
+
+## 2. NetMerc: the 3D layer is drawn over the 2D HUD
+
+The 3D is composited above tilemap output that should be in front of it. This is
+a **priority** fault, not a rendering one -- both layers are being produced.
+
+`m1_video.sv` resolves layer order; MAME's `model1_v.cpp` is the oracle for
+which tilemap wins against the 3D. NetMerc is a gun game with a permanent HUD,
+so it exercises a priority case Virtua Racing's road never does.
+
+## 3. Wing War: grey backdrop, Start does not register, 3D may be absent
+
+Three symptoms, and they may be one fault or three.
+
+**START IS ALREADY ON THE CORRECT BIT -- do not "fix" the mapping.** Measured
+against `INPUT_PORTS_START( wingwar )`: IN.0 bit `0x10` is `IPT_START1`, and
+`io_in0_vr` puts `io_start` at bit 4, which is `0x10`. Coin (`0x01`) and Service
+(`0x08`) line up too. So the button reaching the board is right and the reason
+it does nothing is elsewhere -- the game not being in a state where Start means
+anything is the more likely reading, which the grey backdrop supports.
+
+A grey backdrop with no 3D is what a display list that never gets walked looks
+like. Check whether the V60 is issuing geometry at all before looking at the
+rasterizer.
+
+## 4. Only Virtua Racing / Formula and Virtua Fighter have an input map
+
+`Model1.sv` selects between exactly two layouts -- `is_vf ? vf : vr` -- so
+**Star Wars, Wing War and NetMerc are all being handed Virtua Racing's driving
+layout.** That is the cause of "wrong button layout" on every set but the two
+racers.
+
+The digital bits, from `INPUT_PORTS_START` in `model1.cpp`:
+
+| | IN.0 | IN.1 |
+|---|---|---|
+| vr | 0x01 coin, 0x08 service, 0x10 start, 0x20/40/80 View 1-3 | 0x01 View 4, 0x10 shift down, 0x20 shift up |
+| vf | + 0x20 START2 | full 8-way stick + 3 buttons per player, IN.1 and IN.2 |
+| swa | 0x10 START1, **0x20 START2** | 0x01/0x02 P1 buttons 1-2, 0x04/0x08 P2 buttons 1-2, 0x10 P1 button 3 |
+| wingwar | 0x10 start, 0x20/40/80 View 1-3 | 0x01 View 4, 0x10 Machine Gun, 0x20 Missile, 0x40 Smoke |
+| netmerc | 0x01 coin, 0x08 service, **no start at all** | 0x01 Trigger, 0x02 Thumb, 0x04 MVD Holder |
+
+**The analogue channels are the bigger half of this, and they are worse than
+unmapped -- they are mis-centred.** We publish three bytes: `0x00` wheel, `0x01`
+accelerator, `0x02` brake, with `0x03`-`0x07` tied to 0xff. MAME's
+`an_callback<N>` per game:
+
+| set | ch0 | ch1 | ch2 | ch4 | ch5 |
+|---|---|---|---|---|---|
+| vr, vformula | WHEEL | ACCEL | BRAKE | -- | -- |
+| swa | STICK1X | STICK1Y | THROTTLE | STICK2X | STICK2Y |
+| wingwar | STICKX | STICKY | THROTTLE | -- | -- |
+| netmerc | STICKX | -- | **STICKY** | -- | -- |
+
+Two consequences worth stating because they are not obvious:
+
+- **An idle pedal reads 0x01, an idle stick axis wants 0x7f/0x80.** So on every
+  non-racer the Y axis is pinned hard over at rest rather than centred. That is
+  an aiming and flying game permanently at full deflection, which will look like
+  a broken game rather than a wrong idle value.
+- **NetMerc reads Y on channel 2, not channel 1** -- it skips a channel. A map
+  written by pattern-matching the other games will get this one wrong.
+
+Star Wars also wants five analogue channels for its two players; channels 4 and
+5 are currently 0xff.
+
+## Still open from before, unchanged
+
+- **The quad store drops** on busy stretches -- 3,072 quads against peaks of
+  ~3,034 while driving, filled in display-list order so track and scenery go
+  first. The fix is the quad payload in SDRAM; M10K is 551/553.
+- **Star Wars is unblocked, not finished.** It boots; how far it gets is
+  unmeasured.
+
+---
+
 # THE INTERMITTENT ROM LOADING IS FIXED, AND SOUND WORKS (2026-09-16)
 
 **Confirmed on hardware.** Virtua Fighter boots with sound, and the core now

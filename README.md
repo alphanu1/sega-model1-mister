@@ -58,14 +58,22 @@ each with the instrument that produced it and what it corrected.
 Six Model 1 titles, all packed by `tools/gen_mra.py` and verified byte-for-byte
 against an independently written packer with `make verify_mra`.
 
+**All six boot on hardware** as of 2026-09-16. Booting is the floor, not the
+goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail.
+
 | Game | On hardware | In MAME (the oracle) |
 |---|---|---|
 | Virtua Racing | boots, plays, 2D and 3D | yes |
 | Virtua Formula | boots, plays, 2D and 3D; a Virtua Racing clone | yes |
-| Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, and direct-polygon objects are missing | yes |
-| Sega NetMerc | runs, 2D and 3D | reaches its title screen |
-| Star Wars Arcade | does not load | yes |
-| Wing War | ROM packs correctly, untested on hardware | yes |
+| Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, direct-polygon objects are missing, and the input map is the only one besides Virtua Racing's that exists | yes |
+| Sega NetMerc | boots; audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
+| Star Wars Arcade | boots as of 2026-09-16; how far it gets is unmeasured | yes |
+| Wing War | boots; grey backdrop, Start does not register, 3D may be absent | yes |
+
+**Only Virtua Racing / Formula and Virtua Fighter have an input map.** Star
+Wars, Wing War and NetMerc are handed Virtua Racing's driving layout, so their
+buttons are wrong and their analogue axes sit pinned rather than centred -- an
+idle pedal reads 0x01 where a stick axis wants 0x7f.
 
 `vf` and `netmerc` are marked `MACHINE_NOT_WORKING` in MAME and both run
 correctly — that flag is a curation stance about their `BAD_DUMP` coprocessor
