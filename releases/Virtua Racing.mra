@@ -28,6 +28,15 @@
       sound board. Those blocks do not exist in the core, so sending them would
       only slow the load. They belong here as M2 and M4 land.
     -->
+    <!-- WHICH GAME THIS IS. Six titles share one bitstream and they do not
+         agree about the input map, so the core has to be told. Ahead of
+         index 0 deliberately: the byte must arrive before the ROM.
+         0 Virtua Racing / Formula, 1 Virtua Fighter, 2 Star Wars,
+         3 Wing War, 4 NetMerc. -->
+    <rom index="4" md5="none">
+        <part>00 00</part>
+    </rom>
+
     <rom index="0" zip="vr.zip" md5="none">
         <!-- stream 0x000000, ROM_LOAD16_BYTE -->
         <interleave output="16">
@@ -142,6 +151,61 @@
          m1_ioz80 preloads its array from SDRAM before releasing the Z80. -->
     <rom index="3" zip="vr.zip|vr.7z" md5="none">
         <part name="93c45.bin"/>
+    </rom>
+
+    <!-- THE SOUND BOARD, index 5. Its own index for the same reason the TGP's
+         microcode has one: the bases are at 26 MB and beyond, so carrying this
+         on index 0 would mean padding ~26 MB of filler through the HPS.
+         Index 4 is the game-id byte, not free.
+
+         One stream, three destinations, split by m1_rom_loader's SND_*
+         parameters because the bases are not contiguous - the 68000's 64 KB of
+         work RAM sits between the program and PCM1:
+
+           0x000000  epr-14870a.7   0x20000   68000 program  -> 0xD10000
+           0x020000  mpr-14873.32  0x200000   MultiPCM 1     -> 0xD40000
+           0x220000  mpr-14876.4   0x200000   MultiPCM 2     -> 0xE40000
+
+         The 68000 ROM is ROM_LOAD16_WORD_SWAP in MAME, so it is byte-swapped
+         here with map="12" on a 16-bit interleave - the same form Model 2 uses
+         for its own sound 68000. The sample ROMs are byte streams and go in
+         plain. -->
+    <rom index="5" zip="vr.zip|vr.7z">
+        <!--
+             FOUR MB PER MULTIPCM, 2026-09-16. One stream shape for every game:
+
+               0x000000  68000 program   512 KB
+               0x080000  MultiPCM 1        4 MB
+               0x480000  MultiPCM 2        4 MB
+
+             512 KB for the program because NetMerc's is a SINGLE 512 KB ROM;
+             Virtua Fighter and Wing War have two 128 KB ones and Virtua Racing
+             has one. Short sets are zero-padded so every game presents the same
+             shape.
+
+             These regions live ABOVE 32 MB, which only became addressable when
+             the SDRAM controller went to ten column bits. Nothing below 32 MB
+             moved, so the polygon ROM and copro tables stay exactly where the
+             packer has always written them - an earlier attempt to find this
+             space by sliding those regions down broke the 3D on hardware.
+
+             PADS ARE 00, NOT FF. Model1.sv used to mask MultiPCM reads above
+             2 MB to zero, matching MAME, which gives each chip a 4 MB region
+             and may load less into it. That mask is gone now the space is real,
+             so the zeros must be in the data: FF would be full-scale noise
+             exactly where the reference is silent.
+
+             68000 ROMs are ROM_LOAD16_WORD_SWAP in MAME, so each is byte-
+             swapped with map="12" on a 16-bit interleave; samples go in plain.
+        -->
+        <interleave output="16">
+            <part name="epr-14870a.7" map="12"/>
+        </interleave>
+        <part repeat="393216">00</part>
+        <part name="mpr-14873.32"/>
+        <part repeat="2097152">00</part>
+        <part name="mpr-14876.4"/>
+        <part repeat="2097152">00</part>
     </rom>
 
     <nvram index="255" size="256"/>

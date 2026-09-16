@@ -15,19 +15,21 @@ NetMerc.
 
 ## Releases
 
-`releases/` holds the staged MiSTer release: the bitstream, the MRA, and a
-README with the copy instructions and the md5 to check against.
+`releases/` holds the staged MiSTer release: the bitstreams, the MRAs, and a
+README with the copy instructions and the md5s to check against. The previous
+bitstream is kept alongside the current one as a fallback.
 
-**Only Virtua Racing is released.** The other five have MRAs in `mra/` and are
-candidates, not releases — an MRA ships only for a game somebody has played on
-hardware, and the release README lists what is not finished in the exact build
-it ships.
+**Virtua Racing and Virtua Formula are released.** The other four have MRAs in
+`mra/` and are candidates, not releases — an MRA ships only for a game somebody
+has played on hardware, and the release README lists what is not finished in the
+exact build it ships.
 
-**There is no sound.** None at all, in any game. The Model 1's audio is a
-separate PCB — a 68000, a YM3438 and two MultiPCMs — reached over the main
-board's uPD71051C USART, and none of it is implemented. That is milestone M4 and
-it has not been started. The core outputs silence, and that is expected rather
-than a fault in anyone's setup.
+**There is sound**, as of `Model1_20260916.rbf`: the sound PCB's 68000, its
+YM3438 and both MultiPCM channels, reached over the main board's uPD71051C
+USART. It was brought up and confirmed on hardware on **Virtua Fighter**, which
+has attract audio. Virtua Racing's attract mode is silent on the real hardware
+too, so a quiet attract screen is correct there and proves nothing either way;
+Virtua Racing's in-game audio has not been confirmed on hardware.
 
 **Two ROM zips are needed, not one.** `vr.zip` carries the game, the coprocessor
 microcode and `93c45.bin` (the I/O board's settings EEPROM). The I/O board's Z80
@@ -44,7 +46,7 @@ not boot; MAME will not start Virtua Racing without the same file either.
 | M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls through a real Z80 I/O board, window/split-scroll mode implemented and verified |
 | M2 — geometry pipeline | **running real microcode on hardware, for five games.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built. A register-sourced `rep` read the wrong register until 2026-09-05, which hung Virtua Fighter on its first frame |
 | M3 — rasterizer and video | **the 3D layer runs on hardware**: geometry, sort, band buffers and scanout are built, and the geometry agrees with MAME quad-for-quad across a full rotation. Virtua Racing's left-side cut is fixed and confirmed on the board; the open defects are listed below |
-| M4 — sound | not started — 68000, YM3438 and two MultiPCMs on a separate sound PCB, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board |
+| M4 — sound | **runs on hardware** — the sound PCB's 68000 (fx68k), YM3438 (jt12) and both MultiPCM channels, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board. Confirmed on Virtua Fighter; the 68000's work RAM is on-chip and the 8 MB of PCM samples are in SDRAM above 32 MB |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
 what to do next, and the failure modes that have cost time.
@@ -53,15 +55,16 @@ each with the instrument that produced it and what it corrected.
 
 ### Games
 
-Five Model 1 titles, all packed by `tools/gen_mra.py` and verified byte-for-byte
+Six Model 1 titles, all packed by `tools/gen_mra.py` and verified byte-for-byte
 against an independently written packer with `make verify_mra`.
 
 | Game | On hardware | In MAME (the oracle) |
 |---|---|---|
 | Virtua Racing | boots, plays, 2D and 3D | yes |
-| Virtua Fighter | runs and plays; the fighting arena is the wrong size in a match, and direct-polygon objects are missing | yes |
+| Virtua Formula | boots, plays, 2D and 3D; a Virtua Racing clone | yes |
+| Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, and direct-polygon objects are missing | yes |
 | Sega NetMerc | runs, 2D and 3D | reaches its title screen |
-| Star Wars Arcade | does not boot — both CPUs park during init | yes |
+| Star Wars Arcade | does not load | yes |
 | Wing War | ROM packs correctly, untested on hardware | yes |
 
 `vf` and `netmerc` are marked `MACHINE_NOT_WORKING` in MAME and both run
@@ -70,8 +73,8 @@ microcode, not a statement that the machine fails. Every game therefore has an
 instruction-level oracle: `make tgp_trace GAME=<set>` diffs our coprocessor
 against MAME's on that game's own microcode.
 
-Only Virtua Racing's microcode is a good dump; the other four are flagged
-`BAD_DUMP` and run anyway.
+Only Virtua Racing's microcode is a good dump — Virtua Formula is a clone and
+uses the same part; the other four are flagged `BAD_DUMP` and run anyway.
 
 ### M1 progress
 
@@ -176,12 +179,16 @@ every two — so the worst pass in a busy stretch is very likely never sampled. 
 peak-hold is now on the wire, and the 3D clock has been raised a step, which was
 reverted once for a reason that no longer holds.
 
-**Star Wars Arcade does not boot.** Both processors park during init — the V60's
-PC at `0x000004` and the coprocessor at microcode `0x0048` after 69 retires. One
-candidate is EEPROM persistence: `swa` has no factory EEPROM, in our set or in
-MAME's, so it depends on the I/O firmware's virgin-part path at every boot while
-ours is volatile. It also wants a DSBZ80 MPEG sound board that is not implemented
-at all, so expect more than one fault.
+**Star Wars Arcade does not load.** Its MRA verifies byte for byte against the
+independent packer and the packer knows its shape — one 512 KB boot ROM at
+`0xf80000` where Virtua Racing has two 128 KB parts, and no banked data at
+`0x1000000` — but it has never been simulated successfully, so the fault is not
+localised. Earlier, with an older image, both processors parked during init: the
+V60's PC at `0x000004` and the coprocessor at microcode `0x0048` after 69
+retires. One candidate is EEPROM persistence: `swa` has no factory EEPROM, in
+our set or in MAME's, so it depends on the I/O firmware's virgin-part path at
+every boot while ours is volatile. It also wants a DSBZ80 MPEG sound board that
+is not implemented at all, so expect more than one fault.
 
 **The 2D tile fetch misses scanline deadlines.** Not memory: the port is served
 in 18 cycles while the controller sits ~29% busy. It is the engine's own line
@@ -338,8 +345,12 @@ heart of this core, imported with explicit width casts, and its ~35 directed
 testbenches reused unchanged. What it is verified to do is stated below rather
 than assumed: `make v60_trace` diffs its instruction stream against MAME's from
 reset, because a per-opcode suite proves each instruction correct for the state
-it was handed, not that the machine reaches the right state running real code. The Z80 is **T80**, originally by Daniel Wallner,
-via the same project. The framework is **MiSTer-devel**'s.
+it was handed, not that the machine reaches the right state running real code.
+
+The sound board's 68000 is **fx68k**, by Jorge Cwik (ijor), and its YM3438 is
+**jt12**, by Jose Tejada (jotego) — both GPL-3.0 and both used unmodified. The
+Z80 is **T80**, originally by Daniel Wallner, via the s32 project. The framework
+is **MiSTer-devel**'s.
 
 The hardware behaviour is verified throughout against **MAME**, whose Model 1
 driver and MB86233 coprocessor model are the reference every block here is

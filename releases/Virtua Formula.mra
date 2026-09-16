@@ -145,6 +145,44 @@
         <part name="epr-14869b.25"/>
     </rom>
 
+    <rom index="5" zip="vformula.zip|vformula.7z|vr.zip">
+        <!--
+             FOUR MB PER MULTIPCM, 2026-09-16. One stream shape for every game:
+
+               0x000000  68000 program   512 KB
+               0x080000  MultiPCM 1        4 MB
+               0x480000  MultiPCM 2        4 MB
+
+             512 KB for the program because NetMerc's is a SINGLE 512 KB ROM;
+             Virtua Fighter and Wing War have two 128 KB ones and Virtua Racing
+             has one. Short sets are zero-padded so every game presents the same
+             shape.
+
+             These regions live ABOVE 32 MB, which only became addressable when
+             the SDRAM controller went to ten column bits. Nothing below 32 MB
+             moved, so the polygon ROM and copro tables stay exactly where the
+             packer has always written them - an earlier attempt to find this
+             space by sliding those regions down broke the 3D on hardware.
+
+             PADS ARE 00, NOT FF. Model1.sv used to mask MultiPCM reads above
+             2 MB to zero, matching MAME, which gives each chip a 4 MB region
+             and may load less into it. That mask is gone now the space is real,
+             so the zeros must be in the data: FF would be full-scale noise
+             exactly where the reference is silent.
+
+             68000 ROMs are ROM_LOAD16_WORD_SWAP in MAME, so each is byte-
+             swapped with map="12" on a 16-bit interleave; samples go in plain.
+        -->
+        <interleave output="16">
+            <part name="epr-14870a.7" map="12"/>
+        </interleave>
+        <part repeat="393216">00</part>
+        <part name="mpr-14873.32"/>
+        <part repeat="2097152">00</part>
+        <part name="mpr-14876.4"/>
+        <part repeat="2097152">00</part>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>

@@ -25,6 +25,25 @@ Their V60 unit tests are reused unchanged via `tools/run_v60_tests.sh`.
 
 GPL-3 to GPL-3, so reuse is direct. Copyright remains theirs on those files.
 
+### jt12 (Jose Tejada, jotego) — GPL-3.0-or-later
+`rtl/sound/jt12/` is JT12, Jose Tejada's YM2612/YM3438 implementation, used
+unmodified as the sound board's FM chip. Every file carries its own GPL-3.0-or-
+later header naming him as author.
+
+GPL-3 to GPL-3, so reuse is direct. Copyright remains his on those files.
+
+### fx68k (Jorge Cwik / ijor) — GPL-3.0
+`rtl/sound/fx68k/` is fx68k, the sound board's 68000. Cycle accurate, and the
+usual MiSTer choice; it was the option identified when M4 was first costed (see
+*Evaluated for M4 sound* below) and it is the one that shipped.
+
+Its microcode tables are loaded by `$readmemb` from `.mem` files at
+elaboration, by bare filename — so a bench must run from a directory where
+those files resolve, or the 68000 executes nothing and reports no instructions
+with no error.
+
+GPL-3 to GPL-3. Copyright remains theirs on those files.
+
 ### MAME — BSD-3-Clause
 Used as the behavioural oracle throughout (hard rule 3). `mb86233.cpp` and
 `mb86233d.cpp` for the TGP, `model1.cpp` for the board and memory map,
