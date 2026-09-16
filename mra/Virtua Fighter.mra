@@ -178,5 +178,5 @@
 
     <nvram index="255" size="256"/>
 
-    <buttons names="Punch,Kick,Guard,Start,Coin,Service,Test,Coin 2" default="A,B,X,Start,Select"/>
+    <buttons names="Punch,Kick,Guard,Unused 4,Unused 5,Unused 6,Unused 7,Unused 8,Start,Coin,Service,Test,Coin 2" default="A,B,X,Y,L1,R1,L2,R2,Start,Select"/>
 </misterromdescription>

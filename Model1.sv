@@ -136,6 +136,8 @@ module emu
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
     "O[11],Pedals,Up=Accel,Up=Brake;",
+    "O[12],Stick Y axis,Normal,Inverted;",
+    "O[13],Stick X axis,Normal,Inverted;",
     "-;",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
@@ -148,6 +150,7 @@ module emu
 
   wire [31:0] joy0, joy1;
   wire [15:0] joy0_lstick, joy0_rstick;
+  wire [15:0] joy1_lstick;   // pad 2, the gunner seat
   wire [10:0] ps2_key;
 
   // The board's controls, gathered in one place so the I/O board takes a named
@@ -244,6 +247,8 @@ module emu
   localparam [15:0] GAMEID_INDEX = 16'd4;
   logic [7:0] game_id;
   wire is_vf = (game_id == 8'd1);
+  wire is_swa = (game_id == 8'd2);
+  wire is_ww  = (game_id == 8'd3);
 
   // ROMA MIRRORING, per game.
   //
@@ -300,8 +305,38 @@ module emu
   wire [7:0] io_in2_vf = ~{p2_left, p2_right, p2_up, p2_down,
                            1'b0, p2_b3, p2_b2, p2_b1};
 
-  wire [7:0] io_in0 = is_vf ? io_in0_vf : io_in0_vr;
-  wire [7:0] io_in1 = is_vf ? io_in1_vf : io_in1_vr;
+  // Star Wars Arcade. INPUT_PORTS_START( swa ).
+  //
+  // IN.0 is bit for bit Virtua Fighter's -- coin, coin2, test, service, START1
+  // at 0x10 and START2 at 0x20 -- so it is shared rather than retyped. IN.1 is
+  // its own: two buttons for EACH player plus a third for player 1, and the
+  // two players are interleaved rather than given a byte each.
+  //
+  //   0x01 P1 button 1   0x02 P1 button 2   0x10 P1 button 3
+  //   0x04 P2 button 1   0x08 P2 button 2
+  //
+  // IN.2 is declared entirely unused, so it stays idle-high.
+  wire [7:0] io_in1_swa = ~{3'b000, p1_b3, p2_b2, p2_b1, p1_b2, p1_b1};
+
+  // Wing War. INPUT_PORTS_START( wingwar ).
+  //
+  // IN.0 IS ALREADY VIRTUA RACING'S, BIT FOR BIT -- coin at 0x01, the
+  // no-toggle service at 0x04, SERVICE1 at 0x08, START1 at 0x10 and View 1-3
+  // at 0x20/0x40/0x80. Nothing to do, and worth stating because Start not
+  // working on the board was first read as a mapping fault. It is not one.
+  //
+  // IN.1 differs by exactly one reachable bit. View 4 at 0x01 already lands on
+  // io_vr4; Machine Gun (0x10), Missile (0x20) and Smoke (0x40) are the three
+  // weapons, and only the first two had anything driving them -- the gear
+  // levers, by coincidence of position. SMOKE WAS TIED LOW AND UNREACHABLE.
+  //
+  // The three take joy0[4]/[5]/[6], which are the pedals and first gear on a
+  // racer and free here, so they sit under the MRA's first three button names.
+  wire [7:0] io_in1_ww = ~{1'b0, joy0[6], joy0[5], joy0[4], 3'b000, io_vr4};
+
+  wire [7:0] io_in0 = (is_vf | is_swa) ? io_in0_vf : io_in0_vr;
+  wire [7:0] io_in1 = is_swa ? io_in1_swa : is_ww ? io_in1_ww :
+                      is_vf  ? io_in1_vf  : io_in1_vr;
   wire [7:0] io_in2 = is_vf ? io_in2_vf : io_in2_vr;
 
   // The three MSM6253 channels. Each idle value is measured rather than assumed
@@ -364,6 +399,140 @@ module emu
   wire [7:0] io_brake = io_brake_b ? 8'hff :
                         (brake_an > 8'h01) ? brake_an : 8'h01;
 
+  // ------------------------------------------------ Star Wars Arcade, analogue
+  //
+  // MAME's an_callback<N> index IS the DPRAM byte index -- vr publishes WHEEL,
+  // ACCEL, BRAKE on 0/1/2 and reads them at 0x00/0x01/0x02. So swa's five
+  // channels land on five bytes:
+  //
+  //   0x00 STICK1X   0x01 STICK1Y   0x02 THROTTLE
+  //   0x04 STICK2X   0x05 STICK2Y        (channel 3 is skipped)
+  //
+  // BOTH OF THE GAME'S STICKS GET THE SAME VALUE. It is a two-seat cabinet and
+  // one player has one pad, so player 2's pot follows player 1's rather than
+  // sitting at an idle the game would read as a second gunner holding still.
+  //
+  // BOTH OF THE PAD'S STICKS DRIVE IT TOO. The left stick is taken unless it is
+  // resting, in which case the right one is, so it does not matter which the
+  // player reaches for. The d-pad overrides either and goes to full deflection,
+  // the same rule the wheel already uses -- a digital input has no travel to
+  // interpolate and a player holding a direction means it.
+  //
+  // SCALED INTO THE POT'S RANGE, NOT LEFT AT FULL SCALE. MAME declares
+  // PORT_MINMAX(27,227) with a 0x7f centre, so the real pot swings 27..227 and
+  // never reaches the rails. Publishing 0x00..0xff would hand the game values
+  // its calibration never sees. 200/256 of the axis plus 27 lands exactly in
+  // range, and costs a multiply on a path that changes at human speed.
+  wire [7:0] swa_lx = {~joy0_lstick[7],  joy0_lstick[6:0]};
+  wire [7:0] swa_ly = {~joy0_lstick[15], joy0_lstick[14:8]};
+  wire [7:0] swa_rx = {~joy0_rstick[7],  joy0_rstick[6:0]};
+  wire [7:0] swa_ry = {~joy0_rstick[15], joy0_rstick[14:8]};
+
+  // "Resting" is a dead band, not equality: an analogue stick almost never
+  // reports exactly centre, so testing for 0x80 would keep the left stick
+  // selected forever and the right one would never be reachable.
+  wire swa_l_idle = (swa_lx > 8'h70) && (swa_lx < 8'h90) &&
+                    (swa_ly > 8'h70) && (swa_ly < 8'h90);
+  wire [7:0] swa_ax_r = swa_l_idle ? swa_rx : swa_lx;
+  wire [7:0] swa_ay_r = swa_l_idle ? swa_ry : swa_ly;
+
+  // X IS REVERSED BY DECLARATION, NOT BY TASTE.
+  //
+  // swa's STICK1X and STICK2X both carry PORT_REVERSE, and so does wingwar's
+  // STICKX; none of the Y axes do. That asymmetry is why left/right came out
+  // swapped on the board while up/down was fine -- the reverse was read off
+  // model1.cpp and then not applied. O[13] flips it back for anyone whose pad
+  // disagrees, and for wingwar360, which declares the opposite polarity to
+  // wingwar on BOTH axes while sharing its game id.
+  wire       x_inv  = ~status[13];
+  wire [7:0] swa_ax = x_inv ? (8'hff - swa_ax_r) : swa_ax_r;
+  // Y inversion, O[12], SHARED BY EVERY GAME THAT HAS A PITCH AXIS. Only one
+  // game runs at a time, so one switch serves Star Wars and Wing War both --
+  // and it is needed twice over, because wingwar360 declares the opposite Y
+  // polarity to wingwar with all four Wing War MRAs sending the same game id.
+  // Which way a stick pushes is a preference the pads do not agree on anyway,
+  // exactly as the Pedals switch above exists for.
+  wire [7:0] swa_ay = status[12] ? (8'hff - swa_ay_r) : swa_ay_r;
+
+  wire [15:0] swa_sx_m = swa_ax * 16'd200;
+  wire [15:0] swa_sy_m = swa_ay * 16'd200;
+  wire [7:0]  swa_sx_a = 8'd27 + swa_sx_m[15:8];
+  wire [7:0]  swa_sy_a = 8'd27 + swa_sy_m[15:8];
+
+  // The d-pad wins, at the ends of the pot's travel rather than the byte's.
+  wire [7:0] swa_stick_x = (p1_left  ^ x_inv) ? 8'd27  :
+                           (p1_right ^ x_inv) ? 8'd227 : swa_sx_a;
+  wire [7:0] swa_stick_y = (p1_up   ^ status[12]) ? 8'd27  :
+                           (p1_down ^ status[12]) ? 8'd227 : swa_sy_a;
+
+  // THROTTLE is PORT_MINMAX(28,200) with a 0x7f default and nothing on this pad
+  // to drive it, so it rests mid-travel. 0x01 -- the value an idle VR pedal
+  // takes -- would be a throttle held at one end.
+  wire [7:0] swa_throttle = 8'd127;
+
+  // ------------------------------------------------------ Wing War, analogue
+  //
+  //   0x00 STICKX    0x01 STICKY    0x02 THROTTLE
+  //
+  // TWO OF THE THREE WERE ALREADY RIGHT. STICKX centres at 0x80 and so does
+  // io_wheel; THROTTLE is PORT_MINMAX(1,0xff) resting at 0x01 and so is the
+  // brake pedal. Only the pitch axis was wrong, and it was wrong in the way
+  // that matters most: it took io_accel, which RESTS AT 0x01 -- hard over.
+  //
+  // A flight stick pitched fully up at rest is a plane looking at nothing but
+  // sky, which is a strong candidate for the featureless grey screen reported
+  // from the board, and would read as "the 3D is not working" while the 3D is
+  // fine. Unverified, but it is the first thing to check now it is centred.
+  //
+  // Full 0x00-0xff here rather than Star Wars' 27..227: wingwar declares
+  // PORT_BIT( 0xff, 0x80, ... ) with no PORT_MINMAX, so the pot does reach the
+  // rails on this cabinet.
+  wire [7:0] ww_stick_x = (p1_left  ^ x_inv) ? 8'h00 :
+                          (p1_right ^ x_inv) ? 8'hff : swa_ax;
+  wire [7:0] ww_stick_y = (p1_up   ^ status[12]) ? 8'h00 :
+                          (p1_down ^ status[12]) ? 8'hff : swa_ay;
+
+  // -------------------------------------------- Star Wars Arcade, the GUNNER
+  //
+  // swa is a two-SEAT cabinet, not merely two-player: one pilot, one gunner,
+  // each with a stick. The gunner is player 2 throughout -- STICK2X/Y on
+  // channels 4 and 5, and buttons 1 and 2 on IN.1 bits 0x04 and 0x08, which
+  // already come from pad 2.
+  //
+  // PAD 2 DRIVES IT WHEN PAD 2 IS BEING USED, AND MIRRORS PLAYER 1 WHEN IT IS
+  // NOT. A single player must still be able to fly and shoot, which is what
+  // mirroring gives; leaving the gunner's pot at a fixed idle would read as a
+  // second crew member holding the turret still. But once a second stick moves
+  // it has to win, or the gunner seat is decorative.
+  //
+  // The dead band is the same one the pilot's two sticks use: an analogue stick
+  // never reports exactly centre, so equality would never fire.
+  wire [7:0] g_lx = {~joy1_lstick[7],  joy1_lstick[6:0]};
+  wire [7:0] g_ly = {~joy1_lstick[15], joy1_lstick[14:8]};
+  wire g_idle = (g_lx > 8'h70) && (g_lx < 8'h90) &&
+                (g_ly > 8'h70) && (g_ly < 8'h90) &&
+                !p2_left && !p2_right && !p2_up && !p2_down;
+
+  wire [7:0] g_ax = x_inv    ? (8'hff - g_lx) : g_lx;
+  wire [7:0] g_ay = status[12] ? (8'hff - g_ly) : g_ly;
+  wire [15:0] g_sx_m = g_ax * 16'd200;
+  wire [15:0] g_sy_m = g_ay * 16'd200;
+  wire [7:0] g_stick_x = (p2_left ^ x_inv)     ? 8'd27 :
+                         (p2_right ^ x_inv)    ? 8'd227 : (8'd27 + g_sx_m[15:8]);
+  wire [7:0] g_stick_y = (p2_up   ^ status[12]) ? 8'd27 :
+                         (p2_down ^ status[12]) ? 8'd227 : (8'd27 + g_sy_m[15:8]);
+
+  wire [7:0] swa_gun_x = g_idle ? swa_stick_x : g_stick_x;
+  wire [7:0] swa_gun_y = g_idle ? swa_stick_y : g_stick_y;
+
+  // Bytes 0x00-0x02 and 0x04-0x05 are per game. Everything else in the sweep is
+  // the same for all of them.
+  wire [7:0] io_an0 = is_swa ? swa_stick_x : is_ww ? ww_stick_x : io_wheel;
+  wire [7:0] io_an1 = is_swa ? swa_stick_y : is_ww ? ww_stick_y : io_accel;
+  wire [7:0] io_an2 = is_swa ? swa_throttle : io_brake;
+  wire [7:0] io_an4 = is_swa ? swa_gun_x : 8'hff;
+  wire [7:0] io_an5 = is_swa ? swa_gun_y : 8'hff;
+
   // The fifteen bytes the sweep publishes, DPRAM 0x00 first. The DIP banks read
   // as all-ones — every switch off — until an MRA <switches> element drives
   // them. 0x03-0x07 are 0xff because that is what the real board sets them to
@@ -377,12 +546,12 @@ module emu
                               io_in0,    // 0x08
                               8'hff,     // 0x07
                               8'hff,     // 0x06
-                              8'hff,     // 0x05
-                              8'hff,     // 0x04
-                              8'hff,     // 0x03
-                              io_brake,  // 0x02
-                              io_accel,  // 0x01
-                              io_wheel}; // 0x00
+                              io_an5,    // 0x05  swa STICK2Y
+                              io_an4,    // 0x04  swa STICK2X
+                              8'hff,     // 0x03  swa skips this channel
+                              io_an2,    // 0x02  vr BRAKE   / swa THROTTLE
+                              io_an1,    // 0x01  vr ACCEL   / swa STICK1Y
+                              io_an0};   // 0x00  vr WHEEL   / swa STICK1X
 
   // ROM download. m1_rom_loader consumes this and writes SDRAM through the
   // controller's dedicated high-priority write port.
@@ -422,6 +591,7 @@ module emu
     .joystick_1(joy1),
     .joystick_l_analog_0(joy0_lstick),
     .joystick_r_analog_0(joy0_rstick),
+    .joystick_l_analog_1(joy1_lstick),
     .ps2_key(ps2_key),
 
     .ioctl_download(ioctl_download),

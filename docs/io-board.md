@@ -812,3 +812,75 @@ reported that as a divergence at instruction ~206,307. A session went into
 chasing it as a CPU bug. **A guessed constant in a peripheral produced a false
 CPU-bug report** — which is the argument for measuring the peripheral even when
 its behaviour is unobservable to the game.
+
+---
+
+# THE SECOND I/O BOARD: model1io2 (2026-09-16)
+
+**Wing War and Sega NetMerc do not use the I/O board this core implements.**
+Measured from `model1.cpp`: both call `SEGA_MODEL1IO2(config.replace(), ...)`,
+which swaps the whole device out rather than changing its firmware.
+
+| game | board | firmware |
+|---|---|---|
+| vr | model1io | epr15112 |
+| vformula | model1io | epr15624 |
+| vf, swa | model1io | epr14869b |
+| **wingwar** | **model1io2** | **epr-16891** |
+| **netmerc** | **model1io2** | **epr-18021** |
+
+We load `epr-14869.25` for every game, so on Wing War the board answers with the
+wrong protocol entirely. **That is why NO button works there rather than some
+being mismapped** -- the input map was checked bit for bit against
+`INPUT_PORTS_START( wingwar )` and is correct, including Start at IN.0 0x10.
+Chasing the map further is wasted effort until the board exists.
+
+## What it would actually take
+
+**The Z80 does NOT have to be removed to make room. model1io2 IS a Z80.**
+
+| | model1io (built) | model1io2 (not built) |
+|---|---|---|
+| CPU | Z80, 32 MHz / 8 = 4 MHz | **TMPZ84C015**, 19.6608 MHz / 2 = 9.83 MHz |
+| | | (a Z80 with CTC, dual SIO and PIO on die) |
+| I/O chip | Sega 315-5338A | Sega 315-5338A -- **same** |
+| EEPROM | 93C46 | 93C46 -- **same** |
+| ADC | MSM6253, 4 channels | MSM6253, 4 channels -- **same**, clocked |
+| watchdog | -- | MB3773 |
+| display | -- | HD44780 character LCD, diagnostic |
+| serial | -- | two RS232 ports (cn7, cn8) |
+
+So the existing `tv80` is reused and three of the five blocks are already
+written. The increment is the TMPZ84C015's on-die peripherals, a different
+memory map, and a second firmware ROM in the MRA.
+
+**And much of that increment may be dead weight for a single cabinet.** The two
+RS232 ports are for linked cabinets; the CTC's `zc_callback<2>`/`<3>` exist only
+to generate SIO baud rates, so they follow the SIO; the PIO's `in_pa`/`in_pb`
+are nothing but `dsw2`/`dsw3` reads, which is a wire. The LCD is the board's own
+diagnostic display and cannot matter to gameplay. **Read the firmware before
+building any of it** -- `epr-16891.6` is 64 KB and disassembling it says which
+peripherals are actually touched, the same approach that took Virtua Fighter's
+freeze from hours to fifteen minutes.
+
+**Not estimated in ALM, deliberately.** The honest figure needs the firmware
+read first, because it decides whether the SIO is in scope at all. What can be
+said is that it is an increment on a Z80 that is already there, not a second CPU.
+
+## Doing it later
+
+A branch of its own. Two shapes, and the choice is not obvious:
+
+- **Both boards in one core**, selected by the MRA's game-id byte the way
+  `roma_mode` already is. Costs area for a board that is idle in whichever game
+  is running.
+- **One board per build**, two `.rbf`s. Costs the user a decision and the
+  release two cores, which was just deliberately reduced to one.
+
+`~/roms/model1io2.zip` and `~/roms/hd44780.zip` are both present, so the ROMs
+are in hand.
+
+**The Wing War input work already done is correct and untestable.** Smoke on
+IN.1 0x40, the pitch axis centred on channel 1, and the X reversal are all read
+off `model1.cpp` and match it. They simply cannot be exercised until the board
+answers. Leave them in; do not re-derive them.

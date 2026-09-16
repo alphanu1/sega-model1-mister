@@ -38,7 +38,24 @@ a **priority** fault, not a rendering one -- both layers are being produced.
 which tilemap wins against the 3D. NetMerc is a gun game with a permanent HUD,
 so it exercises a priority case Virtua Racing's road never does.
 
-## 3. Wing War: grey backdrop, Start does not register, 3D may be absent
+## 3. Wing War AND NetMerc need a DIFFERENT I/O BOARD -- `model1io2`
+
+**Measured 2026-09-16 and it supersedes the input analysis below.** Both games
+call `SEGA_MODEL1IO2(config.replace(), ...)` in `model1.cpp`: a different device,
+not different firmware. We run model1io's `epr-14869` for every game, so Wing War
+gets the wrong protocol and **no** button works -- which is why the input map
+being bit-perfect did not help.
+
+**The Z80 does not need removing to fit it: TMPZ84C015 is a Z80** with CTC, SIO
+and PIO on die, and the 315-5338A, the 93C46 and the MSM6253 are already built.
+Full comparison, what is likely dead weight, and the two ways to structure it are
+in `io-board.md`. **Read `epr-16891.6` before building anything** -- it decides
+whether the SIO is in scope.
+
+Wing War is **removed from the release** as a result. The input work done for it
+is correct and simply untestable.
+
+## 3b. Wing War's remaining symptoms, for when the board exists
 
 Three symptoms, and they may be one fault or three.
 

@@ -66,14 +66,24 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 | Virtua Racing | boots, plays, 2D and 3D | yes |
 | Virtua Formula | boots, plays, 2D and 3D; a Virtua Racing clone | yes |
 | Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, direct-polygon objects are missing, and the input map is the only one besides Virtua Racing's that exists | yes |
-| Sega NetMerc | boots; audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
-| Star Wars Arcade | boots as of 2026-09-16; how far it gets is unmeasured | yes |
-| Wing War | boots; grey backdrop, Start does not register, 3D may be absent | yes |
+| Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
+| Star Wars Arcade | boots as of 2026-09-16, with its own input map; how far it gets is unmeasured | yes |
+| Wing War | boots, but **needs the model1io2 I/O board** -- no control reaches it | yes |
 
-**Only Virtua Racing / Formula and Virtua Fighter have an input map.** Star
-Wars, Wing War and NetMerc are handed Virtua Racing's driving layout, so their
-buttons are wrong and their analogue axes sit pinned rather than centred -- an
-idle pedal reads 0x01 where a stick axis wants 0x7f.
+**Wing War and NetMerc use a DIFFERENT I/O BOARD, and it is not built.**
+`model1.cpp` gives both `SEGA_MODEL1IO2(config.replace(), ...)` -- a different
+device, not different firmware. This core runs model1io's `epr-14869` for every
+game, so on Wing War no control reaches the game at all, however the buttons are
+mapped. It is not a mapping fault and the map is bit-perfect against MAME.
+
+Fitting it does **not** mean dropping the Z80: `TMPZ84C015` is a Z80 with CTC,
+SIO and PIO on die, and the 315-5338A, 93C46 and MSM6253 are already built. See
+`docs/io-board.md` for the comparison, what is likely dead weight, and the two
+ways to structure it.
+
+Input maps exist for **Virtua Racing / Formula, Virtua Fighter and Star Wars**.
+Wing War's is written and correct but cannot be exercised until its board
+exists.
 
 `vf` and `netmerc` are marked `MACHINE_NOT_WORKING` in MAME and both run
 correctly — that flag is a curation stance about their `BAD_DUMP` coprocessor

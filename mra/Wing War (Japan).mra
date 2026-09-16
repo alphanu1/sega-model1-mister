@@ -159,5 +159,5 @@
 
     <nvram index="255" size="256"/>
 
-    <buttons names="Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>
+    <buttons names="Machine Gun,Missile,Smoke,Unused 4,View 1,View 2,View 3,View 4,Start,Coin,Service,Test,Coin 2" default="A,B,X,Y,L1,R1,L2,R2,Start,Select"/>
 </misterromdescription>
