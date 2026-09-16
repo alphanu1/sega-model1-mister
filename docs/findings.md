@@ -90,8 +90,10 @@ broke can stand as a risk that did not materialise rather than one that did.
 **Booting is not working.** Three defects are open across the newly-booting
 sets; see `HANDOFF.md`. Getting past boot is the floor, not the goal.
 
-**STAR WARS IS UNBLOCKED, NOT FIXED.** It gets out of the reserved-opcode loop
-and into its own boot code. Whether it reaches a game is a separate question.
+**STAR WARS BOOTS AND PLAYS**, confirmed on hardware the same evening, with
+sound and its own input map. The caution that stood here -- "unblocked, not
+fixed; whether it reaches a game is a separate question" -- was right to write
+and is now answered: it reaches the game.
 Its TGP has retired 85 instructions and sits on an empty command FIFO at 40 M
 cycles, but that is **0.5 s of emulated time against the 150 M a Virtua Racing
 attract run needs**, so it is too early to read as a second fault -- and it was

@@ -24,12 +24,14 @@ bitstream is kept alongside the current one as a fallback.
 has played on hardware, and the release README lists what is not finished in the
 exact build it ships.
 
-**There is sound**, as of `Model1_20260916.rbf`: the sound PCB's 68000, its
-YM3438 and both MultiPCM channels, reached over the main board's uPD71051C
-USART. It was brought up and confirmed on hardware on **Virtua Fighter**, which
-has attract audio. Virtua Racing's attract mode is silent on the real hardware
-too, so a quiet attract screen is correct there and proves nothing either way;
-Virtua Racing's in-game audio has not been confirmed on hardware.
+**There is sound**: the sound PCB's 68000, its YM3438 and both MultiPCM
+channels, reached over the main board's uPD71051C USART. Confirmed on hardware
+in attract and in play across Virtua Racing, Virtua Formula, Virtua Fighter and
+Star Wars Arcade. **Sega NetMerc is the exception** — its audio comes out tiny,
+high-pitched and at the wrong rate, which is a sample-clock fault and is open.
+
+Virtua Racing's attract mode is silent on the real cabinet too, so a quiet
+attract screen there is correct rather than a fault.
 
 **Two ROM zips are needed, not one.** `vr.zip` carries the game, the coprocessor
 microcode and `93c45.bin` (the I/O board's settings EEPROM). The I/O board's Z80
@@ -46,7 +48,7 @@ not boot; MAME will not start Virtua Racing without the same file either.
 | M1 — V60, bus, 2D, boot | **runs on hardware** — boots, renders, reads its controls through a real Z80 I/O board, window/split-scroll mode implemented and verified |
 | M2 — geometry pipeline | **running real microcode on hardware, for five games.** FIFOs, copro RAM, microcode over the MRA and the data/table regions in SDRAM are built. A register-sourced `rep` read the wrong register until 2026-09-05, which hung Virtua Fighter on its first frame |
 | M3 — rasterizer and video | **the 3D layer runs on hardware**: geometry, sort, band buffers and scanout are built, and the geometry agrees with MAME quad-for-quad across a full rotation. Virtua Racing's left-side cut is fixed and confirmed on the board; the open defects are listed below |
-| M4 — sound | **runs on hardware** — the sound PCB's 68000 (fx68k), YM3438 (jt12) and both MultiPCM channels, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board. Confirmed on Virtua Fighter; the 68000's work RAM is on-chip and the 8 MB of PCM samples are in SDRAM above 32 MB |
+| M4 — sound | **runs on hardware** — the sound PCB's 68000 (fx68k), YM3438 (jt12) and both MultiPCM channels, reached through the main board's **uPD71051C serial port at `0xC40000`** rather than through the I/O board. Confirmed in attract and in play on Virtua Racing, Virtua Formula, Virtua Fighter and Star Wars; NetMerc's rate is wrong and is the one open defect. The 68000's work RAM is on-chip and the 8 MB of PCM samples are in SDRAM above 32 MB |
 
 `docs/HANDOFF.md` is the current state of play: what is built, what it measures,
 what to do next, and the failure modes that have cost time.
@@ -63,11 +65,11 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 
 | Game | On hardware | In MAME (the oracle) |
 |---|---|---|
-| Virtua Racing | boots, plays, 2D and 3D | yes |
-| Virtua Formula | boots, plays, 2D and 3D; a Virtua Racing clone | yes |
+| Virtua Racing | boots, plays, 2D and 3D, with sound | yes |
+| Virtua Formula | boots, plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
 | Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, direct-polygon objects are missing, and the input map is the only one besides Virtua Racing's that exists | yes |
 | Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
-| Star Wars Arcade | boots as of 2026-09-16, with its own input map; how far it gets is unmeasured | yes |
+| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 | yes |
 | Wing War | boots, but **needs the model1io2 I/O board** -- no control reaches it | yes |
 
 **Wing War and NetMerc use a DIFFERENT I/O BOARD, and it is not built.**

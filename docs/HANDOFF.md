@@ -8,6 +8,17 @@ run on hardware at all. The cause was ROMA -- see `findings.md` 2026-09-16 (b).
 
 **Booting is the floor, not the goal.** What follows is what is wrong now.
 
+## Confirmed on hardware, 2026-09-16 (evening)
+
+**Star Wars Arcade boots AND PLAYS**, with sound and its own input map. **Sound
+is working in every shipped game, in attract and in play** -- Virtua Racing,
+Virtua Formula, Virtua Fighter and Star Wars. Virtua Racing's in-game audio,
+which this file previously listed as unconfirmed, is fine; only its attract
+screen is quiet, and that matches the real cabinet.
+
+**NetMerc is the single remaining audio defect**, and it is a rate fault rather
+than a level one.
+
 ## 1. NetMerc: audio is tiny, high-pitched and at the wrong speed
 
 Reported from the board. The sound board runs and produces output, but the
@@ -116,8 +127,8 @@ Star Wars also wants five analogue channels for its two players; channels 4 and
 - **The quad store drops** on busy stretches -- 3,072 quads against peaks of
   ~3,034 while driving, filled in display-list order so track and scenery go
   first. The fix is the quad payload in SDRAM; M10K is 551/553.
-- **Star Wars is unblocked, not finished.** It boots; how far it gets is
-  unmeasured.
+- ~~Star Wars is unblocked, not finished.~~ **It boots and plays**, with sound
+  and its own input map. Confirmed on hardware 2026-09-16.
 
 ---
 
