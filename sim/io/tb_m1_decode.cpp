@@ -47,9 +47,22 @@ static const char* SNAME[] = {
 };
 
 // Independent transcription of model1_mem.
-static Sel ref_sel(uint32_t a) {
+static Sel ref_sel(uint32_t a, int roma_mode) {
   uint32_t hi = (a >> 16) & 0xff;
-  if (hi <= 0x0f) return ROM_VOID;                  // ROMA, unpopulated
+  // ROMA. MAME maps it .rom() for every game; four of the six populate it by
+  // mirroring the boot ROM in with ROM_RELOAD, so whether it reads erased is a
+  // property of the SET, not of the address space.
+  //   mode 0  vr, vformula, vf   no reload
+  //   mode 1  swa, swaj          512 KB at 0xf80000 reloaded to 0 AND 0x80000
+  //           netmerc            the same part, reloaded to 0 only
+  //   mode 2  wingwar            two 128 KB parts at 0xfc0000 / 0xfe0000
+  //                              reloaded to 0x000000 / 0x020000 -- 256 KB
+  //                              total, so above that it is erased again
+  if (hi <= 0x0f) {
+    if (roma_mode == 0) return ROM_VOID;
+    if (roma_mode == 2 && (a & 0xc0000)) return ROM_VOID;
+    return ROM;
+  }
   if (hi <= 0x1f) return ROM;                       // ROMO, banked
   if (hi <= 0x2f) return ROM;                       // ROMX
   if (hi >= 0xf8) return ROM;                       // ROM0
@@ -83,8 +96,13 @@ static Sel ref_sel(uint32_t a) {
 }
 
 // Packed SDRAM word address for a mapped ROM access.
-static uint32_t ref_rom_addr(uint32_t a, uint32_t bank) {
+static uint32_t ref_rom_addr(uint32_t a, uint32_t bank, int roma_mode) {
   uint32_t hi = (a >> 16) & 0xff;
+  // ROMA mirrors the packed boot region. Bit 19 is dropped, so the 1 MB region
+  // wraps onto the 512 KB part twice -- which is exactly swa's pair of
+  // ROM_RELOADs. Mode 2 starts 256 KB in, where wingwar's first part sits.
+  if (hi <= 0x0f)
+    return (roma_mode == 2 ? 0x0A0000 : 0x080000) + ((a & 0x7ffff) >> 1);
   if (hi <= 0x1f) return 0x0C0000 + bank * 0x80000 + ((a & 0xfffff) >> 1);
   if (hi <= 0x2f) return 0x000000 + ((a & 0xfffff) >> 1);
   return 0x080000 + ((a & 0x7ffff) >> 1);
@@ -112,13 +130,14 @@ int main(int argc, char** argv) {
   long checks = 0, fails = 0;
   std::set<int> seen_regions;
 
-  auto probe = [&](uint32_t addr, uint32_t bank) {
+  auto probe = [&](uint32_t addr, uint32_t bank, int roma_mode = 0) {
     d->addr = addr & 0xffffff;
     d->rom_bank = bank & 7;
+    d->roma_mode = roma_mode & 3;
     d->eval();
     int n;
     Sel got = dut_sel(d, &n);
-    Sel want = ref_sel(addr);
+    Sel want = ref_sel(addr, roma_mode);
     checks++;
     seen_regions.insert((int)want);
     // One-hot is a property in its own right: two selects asserting means two
@@ -137,7 +156,7 @@ int main(int argc, char** argv) {
       return;
     }
     if (want == ROM) {
-      uint32_t ra = d->rom_addr, wa = ref_rom_addr(addr, bank);
+      uint32_t ra = d->rom_addr, wa = ref_rom_addr(addr, bank, roma_mode);
       checks++;
       if (ra != wa) {
         if (fails < 15)
@@ -149,9 +168,10 @@ int main(int argc, char** argv) {
   };
 
   printf("test: every 64 KB page decodes as MAME's map says\n");
-  for (uint32_t page = 0; page < 256; page++)
-    for (uint32_t bank = 0; bank < 8; bank++)
-      probe(page << 16, bank);
+  for (int rm = 0; rm < 3; rm++)
+    for (uint32_t page = 0; page < 256; page++)
+      for (uint32_t bank = 0; bank < 8; bank++)
+        probe(page << 16, bank, rm);
 
   printf("test: region boundaries, where off-by-one decode lives\n");
   {
@@ -171,11 +191,12 @@ int main(int argc, char** argv) {
       0xe00010, 0xe0ffff, 0xe10000, 0xf7ffff, 0xf80000, 0xffffff
     };
     for (uint32_t e : edges) {
-      for (uint32_t bank = 0; bank < 8; bank++) {
-        probe(e, bank);
-        if (e) probe(e - 1, bank);
-        if (e != 0xffffff) probe(e + 1, bank);
-      }
+      for (uint32_t bank = 0; bank < 8; bank++)
+        for (int rm = 0; rm < 3; rm++) {
+          probe(e, bank, rm);
+          if (e) probe(e - 1, bank, rm);
+          if (e != 0xffffff) probe(e + 1, bank, rm);
+        }
     }
   }
 
@@ -183,7 +204,53 @@ int main(int argc, char** argv) {
   {
     std::mt19937 rng(20260815u);
     for (long n = 0; n < 400000; n++)
-      probe(rng() & 0xffffff, rng() & 7);
+      probe(rng() & 0xffffff, rng() & 7, (int)(rng() % 3));
+  }
+
+  printf("test: ROMA mirrors the boot ROM where MAME says it does\n");
+  {
+    // The address that actually matters. swa's reset vector at 0xfffff0 is
+    // `d6 f3 00 ff 0f 00` -- a jump to 0x000fff00, inside ROMA's second mirror.
+    // Under mode 0 the V60 fetched erased space and sat on a reserved opcode at
+    // PC 4 forever, which is why the game never booted. This pins the address
+    // it must reach: 0x7ff00 into a 512 KB boot ROM packed at word 0x080000.
+    d->addr = 0x0fff00; d->rom_bank = 0; d->roma_mode = 1; d->eval();
+    checks++;
+    if (!d->sel_rom || d->rom_addr != 0x080000 + (0x7ff00 >> 1)) {
+      printf("  FAIL swa reset target 0x0fff00: sel_rom=%d rom_addr=%06x want=%06x\n",
+             (int)d->sel_rom, (unsigned)d->rom_addr,
+             (unsigned)(0x080000 + (0x7ff00 >> 1)));
+      fails++;
+    }
+    // Both halves of ROMA land on the same word under mode 1 -- that IS the
+    // pair of ROM_RELOADs, not an aliasing bug.
+    d->addr = 0x000100; d->roma_mode = 1; d->eval();
+    uint32_t lo = d->rom_addr;
+    d->addr = 0x080100; d->roma_mode = 1; d->eval();
+    checks++;
+    if (d->rom_addr != lo) {
+      printf("  FAIL ROMA mode 1: 0x000100 -> %06x but 0x080100 -> %06x\n",
+             lo, (unsigned)d->rom_addr);
+      fails++;
+    }
+    // wingwar's mirror starts 256 KB into the packed boot region, which is
+    // where its first 128 KB part sits (V60 0xfc0000).
+    d->addr = 0x000000; d->roma_mode = 2; d->eval();
+    checks++;
+    if (!d->sel_rom || d->rom_addr != 0x0A0000) {
+      printf("  FAIL ROMA mode 2 base: sel_rom=%d rom_addr=%06x want=0A0000\n",
+             (int)d->sel_rom, (unsigned)d->rom_addr);
+      fails++;
+    }
+    // ...and only 256 KB of it. Above that MAME's region is erased again, so a
+    // read must NOT run off the end of the boot region into the banked data.
+    d->addr = 0x040000; d->roma_mode = 2; d->eval();
+    checks++;
+    if (!d->sel_rom_void) {
+      printf("  FAIL ROMA mode 2 above 256 KB should be void, sel_rom=%d\n",
+             (int)d->sel_rom);
+      fails++;
+    }
   }
 
   printf("test: banking moves the window by exactly 1 MB\n");
@@ -193,7 +260,7 @@ int main(int argc, char** argv) {
     // factor of two puts the game's data ROMs somewhere plausible-looking,
     // which is far worse than putting them somewhere obviously wrong.
     for (uint32_t bank = 0; bank < 8; bank++) {
-      d->addr = 0x100000; d->rom_bank = bank; d->eval();
+      d->addr = 0x100000; d->rom_bank = bank; d->roma_mode = 0; d->eval();
       uint32_t base = d->rom_addr;
       checks++;
       if (base != 0x0C0000 + bank * 0x80000) {

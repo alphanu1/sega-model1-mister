@@ -68,6 +68,11 @@ module m1_main #(
   input  logic        rst_n,
   input  logic        rom_loaded,  // hold the CPU until the ROMs are there
 
+  // Which sets mirror the boot ROM into ROMA (0x000000-0x0fffff), and at what
+  // offset. 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in. See
+  // m1_decode, which carries the per-game table and the MAME evidence.
+  input  logic [1:0]  roma_mode,
+
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
 
@@ -291,7 +296,7 @@ module m1_main #(
   logic [25:1] dec_rom_addr;
 
   m1_decode decode (
-    .addr({m_addr, 1'b0}), .rom_bank(rom_bank),
+    .addr({m_addr, 1'b0}), .rom_bank(rom_bank), .roma_mode(roma_mode),
     .sel_rom(sel_rom), .sel_rom_void(sel_rom_void), .sel_nvram(sel_nvram),
     .sel_wram(sel_wram), .sel_dlist0(sel_dlist0), .sel_dlist1(sel_dlist1),
     .sel_listctl(sel_listctl), .sel_tileram(sel_tileram),
@@ -308,7 +313,7 @@ module m1_main #(
   // different addresses at the same time.
   logic [25:1] if_rom_word;
   m1_decode if_decode (
-    .addr(if_addr), .rom_bank(rom_bank),
+    .addr(if_addr), .rom_bank(rom_bank), .roma_mode(roma_mode),
     .sel_rom(), .sel_rom_void(), .sel_nvram(), .sel_wram(),
     .sel_dlist0(), .sel_dlist1(), .sel_listctl(), .sel_tileram(),
     .sel_charram(), .sel_vsync(), .sel_palette(), .sel_colxlat(),

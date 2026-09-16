@@ -245,6 +245,35 @@ module emu
   logic [7:0] game_id;
   wire is_vf = (game_id == 8'd1);
 
+  // ROMA MIRRORING, per game.
+  //
+  // MAME maps 0x000000-0x0fffff as .rom() for every Model 1 game, and four of
+  // the six populate it by mirroring the boot ROM in with ROM_RELOAD:
+  //
+  //   vr, vformula, vf   no reload           -> void
+  //   swa, swaj          512 KB at 0xf80000, reloaded to 0x000000 AND 0x080000
+  //   netmerc            512 KB at 0xf80000, reloaded to 0x000000
+  //   wingwar            128 KB at 0xfc0000 -> 0x000000
+  //                      128 KB at 0xfe0000 -> 0x020000
+  //
+  // So wingwar's mirror begins 256 KB into the packed boot region and the rest
+  // begin at its base; hence two modes rather than one flag.
+  //
+  // STAR WARS ARCADE COULD NOT BOOT WITHOUT THIS. Its reset vector at 0xfffff0
+  // is a jump to 0x000fff00 -- into ROMA -- so with the region decoded as void
+  // the V60 fetched erased space and sat on `reserved opcode 03` at PC 4
+  // forever. Virtua Racing jumps into its own boot ROM instead, which is why
+  // the gap survived this long.
+  logic [1:0] roma_mode;
+  always_comb begin
+    case (game_id)
+      8'd2:    roma_mode = 2'd1;   // Star Wars Arcade
+      8'd3:    roma_mode = 2'd2;   // Wing War
+      8'd4:    roma_mode = 2'd1;   // NetMerc
+      default: roma_mode = 2'd0;   // Virtua Racing / Formula, Virtua Fighter
+    endcase
+  end
+
   // THE INPUT MAP IS PER GAME, AND IT HAS TO BE.
   //
   // These three bytes are the board's IN.0/IN.1/IN.2 and the games do not agree
@@ -1053,6 +1082,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .clk_3d(clk_3d),
     .rst_n(rst_n), .mem_rst_n(mem_rst_n), .mem_ready(mem_ready),
     .in_bytes(io_in_bytes),
+    .roma_mode(roma_mode),
 
     // The 3D layer's SDRAM masters: p5 for the polygon models, p6 for tgp_ram.
     .r3d_rom_req(r3d_rom_req), .r3d_rom_addr(r3d_rom_addr),

@@ -61,6 +61,24 @@ module m1_decode (
   // 0x100000-0x1fffff data ROM window, is used by any dumped game.
   input  logic [2:0]  rom_bank,
 
+  // ROMA MIRRORING. MAME maps 0x000000-0x0fffff as .rom() for every Model 1
+  // game, and FOUR OF THE SIX populate it -- by mirroring the boot ROM into it
+  // with ROM_RELOAD, not with separate data. Which games, and at what offset,
+  // is a property of the ROM board's chip selects, so it arrives from outside:
+  //
+  //   0  void            vr, vformula, vf -- no ROM_RELOAD, reads erased
+  //   1  boot ROM + 0    swa, swaj, netmerc -- 512 KB part at 0xf80000
+  //   2  boot ROM + 256K wingwar -- two 128 KB parts at 0xfc0000 / 0xfe0000,
+  //                      reloaded to 0x000000 / 0x020000, so the mirror starts
+  //                      256 KB into the packed boot region rather than at 0
+  //
+  // Star Wars Arcade's reset vector JUMPS HERE -- `d6 f3 00 ff 0f 00` at
+  // 0xfffff0 is a jump to 0x000fff00 -- so with mode 0 the V60 fetched erased
+  // space, wandered to PC 4 and emitted `reserved opcode 03` forever. That was
+  // the whole reason it never booted. Virtua Racing jumps to 0xfe104e instead,
+  // inside its own boot ROM, which is why the gap went unnoticed.
+  input  logic [1:0]  roma_mode,
+
   // ---- chip selects, one-hot
   output logic        sel_rom,        // any ROM region that is mapped
   output logic        sel_rom_void,   // ROMA: decoded, but no game populates it
@@ -114,10 +132,26 @@ module m1_decode (
 
     // ---------------------------------------------------------------- ROM
     if (hi <= 8'h0f) begin
-      // ROMA. Decoded so it does not fall through to "nothing", but no dumped
-      // game loads anything here, so it must read as erased rather than
-      // aliasing onto another region's data.
-      sel_rom_void = 1'b1;
+      // ROMA. A mirror of the boot ROM on the sets that populate it, erased on
+      // the ones that do not -- see roma_mode above.
+      //
+      // addr[18:1] rather than addr[19:1] is deliberate for mode 1: ROMA is
+      // 1 MB and the part behind it is 512 KB, so dropping bit 19 wraps the
+      // region onto the ROM twice, which is exactly the pair of ROM_RELOADs
+      // MAME declares for swa and swaj. netmerc declares only the first of the
+      // two and never reads the upper half, so the same expression serves it.
+      if (roma_mode == 2'd0) begin
+        sel_rom_void = 1'b1;
+      end else if (roma_mode == 2'd2 && addr[19:18] != 2'b00) begin
+        // wingwar mirrors only 256 KB. Above that MAME's region is ERASEFF, so
+        // it must read erased rather than running off the end of the packed
+        // boot region into the banked data behind it.
+        sel_rom_void = 1'b1;
+      end else begin
+        sel_rom  = 1'b1;
+        rom_addr = 24'h080000 + (roma_mode == 2'd2 ? 24'h020000 : 24'h000000)
+                              + {6'd0, addr[18:1]};
+      end
     end else if (hi <= 8'h1f) begin
       // ROMO: the banked data ROM window.
       sel_rom  = 1'b1;

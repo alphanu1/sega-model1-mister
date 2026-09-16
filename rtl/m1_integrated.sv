@@ -86,6 +86,11 @@ module m1_integrated (
   // a synchroniser buys nothing a metastable bit would not survive anyway.
   input  logic [119:0] in_bytes,
 
+  // ROMA MIRRORING, derived from the MRA's game-id byte at the top level.
+  // 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in. m1_decode carries
+  // the per-game table and why it exists; this is a wire.
+  input  logic [1:0]  roma_mode,
+
   // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
   output logic        iofw_req,
   output logic [13:0] iofw_word,
@@ -344,6 +349,7 @@ module m1_integrated (
     // program RAM while the ROMs are still arriving.
     .clk_tgp(clk_3d), .rst_n_tgp(rst_n_tgp), .rst_n_tgp_if(rst_n_3d),
     .rom_loaded(rom_loaded_sync[1]),
+    .roma_mode(roma_mode),
     .in_bytes(in_bytes),
     // The I/O board Z80's firmware, from the loader's own download index.
     // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.

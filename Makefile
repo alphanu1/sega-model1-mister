@@ -1015,6 +1015,7 @@ m1_frame:
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
+	  -GROMA_MODE=$(FRAME_ROMA_MODE) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
@@ -1065,6 +1066,10 @@ V60_WRTRACE ?= 0
 # on the loader's `rom_loaded` — which is what Model1.sv did until the white
 # screen on hardware was traced to it. Kept as a switch so the failure can be
 # reproduced rather than only described.
+# ROMA mirroring, keyed off GAME so the bench matches what the MRA's game-id
+# byte selects on hardware. swa/swaj/netmerc mirror the boot ROM from its base,
+# wingwar 256 KB in, everything else reads ROMA erased. m1_decode carries why.
+FRAME_ROMA_MODE ?= $(if $(filter swa swaj netmerc,$(GAME)),1,$(if $(filter wingwar wingwarj wingwar360,$(GAME)),2,0))
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
 

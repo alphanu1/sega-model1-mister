@@ -20,6 +20,77 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-16 (b) — STAR WARS ARCADE JUMPS INTO A REGION WE DECODED AS EMPTY
+
+**`m1_decode` declared ROMA (0x000000-0x0fffff) unpopulated for every game.**
+The comment read "no dumped game loads anything here". **Four of the six load
+something there**, and Star Wars Arcade's reset vector jumps straight into it.
+
+**MAME maps it for every Model 1 game** -- `model1_mem`, first line:
+`map(0x000000, 0x0fffff).rom();  /* ROMA */`. What varies is whether a set puts
+anything behind it, and the sets that do use `ROM_RELOAD` -- a mirror of the
+boot ROM, not separate data:
+
+| set | boot ROM | mirrored to |
+|---|---|---|
+| vr, vformula, vf | -- | nothing; reads erased |
+| swa, swaj | 512 KB at 0xf80000 | 0x000000 **and** 0x080000 |
+| netmerc | 512 KB at 0xf80000 | 0x000000 |
+| wingwar | 128 KB at 0xfc0000 | 0x000000 |
+| | 128 KB at 0xfe0000 | 0x020000 |
+
+**The measurement that named it.** Star Wars' reset instruction at 0xfffff0 is
+`d6 f3 00 ff 0f 00` -- a jump to **0x000fff00**, inside ROMA's second mirror.
+Virtua Racing's is `d6 f3 4e 10 fe 00`, jumping to 0xfe104e inside its own boot
+ROM. **Star Wars is the only shipped set that jumps into ROMA**, which is how
+the gap survived this long. Resolved through the mirror, 0x000fff00 is boot-ROM
+offset 0x7ff00, packed at stream byte 0x17ff00, and the bytes there are real
+V60 code -- `f3` immediate stores to 0x40ff00, 0x408000 and 0xd80000, the
+coprocessor FIFO. Not filler.
+
+Decoded as void, the V60 fetched erased space, wandered to PC 4 and emitted
+`reserved opcode 03` continuously. That is the "both CPUs park during init"
+symptom this file carried, and the V60 half of it is now explained.
+
+**Confirmed by experiment before anything was built.** An unconditional alias
+took Star Wars from an endless reserved-opcode loop to `halted=0`, **zero**
+reserved opcodes, V60 PC 0x0c1f1f -- executing inside ROMA -- no SDRAM
+violations, tilemap 2 filling the screen, and the sound board running.
+
+**The fix is gated on the MRA's game-id byte**, because the mirror is not
+uniform: wingwar's begins 256 KB into the packed boot region and covers only
+256 KB, where the rest begin at its base. `roma_mode` 0/1/2 carries that.
+Nothing in the MRAs changed -- all ten already sent the byte for the per-game
+input maps, and it is sent ahead of index 0 precisely so it lands before the
+ROM does.
+
+**The negative control is complete.** Three Virtua Racing runs at 150 M cycles
+-- without the change, with the gated fix, and with the alias applied
+UNCONDITIONALLY -- are **byte-identical**, 111 lines of PC trace and every
+FRAME line. The unconditional run is the important one: it is strictly more
+invasive than what shipped, and it changed nothing, so Virtua Racing provably
+never reads ROMA.
+
+**A bad control was used first and withdrawn.** `build/diag_settle.log` was
+quoted as the Virtua Racing baseline and is a **Virtua Fighter** run; the
+differing PC and layer pixels it appeared to show were two different games, not
+a regression. Check what a log actually loaded before believing a diff of it.
+
+**STAR WARS IS UNBLOCKED, NOT FIXED.** It gets out of the reserved-opcode loop
+and into its own boot code. Whether it reaches a game is a separate question.
+Its TGP has retired 85 instructions and sits on an empty command FIFO at 40 M
+cycles, but that is **0.5 s of emulated time against the 150 M a Virtua Racing
+attract run needs**, so it is too early to read as a second fault -- and it was
+briefly reported here as one before that was noticed.
+
+**NetMerc's mode is a deliberate behaviour change to a WORKING game.** MAME
+declares the mirror, hard rule 3 says MAME wins, so it is mode 1. But netmerc
+boots today with ROMA void, which means it does not read there during boot, and
+this is **untested on hardware**. If netmerc regresses, that is the first place
+to look.
+
+---
+
 ## 2026-09-16 — THE V60 WAS RELEASED FROM RESET THREE TIMES MID-LOAD
 
 **`sys/hps_io.sv` clears `ioctl_download` at the end of EVERY MRA part**, not

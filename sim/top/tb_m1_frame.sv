@@ -71,6 +71,10 @@ module tb_m1_frame #(
     parameter string  SNDBIN     = "",
     // Set by the Makefile so a silent run can say whether silence is expected.
     parameter bit     GAME_IS_VR = 1'b1,
+    // ROMA mirroring, matching what the MRA's game-id byte selects on
+    // hardware -- 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in.
+    // The Makefile sets it from GAME; see m1_decode for the per-game table.
+    parameter int     ROMA_MODE  = 0,
     parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
     parameter string  PPMOUT     = "build/frame.ppm",
     parameter string  TRAMOUT    = "build/frame_tram.hex",
@@ -351,6 +355,7 @@ wire [15:0] dbg_overruns;
 wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
 m1_integrated core (
+    .roma_mode(2'(ROMA_MODE)),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
