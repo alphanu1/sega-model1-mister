@@ -115,9 +115,9 @@ exactly that reason — if they disagree, trust neither and check.**
   not a Star Wars fault and no setting will bring it back.
 
   **The Star Destroyer draws only partly**, as thin pale slivers rather than a
-  solid shaded hull. The most likely cause is the quad store below overflowing
-  on a model far denser than anything in Virtua Racing — but that is not yet
-  measured, so treat it as unexplained rather than understood.
+  solid shaded hull, and entirely white where the reference is shaded grey with
+  blue engine glow. **Undiagnosed.** It is *not* the quad store running out —
+  that store is not overflowing here.
 
   Neither is a regression. Star Wars had never loaded at all until this build,
   so this is the first time anyone has seen its attract screen on this core.

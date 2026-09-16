@@ -38,16 +38,24 @@ it is unmistakable, and it appears at a fixed point in attract, so a fix either
 brings the logo back or it does not.
 
 **The Star Destroyer draws as thin pale slivers**, where the reference is a
-solid grey shaded hull with gradient engine bells. NOT diagnosed. The leading
-candidate is the quad store overflowing -- the model is far denser than anything
-in Virtua Racing, which already peaks near the 3,072 cap -- but the counters
-have not been read for this game. `tb_m1_frame GAME=swa` prints them. **Measure
-before building anything**: an axis was "fixed" three times in a row this
-session by reasoning instead of modelling, and the pattern is on record.
+solid grey shaded hull with gradient engine bells and blue engine glow.
+**UNDIAGNOSED.**
 
-A secondary possibility worth eliminating at the same time: the render is
-entirely white where the reference is shaded, so the luminance path may be
-contributing rather than the store alone.
+**IT IS NOT THE QUAD STORE.** That was proposed here and is wrong -- the store
+is not overflowing on this game. Recorded because the wrong answer is worth
+knowing: the store overflow is real for Virtua Racing (findings 2026-09-09) and
+it is tempting to reach for whenever geometry is missing, which is precisely why
+it needs ruling out rather than assuming.
+
+What the picture actually shows is two things at once, and they may not share a
+cause: geometry that is largely absent or collapsed, AND a render that is
+entirely white where the reference is shaded. The second points at the luminance
+or colour path rather than at anything structural.
+
+**Measure before building.** `tb_m1_frame GAME=swa` and a MAME tap on the same
+attract frame will say which quads are emitted and what luminance they carry. An
+axis was "fixed" three times in a row this session by reasoning instead of
+modelling, and this entry has already carried one wrong cause.
 
 ## 1. NetMerc: audio is tiny, high-pitched and at the wrong speed
 
