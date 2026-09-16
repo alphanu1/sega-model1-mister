@@ -1664,6 +1664,34 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   // game never commands the board, nothing downstream can make a sound and no
   // amount of gain will help. It costs two flip-flops and no M10K, which the
   // UART monitor did not -- that needed 8 blocks against 553/553.
-  assign LED_USER  = snd_mainloop_seen;
+  // LED_USER IS THE ROM LOADER'S OVERFLOW FLAG NOW, and it answers the only
+  // question the board is currently asking.
+  //
+  // The load is INTERMITTENT on hardware -- the same core and the same MRA
+  // sometimes stall at 0%, sometimes load with no 3D, and sometimes work. One
+  // cause explains all three: m1_rom_loader DROPS a word silently when its FIFO
+  // is full --
+  //
+  //     if (fifo_full) overflow <= 1'b1;   else <write it>
+  //
+  // -- so the stream arrives with holes in it and the load reports success. The
+  // symptom then depends only on WHERE the hole lands: in the boot vector it is
+  // dead at 0%, in the polygon ROM it is a game with no 3D, in padding it is a
+  // game that works.
+  //
+  // `overflow` existed and was wired to NOTHING visible, so this was invisible
+  // on hardware. The same fault was found once before at FIFO_DEPTH 8 /
+  // WAIT_MARGIN 6 and fixed to 512/256, and the note there says exactly what it
+  // looks like: "a ROM with holes in it, reported as a successful load".
+  //
+  // STICKY, because a dropped word is a single cycle and the download is
+  // seconds long. If this LED comes on at any point, the ROM in SDRAM is not
+  // the ROM on the card and nothing downstream is worth debugging.
+  reg ldr_overflow_seen;
+  always @(posedge clk_sys or negedge rst_n) begin
+    if (!rst_n)           ldr_overflow_seen <= 1'b0;
+    else if (ldr_overflow) ldr_overflow_seen <= 1'b1;
+  end
+  assign LED_USER  = ldr_overflow_seen;
 
 endmodule

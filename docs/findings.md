@@ -20,6 +20,61 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-09-16 — THE V60 WAS RELEASED FROM RESET THREE TIMES MID-LOAD
+
+**`sys/hps_io.sv` clears `ioctl_download` at the end of EVERY MRA part**, not
+once at the end of the MRA. `m1_rom_loader` cleared `rom_loaded` whenever a
+stream started and set it again when that stream drained -- so across a
+multi-part MRA the flag toggled per part, and `rom_present` (which gates the
+V60's reset) toggled with it.
+
+**Read off the framework source, not inferred.** `hps_io.sv` handles
+`FIO_FILE_TX` with a zero first byte by doing `ioctl_download <= 0`; the HPS
+sends that at the end of each part and a fresh TX-start for the next one.
+
+**What that did.** The Virtua Fighter MRA sends, in order:
+
+    index 4   (not one we accept -- no effect)
+    index 0   main ROM
+    index 1   TGP microcode
+    index 2   I/O board firmware
+    index 5   sound: 512 KB program + 2 x 4 MB PCM
+
+So the V60 came out of reset **after the main ROM, with no TGP microcode
+underneath it**, and that release lasted for the whole 8.5 MB sound download --
+seconds of a CPU executing real game code against a ROM that is not all there.
+It can write its work RAM, poke hardware, and scribble the EEPROM image that
+index 4 had already placed in SDRAM. Then the next stream clears the flag, the
+CPU is reset again, and it boots for real on top of whatever it just damaged.
+
+**This is the shape of the intermittent loading reported from hardware**: the
+same core and the same MRA sometimes stall at 0%, sometimes come up with no 3D,
+and sometimes work. How long the rogue release got, and therefore what it
+damaged, depends on HPS file-system timing, which varies run to run. Nothing
+about the ROM set is involved -- which is why chasing a missing-file theory was
+the wrong track: **a missing file fails the same way every time. Intermittent
+means race.**
+
+**The fix is `CPU_SETTLE`**: `rom_loaded` must be stable for that many cycles
+before it reaches the CPU, and any new stream restarts the count.
+
+**The first value chosen for it was WRONG and would have looked right.** 800,000
+cycles is 10 ms at 80 MHz, picked as "far longer than a bus round trip". But the
+gap being waited out is the HPS opening the next member of a **zip** and starting
+to decompress it -- a file-system operation of tens of milliseconds. 10 ms sits
+inside the range it was supposed to exclude. It is 80,000,000 now: one second,
+far past any plausible gap and invisible against a download that already takes
+seconds. Being too long costs nothing observable; being too short reinstates the
+fault silently.
+
+**Not yet confirmed on hardware.** Simulation cannot reproduce the fault -- the
+bench's inter-stream gap is whatever the bench chooses -- so this entry records
+a mechanism established from framework source plus a fix, not a measured cure.
+`LED_USER` now carries the loader's sticky FIFO-overflow flag as the independent
+check: if words are ALSO being dropped, a bad load lights the user LED.
+
+---
+
 ## 2026-09-15 — jt12 WOULD NOT ROUTE, AND IT WAS m1_sdram's DUPLICATED MUXES
 
 **The design PLACED and then failed to route 2-4 wires, every seed, all of them

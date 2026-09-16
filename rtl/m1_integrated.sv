@@ -1057,7 +1057,20 @@ module m1_integrated (
   end
   endgenerate
 
-  m1_rom_loader loader (
+  // CPU_SETTLE: 80,000,000 cycles of clk_sys is one second at 80 MHz.
+  //
+  // MEASURED FROM THE FRAMEWORK, NOT ASSUMED: sys/hps_io.sv clears
+  // ioctl_download on the FIO_FILE_TX that ends each part, so an MRA of five
+  // accepted streams drops it four times. Our MRAs send index 4, then 0 (main
+  // ROM), 1 (TGP microcode), 2 (I/O firmware), 5 (8.5 MB of sound) -- so the
+  // V60 was released after the main ROM with NO TGP microcode under it, and
+  // that release lasted the whole sound download: seconds of a CPU running on
+  // a ROM that is not all there, scribbling work RAM and the EEPROM image.
+  //
+  // What is being waited out is the HPS opening the next member of a zip, a
+  // filesystem operation of tens of milliseconds. One second is far past that
+  // and invisible against a download that already takes seconds.
+  m1_rom_loader #(.CPU_SETTLE(80_000_000)) loader (
     .clk(clk_sys), .rst(~rst_n_mem), .mem_ready(mem_ready),
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
     .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),

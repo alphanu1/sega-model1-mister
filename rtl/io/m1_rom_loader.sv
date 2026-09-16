@@ -155,6 +155,35 @@ module m1_rom_loader #(
   // — an order of magnitude past anything plausible — and the buffer is block
   // RAM rather than flip-flops, so the depth costs two M10K instead of 20,000
   // registers.
+  // CYCLES OF QUIET BEFORE THE CPU IS RELEASED.
+  //
+  // rom_loaded is cleared whenever a new download starts and set again when
+  // that stream drains, so with an MRA of SIX streams the V60 is released and
+  // re-reset FIVE times mid-load. Each release lets it run on a ROM that is
+  // only partly there, for however long the HPS happens to take between
+  // streams -- which varies run to run.
+  //
+  // That is the shape of the intermittent loading seen on hardware: the same
+  // core and MRA sometimes stall at 0%, sometimes come up with no 3D, and
+  // sometimes work. A CPU running on half a ROM can write its work RAM, poke
+  // hardware, or wander, and what it damages depends on how long it got.
+  //
+  // So rom_loaded now has to be STABLE for this many cycles before it reaches
+  // the CPU. Any new stream restarts the count. The default is small so the
+  // unit bench still sees a prompt release; Model1.sv passes the real figure.
+  //
+  // THE REAL FIGURE HAS TO COVER AN HPS FILE OPEN, NOT A BUS ROUND TRIP.
+  //
+  // The gap being waited out is the HPS opening the next member of a zip and
+  // starting to decompress it -- a filesystem operation, tens of milliseconds,
+  // not microseconds. 800,000 cycles (10 ms at 80 MHz) was the first guess and
+  // is inside that range, which would have left the bug in place while looking
+  // fixed. 80,000,000 is one full second: far past any plausible gap, and
+  // invisible next to the seconds the download itself takes.
+  //
+  // Being too long costs nothing observable; being too short reinstates the
+  // fault. The counter is 27 bits.
+  parameter int unsigned CPU_SETTLE = 16,
   parameter int unsigned FIFO_DEPTH = 512,
   parameter int unsigned WAIT_MARGIN = 256,
 
@@ -192,7 +221,7 @@ module m1_rom_loader #(
   output logic [31:0] tgp_din,
 
 
-  output logic        rom_loaded,
+  output logic        rom_loaded,      // settled: safe to release the CPU
   // SEPARATE READY FOR THE SOUND STREAM, and the reason is a bug this project
   // has already paid for once. `rom_loaded` latches when the FIRST stream ends,
   // and in the MRA index 0 precedes 1, 2, 3 and 5 -- so gating the sound board
@@ -249,6 +278,26 @@ module m1_rom_loader #(
   (* ramstyle = "M10K" *) logic [25:1] fifo_addr [FIFO_DEPTH];
   (* ramstyle = "M10K" *) logic [15:0] fifo_data [FIFO_DEPTH];
   logic [AW:0]        wptr, rptr;          // one extra bit distinguishes full
+  // rom_loaded_raw is the old, immediate flag; rom_loaded is it held stable.
+  logic               rom_loaded_raw;
+  logic [$clog2(CPU_SETTLE+1)-1:0] settle_cnt;
+  // ASYNC RESET, matching the main always block below. Mixing the two styles
+  // on one signal is what Verilator's SYNCASYNCNET warns about, and on Cyclone V
+  // it makes the fitter choose per-flop rather than consistently.
+  always_ff @(posedge clk or posedge rst) begin
+    if (rst) begin
+      settle_cnt <= '0;
+      rom_loaded <= 1'b0;
+    end else if (!rom_loaded_raw) begin
+      settle_cnt <= '0;
+      rom_loaded <= 1'b0;
+    end else if (settle_cnt != ($clog2(CPU_SETTLE+1))'(CPU_SETTLE)) begin
+      settle_cnt <= settle_cnt + 1'b1;
+    end else begin
+      rom_loaded <= 1'b1;
+    end
+  end
+
   logic [AW:0]        level;
 
   assign level = wptr - rptr;
@@ -311,7 +360,7 @@ module m1_rom_loader #(
       req_q <= 1'b0; busy <= 1'b0; ack_d <= 1'b0;
       sdr_wr_addr <= '0; sdr_wr_din <= '0;
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
-      rom_loaded <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
+      rom_loaded_raw <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
       snd_loaded <= 1'b0; snd_seen <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
       sdram_csum <= 24'd0; sdram_words <= 24'd0;
@@ -412,12 +461,12 @@ module m1_rom_loader #(
       // normally still full — so rom_loaded never asserted at all and the core
       // would have sat in reset forever.
       if (stream_ok) begin
-        rom_loaded <= 1'b0;
+        rom_loaded_raw <= 1'b0;
         dl_done    <= 1'b0;
       end else begin
         if (sok_d && !stream_ok) dl_done <= 1'b1;
         if (dl_done && fifo_empty && !busy) begin
-          rom_loaded <= 1'b1;
+          rom_loaded_raw <= 1'b1;
           dl_done    <= 1'b0;
           // The sound stream has both arrived and drained to SDRAM.
           if (snd_seen) snd_loaded <= 1'b1;

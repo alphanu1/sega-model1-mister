@@ -27,6 +27,49 @@ import sys, os, zipfile, argparse
 # (file-or-pair, maincpu byte offset). A pair is ROM_LOAD16_BYTE and interleaves
 # even/odd; a single name is ROM_LOAD and is already a 16-bit image.
 SETS = {
+  # Star Wars Arcade, from ROM_START( swa ) and ( swaj ).
+  #
+  # SHAPED DIFFERENTLY FROM VIRTUA RACING, and the difference is load-bearing:
+  # the boot region is ONE 512 KB ROM at 0xf80000, where vr and wingwar have two
+  # 128 KB parts at 0xfc0000 and 0xfe0000. pack_stream copies
+  # maincpu[0xf80000:0x1000000] wholesale, so a set that fills the region from
+  # its base works out the same -- but the entry must say 0xf80000, not 0xfc0000.
+  #
+  # It also has NO banked data at 0x1000000: its models live entirely in the
+  # polygon ROMs (POLYGONS['swa']), so stream 0x180000 onward stays empty. That
+  # is why the polygon region for this set is 12 MB against vr's 16.
+  'swa': [
+    (('epr-16669.14', 'epr-16670.15'), 0x200000),
+    (('epr-16668.5',),                 0xf80000),
+  ],
+  'swaj': [
+    (('epr-16468.14', 'epr-16469.15'), 0x200000),
+    (('epr-16467.5',),                 0xf80000),
+  ],
+
+  # Wing War, from ROM_START( wingwar ). Same shape as vr: two boot ROMs and
+  # three banked pairs. The .6/.7 pair is (16738, 16737) and NOT numeric order
+  # -- MAME loads mpr-16738.6 on the EVEN lane -- the same inversion vformula
+  # has, so read the ROM_LOAD16_BYTE offsets rather than the part numbers.
+  'wingwar': [
+    (('epr-16729.14', 'epr-16730.15'), 0x200000),
+    (('epr-16953.4',),                 0xfc0000),
+    (('epr-16952.5',),                 0xfe0000),
+    (('mpr-16738.6',  'mpr-16737.7'),  0x1000000),
+    (('mpr-16736.8',  'mpr-16735.9'),  0x1100000),
+    (('mpr-16734.10', 'mpr-16733.11'), 0x1200000),
+  ],
+
+  # Sega NetMerc, from ROM_START( netmerc ). NO ROMX at 0x200000 at all -- the
+  # region every other set fills with its program is empty here, and the code
+  # lives in the banked pairs. One 512 KB boot ROM like swa.
+  'netmerc': [
+    (('epr-18120.ic5',),                  0xf80000),
+    (('epr-18122.ic6',  'epr-18123.ic7'), 0x1000000),
+    (('epr-18124.ic8',  'epr-18125.ic9'), 0x1100000),
+    (('epr-18126.ic10', 'epr-18127.ic11'),0x1200000),
+  ],
+
   'vr': [
     (('epr-14882.14', 'epr-14883.15'), 0x200000),
     (('epr-14878a.4',),                0xfc0000),
