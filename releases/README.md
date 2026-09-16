@@ -119,8 +119,26 @@ exactly that reason — if they disagree, trust neither and check.**
   blue engine glow. **Undiagnosed.** It is *not* the quad store running out —
   that store is not overflowing here.
 
+  **A ship is missing from the intro** as well. Undiagnosed, and possibly the
+  same direct-polygon gap as the logo.
+
   Neither is a regression. Star Wars had never loaded at all until this build,
   so this is the first time anyone has seen its attract screen on this core.
+
+- **STAR WARS HAS NO MUSIC, AND IT NEVER WILL ON THIS CORE.** The Star Wars
+  theme that should play over the attract sequence does not, and this is not a
+  fault in the sound you can hear elsewhere.
+
+  **Star Wars Arcade has a SECOND sound board.** Besides the 68000, YM3438 and
+  MultiPCM board that every Model 1 game carries — which this core does
+  implement, and which is what you hear — Star Wars adds a **DSB: a Z80 driving
+  an MPEG decoder with 4 MB of music data** (`mpr-16514`, `mpr-16515`). The main
+  sound board forwards commands to it. None of it is built here.
+
+  It is the only Model 1 game with one, which is why every other shipped game
+  has its music and this one does not. Effects and voices come from the normal
+  board and are present; the music is MPEG streamed off a board that does not
+  exist in this core yet.
 
 - **Scenery comes and goes on busy stretches of Virtua Racing.** The store that
   holds transformed quads for a frame fills in display-list order and drops

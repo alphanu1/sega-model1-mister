@@ -30,6 +30,12 @@ in attract and in play across Virtua Racing, Virtua Formula, Virtua Fighter and
 Star Wars Arcade. **Sega NetMerc is the exception** — its audio comes out tiny,
 high-pitched and at the wrong rate, which is a sample-clock fault and is open.
 
+**Star Wars Arcade has a SECOND sound board that is not built.** It is the only
+Model 1 game with a **DSB** — a Z80 driving an MPEG decoder with 4 MB of music
+data, which the main sound board forwards commands to. Its effects come from
+the normal board and work; its *music*, including the theme over attract, is
+MPEG off the DSB and is absent.
+
 Virtua Racing's attract mode is silent on the real cabinet too, so a quiet
 attract screen there is correct rather than a fault.
 
@@ -69,7 +75,7 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 | Virtua Formula | boots, plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
 | Virtua Fighter | boots, has sound and reads its controls, but is **not playable** — the fighting arena is the wrong size during a match; attract and character select are correct | yes |
 | Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
-| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented) and the Star Destroyer draws only partly, as white slivers rather than a shaded hull — undiagnosed, and not the quad store | yes |
+| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented) the Star Destroyer draws only partly as white slivers, a ship is missing from the intro, and there is **no music** — its MPEG music lives on a DSB board that is not implemented | yes |
 | Wing War | boots, but **needs the model1io2 I/O board** -- no control reaches it | yes |
 
 **Wing War and NetMerc use a DIFFERENT I/O BOARD, and it is not built.**

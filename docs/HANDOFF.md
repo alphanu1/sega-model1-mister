@@ -57,6 +57,32 @@ attract frame will say which quads are emitted and what luminance they carry. An
 axis was "fixed" three times in a row this session by reasoning instead of
 modelling, and this entry has already carried one wrong cause.
 
+## 0b. STAR WARS HAS NO MUSIC, AND THE REASON IS A WHOLE SECOND SOUND BOARD
+
+**Measured from `model1.cpp`, not guessed.** `swa()` instantiates `DSBZ80` and
+routes it to its own stereo speaker, and `m_m1audio->rxd_handler().append(...)`
+forwards sound commands to it. Its ROMs are in the set: `epr-16471.2`, a Z80
+program, and `mpr-16514`/`mpr-16515`, **4 MB of MPEG music data**.
+
+**Star Wars is the ONLY Model 1 game with one** -- checked across all six. That
+is exactly why every other shipped game has its music and this one does not, and
+it means the missing theme is not a fault in the 68000/YM3438/MultiPCM board
+this core does implement. Effects and voices come from that board and are
+present. The music is MPEG streamed off hardware that does not exist here.
+
+**Do not go looking for this in the sound path.** It would be an easy week lost:
+the symptom is "no music in one game" while the same board plainly produces
+music in three others, which reads like a game-specific sound bug and is not one.
+
+Building it means an MPEG-1 Layer 2 decoder plus a Z80 and 4 MB of sample data,
+which is a project in its own right and is not on any current milestone.
+
+## 0c. A ship is missing from Star Wars' attract intro
+
+Reported from the board alongside the logo and the Star Destroyer. Undiagnosed.
+Possibly the same direct-polygon gap as the logo (0. above), possibly not --
+nobody has checked which command carries it.
+
 ## 1. NetMerc: audio is tiny, high-pitched and at the wrong speed
 
 Reported from the board. The sound board runs and produces output, but the
