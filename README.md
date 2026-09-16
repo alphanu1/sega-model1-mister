@@ -67,7 +67,7 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 |---|---|---|
 | Virtua Racing | boots, plays, 2D and 3D, with sound | yes |
 | Virtua Formula | boots, plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
-| Virtua Fighter | runs and plays, **with sound**; the fighting arena is the wrong size in a match, direct-polygon objects are missing, and the input map is the only one besides Virtua Racing's that exists | yes |
+| Virtua Fighter | boots, has sound and reads its controls, but is **not playable** — the fighting arena is the wrong size during a match; attract and character select are correct | yes |
 | Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
 | Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 | yes |
 | Wing War | boots, but **needs the model1io2 I/O board** -- no control reaches it | yes |

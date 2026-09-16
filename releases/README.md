@@ -113,7 +113,13 @@ exactly that reason — if they disagree, trust neither and check.**
   following line — but it is not correct.
 
 - **Three games are not shipped, and two of them cannot be.** Virtua Fighter
-  boots and has sound and is a candidate for the next release. **Wing War and
+  boots, has sound and reads its controls, but **is not playable**: the
+  fighting arena is the wrong size during a match, which makes a real fight
+  unplayable even though attract and character select are correct. Two display
+  list commands are parsed and discarded and either could be the cause — the
+  polygon RAM upload, which has no consumer because there is no polygon RAM in
+  the core, and direct already-projected polygons. It is a candidate for a
+  later release, not this one. **Wing War and
   Sega NetMerc use a different I/O board** — MAME gives both `SEGA_MODEL1IO2`,
   a different device rather than different firmware — and this core implements
   only the first board, so no control reaches either game however it is mapped.
