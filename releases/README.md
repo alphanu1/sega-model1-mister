@@ -31,7 +31,7 @@ I/O board Z80 and there is no behavioural fallback**, so without that firmware a
 game does not boot — it waits forever for a board that never answers. MAME will
 not start these games without the same file, so a complete romset already has it.
 
-**Check what you are running.** `Model1_20260917.rbf` is `MD5SUM_PENDING`. If the
+**Check what you are running.** `Model1_20260917.rbf` is `4b008b61b51eaad2b81bc835462cc205`, 4,647,148 bytes. If the
 core on your card does not have that md5 you are not running this build — and
 the usual reason is a second file: MiSTer resolves `<rbf>Model1</rbf>` by
 scanning for names starting `Model1` followed by `.` or `_`, and keeps the

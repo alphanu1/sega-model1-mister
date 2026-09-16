@@ -447,15 +447,18 @@ module emu
   //
   // Per axis rather than per stick: pushing left-stick X must not drag
   // right-stick Y along with it.
-  function automatic [7:0] dz(input [7:0] v);
-    dz = (v > 8'h70 && v < 8'h90) ? 8'h80 : v;
-  endfunction
+  // COMPUTED ONCE EACH, NOT PER USE. These were functions called thirteen
+  // times, and Quartus builds one comparator per call rather than sharing them
+  // -- the same duplication that cost this design its routing once already.
+  // Six wires instead, and clk_3d came back positive.
   function automatic [7:0] dev(input [7:0] v);          // distance from centre
     dev = (v >= 8'h80) ? (v - 8'h80) : (8'h80 - v);
   endfunction
 
-  wire [7:0] lx_d = dz(swa_lx), ly_d = dz(swa_ly);
-  wire [7:0] rx_d = dz(swa_rx), ry_d = dz(swa_ry);
+  wire [7:0] lx_d = (swa_lx > 8'h70 && swa_lx < 8'h90) ? 8'h80 : swa_lx;
+  wire [7:0] ly_d = (swa_ly > 8'h70 && swa_ly < 8'h90) ? 8'h80 : swa_ly;
+  wire [7:0] rx_d = (swa_rx > 8'h70 && swa_rx < 8'h90) ? 8'h80 : swa_rx;
+  wire [7:0] ry_d = (swa_ry > 8'h70 && swa_ry < 8'h90) ? 8'h80 : swa_ry;
   wire [7:0] swa_ax_r = (dev(rx_d) > dev(lx_d)) ? rx_d : lx_d;
   wire [7:0] swa_ay_r = (dev(ry_d) > dev(ly_d)) ? ry_d : ly_d;
 
@@ -477,14 +480,18 @@ module emu
   // inverted value back through the dead zone snaps 0x7f to 0x80 again, so
   // centre survives the flip in both directions.
   wire       x_inv  = ~status[13];
-  wire [7:0] swa_ax = dz(x_inv ? (8'hff - swa_ax_r) : swa_ax_r);
+  // The arbitrated value is already snapped, so preserving centre through the
+  // flip needs one equality, not a second dead zone: 0xff - 0x80 is 0x7f.
+  wire [7:0] swa_ax = !x_inv               ? swa_ax_r :
+                      (swa_ax_r == 8'h80)  ? 8'h80    : (8'hff - swa_ax_r);
   // Y inversion, O[12], SHARED BY EVERY GAME THAT HAS A PITCH AXIS. Only one
   // game runs at a time, so one switch serves Star Wars and Wing War both --
   // and it is needed twice over, because wingwar360 declares the opposite Y
   // polarity to wingwar with all four Wing War MRAs sending the same game id.
   // Which way a stick pushes is a preference the pads do not agree on anyway,
   // exactly as the Pedals switch above exists for.
-  wire [7:0] swa_ay = dz(status[12] ? (8'hff - swa_ay_r) : swa_ay_r);
+  wire [7:0] swa_ay = !status[12]          ? swa_ay_r :
+                      (swa_ay_r == 8'h80)  ? 8'h80    : (8'hff - swa_ay_r);
 
   wire [15:0] swa_sx_m = swa_ax * 16'd200;
   wire [15:0] swa_sy_m = swa_ay * 16'd200;
@@ -551,11 +558,15 @@ module emu
   wire [7:0] g_ly = {~joy1_lstick[15], joy1_lstick[14:8]};
   // Same dead zone, so a drifting pad 2 does not permanently claim the gunner
   // seat from the pilot's mirrored stick.
-  wire g_idle = (dz(g_lx) == 8'h80) && (dz(g_ly) == 8'h80) &&
-                !p2_left && !p2_right && !p2_up && !p2_down;
 
-  wire [7:0] g_ax = dz(x_inv      ? (8'hff - dz(g_lx)) : dz(g_lx));
-  wire [7:0] g_ay = dz(status[12] ? (8'hff - dz(g_ly)) : dz(g_ly));
+  wire [7:0] gx_d = (g_lx > 8'h70 && g_lx < 8'h90) ? 8'h80 : g_lx;
+  wire [7:0] gy_d = (g_ly > 8'h70 && g_ly < 8'h90) ? 8'h80 : g_ly;
+  wire g_idle = (gx_d == 8'h80) && (gy_d == 8'h80) &&
+                !p2_left && !p2_right && !p2_up && !p2_down;
+  wire [7:0] g_ax = !x_inv            ? gx_d  :
+                    (gx_d == 8'h80)   ? 8'h80 : (8'hff - gx_d);
+  wire [7:0] g_ay = !status[12]       ? gy_d  :
+                    (gy_d == 8'h80)   ? 8'h80 : (8'hff - gy_d);
   wire [15:0] g_sx_m = g_ax * 16'd200;
   wire [15:0] g_sy_m = g_ay * 16'd200;
   wire [7:0] g_stick_x = p2_left  ? (x_inv ? 8'd227 : 8'd27 ) :
