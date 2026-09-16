@@ -431,10 +431,33 @@ module emu
   // "Resting" is a dead band, not equality: an analogue stick almost never
   // reports exactly centre, so testing for 0x80 would keep the left stick
   // selected forever and the right one would never be reachable.
-  wire swa_l_idle = (swa_lx > 8'h70) && (swa_lx < 8'h90) &&
-                    (swa_ly > 8'h70) && (swa_ly < 8'h90);
-  wire [7:0] swa_ax_r = swa_l_idle ? swa_rx : swa_lx;
-  wire [7:0] swa_ay_r = swa_l_idle ? swa_ry : swa_ly;
+  // DEAD-ZONE EACH STICK, THEN LET THE FURTHER-PUSHED ONE WIN, PER AXIS.
+  //
+  // The first version asked "is the LEFT stick resting?" and used the right one
+  // if so. That is fragile in exactly the way pads are: a left stick that rests
+  // a few counts off centre is never "resting", so it locks the right stick out
+  // AND feeds its own drift through as a permanent off-centre reading -- an aim
+  // that runs away and stays there. A worn pad should degrade into a slightly
+  // less precise stick, not into a stuck axis and a dead second stick.
+  //
+  // So each axis is snapped to centre inside the dead band first, which removes
+  // drift at the source, and then the axis further from centre wins. Either
+  // stick drives, neither can be locked out, and a drifting one loses to a
+  // stick somebody is actually pushing.
+  //
+  // Per axis rather than per stick: pushing left-stick X must not drag
+  // right-stick Y along with it.
+  function automatic [7:0] dz(input [7:0] v);
+    dz = (v > 8'h70 && v < 8'h90) ? 8'h80 : v;
+  endfunction
+  function automatic [7:0] dev(input [7:0] v);          // distance from centre
+    dev = (v >= 8'h80) ? (v - 8'h80) : (8'h80 - v);
+  endfunction
+
+  wire [7:0] lx_d = dz(swa_lx), ly_d = dz(swa_ly);
+  wire [7:0] rx_d = dz(swa_rx), ry_d = dz(swa_ry);
+  wire [7:0] swa_ax_r = (dev(rx_d) > dev(lx_d)) ? rx_d : lx_d;
+  wire [7:0] swa_ay_r = (dev(ry_d) > dev(ly_d)) ? ry_d : ly_d;
 
   // X IS REVERSED BY DECLARATION, NOT BY TASTE.
   //
@@ -444,15 +467,24 @@ module emu
   // model1.cpp and then not applied. O[13] flips it back for anyone whose pad
   // disagrees, and for wingwar360, which declares the opposite polarity to
   // wingwar on BOTH axes while sharing its game id.
+  //
+  // THE INVERSION IS RE-CENTRED, and that is not cosmetic. `0xff - v` maps a
+  // centred 0x80 to 0x7f -- one count off -- so with the invert ON, which is
+  // the DEFAULT here because MAME declares PORT_REVERSE, a stick sitting
+  // perfectly still sent 126 where the pot's centre is 127. Star Wars reads the
+  // pot as a RATE, so a permanent one-count offset is a crosshair that creeps
+  // and never settles: "it does not recenter after turning right". Passing the
+  // inverted value back through the dead zone snaps 0x7f to 0x80 again, so
+  // centre survives the flip in both directions.
   wire       x_inv  = ~status[13];
-  wire [7:0] swa_ax = x_inv ? (8'hff - swa_ax_r) : swa_ax_r;
+  wire [7:0] swa_ax = dz(x_inv ? (8'hff - swa_ax_r) : swa_ax_r);
   // Y inversion, O[12], SHARED BY EVERY GAME THAT HAS A PITCH AXIS. Only one
   // game runs at a time, so one switch serves Star Wars and Wing War both --
   // and it is needed twice over, because wingwar360 declares the opposite Y
   // polarity to wingwar with all four Wing War MRAs sending the same game id.
   // Which way a stick pushes is a preference the pads do not agree on anyway,
   // exactly as the Pedals switch above exists for.
-  wire [7:0] swa_ay = status[12] ? (8'hff - swa_ay_r) : swa_ay_r;
+  wire [7:0] swa_ay = dz(status[12] ? (8'hff - swa_ay_r) : swa_ay_r);
 
   wire [15:0] swa_sx_m = swa_ax * 16'd200;
   wire [15:0] swa_sy_m = swa_ay * 16'd200;
@@ -460,10 +492,18 @@ module emu
   wire [7:0]  swa_sy_a = 8'd27 + swa_sy_m[15:8];
 
   // The d-pad wins, at the ends of the pot's travel rather than the byte's.
-  wire [7:0] swa_stick_x = (p1_left  ^ x_inv) ? 8'd27  :
-                           (p1_right ^ x_inv) ? 8'd227 : swa_sx_a;
-  wire [7:0] swa_stick_y = (p1_up   ^ status[12]) ? 8'd27  :
-                           (p1_down ^ status[12]) ? 8'd227 : swa_sy_a;
+  // THE BUTTON SELECTS, THE INVERT SWAPS THE ENDPOINTS. It must not be written
+  // as `(p1_left ^ x_inv)`: that reads as "pressed XOR inverted", so with
+  // nothing pressed and the invert SET it evaluates true and pins the axis to
+  // an endpoint, and the analogue value below is never reached. x_inv defaults
+  // to 1 because MAME declares PORT_REVERSE on X, so that is exactly what
+  // happened on the board -- the left stick did nothing and the aim sat hard
+  // over. The Y form had the same shape and was only harmless because O[12]
+  // defaults to 0; it would have broken the moment anyone used the switch.
+  wire [7:0] swa_stick_x = p1_left  ? (x_inv ? 8'd227 : 8'd27 ) :
+                           p1_right ? (x_inv ? 8'd27  : 8'd227) : swa_sx_a;
+  wire [7:0] swa_stick_y = p1_up    ? (status[12] ? 8'd227 : 8'd27 ) :
+                           p1_down  ? (status[12] ? 8'd27  : 8'd227) : swa_sy_a;
 
   // THROTTLE is PORT_MINMAX(28,200) with a 0x7f default and nothing on this pad
   // to drive it, so it rests mid-travel. 0x01 -- the value an idle VR pedal
@@ -487,10 +527,10 @@ module emu
   // Full 0x00-0xff here rather than Star Wars' 27..227: wingwar declares
   // PORT_BIT( 0xff, 0x80, ... ) with no PORT_MINMAX, so the pot does reach the
   // rails on this cabinet.
-  wire [7:0] ww_stick_x = (p1_left  ^ x_inv) ? 8'h00 :
-                          (p1_right ^ x_inv) ? 8'hff : swa_ax;
-  wire [7:0] ww_stick_y = (p1_up   ^ status[12]) ? 8'h00 :
-                          (p1_down ^ status[12]) ? 8'hff : swa_ay;
+  wire [7:0] ww_stick_x = p1_left  ? (x_inv ? 8'hff : 8'h00) :
+                          p1_right ? (x_inv ? 8'h00 : 8'hff) : swa_ax;
+  wire [7:0] ww_stick_y = p1_up    ? (status[12] ? 8'hff : 8'h00) :
+                          p1_down  ? (status[12] ? 8'h00 : 8'hff) : swa_ay;
 
   // -------------------------------------------- Star Wars Arcade, the GUNNER
   //
@@ -509,18 +549,19 @@ module emu
   // never reports exactly centre, so equality would never fire.
   wire [7:0] g_lx = {~joy1_lstick[7],  joy1_lstick[6:0]};
   wire [7:0] g_ly = {~joy1_lstick[15], joy1_lstick[14:8]};
-  wire g_idle = (g_lx > 8'h70) && (g_lx < 8'h90) &&
-                (g_ly > 8'h70) && (g_ly < 8'h90) &&
+  // Same dead zone, so a drifting pad 2 does not permanently claim the gunner
+  // seat from the pilot's mirrored stick.
+  wire g_idle = (dz(g_lx) == 8'h80) && (dz(g_ly) == 8'h80) &&
                 !p2_left && !p2_right && !p2_up && !p2_down;
 
-  wire [7:0] g_ax = x_inv    ? (8'hff - g_lx) : g_lx;
-  wire [7:0] g_ay = status[12] ? (8'hff - g_ly) : g_ly;
+  wire [7:0] g_ax = dz(x_inv      ? (8'hff - dz(g_lx)) : dz(g_lx));
+  wire [7:0] g_ay = dz(status[12] ? (8'hff - dz(g_ly)) : dz(g_ly));
   wire [15:0] g_sx_m = g_ax * 16'd200;
   wire [15:0] g_sy_m = g_ay * 16'd200;
-  wire [7:0] g_stick_x = (p2_left ^ x_inv)     ? 8'd27 :
-                         (p2_right ^ x_inv)    ? 8'd227 : (8'd27 + g_sx_m[15:8]);
-  wire [7:0] g_stick_y = (p2_up   ^ status[12]) ? 8'd27 :
-                         (p2_down ^ status[12]) ? 8'd227 : (8'd27 + g_sy_m[15:8]);
+  wire [7:0] g_stick_x = p2_left  ? (x_inv ? 8'd227 : 8'd27 ) :
+                         p2_right ? (x_inv ? 8'd27  : 8'd227) : (8'd27 + g_sx_m[15:8]);
+  wire [7:0] g_stick_y = p2_up    ? (status[12] ? 8'd227 : 8'd27 ) :
+                         p2_down  ? (status[12] ? 8'd27  : 8'd227) : (8'd27 + g_sy_m[15:8]);
 
   wire [7:0] swa_gun_x = g_idle ? swa_stick_x : g_stick_x;
   wire [7:0] swa_gun_y = g_idle ? swa_stick_y : g_stick_y;

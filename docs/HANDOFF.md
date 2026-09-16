@@ -19,6 +19,36 @@ screen is quiet, and that matches the real cabinet.
 **NetMerc is the single remaining audio defect**, and it is a rate fault rather
 than a level one.
 
+## 0. STAR WARS' ATTRACT SCREEN, AND WHAT IT EXPOSES
+
+Photographed on the board 2026-09-16 against a reference capture. Two faults,
+and neither is Star Wars-specific -- it is the first game to show them plainly.
+
+**The title logo never appears, and that IS command 0x02.** `m1_listwalk.sv:54`
+says so in its own comment: "COMMAND 2 IS WALKED, NOT DECODED ... emitting the
+quads themselves is the direct path's job and is not this module's." The record
+is parsed so the list stays in sync and the quads are dropped. The Star Wars
+logo is a flat yellow outline overlaid in space -- precisely what already
+projected polygons are for.
+
+**This upgrades command 0x02 from suspicion to demonstration.** It was recorded
+as "the likely reason knives do not appear" in Virtua Fighter, never proven. A
+whole title screen is a far better test case than a missing prop: it is large,
+it is unmistakable, and it appears at a fixed point in attract, so a fix either
+brings the logo back or it does not.
+
+**The Star Destroyer draws as thin pale slivers**, where the reference is a
+solid grey shaded hull with gradient engine bells. NOT diagnosed. The leading
+candidate is the quad store overflowing -- the model is far denser than anything
+in Virtua Racing, which already peaks near the 3,072 cap -- but the counters
+have not been read for this game. `tb_m1_frame GAME=swa` prints them. **Measure
+before building anything**: an axis was "fixed" three times in a row this
+session by reasoning instead of modelling, and the pattern is on record.
+
+A secondary possibility worth eliminating at the same time: the render is
+entirely white where the reference is shaded, so the luminance path may be
+contributing rather than the store alone.
+
 ## 1. NetMerc: audio is tiny, high-pitched and at the wrong speed
 
 Reported from the board. The sound board runs and produces output, but the

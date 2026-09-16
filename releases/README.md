@@ -53,11 +53,14 @@ Virtua Formula is the same game on the linked-cabinet F1 board and is a Virtua
 Racing clone in MAME: only the program ROMs, the two boot ROMs and one banked
 pair differ.
 
-**Star Wars Arcade is new in this build, and it plays.** It had never loaded at
-all before: its reset vector jumps into a region of the address map that every
-other shipped game leaves empty, and the core decoded that region as
-unpopulated. It has its own input map — stick to aim, Fire/Thumb/Button 3 on
-A/B/X, and a second pad drives the gunner seat.
+**Star Wars Arcade is new in this build, and it plays** — but **its attract
+sequence does not draw correctly**. Read the entry below before deciding whether
+it is broken for you; it is a known gap, not damage to your setup.
+
+It had never loaded at all before: its reset vector jumps into a region of the
+address map that every other shipped game leaves empty, and the core decoded
+that region as unpopulated. It has its own input map — stick to aim,
+Fire/Thumb/Button 3 on A/B/X, and a second pad drives the gunner seat.
 
 Every MRA here is verified byte for byte against an independently written packer
 — the MRA is expanded exactly as MiSTer expands it and diffed against a separate
@@ -99,6 +102,25 @@ This list describes the RBF named above. Every entry is removed in the same
 change as the RBF that fixes it, so if an item is still here it is still true of
 the newest build in this directory. **The heading carries the RBF's name for
 exactly that reason — if they disagree, trust neither and check.**
+
+- **STAR WARS ARCADE'S ATTRACT SCREEN IS WRONG, IN TWO SEPARATE WAYS.** The
+  game boots, plays, reads its controls and has sound — but what you see before
+  you start is not what the cabinet shows.
+
+  **The Star Wars logo never appears.** After the Star Destroyer passes, the
+  yellow outlined title should fill the screen. It is drawn with a display list
+  command that supplies polygons already projected into screen space, and this
+  core walks that command and discards it — the code to emit those polygons was
+  never written. The same gap is why Virtua Fighter's knives are missing. It is
+  not a Star Wars fault and no setting will bring it back.
+
+  **The Star Destroyer draws only partly**, as thin pale slivers rather than a
+  solid shaded hull. The most likely cause is the quad store below overflowing
+  on a model far denser than anything in Virtua Racing — but that is not yet
+  measured, so treat it as unexplained rather than understood.
+
+  Neither is a regression. Star Wars had never loaded at all until this build,
+  so this is the first time anyone has seen its attract screen on this core.
 
 - **Scenery comes and goes on busy stretches of Virtua Racing.** The store that
   holds transformed quads for a frame fills in display-list order and drops
