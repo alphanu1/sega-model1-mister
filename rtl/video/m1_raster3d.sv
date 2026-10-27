@@ -119,7 +119,15 @@ module m1_raster3d #(
   // fix: a peak frame offers more than this and the honest answer is the quad
   // payload in SDRAM, which stores everything and hands back all 138 M10K. This
   // is what the freed blocks will buy today.
-  parameter int unsigned NQ     = 3072,
+  // 4,096 AS OF 2026-10-27, from 3,072. With the vertex payload in DDR3 a
+  // bank's on-chip cost is only att, key and the two index arrays, so the
+  // extra 1,024 quads a bank are about 16 M10K for both - where on 2026-09-09
+  // they would have been ~50. The board measured peaks of 3,034-3,193 quads
+  // in busy driving against the 3,072 cap, with D= counting the overflow:
+  // the track and scenery the list draws last. A frame under 3,072 quads is
+  // unaffected cycle for cycle - the scan and the sort run over the quads
+  // present, not the capacity.
+  parameter int unsigned NQ     = 4096,
   // THE VERTEX PAYLOAD IN DDR3 (1) OR IN M10K (0).
   //
   // The two stores' vertices are 4 x 32 bits a quad - at NQ=3,072 about 96 of
