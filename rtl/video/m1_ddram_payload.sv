@@ -109,7 +109,7 @@ module m1_ddram_payload #(
   input  logic [63:0]   DDRAM_DOUT,
   input  logic          DDRAM_DOUT_READY,
   output logic          DDRAM_RD,
-  output logic [63:0]   DDRAM_DIN,
+  output logic [63:0]   DDRAM_DIN,            // from the queue head, see the bus
   output logic [7:0]    DDRAM_BE,
   output logic          DDRAM_WE
 );
@@ -151,7 +151,7 @@ module m1_ddram_payload #(
   // both ends - guarantees a request never arrives with the credit exhausted.
   // That guarantee is checked: dbg_rd_refused counts any that did.
   localparam int unsigned DW = $clog2(DEPTH);
-  (* ramstyle = "MLAB" *) logic [IW:0] rq [DEPTH];   // {bank, idx}
+  (* ramstyle = "M10K" *) logic [IW:0] rq [DEPTH];   // {bank, idx}
   logic [DW:0]   rq_wp, rq_wp_d, rq_rp;
   logic [IW:0]   rq_q;
   wire           rq_avail = (rq_wp_d != rq_rp);
@@ -164,11 +164,13 @@ module m1_ddram_payload #(
   wire   rd_acc   = rd_req && rd_ready;
 
   // ================================================================ replies
-  (* ramstyle = "M10K" *) logic [127:0] fq [DEPTH];
+  // Two halves, one per reply beat, each written as its beat arrives: the
+  // first beat no longer waits in a 64-bit register for the second.
+  (* ramstyle = "M10K" *) logic [63:0] fq_lo [DEPTH];
+  (* ramstyle = "M10K" *) logic [63:0] fq_hi [DEPTH];
   logic [DW:0]   fq_wp, fq_wp_d, fq_rp;
   logic [127:0]  fq_q;
   logic          beat_hi;                     // the next beat is a burst's high half
-  logic [63:0]   beat_lo;
   logic [DW:0]   owed;                        // read bursts presented, not fully returned
   logic [DW:0]   drop;                        // of those, replies to discard (flush)
   wire           burst_done = DDRAM_DOUT_READY && beat_hi;
@@ -179,8 +181,13 @@ module m1_ddram_payload #(
   assign rd_data  = fq_q;
 
   // ================================================================ the bus
+  // A write burst's two beats come straight from the queue's head, which is
+  // popped only once the SECOND beat has been taken - so DIN needs no register
+  // of its own and the head is stable for as long as BUSY holds a beat.
   logic          wr_open;                     // a write burst's second beat is owed
-  logic [63:0]   wr_hi;
+  logic          din_hi;                      // the beat presented is the high half
+  wire           wq_pop = !DDRAM_BUSY && DDRAM_WE && din_hi;
+  assign DDRAM_DIN = din_hi ? wq_q[127:64] : wq_q[63:0];
 
   // What goes out at this edge, if the bus takes commands. Reads first: they
   // are what the fill is waiting for, and a write sits in a 256-deep queue.
@@ -188,8 +195,10 @@ module m1_ddram_payload #(
   wire bus_free  = !DDRAM_BUSY;
   wire can_issue = bus_free && !wr_open && !flush;
   wire do_rd     = can_issue && rq_avail;
-  wire do_wr     = can_issue && !do_rd && wq_avail;
-  wire [WW:0] wq_rp_nx = wq_rp + (WW+1)'(do_wr);
+  // Not in the cycle the head is popped: the next head is read at that edge
+  // and is on wq_q only after it.
+  wire do_wr     = can_issue && !do_rd && wq_avail && !wq_pop;
+  wire [WW:0] wq_rp_nx = wq_rp + (WW+1)'(wq_pop);
   wire [DW:0] rq_rp_nx = rq_rp + (DW+1)'(do_rd);
 
   assign wr_idle = (wq_fill == '0) && !wr_open && !DDRAM_WE;
@@ -199,8 +208,9 @@ module m1_ddram_payload #(
     wq_q <= wq[wq_rp_nx[WW-1:0]];
     if (rd_acc) rq[rq_wp[DW-1:0]] <= {rd_bank, rd_idx};
     rq_q <= rq[rq_rp_nx[DW-1:0]];
-    if (fq_push) fq[fq_wp[DW-1:0]] <= {DDRAM_DOUT, beat_lo};
-    fq_q <= fq[fq_rp_nx[DW-1:0]];
+    if (DDRAM_DOUT_READY && !beat_hi) fq_lo[fq_wp[DW-1:0]] <= DDRAM_DOUT;
+    if (DDRAM_DOUT_READY &&  beat_hi) fq_hi[fq_wp[DW-1:0]] <= DDRAM_DOUT;
+    fq_q <= {fq_hi[fq_rp_nx[DW-1:0]], fq_lo[fq_rp_nx[DW-1:0]]};
   end
 
   logic [15:0] wait_t;
@@ -208,12 +218,12 @@ module m1_ddram_payload #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       DDRAM_RD <= 1'b0; DDRAM_WE <= 1'b0; DDRAM_ADDR <= '0;
-      DDRAM_DIN <= '0;  DDRAM_BURSTCNT <= 8'd2;
+      DDRAM_BURSTCNT <= 8'd2; din_hi <= 1'b0;
       wq_wp <= '0; wq_wp_d <= '0; wq_rp <= '0;
       rq_wp <= '0; rq_wp_d <= '0; rq_rp <= '0; credit <= '0; dbg_rd_refused <= '0;
       fq_wp <= '0; fq_wp_d <= '0; fq_rp <= '0;
-      owed <= '0; drop <= '0; beat_hi <= 1'b0; beat_lo <= '0;
-      wr_open <= 1'b0; wr_hi <= '0;
+      owed <= '0; drop <= '0; beat_hi <= 1'b0;
+      wr_open <= 1'b0;
       dbg_wr_ovf <= '0; dbg_rd_wait <= '0; wait_t <= '0;
     end else begin
       // ---- posted-write queue. A flush drops everything not yet on the bus;
@@ -222,7 +232,7 @@ module m1_ddram_payload #(
       if (flush)        wq_wp <= wq_rp;
       else if (wq_push) wq_wp <= wq_wp + 1'b1;
       wq_wp_d <= flush ? wq_rp : wq_wp;
-      if (do_wr) wq_rp <= wq_rp + 1'b1;
+      if (wq_pop) wq_rp <= wq_rp + 1'b1;
 
       // ---- read queue
       if (flush) begin
@@ -245,7 +255,7 @@ module m1_ddram_payload #(
         DDRAM_RD <= 1'b0;
         DDRAM_WE <= 1'b0;
         if (wr_open) begin
-          DDRAM_DIN <= wr_hi;
+          din_hi    <= 1'b1;
           DDRAM_WE  <= 1'b1;
           wr_open   <= 1'b0;
         end else if (do_rd) begin
@@ -255,18 +265,14 @@ module m1_ddram_payload #(
         end else if (do_wr) begin
           DDRAM_ADDR     <= pay_addr(wq_q[WE_W-1], wq_q[WE_W-2 -: IW]);
           DDRAM_BURSTCNT <= 8'd2;
-          DDRAM_DIN      <= wq_q[63:0];
-          wr_hi          <= wq_q[127:64];
+          din_hi         <= 1'b0;
           DDRAM_WE       <= 1'b1;
           wr_open        <= 1'b1;
         end
       end
 
       // ---- replies, two beats each, in order
-      if (DDRAM_DOUT_READY) begin
-        beat_hi <= !beat_hi;
-        if (!beat_hi) beat_lo <= DDRAM_DOUT;
-      end
+      if (DDRAM_DOUT_READY) beat_hi <= !beat_hi;
       // owed counts read bursts from the edge they are presented until their
       // second beat returns; a flush turns every one still owed into a drop.
       owed <= owed + (DW+1)'(do_rd) - (DW+1)'(burst_done);

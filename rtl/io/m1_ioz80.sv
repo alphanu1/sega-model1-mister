@@ -462,7 +462,11 @@ module m1_ioz80 #(
   // preload only runs while ee_ready is low, before the Z80 is released - so
   // they are muxed into a single write below rather than left as three sites,
   // which synthesis would otherwise answer by duplicating the memory.
-  (* ramstyle = "MLAB" *) logic [15:0] ee  [64];
+  // M10K, NOT MLAB, AS OF 2026-10-27. The MLAB was chosen when M10K was 553 of
+  // 553; the quad payload's move to DDR3 handed back ~70 blocks, and an MLAB
+  // is ALMs - about ten per 640 bits - where ALM is now the binding resource.
+  // The read was already registered, so the RTL's behaviour is unchanged.
+  (* ramstyle = "M10K" *) logic [15:0] ee  [64];
   logic [5:0]  ee_wa;      // the single write port
   logic [15:0] ee_wd;
   logic        ee_we;

@@ -213,7 +213,11 @@ module m1_geo_clip (
   // only pushes and pops for a polygon a plane actually cuts, so the cycles
   // are nothing. Model 2's m2_geo_clip made the same move first; this follows
   // its shape, including the five-cycle pop.
-  (* ramstyle = "MLAB" *) logic [95:0] sk_mem [NSTK*4];   // {z, y, x}
+  // M10K, NOT MLAB, AS OF 2026-10-27. The MLAB was chosen when M10K was 553 of
+  // 553; the quad payload's move to DDR3 handed back ~70 blocks, and an MLAB
+  // is ALMs - about ten per 640 bits - where ALM is now the binding resource.
+  // The read was already registered, so the RTL's behaviour is unchanged.
+  (* ramstyle = "M10K" *) logic [95:0] sk_mem [NSTK*4];   // {z, y, x}
   logic [95:0]        sk_rd;
   logic [2:0]         sp;
   wire  [2:0]         sp_top = sp - 3'd1;   // the entry a pop reads

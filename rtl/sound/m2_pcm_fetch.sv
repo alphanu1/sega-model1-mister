@@ -68,7 +68,11 @@ module m2_pcm_fetch #(
   // writes the line and the same held address reads it back by F_ACK. One
   // cycle more per hit than the flip-flop version. Tags and valid bits stay
   // in registers: 32 x 20 bits, and the valid bits must clear at reset.
-  (* ramstyle = "MLAB" *) logic [63:0] buf_q [32];
+  // M10K, NOT MLAB, AS OF 2026-10-27. The MLAB was chosen when M10K was 553 of
+  // 553; the quad payload's move to DDR3 handed back ~70 blocks, and an MLAB
+  // is ALMs - about ten per 640 bits - where ALM is now the binding resource.
+  // The read was already registered, so the RTL's behaviour is unchanged.
+  (* ramstyle = "M10K" *) logic [63:0] buf_q [32];
   logic [63:0] buf_rd;
   // MLAB, NOT FLOPS. 32 x 19 bits is 608 registers per fetcher and there are
   // two of them -- about 300 ALM for the pair, on a design at 99%. buf_q beside

@@ -240,7 +240,17 @@ module m1_quad_store #(
   // pace. See docs/findings.md 2026-09-10 (10) and tb_m1_ddram_payload.
   localparam int unsigned MD = 16;
   localparam int unsigned MW = $clog2(MD);
-  logic [16:0] meta [MD];                 // {moire, colour as RGB565}
+  // IN A BLOCK RAM WITH A REGISTERED READ, not 16 x 17 flip-flops and a 16:1
+  // read mux per bit - about a hundred ALM a bank, at a utilisation where ALM
+  // is the binding resource and M10K no longer is. The read is presented
+  // show-ahead: its address is the pointer the output stage will hold AFTER
+  // this edge, so meta_q is always the head. A colour is captured only with
+  // its payload, which is at least two cycles behind the colour's write (the
+  // request leaves from a register and the backing answers no sooner than the
+  // next cycle), so the head the read returns is never one still being
+  // written. Bit for bit the old read; render3d and tb_m1_quad_store say so.
+  (* ramstyle = "M10K" *) logic [16:0] meta [MD];   // {moire, colour as RGB565}
+  logic [16:0] meta_q;
   logic [MW:0] mwp, mrp;
   wire  [MW:0] mfill  = mwp - mrp;
   wire         mfull  = (mfill == (MW+1)'(MD));
@@ -656,6 +666,17 @@ typedef enum logic       { O_IDLE, O_OUT } ostate_t;
     // cycle - when `q <= q2` then `vtx[q]` used to deliver them.
   end
 
+  // The colour FIFO's two ports. Written on the hit the scan records, read
+  // show-ahead at the pointer the output stage moves to.
+  wire          meta_we  = (p_st == P_RUN) && hit && can_take;
+  wire          p_start  = (p_st == P_IDLE) && replay_start && (count != 0);
+  wire          o_cap    = (o_st == O_IDLE) && !mempty && pay_valid;
+  wire [MW:0]   mrp_nx   = p_start ? '0 : (mrp + (MW+1)'(o_cap));
+  always_ff @(posedge clk) begin
+    if (meta_we) meta[mwp[MW-1:0]] <= {att_rd[16], att_rd[15:11], att_rd[10:5], att_rd[4:0]};
+    meta_q <= meta[mrp_nx[MW-1:0]];
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       p_st <= P_IDLE; pi <= '0;
@@ -695,8 +716,6 @@ typedef enum logic       { O_IDLE, O_OUT } ostate_t;
           if (hit && can_take) begin
             // Record the colour and ASK for the vertices, then carry on. The
             // scan does not wait for either the payload or the fill.
-            meta[mwp[MW-1:0]] <= {att_rd[16],
-                                  att_rd[15:11], att_rd[10:5], att_rd[4:0]};
             mwp       <= mwp + 1'b1;
             pay_req   <= 1'b1;
             pay_raddr <= q2;
@@ -724,10 +743,10 @@ typedef enum logic       { O_IDLE, O_OUT } ostate_t;
             {out_y2, out_x2} <= widen(pay_rdata[3*VW-1   -:VW]);
             {out_y3, out_x3} <= widen(pay_rdata[4*VW-1   -:VW]);
             // 565 back to 888 with the low bits clear, exactly as before.
-            out_col   <= {meta[mrp[MW-1:0]][15:11], 3'b000,
-                          meta[mrp[MW-1:0]][10:5],  2'b00,
-                          meta[mrp[MW-1:0]][4:0],   3'b000};
-            out_moire <= meta[mrp[MW-1:0]][16];
+            out_col   <= {meta_q[15:11], 3'b000,
+                          meta_q[10:5],  2'b00,
+                          meta_q[4:0],   3'b000};
+            out_moire <= meta_q[16];
             out_valid <= 1'b1;
             mrp       <= mrp + 1'b1;
             pay_take  <= 1'b1;

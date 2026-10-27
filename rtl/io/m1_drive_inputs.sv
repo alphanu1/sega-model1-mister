@@ -132,10 +132,11 @@ module m1_drive_inputs (
   wire [7:0] an_accel = (whl_a | whl_b) ? whl_accel : std_accel;
   wire [7:0] an_brake = (whl_a | whl_b) ? whl_brake : std_brake;
 
-  // The buttons give full travel; otherwise the axis, never below released.
-  // (Every value above already rests at 0x01; the compare is Standard's own,
-  // kept so Standard stays the old expression exactly.)
-  assign accel = accel_b ? 8'hff : (an_accel > 8'h01) ? an_accel : 8'h01;
-  assign brake = brake_b ? 8'hff : (an_brake > 8'h01) ? an_brake : 8'h01;
+  // The buttons give full travel; otherwise the axis. The old Model1.sv also
+  // clamped the axis to at least 0x01, which can never act: every value above
+  // has bit 0 set. The bench's frozen copy keeps that clamp and the two agree
+  // for every input, so it is dropped here rather than built.
+  assign accel = accel_b ? 8'hff : an_accel;
+  assign brake = brake_b ? 8'hff : an_brake;
 
 endmodule

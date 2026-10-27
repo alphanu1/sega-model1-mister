@@ -56,10 +56,14 @@ reg [7:0] sreg [0:27][0:7];
 // written beside `sreg` by the CPU and read registered at its consumer's
 // slot; a write to the slot being read is forwarded for the one cycle the
 // registered read is behind it. 700 registers a chip and their 28:1 muxes.
-(* ramstyle = "MLAB" *) reg [3:0] pan_ram [0:31];    // reg 0[7:4]
-(* ramstyle = "MLAB" *) reg [6:0] lvl_ram [0:31];    // reg 5[7:1]
-(* ramstyle = "MLAB" *) reg [5:0] pit_ram [0:31];    // reg 2[7:2]
-(* ramstyle = "MLAB" *) reg [7:0] oct_ram [0:31];    // reg 3
+// M10K, NOT MLAB, AS OF 2026-10-27. The MLAB was chosen when M10K was 553 of
+// 553; the quad payload's move to DDR3 handed back ~70 blocks, and an MLAB
+// is ALMs - about ten per 640 bits - where ALM is now the binding resource.
+// The read was already registered, so the RTL's behaviour is unchanged.
+(* ramstyle = "M10K" *) reg [3:0] pan_ram [0:31];    // reg 0[7:4]
+(* ramstyle = "M10K" *) reg [6:0] lvl_ram [0:31];    // reg 5[7:1]
+(* ramstyle = "M10K" *) reg [5:0] pit_ram [0:31];    // reg 2[7:2]
+(* ramstyle = "M10K" *) reg [7:0] oct_ram [0:31];    // reg 3
 reg [3:0] pan_rd, pan_fwd_d;
 reg [6:0] lvl_rd, lvl_fwd_d;
 reg [5:0] pit_rd, pit_fwd_d;
@@ -90,8 +94,12 @@ wire       sreg_we = cs && we && (addr == 2'd0) && cur_slot_valid;
 // in desc_fwd and used instead. s_active, s_fmt12 and s_release stay
 // registers: the first two gate every use and must clear at reset, the
 // last has a reset value.
-(* ramstyle = "MLAB" *) reg [54:0] desc_ram [0:31];   // {end[16:0], loop[15:0], start[21:0]}
-(* ramstyle = "MLAB" *) reg [37:0] pos_ram  [0:31];
+// M10K, NOT MLAB, AS OF 2026-10-27. The MLAB was chosen when M10K was 553 of
+// 553; the quad payload's move to DDR3 handed back ~70 blocks, and an MLAB
+// is ALMs - about ten per 640 bits - where ALM is now the binding resource.
+// The read was already registered, so the RTL's behaviour is unchanged.
+(* ramstyle = "M10K" *) reg [54:0] desc_ram [0:31];   // {end[16:0], loop[15:0], start[21:0]}
+(* ramstyle = "M10K" *) reg [37:0] pos_ram  [0:31];
 reg [54:0] desc_rd;
 reg [37:0] pos_rd;
 reg [27:0] pos_zero;

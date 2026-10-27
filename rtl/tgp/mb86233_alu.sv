@@ -322,6 +322,12 @@ module mb86233_alu #(
                        ? ~(32'hffff_ffff >> shamt) : 32'd0;
   wire [31:0] shr_res  = shr_log | shr_fill;
 
+  // ONE ADDER FOR ADDD AND SUBD: d + (a or ~a) + carry, where two 32-bit
+  // adders were built. The Model 2 core's R952 (sega-model2-mister e68e238)
+  // on its copy of this ALU; the shifters here were already shared.
+  wire        i_sub = (op == mb86233_pkg::ALU_SUBD);
+  wire [31:0] i_sum = reg_d + (i_sub ? ~reg_a : reg_a) + {31'd0, i_sub};
+
   logic [31:0] int_result;
   always_comb begin
     unique case (op)
@@ -329,8 +335,8 @@ module mb86233_alu #(
       mb86233_pkg::ALU_ORAD: int_result = reg_d | reg_a;
       mb86233_pkg::ALU_EORD: int_result = reg_d ^ reg_a;
       mb86233_pkg::ALU_NOTD: int_result = ~reg_d;
-      mb86233_pkg::ALU_ADDD: int_result = reg_d + reg_a;
-      mb86233_pkg::ALU_SUBD: int_result = reg_d - reg_a;
+      mb86233_pkg::ALU_ADDD: int_result = i_sum;    // reg_d + reg_a
+      mb86233_pkg::ALU_SUBD: int_result = i_sum;    // reg_d - reg_a
       mb86233_pkg::ALU_LSRD: int_result = shr_res;
       // asld and lsld are the same operation on the bit pattern -- MAME keeps
       // them as separate cases computing identical expressions, and now they
