@@ -20,6 +20,83 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-27 — THE QUAD PAYLOAD IS IN DDR3, AND IT BOUGHT 15 kHz, WHEEL MODES AND ROOM
+
+Branch `ddr3-crt-wheel`. Fitted at seed 29, Quartus 17.0: **41,205 / 41,910
+ALM, 526 / 553 M10K, 62 / 112 DSP**, against the release build re-fitted from
+main at seed 3 the same day (41,267 ALM, 551 M10K, 56 DSP - it reproduced the
+release's numbers exactly). Every clock better than the release's:
+
+| clock | release (main, s3) | this branch (s29) |
+|---|---|---|
+| clk_3d | +0.407 | **+0.486** |
+| clk_sys | +0.848 | **+1.519** |
+| clk_cpu | +4.549 | **+5.043** |
+| pll_hdmi (framework) | +0.074 | **+0.138** |
+| hold, worst | +0.154 | **+0.216** |
+
+Seeds 3 and 11 of the same commit fitted at 41,293 and 41,190 ALM with clk_3d
++0.190 and +0.057 and `pll_hdmi` -0.316 and -0.022: seed 29 is the one to test.
+
+### The 3D "frame buffer" is not a frame buffer
+
+Model 1's renderer has no frame buffer to move: it fills 8-row bands just
+ahead of the beam (three 8 M10K buffers). What holds the 3D in block RAM is
+the **quad store** - two banks, 69 M10K each on the release fit, of which the
+vertex payload was **39 a bank, 78 in all**. That is what went to DDR3, on the
+path `vf-play-area` started (its three commits taken, then finished). The
+Model 2 core's frame-buffer port (its study R340-R385, R640-R664) would free
+only the 24 band-buffer blocks against a reader's own line buffers, and adds a
+frame of latency on any frame the draw does not finish inside blanking - it is
+the follow-up for the BEAM DEADLINE, not for space.
+
+### Measured, render3d on four MAME frames against main
+
+- the picture is **byte for byte main's** at every round trip to 400 cycles of
+  clk_3d (6.8 us) and under random BUSY and withheld reply beats; Model 2
+  measured 130-500 ns on this bus (its R351)
+- the worst band fill is **faster**: frame 2500, 14,076 cycles against
+  16,965, because the store's scan now runs ahead of the fill
+- bands go late only at a fixed 1,000-cycle (17 us) round trip
+- the geometry posts a payload write at most 4 times in 1,024 cycles, its
+  shortest gap 154; the write queue is 256 deep and an overrun is counted
+
+### Two bugs no unit bench could see
+
+- **`c9d2914` (vf-play-area) dropped quads.** P_IDLE cleared `out_valid`
+  while the output stage still held a quad for the fill: 2,598 pixels of
+  frame 2500. The store's bench took every quad at once. It now also runs a
+  consumer that stalls 50% and 90% of the time, which fails with the bug.
+- **A client queue shallower than its credit froze the 3D under a busy bus.**
+  The store asks a cycle after sampling ready, so a request arrived after the
+  credit was spent. Only render3d with BUSY found it.
+
+And one in a bench: `longint t = cyc + LATENCY;` inside an always block is a
+static initialiser that runs ONCE, so the SV DDR3 model answered every read at
+once. The first full-system race ran against that; `dbg_rd_wait` reading 1
+gave it away.
+
+### The full-system race, main against this branch
+
+`make m1_frame GAME=vr FRAME_CYCLES=1100000000` with `vr_race.txt`, 879
+frames to the pit start: **identical** - same progress lines throughout, same
+final frame byte for byte, and the same overrun totals: 42,817 bands, **0 late,
+0 dropped**, 451 passes; **18,844 tile fetch overruns, 18,841 of them during the
+ROM download** and 3 in play (frames 735-850, as the 3D load rises). No DDR3
+traffic before `rom_loaded`. (That run's DDR3 answered at once - see above;
+latency 40 and 200-with-BUSY reruns are in HANDOFF.)
+
+### Room
+
+MLABs chosen when M10K was full are block RAM now that it is not (both
+MultiPCMs, both sample-fetch line buffers, the clipper's stack, the EEPROM):
+the release fit had **330 ALMs of MLAB; this one has 0**. The store's colour
+FIFOs moved from flip-flops to block RAM, the DDR3 client keeps no copies of
+data the queue already holds, and the TGP ALU shares one adder for ADDD/SUBD
+(Model 2's R952). Each is cycle-identical on render3d's 36-run sweep.
+
+---
+
 ## 2026-09-16 (b) — STAR WARS ARCADE JUMPS INTO A REGION WE DECODED AS EMPTY
 
 **`m1_decode` declared ROMA (0x000000-0x0fffff) unpopulated for every game.**

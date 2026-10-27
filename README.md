@@ -78,6 +78,13 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 | Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented) the Star Destroyer draws only partly as white slivers, a ship is missing from the intro, and there is **no music** — its MPEG music lives on a DSB board that is not implemented | yes |
 | Wing War | boots, but **needs the model1io2 I/O board** -- no control reaches it | yes |
 
+**15 kHz and wheels.** The OSD's `Video` puts the picture out at 15 kHz
+interlaced through a scan converter (the Model 2 core's, retrorepair's design),
+with a choice of 15.7, 15.4 or 15.1 kHz; a `[15kHz CRT]` MRA starts every game
+that way. `Analog control` reads a USB wheel's pedals from axes of their own
+(Wheel A: each pedal on the up half of an axis; Wheel B: on its full travel);
+Standard is the pad layout as before. Neither is yet confirmed on hardware.
+
 **Wing War and NetMerc use a DIFFERENT I/O BOARD, and it is not built.**
 `model1.cpp` gives both `SEGA_MODEL1IO2(config.replace(), ...)` -- a different
 device, not different firmware. This core runs model1io's `epr-14869` for every

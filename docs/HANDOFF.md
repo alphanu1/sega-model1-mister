@@ -1,3 +1,69 @@
+# 2026-10-27: QUAD PAYLOAD IN DDR3, 15 kHz, WHEEL MODES, MORE ROOM. NOT YET ON HARDWARE.
+
+Branch **`ddr3-crt-wheel`** (local, not pushed). The build to test is
+**`build/Model1_ddr3crt_seed29_41205.rbf`**, md5 `a20a32f42d3849b56f80dbf60a51728a`,
+fitted from `f5111d4`: 41,205/41,910 ALM, 526/553 M10K, 62/112 DSP, every
+clock better than the release (clk_3d +0.486, clk_sys +1.519, clk_cpu +5.043,
+pll_hdmi +0.138, hold +0.216). Full numbers and the method in `findings.md`
+2026-10-27.
+
+## What is in it
+
+1. **The quad store's vertex payload lives in DDR3** (0x30000000, DDRAM_CLK =
+   clk_3d). Picture identical to main in every bench; the band fill is faster.
+2. **15 kHz**: the Model 2 core's scan converter (`m1_scan15`, retrorepair's
+   design). OSD: Video (Native 24kHz / 15kHz interlaced) O[16], 15kHz lines
+   O[18:17], 15kHz pairing O[19]. `[15kHz CRT]` MRAs (game id bit 7) force it
+   on; `tools/make_crt_mra.py` regenerates them from their parents.
+3. **Analog control** Standard / Wheel A / Wheel B, O[15:14]
+   (`m1_drive_inputs`). Standard is bit for bit the old map.
+4. **Room**: MLABs to M10K, FIFOs out of flip-flops, one TGP adder.
+
+## What to check on the board, in order
+
+- **Virtua Racing at 24 kHz, Standard controls**: must be exactly as the
+  release. Then a busy race for the 3D: scenery present, no new bars.
+- **The DDR3 path under load**: nothing in it can be seen if it works. If 3D
+  goes missing or freezes, that is the first suspect - the release rbf is
+  the comparison.
+- **15 kHz** on a CRT and through HDMI, all three line counts; then a
+  `[15kHz CRT]` MRA (the Video line shows as fixed).
+- **Wheel A / Wheel B** on a real wheel. Neither has been driven on one; the
+  axis assignment is Model 2's (R958), reported by a user, not measured.
+
+## Bench-only follow-ups still running at handoff
+
+`build/wt-r40` and `build/wt-r200`: the full race with the DDR3 model at 40
+cycles, and at 200 cycles with BUSY 100/1000. Each prints `OVERRUN:` and
+`DDR3:` lines at the end of `build/race.log`; both should match main's
+`OVERRUN: ... late=0 ... dropped=0 ... tile fetch overruns=18844`.
+
+## Overruns: what the benches say
+
+- **3D**: no late band and no dropped quad in any bench, before or after.
+  The board's must come from heavier scenes than any bench reaches (the race
+  bench stops at the pit start, 1,855 quads). Two levers now exist that did
+  not: NQ can grow for att/key/idx M10K alone (4,096 is ~+16 M10K), and the
+  Model 2 frame-buffer path would remove the beam deadline entirely.
+- **Tiles**: 18,844 in the race, all but 3 during the ROM download; 3 in play
+  as the 3D load rises (frames 735-850), identical before and after this
+  work. `findings.md` 2026-09-04/05 has the standing analysis (the fetch
+  engine's per-line cost, not SDRAM bandwidth).
+
+## Not done, and why
+
+- **Item 1 (push local main)**: not pushed. See the session report: other
+  branches differ from GitHub, and 0b5d04f's message names the untracked
+  instructions file, which needs Ben's call before it goes public.
+- **Lint**: `make lint` stops at `lint_v60` on a Verilator 5.052
+  `SIMILARNAME` warning in `v60_fp.sv` that main has too; `lint_top` reports
+  two warnings main also has. Neither touched here.
+- The untracked instructions file's expected-output block is stale: m1_quad_store
+  now prints 31,165 checks; m1_ddram_payload 2,891; new m1_drive_inputs
+  8,291,488 and m1_scan15 runs=8.
+
+---
+
 # ALL SIX SETS BOOT (2026-09-16). THREE DEFECTS OPEN.
 
 **Confirmed on hardware**, seed 29 (41,091/41,910 ALM, 551/553 M10K, every
