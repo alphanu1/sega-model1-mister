@@ -53,6 +53,10 @@ module tb_m1_frame #(
     // and looked like a completed 2,400-frame run. Reaching the state the board
     // is actually in needs about 3.6e9, so this has to be 64-bit.
     parameter longint RUN_CYCLES = 120000000,
+    // The DDR3 model's read latency in clk_3d cycles, and how often it goes
+    // busy (per mille of idle cycles). See sim/mem/ddr3_model.sv.
+    parameter int     DDR_LAT    = 40,
+    parameter int     DDR_BUSY   = 0,
     parameter string  ROMHEX     = "build/rom/vr_v60.hex",
     // The rest of the per-game artefacts. Hardcoded until 2026-09-09, which is
     // why every bench run has been Virtua Racing whatever ROMHEX said - the
@@ -354,7 +358,24 @@ wire [15:0] dbg_overruns;
 // same reason.
 wire cpu_release = HOLD_CPU ? (mem_ready & loader_done) : mem_ready;
 
+// DDR3: the 3D layer's quad payload lives there (m1_raster3d PAY_DDR3).
+// This bench builds with -Wno-PINMISSING, so an unconnected DDRAM port would
+// tie BUSY and DOUT_READY to zero and the 3D would wait for replies for ever,
+// silently - the same trap clk_3d fell into below.
+wire        ddr_busy, ddr_dout_ready, ddr_rd, ddr_we, ddr_clk;
+wire [7:0]  ddr_burstcnt, ddr_be;
+wire [28:0] ddr_addr;
+wire [63:0] ddr_dout, ddr_din;
+ddr3_model #(.LATENCY(DDR_LAT), .BUSY_PERMILLE(DDR_BUSY)) u_ddr3 (
+    .clk(clk_3d), .busy(ddr_busy), .burstcnt(ddr_burstcnt), .addr(ddr_addr),
+    .dout(ddr_dout), .dout_ready(ddr_dout_ready), .rd(ddr_rd), .din(ddr_din),
+    .be(ddr_be), .we(ddr_we)
+);
+
 m1_integrated core (
+    .DDRAM_CLK(ddr_clk), .DDRAM_BUSY(ddr_busy), .DDRAM_BURSTCNT(ddr_burstcnt),
+    .DDRAM_ADDR(ddr_addr), .DDRAM_DOUT(ddr_dout), .DDRAM_DOUT_READY(ddr_dout_ready),
+    .DDRAM_RD(ddr_rd), .DDRAM_DIN(ddr_din), .DDRAM_BE(ddr_be), .DDRAM_WE(ddr_we),
     .roma_mode(2'(ROMA_MODE)),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
@@ -1584,8 +1605,43 @@ task automatic report_census;
                  v60_fifo_reads, v60_fifo_reads / (frames ? frames : 1), v60_fifo_pushed);
         $display("FRAME: TGP retires=%0d pc=%04h unimpl=%0d  pushes=%0d pops=%0d returns=%0d",
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
+        $display("OVERRUN: 3D bands presented=%0d late=%0d late_band0=%0d  quads dropped=%0d  geometry passes=%0d  | tile fetch overruns=%0d",
+                 ov_bands, ov_late, ov_late0, ov_drop, ov_passes, ov_tile);
+`ifndef BASELINE_BENCH
+        $display("DDR3: reads=%0d writes=%0d protocol_errors=%0d  before rom_loaded: reads=%0d writes=%0d  | payload writes lost=%0d reads refused=%0d worst reply wait=%0d",
+                 u_ddr3.reads, u_ddr3.writes, u_ddr3.protocol_errs, ddr_pre_rd, ddr_pre_wr,
+                 core.u_raster3d.dbg_pay_ovf, core.u_raster3d.dbg_pay_refused, core.u_raster3d.dbg_pay_wait);
+`endif
     end
 endtask
+
+// OVERRUNS, totalled here from the core's free-running 16-bit counters so a
+// long run cannot wrap them: 3D bands presented late (the beam already inside
+// the band) and quads the store dropped, and the 2D tile fetch's missed line
+// deadlines. Ben sees both kinds on the board; these are what a bench can say
+// about them before and after a change.
+longint ov_bands = 0, ov_late = 0, ov_late0 = 0, ov_drop = 0, ov_passes = 0, ov_tile = 0;
+logic [15:0] pv_bands = 0, pv_late = 0, pv_late0 = 0, pv_drop = 0, pv_passes = 0, pv_tile = 0;
+always @(posedge clk_3d) begin
+    ov_bands  += 16'(core.u_raster3d.dbg_bands      - pv_bands);  pv_bands  = core.u_raster3d.dbg_bands;
+    ov_late   += 16'(core.u_raster3d.dbg_late       - pv_late);   pv_late   = core.u_raster3d.dbg_late;
+    ov_late0  += 16'(core.u_raster3d.dbg_late0      - pv_late0);  pv_late0  = core.u_raster3d.dbg_late0;
+    ov_drop   += 16'(core.u_raster3d.dbg_drop_total - pv_drop);   pv_drop   = core.u_raster3d.dbg_drop_total;
+    ov_passes += 16'(core.u_raster3d.dbg_frames     - pv_passes); pv_passes = core.u_raster3d.dbg_frames;
+end
+always @(posedge clk) begin
+    ov_tile += 16'(dbg_overruns - pv_tile); pv_tile = dbg_overruns;
+end
+`ifndef BASELINE_BENCH
+// DDR3 traffic while the ROM is still streaming. The Model 2 core's reader
+// starved the HPS's own download through the same bridge (its study, R380);
+// this says whether the 3D layer here touches DDR3 before the ROM is in.
+longint ddr_pre_rd = 0, ddr_pre_wr = 0;
+always @(posedge clk_3d) if (!loader_done) begin
+    if (ddr_rd && !ddr_busy) ddr_pre_rd++;
+    if (ddr_we && !ddr_busy) ddr_pre_wr++;
+end
+`endif
 
 localparam integer W = 496;
 localparam integer H = 384;

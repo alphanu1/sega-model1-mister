@@ -262,7 +262,20 @@ module m1_integrated (
   output logic [15:0] dbg_copro_pops,
 
   // The TGP taking a command — see m1_copro_if.
-  output logic [15:0] dbg_copro_drains
+  output logic [15:0] dbg_copro_drains,
+
+  // DDR3, through the framework's DDRAM port: the 3D layer's quad payload.
+  // DDRAM_CLK is clk_3d, the clock of every master and consumer on it.
+  output logic        DDRAM_CLK,
+  input  logic        DDRAM_BUSY,
+  output logic [7:0]  DDRAM_BURSTCNT,
+  output logic [28:0] DDRAM_ADDR,
+  input  logic [63:0] DDRAM_DOUT,
+  input  logic        DDRAM_DOUT_READY,
+  output logic        DDRAM_RD,
+  output logic [63:0] DDRAM_DIN,
+  output logic [7:0]  DDRAM_BE,
+  output logic        DDRAM_WE
 );
 
   logic [14:0] vid_tram_addr;
@@ -688,6 +701,14 @@ module m1_integrated (
   end
   assign rst_n_3d = rst_sync_3d[1];
 
+  // The MEMORY reset in the 3D clock, for the DDR3 client alone: it must
+  // never see the game reset, which arrives as a flush instead.
+  logic [1:0]  rst_sync_m3d;
+  always_ff @(posedge clk_3d or negedge mem_rst_n) begin
+    if (!mem_rst_n) rst_sync_m3d <= 2'b00;
+    else            rst_sync_m3d <= {rst_sync_m3d[0], 1'b1};
+  end
+
   // The frame pulse. vblank_irq_sys is one clk_sys cycle; m1_cdc_pulse is what
   // this design already uses to carry a pulse across a domain, and a pulse is
   // exactly what must not be sampled directly.
@@ -764,7 +785,13 @@ module m1_integrated (
   end
 
   m1_raster3d u_raster3d (
-    .clk(clk_3d), .rst_n(rst_n_3d),
+    .clk(clk_3d), .rst_n(rst_n_3d), .mem_rst_n(rst_sync_m3d[1]),
+    .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
+    .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
+    .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+    .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
+    .DDRAM_WE(DDRAM_WE),
+    .dbg_pay_ovf(), .dbg_pay_wait(), .dbg_pay_refused(),
     .frame_start(frame_start_3d), .dl_sel(listctl_sel), .dl_sel_q(r3d_dl_sel),
     .dl_addr(r3_dl_addr), .dl_req(r3_dl_req),
     .dl_valid(r3_dl_valid), .dl_data(r3_dl_data),

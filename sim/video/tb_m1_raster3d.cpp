@@ -27,6 +27,7 @@
 #include "Vm1_raster3d.h"
 #include "Vm1_raster3d___024root.h"
 #include "verilated.h"
+#include "../mem/ddr3_model.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -119,6 +120,23 @@ int main(int argc, char** argv) {
     // board is in and this bench, at one word a cycle, never reaches.
     const int rom_lat = getenv("ROM_LAT") ? atoi(getenv("ROM_LAT")) : 0;
     int rom_wait = 0;
+    // THE QUAD PAYLOAD IS IN DDR3 (m1_raster3d PAY_DDR3), so the bench carries
+    // a hostile DDR3: DDR_LAT cycles of latency, BUSY started on DDR_BUSY per
+    // mille of idle cycles in runs of up to DDR_BUSYMAX, DDR_HOLD % of reply
+    // beats withheld. The picture must not change with any of them; only the
+    // band timing may.
+    Ddr3Model<Vm1_raster3d> ddr; ddr.d = d;
+    ddr.latency  = getenv("DDR_LAT")     ? atol(getenv("DDR_LAT"))     : 40;
+    ddr.busy_pct = getenv("DDR_BUSY")    ? atoi(getenv("DDR_BUSY"))    : 0;
+    ddr.busy_max = getenv("DDR_BUSYMAX") ? atoi(getenv("DDR_BUSYMAX")) : 24;
+    ddr.hold_pct = getenv("DDR_HOLD")    ? atoi(getenv("DDR_HOLD"))    : 0;
+    printf("DDR3 model: latency %ld, busy %d/1000 (runs to %d), %d%% of beats withheld\n",
+           ddr.latency, ddr.busy_pct, ddr.busy_max, ddr.hold_pct);
+    // How densely the geometry posts payload writes: the shortest gap between
+    // two quads and the most quads in any 1,024-cycle window. The DDR3 client
+    // posts them through a 256-deep queue, so this is its margin.
+    long q_last = -1, q_min_gap = 1L << 40;
+    std::vector<long> q_times;
     auto tick = [&](bool pixel_edge) {
         int dreq = d->dl_req, rreq = d->rom_req, treq = d->tex_req;
         uint32_t taddr = d->tex_addr;
@@ -135,13 +153,21 @@ int main(int argc, char** argv) {
         if (treq && d->tex_we) tgpram[taddr & 0xfffff] = d->tex_wdata;
         d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
         memories();
+        ddr.pre();
+        if (d->rootp->m1_raster3d__DOT__q_valid) {
+            if (q_last >= 0 && cycles - q_last < q_min_gap) q_min_gap = cycles - q_last;
+            q_last = cycles; q_times.push_back(cycles);
+        }
         d->clk = 1; if (pixel_edge) d->scan_clk = 1; d->eval();
+        ddr.post();
     };
 
+    d->mem_rst_n = 0; d->DDRAM_BUSY = 0; d->DDRAM_DOUT_READY = 0; d->DDRAM_DOUT = 0;
     d->rst_n = 0; d->frame_start = 0; d->frame_odd = 0; d->dl_sel = 0;
     d->scan_clk = 0; d->scan_x = 0; d->scan_y = 0; d->dl_valid = 0; d->rom_valid = 0;
     d->tex_valid = 0;
     for (int i = 0; i < 8; i++) tick(true);
+    d->mem_rst_n = 1;
     d->rst_n = 1;
     for (int i = 0; i < 8; i++) tick(true);
 
@@ -418,6 +444,22 @@ int main(int argc, char** argv) {
            (unsigned)d->dbg_dropped, (unsigned)d->dbg_frames);
     printf("swept %d frames, simulated %ld cycles = %.1f ms at 47.059 MHz\n",
            frames_swept, cycles, cycles / 47059.0);
+
+    {
+        // the densest 1,024-cycle window of payload writes
+        long dense = 0; size_t lo = 0;
+        for (size_t hi = 0; hi < q_times.size(); hi++) {
+            while (q_times[hi] - q_times[lo] >= 1024) lo++;
+            if ((long)(hi - lo + 1) > dense) dense = hi - lo + 1;
+        }
+        printf("DDR3: %ld reads, %ld writes, busy %ld cycles, worst reply wait %u cycles, "
+               "writes lost %u, reads refused %u, protocol errors %ld\n",
+               ddr.reads, ddr.writes, ddr.busy_cycles, (unsigned)d->dbg_pay_wait,
+               (unsigned)d->dbg_pay_ovf, (unsigned)d->dbg_pay_refused, ddr.protocol_errs);
+        printf("payload writes: shortest gap %ld cycles, at most %ld in any 1,024 cycles\n",
+               q_min_gap, dense);
+        if (ddr.protocol_errs || d->dbg_pay_ovf || d->dbg_pay_refused) { printf("FAIL: DDR3 protocol or lost write\n"); return 1; }
+    }
 
     long nz = 0, rows = 0;
     for (int y = 0; y < SH; y++) { if (got_row[y]) rows++;

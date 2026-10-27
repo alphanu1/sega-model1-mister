@@ -67,12 +67,21 @@ struct Dut {
         int g = 0;
         while (d->sort_busy && ++g < 4000000) tick();
     }
+    // A CONSUMER THAT STALLS. The fill takes a quad only when it is ready,
+    // and the store's output stage must hold one until it does. Taking every
+    // quad the cycle it appears - all this bench did - could not see the store
+    // drop the quad its output was still holding when the scan finished a band
+    // (m1_raster3d's render3d found that; 2,598 pixels of frame 2500).
+    int stall = 0;                       // percent of cycles out_ready is low
+    std::mt19937 srng{0x5eed};
     std::vector<Q> replay() {
         std::vector<Q> out;
         d->replay_start = 1; tick(); d->replay_start = 0;
         int g = 0;
         while (++g < 4000000) {
-            if (d->out_valid) {
+            d->out_ready = (stall == 0) || ((int)(srng() % 100) >= stall);
+            d->eval();
+            if (d->out_valid && d->out_ready) {
                 Q q;
                 q.x0 = (int16_t)d->out_x0; q.y0 = (int16_t)d->out_y0;
                 q.x1 = (int16_t)d->out_x1; q.y1 = (int16_t)d->out_y1;
@@ -273,6 +282,20 @@ int main(int argc, char** argv) {
             compare(t, q, "fuzz");
         }
     }
+
+    printf("test: fuzz, against a fill that is not always ready\n");
+    for (int st : {50, 90}) {
+        t.stall = st;
+        std::mt19937 rng(0x51a11u + st);
+        for (int iter = 0; iter < 40; iter++) {
+            std::vector<Q> q;
+            int n = 1 + (int)(rng() % 300);
+            for (int i = 0; i < n; i++)
+                q.push_back(mk(i, (float)((int)(rng() % 64) - 32), (rng() & 1) != 0));
+            compare(t, q, "stalled fuzz");
+        }
+    }
+    t.stall = 0;
 
     printf("test: THROUGHPUT - the sort must fit inside a frame\n");
     {

@@ -50,8 +50,8 @@ module emu
   assign UART_TXD = core_uart_tx;
   wire core_uart_tx;
   assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-  assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN,
-          DDRAM_BE, DDRAM_RD, DDRAM_WE} = '0;
+  // DDR3 carries the 3D layer's quad payload (m1_raster3d, PAY_DDR3), driven
+  // from m1_integrated below.
 
   assign VGA_SL       = 0;
   assign VGA_F1       = 0;
@@ -1298,6 +1298,11 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   wire [15:0] dbg_io_replies;
 
   m1_integrated core (
+    .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
+    .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
+    .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+    .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
+    .DDRAM_WE(DDRAM_WE),
     .sdram_occ(sdram_occ), .sdram_wait1(sdram_wait1),
     .clk_sys(clk_sys), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),

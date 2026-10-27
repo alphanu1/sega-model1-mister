@@ -89,7 +89,12 @@ module m1_quad_store #(
   // every polygon that leaves the screen. The narrowing stays available as
   // a parameter for when the true range is measured (the bench prints it).
   parameter int unsigned XW     = 16,
-  parameter int unsigned YW     = 16
+  parameter int unsigned YW     = 16,
+  // WHERE THE VERTEX PAYLOAD LIVES. 0: m1_quad_payload, on-chip M10K, which is
+  // what this module's own bench drives. 1: outside, through the ext_* ports -
+  // m1_raster3d puts both banks' payloads in DDR3 that way. The pipeline is the
+  // same either way; only the backing moves.
+  parameter bit          EXT_PAY = 1'b0
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -130,7 +135,21 @@ module m1_quad_store #(
   output logic [15:0] dbg_dropped,
   // Quads with a vertex outside 0..2^XW-1 / 0..2^YW-1, free-running. Zero by
   // contract; see the parameters.
-  output logic [15:0] dbg_oob /* verilator public_flat_rd */
+  output logic [15:0] dbg_oob /* verilator public_flat_rd */,
+
+  // ---- the vertex payload's backing, when EXT_PAY. Writes are posted - one a
+  // quad, the cycle the quad is accepted - and reads are the request/valid
+  // shape m1_quad_payload has. Unused (outputs zero) when the payload is on
+  // chip.
+  output logic                   ext_we,
+  output logic [IW-1:0]          ext_waddr,
+  output logic [4*(XW+YW)-1:0]   ext_wdata,
+  output logic                   ext_req,
+  output logic [IW-1:0]          ext_raddr,
+  input  logic                   ext_ready,
+  input  logic                   ext_valid,
+  output logic                   ext_take,
+  input  logic [4*(XW+YW)-1:0]   ext_rdata
 );
 
 
@@ -183,12 +202,28 @@ module m1_quad_store #(
   logic            pay_take;
   logic [4*VW-1:0] pay_rdata;
 
-  m1_quad_payload #(.NQ(NQ), .IW(IW), .VW(VW)) u_pay (
-    .clk(clk), .rst_n(rst_n),
-    .we(pay_we), .waddr(pay_waddr), .wdata(pay_wdata),
-    .req(pay_req), .raddr(pay_raddr), .ready(pay_ready),
-    .valid(pay_valid), .take(pay_take), .rdata(pay_rdata)
-  );
+  generate
+    if (EXT_PAY) begin : g_ext_pay
+      assign ext_we    = pay_we;
+      assign ext_waddr = pay_waddr;
+      assign ext_wdata = pay_wdata;
+      assign ext_req   = pay_req;
+      assign ext_raddr = pay_raddr;
+      assign ext_take  = pay_take;
+      assign pay_ready = ext_ready;
+      assign pay_valid = ext_valid;
+      assign pay_rdata = ext_rdata;
+    end else begin : g_int_pay
+      m1_quad_payload #(.NQ(NQ), .IW(IW), .VW(VW)) u_pay (
+        .clk(clk), .rst_n(rst_n),
+        .we(pay_we), .waddr(pay_waddr), .wdata(pay_wdata),
+        .req(pay_req), .raddr(pay_raddr), .ready(pay_ready),
+        .valid(pay_valid), .take(pay_take), .rdata(pay_rdata)
+      );
+      assign ext_we = 1'b0;   assign ext_waddr = '0; assign ext_wdata = '0;
+      assign ext_req = 1'b0;  assign ext_raddr = '0; assign ext_take  = 1'b0;
+    end
+  endgenerate
 
   // THE SCAN RUNS AHEAD OF THE OUTPUT, and this FIFO is what lets it.
   //
@@ -582,8 +617,6 @@ typedef enum logic       { O_IDLE, O_OUT } ostate_t;
   wire  [AT_W-1:0] att_rd;
   logic [AT_W-1:0] att_q_lo, att_q_hi;
   logic            att_sel_hi;
-  logic [VW-1:0]   v0_q_lo, v0_q_hi, v1_q_lo, v1_q_hi, v2_q_lo, v2_q_hi, v3_q_lo, v3_q_hi;
-  logic            vtx_sel_hi;
   assign idx_a_addr = (p_st != P_IDLE) ? pi[IW-1:0] : ri[IW-1:0];
   assign att_rd = att_sel_hi ? att_q_hi : att_q_lo;
 
@@ -643,8 +676,13 @@ typedef enum logic       { O_IDLE, O_OUT } ostate_t;
       end
 
       case (p_st)
+        // NO `out_valid <= 0` HERE. The output stage owns out_valid now. The
+        // scan reaches P_IDLE as soon as it has QUEUED the band's last hit,
+        // which is often while the output stage is still holding a quad for
+        // the fill - and clearing it from here dropped that quad. The
+        // render3d bench lost 2,598 pixels of frame 2500 to it; the store's
+        // own bench takes every quad at once and could not see it.
         P_IDLE: begin
-          out_valid <= 1'b0;
           if (replay_start && count != 0) begin
             pi <= '0; v1 <= 1'b0; v2 <= 1'b0;
             // The queues are per band: a band starts with nothing in flight.

@@ -73,7 +73,7 @@ SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv rtl/video/m1_geo_cli
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_color.sv \
   rtl/video/m1_fp_pool.sv rtl/video/fp_to_int.sv rtl/video/fp_from_int.sv \
   rtl/video/m1_lightbank.sv rtl/video/m1_listwalk.sv \
-  rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
+  rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv \
   rtl/video/m1_raster3d.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
@@ -113,7 +113,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_
   rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv rtl/video/m1_geo_recip.sv rtl/video/m1_geo_det.sv \
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_norm.sv rtl/video/m1_geo_color.sv \
   rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv rtl/video/m1_geometry.sv rtl/video/m1_lightbank.sv \
-  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
+  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv rtl/video/m1_raster3d.sv \
   $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
@@ -311,7 +311,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -391,6 +391,7 @@ render3d:
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
 	  rtl/video/fp_from_int.sv rtl/video/m1_lightbank.sv \
 	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv \
+	  rtl/video/m1_ddram_payload.sv \
 	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
 	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
 	./obj_render3d/tb_render3d
@@ -1026,7 +1027,7 @@ m1_frame:
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
 	  --Mdir build/m1frame -o m1frame \
-	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) sim/mem/sdram_model.sv sim/top/tb_m1_frame.sv
+	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) sim/mem/sdram_model.sv sim/mem/ddr3_model.sv sim/top/tb_m1_frame.sv
 	@# THE 68000'S MICROCODE IS LOADED BY BARE FILENAME AT RUNTIME.
 	@# fx68k.sv does `$$readmemb("microrom.mem", uRam)` with no path, so it
 	@# resolves against the CWD of the SIMULATOR, not the source tree. The

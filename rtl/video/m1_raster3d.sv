@@ -119,10 +119,37 @@ module m1_raster3d #(
   // fix: a peak frame offers more than this and the honest answer is the quad
   // payload in SDRAM, which stores everything and hands back all 138 M10K. This
   // is what the freed blocks will buy today.
-  parameter int unsigned NQ     = 3072
+  parameter int unsigned NQ     = 3072,
+  // THE VERTEX PAYLOAD IN DDR3 (1) OR IN M10K (0).
+  //
+  // The two stores' vertices are 4 x 32 bits a quad - at NQ=3,072 about 96 of
+  // the device's 553 M10K, the largest single user of block RAM in the core.
+  // They are also the only part of the store with an access pattern external
+  // memory can serve: read only for a quad that passes the band filter, and
+  // prefetched by a scan that runs ahead of the fill (see m1_quad_store and
+  // m1_ddram_payload). 0 keeps them on chip, for a bench without DDR3 or a
+  // fallback build; the picture is the same bit for bit either way.
+  parameter bit          PAY_DDR3 = 1'b1
 ) (
-  input  logic        clk,            // the 3D clock, 45.714 MHz
+  input  logic        clk,            // the 3D clock, 58.95 MHz
   input  logic        rst_n,
+  // The MEMORY reset (PLL lock), already synchronised to clk. The DDR3 client
+  // is reset only by this: a burst cut short wedges the HPS bridge until the
+  // FPGA is reconfigured, so the game reset only FLUSHES it (see
+  // m1_ddram_payload, and the Model 2 study's R649).
+  input  logic        mem_rst_n,
+
+  // ---- DDR3, through the framework's DDRAM port. DDRAM_CLK is clk.
+  output logic        DDRAM_CLK,
+  input  logic        DDRAM_BUSY,
+  output logic [7:0]  DDRAM_BURSTCNT,
+  output logic [28:0] DDRAM_ADDR,
+  input  logic [63:0] DDRAM_DOUT,
+  input  logic        DDRAM_DOUT_READY,
+  output logic        DDRAM_RD,
+  output logic [63:0] DDRAM_DIN,
+  output logic [7:0]  DDRAM_BE,
+  output logic        DDRAM_WE,
 
   // ---- frame control, already synchronised to clk
   input  logic        frame_start,    // one pulse at the start of vblank
@@ -296,7 +323,16 @@ module m1_raster3d #(
   output logic [15:0] dbg_plane_l,
 
   // Objects with command 0x41 - "drawn above the HUD" - free-running.
-  output logic [15:0] dbg_hud_obj
+  output logic [15:0] dbg_hud_obj,
+  // The DDR3 payload's two health figures: posted writes LOST (zero by
+  // construction at the geometry's rate - nonzero means a wrong picture), and
+  // the longest wait for a read reply, in clk cycles.
+  output logic [15:0] dbg_pay_ovf,
+  output logic [15:0] dbg_pay_wait,
+  // Payload reads the store asked for with the client's credit exhausted.
+  // Zero by contract - the store's colour FIFO bounds them - and a nonzero
+  // count is a frozen 3D layer, so it is checked by every bench that runs it.
+  output logic [15:0] dbg_pay_refused
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -529,6 +565,17 @@ module m1_raster3d #(
   logic [23:0] qo_col_v [2];
   logic [1:0]  qo_moire_v;
 
+  // The payload ports of both stores. The producer's store is the only one
+  // that writes and the consumer's the only one that reads - each store's
+  // inputs are gated by `mine_p` - so the two never compete for a direction
+  // and the merge below is an OR plus a one-bit bank.
+  localparam int unsigned QIW = $clog2(NQ);
+  logic [1:0]     px_we, px_req, px_take;
+  logic [QIW-1:0] px_waddr [2], px_raddr [2];
+  logic [127:0]   px_wdata [2];
+  logic           px_rd_ready, px_rd_valid, px_wr_idle;
+  logic [127:0]   px_rd_data;
+
   genvar k;
   generate
     for (k = 0; k < 2; k++) begin : g_store
@@ -538,7 +585,8 @@ module m1_raster3d #(
       wire mine_p = (bank == 1'(k));
       m1_quad_store #(
         .NQ(NQ), .IW($clog2(NQ)),
-        .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H)
+        .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H),
+        .EXT_PAY(PAY_DDR3)
       ) u_store (
         .clk(clk), .rst_n(rst_n),
         .clear(qs_clear && mine_p),
@@ -559,8 +607,51 @@ module m1_raster3d #(
         .out_x3(qo_x3_v[k]), .out_y3(qo_y3_v[k]),
         .out_col(qo_col_v[k]), .out_moire(qo_moire_v[k]),
         .dbg_count(qs_count_v[k]), .dbg_dropped(qs_dropped_v[k]),
-        .dbg_oob(qs_oob_v[k])
+        .dbg_oob(qs_oob_v[k]),
+        .ext_we(px_we[k]), .ext_waddr(px_waddr[k]), .ext_wdata(px_wdata[k]),
+        .ext_req(px_req[k]), .ext_raddr(px_raddr[k]),
+        // Only the consumer's store replays, so only it is offered a reply.
+        .ext_ready(px_rd_ready && !mine_p), .ext_valid(px_rd_valid && !mine_p),
+        .ext_take(px_take[k]), .ext_rdata(px_rd_data)
       );
+    end
+  endgenerate
+
+  generate
+    if (PAY_DDR3) begin : g_pay_ddr3
+      // The game reset, as a flush. It is asserted asynchronously, so it is
+      // brought into this clock before the client - which keeps running across
+      // it - is allowed to see it.
+      logic [1:0] flush_s;
+      always_ff @(posedge clk or negedge mem_rst_n) begin
+        if (!mem_rst_n) flush_s <= 2'b11;
+        else            flush_s <= {flush_s[0], ~rst_n};
+      end
+      m1_ddram_payload #(.IW(QIW)) u_pay_ddr3 (
+        .clk(clk), .rst_n(mem_rst_n), .flush(flush_s[1]),
+        .wr_req(|px_we), .wr_bank(px_we[1]),
+        .wr_idx(px_we[1] ? px_waddr[1] : px_waddr[0]),
+        .wr_data(px_we[1] ? px_wdata[1] : px_wdata[0]),
+        .wr_idle(px_wr_idle),
+        .rd_req(|px_req), .rd_bank(px_req[1]),
+        .rd_idx(px_req[1] ? px_raddr[1] : px_raddr[0]),
+        .rd_ready(px_rd_ready), .rd_valid(px_rd_valid),
+        .rd_take(|px_take), .rd_data(px_rd_data),
+        .dbg_wr_ovf(dbg_pay_ovf), .dbg_rd_wait(dbg_pay_wait),
+        .dbg_rd_refused(dbg_pay_refused),
+        .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
+        .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
+        .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+        .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
+        .DDRAM_WE(DDRAM_WE)
+      );
+    end else begin : g_pay_m10k
+      assign px_wr_idle = 1'b1;
+      assign px_rd_ready = 1'b0; assign px_rd_valid = 1'b0; assign px_rd_data = '0;
+      assign dbg_pay_ovf = '0;   assign dbg_pay_wait = '0;  assign dbg_pay_refused = '0;
+      assign DDRAM_CLK = clk;    assign DDRAM_BURSTCNT = 8'd1; assign DDRAM_ADDR = '0;
+      assign DDRAM_RD = 1'b0;    assign DDRAM_DIN = '0;        assign DDRAM_BE = 8'hff;
+      assign DDRAM_WE = 1'b0;
     end
   endgenerate
 
@@ -1524,7 +1615,11 @@ module m1_raster3d #(
         end
 
         P_SORT:  pst <= P_SORTW;
-        P_SORTW: if (!qs_sort_busy) begin
+        // And every posted payload write is on the DDR3 bus before the bank
+        // can be handed to the reader. The sort takes ~21,000 cycles after the
+        // last quad, so this never waits in practice; it is here so that it
+        // cannot be the reason a picture is wrong.
+        P_SORTW: if (!qs_sort_busy && px_wr_idle) begin
           dbg_frames      <= dbg_frames + 16'd1;
           dbg_pass_cycles <= pass_timer;
           dbg_drop_total  <= dbg_drop_total + qs_dropped;
