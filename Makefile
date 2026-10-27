@@ -203,7 +203,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -286,7 +286,7 @@ lint_top:
 	  echo "third_party/template missing — run ./tools/bootstrap.sh"; exit 1; }
 	@verilator --lint-only -Wno-fatal +incdir+third_party/template \
 	  +incdir+build/lintinc --top-module emu \
-	  Model1.sv $(SRCS_TOP_CORE) $(SND_RTL) \
+	  Model1.sv $(SRCS_TOP_CORE) $(SND_RTL) rtl/video/m1_scan15.sv rtl/io/m1_drive_inputs.sv \
 	  third_party/template/sys/hps_io.sv > build/lintinc/top.log 2>&1; \
 	 grep "%Error" build/lintinc/top.log | grep -vE "altera_pll|'pll'" \
 	   | grep -v "Exiting due to" > build/lintinc/real.log; \
@@ -311,7 +311,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -407,6 +407,24 @@ test_lightbank:
 	  rtl/video/m1_lightbank.sv sim/video/tb_m1_lightbank.cpp \
 	  -o tb_lightbank --Mdir obj_lightbank
 	./obj_lightbank/tb_lightbank
+
+# The 15 kHz scan converter (rtl/video/m1_scan15.sv, from the Model 2 core).
+# Every line count, both image phases, and a cadence that slips; each run checks
+# every output pixel against a first-principles 4:5 blend and the sync geometry,
+# and prints PASS only if all of it holds. ~15 s a run.
+test_scan15:
+	@n=0; f=0; \
+	for a in "0 14 2 0" "0 14 2 1" "1 14 2 0" "1 14 2 1" "2 14 2 0" "2 14 2 1"; do \
+	  n=$$((n+1)); bash sim/video/run_scan15.sh $$a | grep -q '^PASS' || { f=$$((f+1)); echo "  FAIL scan15 $$a"; }; done; \
+	for sd in 3 7; do \
+	  n=$$((n+1)); PLUS="+rnd=1 +slip3=20 +slip1=5 +seed=$$sd" bash sim/video/run_scan15.sh 0 60 2 0 | grep -q '^PASS' \
+	    || { f=$$((f+1)); echo "  FAIL scan15 slip seed $$sd"; }; done; \
+	echo "m1_scan15: runs=$$n fails=$$f"; test $$f -eq 0
+
+test_drive_inputs:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_drive_inputs \
+	  rtl/io/m1_drive_inputs.sv sim/io/tb_m1_drive_inputs.cpp -o tb_drive_inputs --Mdir obj_drive_inputs
+	./obj_drive_inputs/tb_drive_inputs
 
 test_ddram_payload:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ddram_payload \

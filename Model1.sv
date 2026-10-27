@@ -54,7 +54,6 @@ module emu
   // from m1_integrated below.
 
   assign VGA_SL       = 0;
-  assign VGA_F1       = 0;
   assign VGA_SCALER   = 0;
   assign VGA_DISABLE  = 0;
   assign HDMI_FREEZE  = 0;
@@ -136,6 +135,16 @@ module emu
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
     "O[11],Pedals,Up=Accel,Up=Brake;",
+    "O[15:14],Analog control,Standard,Wheel A,Wheel B;",
+    "-;",
+    // 15 kHz, as the Model 2 core has it (its study R898, R939): the native
+    // 24 kHz picture through a scan converter to 15 kHz interlaced, 240 lines
+    // a field. A [15kHz CRT] MRA sets bit 7 of the game id and the option then
+    // shows as fixed, so a CRT is never handed 24 kHz by a saved setting.
+    "H0O[16],Video,Native 24kHz,15kHz interlaced;",
+    "h0O[16],Video,15kHz (CRT MRA),15kHz (CRT MRA);",
+    "O[18:17],15kHz lines,273/274 (15.7kHz),268/269 (15.4kHz),262/263 (15.1kHz);",
+    "O[19],15kHz pairing,Auto,Off;",
     "O[12],Stick Y axis,Normal,Inverted;",
     "O[13],Stick X axis,Normal,Inverted;",
     "-;",
@@ -246,9 +255,14 @@ module emu
   // build once.
   localparam [15:0] GAMEID_INDEX = 16'd4;
   logic [7:0] game_id;
-  wire is_vf = (game_id == 8'd1);
-  wire is_swa = (game_id == 8'd2);
-  wire is_ww  = (game_id == 8'd3);
+  // BIT 7 IS NOT THE GAME. A [15kHz CRT] MRA sends the same id with bit 7 set
+  // (the Model 2 core's convention, its study R795), so every game test reads
+  // bits 6:0 and bit 7 alone says "this is a CRT".
+  wire [6:0] game = game_id[6:0];
+  wire crt_mra = game_id[7];
+  wire is_vf = (game == 7'd1);
+  wire is_swa = (game == 7'd2);
+  wire is_ww  = (game == 7'd3);
 
   // ROMA MIRRORING, per game.
   //
@@ -271,10 +285,10 @@ module emu
   // the gap survived this long.
   logic [1:0] roma_mode;
   always_comb begin
-    case (game_id)
-      8'd2:    roma_mode = 2'd1;   // Star Wars Arcade
-      8'd3:    roma_mode = 2'd2;   // Wing War
-      8'd4:    roma_mode = 2'd1;   // NetMerc
+    case (game)
+      7'd2:    roma_mode = 2'd1;   // Star Wars Arcade
+      7'd3:    roma_mode = 2'd2;   // Wing War
+      7'd4:    roma_mode = 2'd1;   // NetMerc
       default: roma_mode = 2'd0;   // Virtua Racing / Formula, Virtua Fighter
     endcase
   end
@@ -353,51 +367,19 @@ module emu
   // delivers the axis as signed, centred at zero, and the wheel wants unsigned
   // centred at 0x80, so the sign bit is inverted rather than the value offset:
   // the same conversion, without an adder that could overflow at the extremes.
-  wire [7:0] wheel_stick = {~joy0_lstick[7], joy0_lstick[6:0]};
-  wire [7:0] io_wheel = io_steer_l ? 8'h00 :
-                        io_steer_r ? 8'hff : wheel_stick;
-
-  // PEDALS ARE ANALOGUE NOW, with the buttons still live.
-  //
-  // They used to be buttons only, on the reasoning that hps_io's analog ports
-  // are two-axis sticks with no travel to read for a pedal. That was wrong in
-  // practice: a pad's triggers reach the core through an analog port, and a
-  // racing game with on/off pedals is a different game - you cannot hold a
-  // line through a corner without partial throttle.
-  //
-  // MiSTer has NO dedicated trigger signal - hps_io offers only the two sticks,
-  // the paddles and the spinners. An arrangement that read one axis per pedal
-  // was tried on the assumption a player would bind LT and RT to them; it put
-  // the accelerator on the LEFT stick's Y and the brake on the RIGHT stick's X,
-  // so steering with the left stick moved the throttle at the same time.
-  //
-  // BOTH PEDALS ON THE RIGHT STICK'S Y AXIS, one per direction.
-  //
-  // One axis, split by sign: push up to accelerate, pull down to brake, exactly
-  // as a single pedal axis behaves. That frees the LEFT stick entirely for
-  // steering, which is the only thing it should have been doing.
-  //
-  // WHICH HALF IS WHICH DEPENDS ON THE PAD, and no amount of reasoning settles
-  // it - axis polarity is not standardised. `Pedals` in the OSD swaps them, so
-  // a pad that reports the opposite sign is one setting away rather than a
-  // rebuild.
-  //
-  // Idle is 0x01 and full 0xff, MAME's PORT_MINMAX(1,0xff): a pedal resting at
-  // 0x00 is a car that will not move, measured in docs/io-board.md. Centred is
-  // magnitude zero, so both read 0x01 and neither is applied. The buttons stay
-  // live and the larger of the two wins.
-  wire signed [7:0] pedal_ax  = joy0_rstick[15:8];   // right stick Y
-  wire [6:0] pedal_mag = pedal_ax[7] ? (~pedal_ax[6:0] + 7'd1) : pedal_ax[6:0];
-  wire [7:0] pedal_an  = {pedal_mag, 1'b1};
-  // pedal_ax[7] is the sign: one half of the axis is the throttle, the other the
-  // brake, and `Pedals` chooses which.
-  wire       pedal_up  = status[11] ? ~pedal_ax[7] : pedal_ax[7];
-  wire [7:0] accel_an  = pedal_up ? pedal_an : 8'h01;
-  wire [7:0] brake_an  = pedal_up ? 8'h01    : pedal_an;
-  wire [7:0] io_accel = io_accel_b ? 8'hff :
-                        (accel_an > 8'h01) ? accel_an : 8'h01;
-  wire [7:0] io_brake = io_brake_b ? 8'hff :
-                        (brake_an > 8'h01) ? brake_an : 8'h01;
+  // ALL OF IT IN m1_drive_inputs NOW, with the OSD's "Analog control" beside
+  // it: Standard is the logic that stood here, bit for bit (the module's
+  // bench checks it against a frozen copy for every input); Wheel A and Wheel
+  // B read a USB wheel's pedals from axes of their own, as the Model 2 core
+  // does (its study R958). See that module.
+  wire [7:0] io_wheel, io_accel, io_brake;
+  m1_drive_inputs u_drive (
+    .mode(status[15:14]), .swap(status[11]),
+    .steer_l(io_steer_l), .steer_r(io_steer_r),
+    .accel_b(io_accel_b), .brake_b(io_brake_b),
+    .lstick(joy0_lstick), .rstick(joy0_rstick),
+    .wheel(io_wheel), .accel(io_accel), .brake(io_brake)
+  );
 
   // ------------------------------------------------ Star Wars Arcade, analogue
   //
@@ -631,6 +613,9 @@ module emu
     .forced_scandoubler(forced_scandoubler),
     .buttons(buttons),
     .status(status),
+    // Bit 0 hides the selectable Video line and shows the fixed one: a
+    // [15kHz CRT] MRA is loaded.
+    .status_menumask({15'd0, crt_mra}),
 
     // CONTROLS. Wired here so they exist; what consumes them is the I/O board.
     //
@@ -1303,6 +1288,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
     .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
     .DDRAM_WE(DDRAM_WE),
+    .r3d_show_tag(r3d_show_tag),
     .sdram_occ(sdram_occ), .sdram_wait1(sdram_wait1),
     .clk_sys(clk_sys), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(1'b1),
@@ -1883,14 +1869,73 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   endgenerate
 
   // ------------------------------------------------------------------ video
+  // ------------------------------------------------------------ 15 kHz
+  //
+  // m1_scan15, the Model 2 core's scan converter (retrorepair's design; see
+  // that module and THIRD-PARTY.md). The picture is made at 24 kHz exactly as
+  // before and the converter re-times the finished pixels to 15 kHz
+  // interlaced: 240 lines a field from 384 by an exact 4:5 blend, no frame of
+  // delay, two output fields to exactly two native frames.
+  //
+  // Selected by the OSD or by a [15kHz CRT] MRA (game id bit 7). At 24 kHz it
+  // idles and the pins carry the native picture, bit for bit what they did.
+  // HDMI follows the same pins: the framework's scaler deinterlaces 15 kHz.
+  //
+  // The output enable is an exact rational of clk_sys, so two fields are
+  // exactly two native frames: 547/4240 (273/274 lines, 15.7 kHz), 537/4240
+  // (268/269, 15.4) or 4305/34768 (262/263, 15.1) of 80 MHz - Model 2's
+  // 547/5300, 537/5300 and 861/8692 of its 100 MHz, times 5/4.
+  logic vid_scan_r, vid_scan;
+  logic [1:0] vid_lines;
+  logic vid_pair;
+  always_ff @(posedge clk_sys) begin
+    vid_scan_r <= status[16] | crt_mra;
+    vid_scan   <= vid_scan_r;
+    vid_lines  <= status[18:17];
+    vid_pair   <= ~status[19];
+  end
+  wire vid_nl = (vid_lines == 2'd2);
+  wire vid_ml = (vid_lines == 2'd1);
+
+  logic [15:0] ceo_acc;
+  logic        ce_out;
+  wire  [15:0] ceo_num = vid_nl ? 16'd4305  : vid_ml ? 16'd537  : 16'd547;
+  wire  [15:0] ceo_den = vid_nl ? 16'd34768 : 16'd4240;
+  always_ff @(posedge clk_sys) begin
+    // >= den only after a line-count change; restart rather than run away
+    if (ceo_acc >= ceo_den) begin
+      ceo_acc <= '0; ce_out <= 1'b0;
+    end else if (ceo_acc + ceo_num >= ceo_den) begin
+      ceo_acc <= ceo_acc + ceo_num - ceo_den; ce_out <= 1'b1;
+    end else begin
+      ceo_acc <= ceo_acc + ceo_num; ce_out <= 1'b0;
+    end
+  end
+
+  // The image on show changes when the 3D layer swaps to a new pass; the
+  // converter pairs its fields to that cadence so an output frame is never
+  // made of two images (R939).
+  wire [3:0] r3d_show_tag;
+  wire       sc_hs, sc_vs, sc_de, sc_fld;
+  wire [23:0] sc_rgb;
+  m1_scan15 u_scan15 (
+    .clk(clk_sys), .rst_n(mem_rst_n), .en(vid_scan), .img_tag(r3d_show_tag),
+    .pair_en(vid_pair),
+    .ce_in(ce_pix), .de_in(~(vid_hb | vid_vb)), .vb_in(vid_vb),
+    .rgb_in({dg_r, dg_g, dg_b}),
+    .ce_out(ce_out), .nl(vid_nl), .ml(vid_ml),
+    .o_hs(sc_hs), .o_vs(sc_vs), .o_de(sc_de), .o_field(sc_fld), .o_rgb(sc_rgb)
+  );
+
   assign CLK_VIDEO = clk_sys;
-  assign CE_PIXEL  = ce_pix;
-  assign VGA_R     = dg_r;
-  assign VGA_G     = dg_g;
-  assign VGA_B     = dg_b;
-  assign VGA_HS    = vid_hs;
-  assign VGA_VS    = vid_vs;
-  assign VGA_DE    = ~(vid_hb | vid_vb);
+  assign CE_PIXEL  = vid_scan ? ce_out       : ce_pix;
+  assign VGA_R     = vid_scan ? sc_rgb[23:16] : dg_r;
+  assign VGA_G     = vid_scan ? sc_rgb[15:8]  : dg_g;
+  assign VGA_B     = vid_scan ? sc_rgb[7:0]   : dg_b;
+  assign VGA_HS    = vid_scan ? sc_hs        : vid_hs;
+  assign VGA_VS    = vid_scan ? sc_vs        : vid_vs;
+  assign VGA_DE    = vid_scan ? sc_de        : ~(vid_hb | vid_vb);
+  assign VGA_F1    = vid_scan & sc_fld;
 
   // Lit while the ROM set is loading, so a failed load is visible without a
   // screen — the first thing to check when a board shows nothing.

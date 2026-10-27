@@ -275,7 +275,11 @@ module m1_integrated (
   output logic        DDRAM_RD,
   output logic [63:0] DDRAM_DIN,
   output logic [7:0]  DDRAM_BE,
-  output logic        DDRAM_WE
+  output logic        DDRAM_WE,
+
+  // The 3D image on show, for the 15 kHz converter's field pairing (clk_3d,
+  // changes only in vertical blanking). See m1_raster3d.
+  output logic [3:0]  r3d_show_tag
 );
 
   logic [14:0] vid_tram_addr;
@@ -791,7 +795,7 @@ module m1_integrated (
     .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
     .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
     .DDRAM_WE(DDRAM_WE),
-    .dbg_pay_ovf(), .dbg_pay_wait(), .dbg_pay_refused(),
+    .dbg_pay_ovf(), .dbg_pay_wait(), .dbg_pay_refused(), .show_tag(r3d_show_tag),
     .frame_start(frame_start_3d), .dl_sel(listctl_sel), .dl_sel_q(r3d_dl_sel),
     .dl_addr(r3_dl_addr), .dl_req(r3_dl_req),
     .dl_valid(r3_dl_valid), .dl_data(r3_dl_data),

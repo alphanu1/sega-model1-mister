@@ -332,7 +332,13 @@ module m1_raster3d #(
   // Payload reads the store asked for with the client's credit exhausted.
   // Zero by contract - the store's colour FIFO bounds them - and a nonzero
   // count is a frozen 3D layer, so it is checked by every bench that runs it.
-  output logic [15:0] dbg_pay_refused
+  output logic [15:0] dbg_pay_refused,
+  // NAMES THE 3D IMAGE ON SHOW: steps each time the consumer swaps to a newly
+  // finished pass. The 15 kHz scan converter pairs its fields to it so an
+  // interlaced frame never holds two images (m1_scan15, R939 in the Model 2
+  // study). It changes at the frame start, in vertical blanking, and is held
+  // for at least a frame, so the converter samples it with one register.
+  output logic [3:0]  show_tag
 );
 
   localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
@@ -1330,7 +1336,7 @@ module m1_raster3d #(
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0;
+      pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0; show_tag <= '0;
       cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0; dbg_hud_obj <= '0;
       ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped <= 1'b0;
@@ -1513,7 +1519,7 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
-      if (swap_now) bank <= ~bank;
+      if (swap_now) begin bank <= ~bank; show_tag <= show_tag + 4'd1; end
       // One sweep per frame: set when a sweep starts, cleared when the beam
       // leaves the last band, so a sweep that finishes early cannot start a
       // second one before the next frame.

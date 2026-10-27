@@ -44,6 +44,34 @@ with no error.
 
 GPL-3 to GPL-3. Copyright remains theirs on those files.
 
+### The 15 kHz scan converter — retrorepair, via the Model 2 core — GPL-3.0-or-later
+`rtl/video/m1_scan15.sv`, `sim/video/tb_m1_scan15.sv` and `sim/video/run_scan15.sh`
+are the Model 2 core's 15 kHz scan converter and its bench, taken from
+**sega-model2-mister at `af76dde`** (`rtl/video/m2_scan15.sv`,
+`sim/video/tb_m2_scan15.sv`, `sim/video/run_scan15.sh`; its study R898 and
+R939). That is in turn retrorepair's design, from
+**retrorepair/sega-model2-mister branch `guncon-scan15` at `57faad7`**, with the
+Model 2 core's changes recorded in that project's THIRD_PARTY.md (two taps, a
+16-line ring, all three line counts, the R939 pairing fix).
+
+Licence: both repositories are GPL-3.0 and the files carry
+`SPDX-License-Identifier: GPL-3.0-or-later` — the same licence as this project.
+Copyright remains with their authors.
+
+Changed here: the module renamed `m1_scan15` and its header notes, nothing in
+the logic — Model 1 and Model 2 declare the same 16 MHz, 656 x 424, 496 x 384
+picture. The bench runs at 80 MHz with ce_pix one cycle in five, as `clk_sys`
+does here, against `m1_video_timing`; the output enables are the same rates as
+exact rationals of 80 MHz (547/4240, 537/4240, 4305/34768). The `[15kHz CRT]`
+MRAs follow the Model 2 core's convention (game id bit 7), made by
+`tools/make_crt_mra.py`, which is original here.
+
+### The wheel modes — idea from the Model 2 core
+`rtl/io/m1_drive_inputs.sv` is written here. Its Wheel A / Wheel B pedal
+mapping follows the Model 2 core's `rtl/io/m2_cab_inputs.sv` (sega-model2-mister
+R958, itself modelled on the Analog control option of Jotego's OutRun core),
+rescaled to Virtua Racing's 0x01..0xff pedal range; no code was copied.
+
 ### MAME — BSD-3-Clause
 Used as the behavioural oracle throughout (hard rule 3). `mb86233.cpp` and
 `mb86233d.cpp` for the TGP, `model1.cpp` for the board and memory map,
