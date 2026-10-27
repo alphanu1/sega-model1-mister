@@ -1040,7 +1040,7 @@ m1_frame:
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
-	  -GROMA_MODE=$(FRAME_ROMA_MODE) \
+	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
@@ -1063,6 +1063,10 @@ m1_frame:
 # enough; the literal needs its width. Reaching the attract state the board is
 # actually in takes about 3.6e9.
 FRAME_SNDBIN ?= build/rom/$(GAME)_snd.bin
+# The DDR3 model's read latency (clk_3d cycles) and BUSY rate (per mille of
+# idle cycles), for the 3D layer's quad payload. See sim/mem/ddr3_model.sv.
+FRAME_DDR_LAT  ?= 40
+FRAME_DDR_BUSY ?= 0
 FRAME_CYCLES ?= 120000000
 
 # FRAME_TRACE=1 prints one line per frame: what share of the frame fell through

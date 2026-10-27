@@ -59,7 +59,12 @@ module ddr3_model #(
         mem[wr_addr] = din; wr_addr++; wr_left--;
       end
       if (rd) begin
-        longint t = cyc + LATENCY;
+        // ASSIGNED, NOT INITIALISED. A declaration's initialiser in an always
+        // block runs ONCE, at time zero - `longint t = cyc + LATENCY;` gave
+        // every read a due time of 40 and the first race bench ran against a
+        // DDR3 that answered at once. Caught by dbg_rd_wait reading 1.
+        longint t;
+        t = cyc + LATENCY;
         if (wr_left != 0) begin protocol_errs++; $display("DDR3 PROTOCOL: read inside a write burst"); end
         if (q.size() != 0 && q[$].due >= t) t = q[$].due + 1;
         for (int b = 0; b < burstcnt; b++)
