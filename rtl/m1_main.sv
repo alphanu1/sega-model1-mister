@@ -250,6 +250,14 @@ module m1_main #(
   // The TGP taking a command — see m1_copro_if. dbg_copro_pops is the V60
   // reading results back, which it never does; this is the live one.
   output logic [15:0] dbg_copro_drains,
+  // V60 writes into a ROM window, dropped (see rom_wr): how many, and the PC,
+  // address and bank of the FIRST since reset. Zero on a healthy machine.
+  output logic [15:0] dbg_rom_wr,
+  output logic [23:0] dbg_rom_wr_pc,
+  output logic [23:0] dbg_rom_wr_addr,
+  output logic [2:0]  dbg_rom_wr_bank,
+  // m1_copro_if's interlock state (see dbg_fifo_state there), clk_tgp domain.
+  output logic [11:0] dbg_copro_fifo,
   output logic [2:0]  rom_bank
 );
 
@@ -329,6 +337,23 @@ module m1_main #(
   logic        to_sdram;
   logic [25:1] sdram_word;
   assign to_sdram = sel_rom | sel_wram | sel_nvram | sel_charram;
+
+  // THE ROM WINDOWS ARE READ-ONLY. A V60 WRITE TO ONE NEVER REACHES SDRAM.
+  //
+  // ROMA, ROMO, ROMX and ROM0 are `.rom()` and `.bankr()` in MAME's map
+  // (model1.cpp:985) and mask ROM on the board: a write to them goes nowhere.
+  // Here they are the ROM IMAGE in SDRAM, which nothing reloads short of a new
+  // MRA load - and until 2026-10-28 a write to one was dispatched to SDRAM
+  // like any other. One stray store, from a copy run long or a pointer gone
+  // bad, then corrupted the game's program, its banked data or (through ROMO
+  // at banks 4-7) the coprocessor's data ROM and the polygon models, and it
+  // stayed corrupted through the core's reset. MAME never writes these
+  // regions: 0 writes in 600 s of Virtua Racing attract, measured with a
+  // write tap (build/mame_romwrites.lua in docs/findings.md 2026-10-28).
+  //
+  // So the write is acknowledged and dropped, exactly as the board drops it,
+  // and counted - a nonzero count means the game has already gone wrong.
+  wire rom_wr = sel_rom && m_we;
 
   always_comb begin
     if      (sel_rom)     sdram_word = dec_rom_addr;
@@ -615,6 +640,23 @@ module m1_main #(
 typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate_t;
   bstate_t bst;
 
+  // Counted once per access: the request is held until the ack, so count the
+  // cycle the dispatch leaves B_IDLE.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dbg_rom_wr <= '0; dbg_rom_wr_pc <= '0; dbg_rom_wr_addr <= '0;
+      dbg_rom_wr_bank <= '0;
+    end else if (bst == B_IDLE && m_req && rom_wr) begin
+      if (dbg_rom_wr == 16'd0) begin
+        dbg_rom_wr_pc   <= dbg_pc;
+        dbg_rom_wr_addr <= {m_addr, 1'b0};
+        dbg_rom_wr_bank <= rom_bank;
+      end
+      if (dbg_rom_wr != 16'hffff) dbg_rom_wr <= dbg_rom_wr + 16'd1;
+    end
+  end
+
+
   // ------------------------------------------------- coprocessor interface
   // CPR, 0xd00000-0xdfffff: the address register, the 8192x32 copro RAM window
   // and the command FIFOs. The TGP itself is not attached yet — see
@@ -663,7 +705,8 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
     .dbg_fifo_pushes(dbg_copro_fifo_pushes),
     .dbg_fifo_returns(dbg_copro_returns), .dbg_fifo_pops(dbg_copro_pops),
     .dbg_fifo_drains(dbg_copro_drains),
-    .v60_stall(copro_v60_stall)
+    .v60_stall(copro_v60_stall),
+    .dbg_fifo_state(dbg_copro_fifo)
   );
 
   // --------------------------------------------------------- the coprocessor
@@ -769,7 +812,7 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
         B_IDLE: begin
           ack_r <= 1'b0;
           if (m_req) begin
-            if (to_sdram) begin
+            if (to_sdram && !rom_wr) begin
               // One transaction per request RISING edge — see m1_sdram.sv.
               sdr_addr <= sdram_word;
               sdr_req  <= 1'b1;
@@ -787,7 +830,8 @@ typedef enum logic [2:0] { B_IDLE, B_SDRAM, B_LOCAL, B_ACK, B_SDRAM_RMW } bstate
               end
             end else begin
               // On-chip reads are registered, so give them a cycle. Registers
-              // and unmapped space resolve in the same slot.
+              // and unmapped space resolve in the same slot. A write into a ROM
+              // window lands here too and selects nothing: acknowledged, dropped.
               bst <= B_LOCAL;
             end
           end
