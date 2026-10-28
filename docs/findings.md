@@ -20,6 +20,189 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-28 — 6,147 ALM BACK FITTED (5,478 BY quartus_map), AND NO BENCH CAN TELL THE DIFFERENCE
+
+Branch `alm-save`, from `ddr3-crt-wheel` at bba4ecd (build B: 41,303 / 41,910
+ALM fitted, 98%). The brief: at least 3,000 ALM back with **no behaviour
+change** - room for the tile-overrun fix and what follows. Nothing below moves
+a cycle on any bench; nothing was allowed to.
+
+**Fitted:** seed 3 of HEAD (16e6d88), Quartus 17.0, Slow 1100mV 100C: **35,156 / 41,910
+ALM (84%), down 6,147 from build B's 41,303**; 541 / 553 M10K (542); 50 / 112
+DSP (62). Every clock positive: clk_3d +1.038 (B: +0.472), clk_sys +1.070
+(+0.752), clk_cpu +4.141 (+4.781), `pll_hdmi` +0.100 (+0.130), worst hold
++0.189. `build/Model1_almsave_seed3_35156.rbf`, md5
+`00b99984ebc450947d2a97414dd3b11f`; reports in `build/almsave_s3_reports/`.
+Seeds 11 and 29 fitted at 35,096 and 35,142 with our clocks positive
+(clk_3d +1.202 / +0.974) but the framework's `pll_hdmi` at -0.291 / -0.082:
+seed 3 is the candidate. By module (fitted ALMs, B -> seed 3): s32_v60 13,716
+-> 11,199 (its own logic 10,694 -> 7,972), m1_raster3d 9,895 -> 8,803,
+m2_sound_board 4,957 -> 3,844, m1_sdram 878 -> 553, m1_fetch_bridge 492 ->
+231.
+
+### Instrument
+
+A full-design `quartus_map` (Quartus 17.0, the staged MiSTer project, "Estimate
+of Logic utilization (ALMs needed)") for every change - about six minutes,
+against twenty-five-plus for a fit, so each change could be priced on its own:
+the V60 changes cumulatively on top of the register-file commit, everything
+else one file at a time on top of that commit. Baseline: **40,008** for the
+RTL that fitted at 41,303.
+
+**The estimate is noisy at about +/-50**, and identical logic moves between
+runs: the V60's own combinational count for the SAME v60.sv read 15,282,
+15,289, 15,300 and 15,315 in four maps whose only difference was another
+module. A delta under ~60 is not a measurement. Per-entity combinational
+ALUT and register counts from the same report are steadier and are quoted
+where the ALM figure is ambiguous.
+
+### Cycle identity, and the instrument added for it
+
+`tb_m1_frame` gained `FRAME_HASH` (parameter HASHEVERY): three 64-bit hashes
+folded on **every** enabled cycle and printed each frame -
+
+- clk_cpu: the V60's whole bus (req, we, size, address, write data, ack, read
+  data), its fetch port (if_req, if_addr, if_ack), irq_ack, ce, dbg_pc and the
+  sequencer state `st`;
+- clk_3d: the 3D block's DDR3 (address, rd, we, burst, byte enables, write
+  data), display-list, ROM, texture, palette and translation ports, band
+  presentation and its quad/object/drop/late counters;
+- clk_sys at ce_pix: the video output, every pixel and sync.
+
+Two builds that behave the same print the same lines; the first line that
+differs names the frame where they parted. Results, base (bba4ecd plus the
+instrument) against the final tree:
+
+| bench | frames | result |
+|---|---:|---|
+| race, `vr_race.txt`, 1.1e9 cycles | 894 | **identical on every one of the 894 frames** (365,237,706 CPU and
+730,475,413 3D cycles); final frame, audio, TGP pushes/pops/answers and 3D
+streams byte-identical; the same 42,817 bands, 0 late, 0 dropped, 451 passes,
+18,844 tile overruns |
+| VF, `vf_match.txt`, 3e8 cycles | 318 | every HASH line identical; picture, audio, TGP pushes/pops/answers, 3D streams byte-identical |
+| Star Wars attract, 3e8 cycles | 318 | the same |
+| render3d, 4 MAME frames x 9 DDR3 latency/BUSY settings | 36 runs | every log (each frame's fill cycles, late bands) and picture identical |
+| `make test` | 62 suites | every count identical to the base |
+| V60 unit suite | 29 | 29/29; the FTZ (shipping) FP bench's log, 236 numpy disagreements and its finish time to the picosecond, identical to the base |
+| sound board bench | 0.5 s | WAV and every statistic byte-identical |
+| `make v60_trace` (against MAME) | - | not re-run: the V60's dbg_pc is in the clk_cpu hash, so our PC stream is the base's to the cycle and the trace's verdict is necessarily the base's |
+
+Simulation-only checkers ride along in every bench: the V60's register file
+is compared, every register every cycle, against a flat mirror (`RF MISMATCH`
+fails the unit suite); the 68000's likewise (`FX68K RF MISMATCH`); the
+determinant checks its input-stability contract (`GEO_DET INPUT MOVED`). None
+fired.
+
+### What each change was worth (quartus_map, ALMs needed)
+
+V60, cumulative from the base:
+
+| change | before | after | delta | registers |
+|---|---:|---:|---:|---:|
+| register file in MLAB: two banks x two read copies x three lanes, a live-value table, a one-clock write bypass, flip-flop shadows of R26/R29/R30/SP | 40,008 | 39,212 | **-796** | -716 |
+| string completion arithmetic built once (`movc_finish` was inlined at three sites with three index expressions) | 39,212 | 38,643 | **-569** | -13 |
+| *new-PSW hoist - REVERTED, see below* | 38,643 | 38,766 | *+123* | |
+| one 33x33 multiplier for MULX/MULUX and MUL/MULU's overflow flag (was four) | 38,643 | 38,517 | **-126** | 0, DSP 62 -> 50 |
+| second displacement of double-displacement modes from fixed offsets (was a runtime-offset 4-byte extraction at three sites) | 38,517 | 38,257 | **-260** | 0 |
+| SP +/-4 and two bit-field expressions as wires | 38,257 | 38,229 | -28 | +5 |
+| DIVX/DIVUX operand magnitudes once (64-bit negators were duplicated for the register and memory forms) | 38,229 | 38,034 | **-195** | 0 |
+| privileged registers only LDPR/STPR touch (PIR, PSW2, ATBR/ATLR, TRMODE, ADTR/ADTMR) in MLAB, valid bits for S_RESET | 38,034 | 37,726 | **-308** | -471 |
+| EA/BAM address adders once each (`modtop-4` and `modtop[1:0]` were different expressions for the same bits); PUSHM's encoder reused | 37,726 | 37,550 | **-176** | 0 |
+| small repeated sums as wires; one DIV/REM sign negator | 37,550 | 37,634 | +84 (V60 comb +95) | 0 |
+| `bitdiv8` as `(x+7)>>>3` for negatives - one adder, not two negators (proven over all 2^32 inputs) | 37,634 | 37,511 | **-123** | 0 |
+| `wb_op2`'s value routed once after the state case | 37,511 | 37,528 | +17 (V60 comb -128) | 0 |
+| the five banked stack pointers in MLAB, one read port addressed by state, last write bypassed | 37,528 | 37,357 | **-171** | -103 |
+| DIVX shares MUL/DIV's accumulator, divisor and counter | 37,357 | 37,349 | -8 | -118 |
+| idle registers shared between groups that never overlap (ROTC/alu_r, FP result/wb_val, task block/string fill, MOVBS/string lengths, v60_fp takes op1); plus v60_fp's one pack | 37,349 | 37,343 | -6 | -225 |
+| one barrel shifter for EXTBFL and INSBFL (a right shift is the reversal of a left shift of the reversal) | 37,343 | 37,308 | -35 (V60 comb -140) | +1 |
+
+Everything else, each alone on top of the register-file commit (39,212):
+
+| change | module | after | delta | registers |
+|---|---|---:|---:|---:|
+| PCM fetch tags in MLAB (never consulted in the cycle after a write) | m2_pcm_fetch x2 | 38,716 | **-496** | -1,217 |
+| 68000 register file in MLAB, live-value table, last writes bypassed | fx68k excUnit | 38,686 | **-526** | -357 |
+| radix-sort histogram and bucket bases in MLAB, last write bypassed | m1_quad_store x2 | 38,714 | **-498** | -719 |
+| matrix (a copy per reader, last write bypassed) and product banks in MLAB | m1_geo_xform | 38,856 | **-356** | -926 |
+| read capture in MLAB, three words a port, last beat bypassed | m1_sdram | 39,013 | **-199** | -495 |
+| result FIFO `fout` in MLAB, last push bypassed | m1_copro_if | 39,022 | **-190** | -474 |
+| general register file in MLAB, valid bits, last write bypassed | mb86233_regs | 39,038 | **-174** | -463 |
+| line cache and tags in MLAB (never read in the cycle after a fill) | m1_fetch_bridge | 39,043 | **-169** | -659 |
+| reg 1 (sample number) in MLAB, valid bits, last write bypassed | m2_multipcm x2 | 39,084 | **-128** | -382 |
+| the three points read where the walker holds them, not copied | m1_geo_det | 39,152 | -60 | -288 |
+| SHA's overflow field from the right shifter (a third barrel shifter gone) | v60_shift | 39,155 | -57 (comb 699 -> 588) | 0 |
+| one fp_pack for CVTWS, SCLFS, add/multiply and divide | v60_fp | 39,192 | -20 | 0 |
+| the window frontier added once | v60_ifetch | 39,212 | 0 | 0 |
+| bit ops ride the integer lane (Model 2's R952, f92030c) | mb86233_alu | 39,269 | +57 (noise: the lane lived in an altshift_taps RAM, not ALMs) | 0 |
+
+**All of it together: 40,008 -> 34,530 (-5,478)**, registers 38,873 ->
+31,321 (-7,552), DSP 62 -> 50. The individual deltas sum to -5,516, so they
+are roughly additive.
+
+### Three patterns that paid, and one that did not
+
+**1. Storage held in flip-flops because it is read asynchronously goes into
+MLAB - with `no_rw_check` and, where a read can follow a write by one cycle, a
+one-clock bypass.** A bare `(* ramstyle = "MLAB" *)` on an array read
+combinationally is NOT inferred - "uninferred due to unsupported
+read-during-write behavior" - and stays flip-flops with no other sign (Model
+2's R607 hit the same). `"MLAB, no_rw_check"` infers it. The MLAB registers
+its write inputs at the edge (the generated altdpram has INDATA_REG,
+WRADDRESS_REG and WRCONTROL_REG = INCLOCK) and writes the cell during the
+following cycle, so a read of that address IN that cycle is the "don't care"
+no_rw_check accepts. Wherever a read can land there, the previous clock's
+write is held in flip-flops and wins for that one clock; after it the cell is
+written. Where the access pattern proves no read lands there, there is no
+bypass and the comment beside the array says why. A reset that cleared the
+array becomes a valid bit per entry where the reset value is observable, and
+is dropped where it cannot be (every entry written before it is read).
+
+Two write ports become a live-value table: a bank per write port, a copy of
+each bank per read port, one bit per entry and lane naming the newest bank,
+the later port claiming last so it still wins a collision. The V60's file
+(12 MLABs) and the 68000's (12) are built that way.
+
+**2. A task or function inlined at several sites with a DIFFERENT argument at
+each builds its whole datapath once per site.** The fb32() lesson of
+2026-09-07, still the largest single V60 lever: `movc_finish` -569, the
+runtime-offset second displacement -260, DIVX's negators -195, the address
+adders -176. Choose the varying input by state into one wire, compute once,
+let the sites route. Where the inlined copies had the SAME argument (the
+fetch frontier, `pc + 1` and friends) Quartus had already shared them and the
+hoist measured 0 or noise.
+
+**3. Registers count at this utilisation.** The geometry and sound wins are
+almost all flip-flops: the PCM tags were 1,217 registers and 496 ALM. At 98%
+the fitter cannot pair registers with unrelated logic freely, which is why
+storage moved to MLAB pays nearly an ALM per 2-3 flip-flops even with the read
+mux it also removes.
+
+**What did not pay - hoisting the new PSW.** Six PSW writers each inline a
+5:1 32-bit pick of the new stack pointer selected by their own new-PSW value.
+Muxing the new PSW into one wire first mapped **+123**: the 32-bit mux cost
+more than the picks it saved. Reverted. The stack pointers went into an MLAB
+instead, whose read address is a 3-bit function of the new PSW - that is the
+version that paid (-171). Also noise-level and kept only because they are
+verified: the small sums (+84), `wb_op2` (+17, though V60 comb -128), the
+register sharing (-6/-8), `fp_pack` (-20), the fetch frontier (0) and the TGP
+lane (+57). Dropping them is free if a smaller diff is wanted.
+
+**Not finished: a per-register cone attribution of the V60** (yosys `synth
+-lut 6`, then each flip-flop's fan-in cone). ABC had not finished after 47
+minutes on the flat 4,300-line block and was stopped; the deliberate-break
+pricing of 2026-09-11 remains the only map of where the V60's logic is.
+
+### Timing
+
+clk_3d and clk_sys both gained (+1.038 and +1.070 against +0.472 and +0.752
+on build B): the MLAB reads are no slower than the flip-flop read muxes they
+replace, and the fitter has 16% of the device free to place with. clk_cpu
+lost 0.64 ns (+4.141) and has four nanoseconds to spare. The framework's
+`pll_hdmi` is the seed lottery as always: +0.100 on seed 3, negative on 11
+and 29.
+
+---
+
 ## 2026-10-27 — THE QUAD PAYLOAD IS IN DDR3, AND IT BOUGHT 15 kHz, WHEEL MODES AND ROOM
 
 Branch `ddr3-crt-wheel`. Fitted at seed 29, Quartus 17.0: **41,205 / 41,910

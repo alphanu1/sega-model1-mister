@@ -1,3 +1,103 @@
+# 2026-10-28: ALM-SAVE - 6,147 ALM BACK FITTED, CYCLE-IDENTICAL. NOT YET ON HARDWARE.
+
+Branch **`alm-save`** (local, not pushed), from `ddr3-crt-wheel` at bba4ecd
+(build B, 41,303 / 41,910 ALM). Six commits, every one of them invisible to
+every bench: the point was room - for the tile-overrun fix and what follows -
+with nothing changed.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| B (ddr3-crt-wheel, s11) | fc418ba | 41,303 | 542 | 62 | +0.472 | +0.752 | +4.781 | +0.130 | +0.251 |
+| **alm-save, seed 3** | 16e6d88 | **35,156** | 541 | 50 | +1.038 | +1.070 | +4.141 | +0.100 | +0.189 |
+| alm-save, seed 11 | 16e6d88 | 35,096 | 541 | 50 | +1.202 | +1.267 | +6.012 | -0.291 | +0.192 |
+| alm-save, seed 29 | 16e6d88 | 35,142 | 541 | 50 | +0.974 | +1.255 | +5.241 | -0.082 | +0.202 |
+
+**Test `build/Model1_almsave_seed3_35156.rbf`** (md5
+`00b99984ebc450947d2a97414dd3b11f`): 6,147 ALM below build B, every clock
+positive. quartus_map says 40,008 -> 34,530 for the same change.
+
+## What is in it
+
+Storage that was flip-flops because it is read asynchronously, now MLAB
+(`ramstyle = "MLAB, no_rw_check"`, a one-clock bypass wherever a read can
+follow a write by one cycle, valid bits wherever a reset value can be seen):
+
+- the V60's general registers (live-value table, two write ports), its
+  privileged registers and its five banked stack pointers
+- the TGP's register file and copro_if's result FIFO
+- the SDRAM controller's read capture and the V60 fetch bridge's line cache
+- the transform's matrix and product banks, the quad stores' sort tables
+- the sound 68000's register file (fx68k, recorded in THIRD-PARTY.md), the
+  PCM fetch tags and MultiPCM's sample-number register
+
+and in the V60, arithmetic that was built once per call site built once
+(string completion, the second displacement, the address adders, DIVX's
+negators, bitdiv8), one multiplier where there were four (12 DSP back), one
+bit-field shifter where there were two, and registers shared between
+instruction groups that never overlap. `docs/findings.md` 2026-10-28 has
+every change with its own quartus_map price.
+
+## What to check on the board, in order
+
+Everything in build B's list still applies (the DDR3 payload, 15 kHz, wheel
+modes) - this branch only changes how things are built. The parts most worth
+watching, because they are where an MLAB's write timing would show if the
+bypass reasoning were wrong somewhere:
+
+- **Virtua Racing attract and a race**: CPU, TGP and 3D all ride the new
+  register files. Any wrong value shows fast - a crash, a frozen TGP, broken
+  geometry.
+- **Sound in every game, and Star Wars' effects**: the 68000's register file,
+  the PCM tags and the MultiPCM sample number all moved.
+- **Virtua Fighter and NetMerc**: the V60's FP group and the bit/string
+  instructions; nothing in VR exercises all of them.
+- Compare against build B (`build/Model1_ddr3crt_nq4096_seed11_41303.rbf`) if
+  anything looks different: it should not, to the frame.
+
+## How it was proven, and how to repeat it
+
+- `make m1_frame ... FRAME_HASH=1` prints cycle hashes of the V60 bus, the 3D
+  ports and the video every frame (see `findings.md` for what is folded in).
+  Run the base and the change with the same input script and diff the HASH
+  lines; the first difference is the frame they part on.
+- The race (vr_race.txt, 1.1e9 cycles): identical cycle hashes on all 894 frames, and the final frame, audio, TGP traffic and 3D streams byte-identical.
+- VF (vf_match.txt) and Star Wars attract, 3e8 cycles: identical hashes and
+  byte-identical picture, audio, TGP traffic and 3D streams.
+- render3d's 36-run DDR3 sweep, `make test`, the V60 unit suite (29/29), the
+  FTZ FP bench's log and the sound board bench's WAV: all identical to the
+  base.
+- quartus_map per change: stage with `MISTER_STAGE=<dir> bash
+  tools/mister_project.sh`, write `build_id.v` by hand (it is the pre-flow
+  script's job and quartus_map alone does not run it), then `quartus_map
+  Model1` - six minutes. **Map estimates move by +/-50 for identical RTL**;
+  do not trust a smaller delta.
+
+## Failure modes found on the way - read before doing more of this
+
+- **A bare `ramstyle = "MLAB"` on an asynchronously read array is silently
+  NOT inferred** ("uninferred due to unsupported read-during-write behavior").
+  `"MLAB, no_rw_check"` is required. The PCM fetch's tag array had carried
+  a bare MLAB attribute once and was reverted to plain; it may never have
+  been an MLAB at all.
+- **The cycle after an MLAB write is "don't care" for a read of that
+  address.** The write inputs are registered at the edge and the cell is
+  written during the next cycle. Every MLAB here either bypasses the last
+  clock's write or has a written reason it cannot be read then.
+- **Icarus binds names in source order.** Six V60 unit tests run under
+  Icarus; a wire or task used above its declaration builds under Verilator
+  and Quartus and fails there. Several tasks moved below the wires they read
+  for this reason.
+- **Tests poke internals by name.** `cpu.r[n] = ...` now goes through
+  `rf_poke` (tools/run_v60_tests.sh rewrites it); `cpu.fp_a` became `op1`;
+  `tb_v60_audit` reads ATBR0..ADTMR1 and PIR by name, which are now
+  simulation-only views of the MLAB.
+- **fx68k.sv has mixed line endings** (CRLF and LF in the same file). Edit it
+  with tools that preserve both.
+- **Hoisting a value that differs per site into one mux can cost more than
+  the copies it saves** - the new-PSW hoist mapped +123 and was reverted.
+
+---
+
 # 2026-10-27: QUAD PAYLOAD IN DDR3, 15 kHz, WHEEL MODES, MORE ROOM. NOT YET ON HARDWARE.
 
 Branch **`ddr3-crt-wheel`** (local, not pushed). Two builds to test, both
