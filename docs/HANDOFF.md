@@ -1,3 +1,80 @@
+# 2026-10-28: TILE OVERRUNS - 0 LOST LINES IN THE FULL SYSTEM AT THE BOARD'S CLOCKS. NOT YET ON HARDWARE.
+
+Branch **`tile-overrun`** (local, not pushed), on `alm-save`. Build to test:
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| alm-save, seed 3 (on the board) | 16e6d88 | 35,156 | 541 | 50 | +1.038 | +1.070 | +4.141 | +0.100 | +0.189 |
+| **tile-overrun, seed 5** | 2d561d3 | **35,230** | **525** | 50 | +0.891 | +1.229 | +5.289 | +0.732 | +0.245 |
+
+**`build/Model1_tile_alm_seed5_35230.rbf`**, md5
+`c671ddff5b217986dd191af14eb91a4f`; reports in `build/tile_alm_s5_reports/`.
+quartus_map 34,530 -> 34,572 ALM. Seeds 3 and 11 fitted too (pll_hdmi -0.007
+and +0.037); seed 5 is the one with every clock positive by a margin.
+
+## What it fixes, and how it was found
+
+`findings.md` 2026-10-28 has the whole of it. Short version:
+
+- **The frame bench could not see the overruns because its clocks were
+  stale**: 23.5/47 MHz against the board's 29.47/58.95. At the board's clocks
+  (`FRAME_DEFS=+define+BOARD_CLOCKS`) the same RTL loses 1,734 lines in the VR
+  race and 2,780 in the VF match. This branch: **0 and 0**.
+- The cause was the fetch engine's own overhead on dense screens (VR's course
+  select: 148 character rows on one line, L+4 cycles each). Fixed in two
+  parts: requests back to back with masked columns not fetched
+  (`m1_tile_fetch`), and a ring of four line buffers so a slow line spends what
+  its neighbours saved (`m1_video`) - which also gives 16 M10K back.
+- The 3D is untouched in every run: same list swaps, bands, 0 late, 0 dropped.
+
+## What to check on the board, in order
+
+1. **Virtua Racing's course select** (the map pictures and the chequered
+   background): the worst screen measured, it lost ~20 lines a frame.
+2. **A Virtua Fighter fight** (the bench lost ~20 lines a frame from the
+   character-select onward) and **a VR race**.
+3. Everything alm-save's list says still applies; compare against
+   `build/Model1_almsave_seed3_35156.rbf` if anything else looks different.
+   One known benign difference: a screen being wiped while it is drawn can
+   differ by a tile for one frame (the two engines read tile RAM at different
+   moments; findings has frame 666).
+
+## Instruments added
+
+- `make m1_frame ... FRAME_DEFS=+define+BOARD_CLOCKS` - the board's clocks.
+  The bench's default is still 23.5/47, so earlier logs stay comparable; use
+  the define for anything about contention or deadlines.
+- `TILE2D:` lines in the frame bench: every lost display line with its frame
+  and line number, the worst line render against 3,280, and the character
+  port's latency histogram. `TILE2D-PROGRESS` every 50 M cycles.
+- `tools/mame_tile_dump.lua` + `make video2d` (`sim/video/tb_m1_video2d.cpp`):
+  MAME's tile RAM, character RAM and palette replayed through `m1_video`
+  against its line deadline, at a fixed, jittered or measured (`-hist`) port
+  latency; every pixel checked, every frame hashed. 20,112 frames of six
+  titles took ~20 minutes a configuration on an idle machine. The dumps are
+  ROM-derived and live in `build/tiledump/` (not committed).
+- `tb_m1_tile_fetch` now models `m1_sdram`'s port exactly (rising-edge latch,
+  two-cycle ack) and fuzzes repeats across masked columns at latency 3-200.
+
+## make test
+
+Clean. Every count as on alm-save except **`m1_tile_fetch: checks=1840406
+fails=0`** (was 49,116; the fuzz and the skip tests). Note `m1_geometry`
+reads 11,776 instead of 44,752 when `build/real_objects.txt` is absent - copy
+it in a fresh worktree, it is not a regression.
+
+## Not done
+
+- The line-pair engine (findings, "the next lever") - for a screen dense on
+  every line at latencies past ~22 cycles; nothing measured needs it yet.
+- `tb_m1_video` still runs the 96 MHz divider (/6); left alone because its
+  expected counts are the baseline other work compares against.
+- Fit discipline: every fit batch takes `build/.fit_lock` (mkdir) and starts
+  only with no quartus_fit running; `build/wt-tile/build/fitbatch.sh` does
+  both.
+
+---
+
 # 2026-10-28: ALM-SAVE - 6,147 ALM BACK FITTED, CYCLE-IDENTICAL. NOT YET ON HARDWARE.
 
 Branch **`alm-save`** (local, not pushed), from `ddr3-crt-wheel` at bba4ecd

@@ -20,6 +20,197 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-28 — THE TILE OVERRUNS ARE THE FETCH ENGINE'S OWN OVERHEAD ON DENSE SCREENS, AND THE BENCH RAN AT CLOCKS THAT HID THEM
+
+Branch `tile-overrun`, on `alm-save` (`0ac55df`; first written on `ddr3-crt-wheel`,
+which alm-save is cycle-identical to). Ben sees tile
+overruns on the board; the frame bench reported 18,844 in the Virtua Racing
+race, 18,841 of them during the ROM download and 3 in play.
+
+### Why the frame bench saw three: its clocks were seven weeks old
+
+`tb_m1_frame` ran clk_cpu at 23.529 MHz and clk_3d at 47.059 - the PLL from
+before 2026-09-15. The board runs **29.474 and 58.947** (`rtl/pll`, 560/19 and
+1120/19), a quarter more V60 and 3D traffic on the SDRAM. `FRAME_DEFS=+define+BOARD_CLOCKS`
+now runs the board's. Same RTL (`bba4ecd`), same inputs, every lost line
+counted (TILE2D, below):
+
+    run (1.1 G cycles, 894 frames)   clocks   lines lost in play   worst line
+    VR race, vr_race.txt             bench    4                    3,297
+    VR race, vr_race.txt             board    1,734                3,883
+    VF match, vf_match.txt           board    2,780                3,701
+    SWA, no inputs (settings menu)   board    0                    2,160
+
+(line = 3,280 cycles: 656 dots x 5 at 80 MHz). VR loses lines from frame 412
+(the course select) and through the race; VF about 20 a frame from frame 606.
+**So the full-system bench reproduces the board once it runs the board's
+clocks.** Every frame bench figure taken at 23.5/47 MHz under-states SDRAM
+contention; treat them as such.
+
+Two counting faults, both fixed: `dbg_overruns` counted a line_start only in
+Q_RUN - one landing in the per-layer register reads or Q_NEXT is just as lost
+(49 of VR's 1,734) - and nothing said WHICH line, so a loss in vblank could not
+be told from one on screen. The bench's TILE2D census now counts every refused
+line_start, names the line, and prints the character port's latency as a
+histogram: in play the port waits a mean of **16.3-18.2 cycles**, mode 12,
+tail to 97.
+
+### The instrument that reproduces it in seconds: MAME's own scenes
+
+The frame bench takes ~2 h a race and reaches only what our V60 reaches. A
+line's cost is a function of tile RAM, character RAM and the row mask alone,
+so `tools/mame_tile_dump.lua` dumps those (plus palette) from MAME at a run of
+frames, any title, and `tb_m1_video2d` (`make video2d`) replays each snapshot
+through the real `m1_video`, the character port answering as `m1_sdram` does
+(request latched on its rising edge, ack held two cycles), after a fixed
+latency, a jittered one, or one drawn from the frame bench's histogram. Every
+visible pixel is checked against the end-to-end reference, every lost line
+counted, every frame hashed. Six titles, attract and play: **20,112 frames**.
+
+### The cause: 148 fetches at L+4, and the engine's overhead was the +4
+
+Not bandwidth - 2026-09-04 stands, and the controller is still mostly idle.
+The densest real line is Virtua Racing's **course select** (Virtua Formula's
+is the same screen): **148** distinct character rows across the four layers.
+The old engine paid **L+4** cycles a fetch - round trip, then check, tile read,
+raise and hand-off in series - so that line took `2,560 + 148 x (L - 10)`
+cycles: **3,448 at L = 16**, fitting only to L = 15, a cycle under the mean.
+Replayed at L = 16, the old engine loses lines in 352 of 10,056 frames (7,060
+lines), all of them course select; at the measured histogram, in about one
+frame in ten across all six titles.
+
+### The fix, part 1: the engine's overhead (`rtl/video/m1_tile_fetch.sv`)
+
+- **Lookahead, requester and emitter, decoupled by a 4-entry descriptor queue
+  and a 2-entry data queue.** The next columns' tile words are read while a
+  request is in flight, and the next request rises the cycle after the ack's
+  own: **L+1 a fetch**. The port contract is unchanged - one outstanding,
+  rising edge, address held from it, the held second ack cycle ignored on the
+  raise.
+- **A column the mixer cannot see is not fetched**: the window pair's other map
+  (VR's tilemap 3 - a whole layer, every line), both mask columns set, or the
+  split covering both ends. `!masked` gates both mixer passes, so what the line
+  buffer holds there is immaterial; the masked bit is still written per pixel.
+  On the course select 34 of the 148 are such columns.
+- The emitter takes the next column on the last cycle of the previous one: two
+  cycles a column, not three.
+- `Q_HSCR` loads the latched frame configuration in one cycle instead of seven
+  states of tile-RAM reads whose results were discarded.
+
+Course select, worst line, old -> new: **3,448 -> 2,265** at L = 16; at the
+measured histogram 3,669 (46 lines lost) -> 2,455 (none); at 1.25x it 2,949
+(none); at 1.5x, 12. Fixed latency: the new engine is clean on every scene to
+L = 20-22 and loses lines in 161 of 2,520 frames at L = 24.
+
+### The fix, part 2: a ring of four line buffers (`m1_video.sv`)
+
+Part 1 alone, in the full system at the board's clocks, took the VR race from
+1,734 lost lines to **72** and the VF match from 2,780 to **1**. What was left
+were isolated lines in the race (frames 698-880, lines ~129-180), each a few
+dozen to ~200 cycles over while its neighbours had hundreds spare: the 3D
+layer's SDRAM traffic stretches the character port's latency on exactly those
+lines (the race's latency tail reaches 108). That is variance, and a double
+buffer cannot absorb variance - every line had exactly one line period
+whatever its neighbours needed.
+
+So line L now lives in bank L[1:0] of a four-bank ring, and the renderer
+starts a line as soon as its bank is free - up to three lines ahead of the
+beam - and stops only to wait for one. A line whose display has begun is
+skipped; a display line whose buffer is not finished repeats the previous one,
+as before, and is counted (`lost_line`, `lost_no` for the benches). The four
+banks are one 512 x 15 memory per layer and lane, **16 M10K where the double
+buffer took 32**. The frame's configuration is still latched by the first
+render to start after vblank begins - one of the blank lines just past 383,
+as before.
+
+Replayed, the ring changes nothing where latency is steady (a dense screen is
+dense on every line) and removes the variance losses: course select at 1.5x
+the measured latency histogram, 23 lost lines -> 0.
+
+Measured with both parts, the full system at the board's clocks (same runs,
+same inputs as the table above):
+
+    run                 base (bba4ecd)   part 1 only   parts 1 + 2
+    VR race, lost       1,734            72            **0**
+    VF match, lost      2,780            1             **0**
+    worst line render   3,883            3,478         3,560 (absorbed)
+
+Same 363 / 371 display-list swaps, 42,817 bands, 0 late, 0 dropped quads in
+every case: the 3D is untouched. Replayed (6 titles, 5,028 frames at the
+board's measured latency histogram): base loses lines in 538 frames (13,788
+lines); part 1 alone in none at 1.0x and 175 frames at 1.25x; with the ring
+**none at 1.0x or 1.25x**, 290 frames at 1.5x.
+
+### Cost, fitted (Quartus 17.0, on alm-save)
+
+quartus_map: 34,530 -> **34,572 ALM (+42)**. Fitted at seed 5: **35,230 ALM,
+525 M10K (alm-save: 541), 50 DSP**, every clock positive at Slow 1100mV 100C -
+clk_3d +0.891, clk_sys +1.229, clk_cpu +5.289, pll_hdmi +0.732, worst hold
++0.245. Seeds 3 and 11: 35,129 / 35,157 ALM, pll_hdmi -0.007 / +0.037, ours
+positive. (Part 1 alone on ddr3-crt-wheel had fitted +23 ALM at seed 11 against
+build B, with pll_hdmi negative on four seeds of five - the framework's clock,
+seed lottery, as recorded for build A.)
+
+### Unchanged picture
+
+- L = 12, where the old engine never overruns: **10,056 of 10,056 frames
+  byte-identical**, old against new - part 1 alone, and part 1 with the ring.
+- L = 16: the 9,704 frames the old engine drew in time are identical; the 352
+  it did not are the only ones that differ, and in all of them the new engine
+  matches the reference and the old does not.
+- The full system, bench clocks (`vr_race.txt`, 894 frames, part 1): final
+  frame byte for byte, the same 316 list swaps, 42,817 bands, 0 late, 0
+  dropped; the old engine's 4 lost lines are 0.
+- The full system, board clocks, with the ring: of the 204 frames dumped
+  from both runs (every second frame from 488 on), 203 are byte-identical to
+  the old engine's. The one that is not, frame 666, differs in 16 pixels of
+  row 54 in the middle of a screen wipe: the game was rewriting those two
+  tiles while the line was being rendered, and the two engines read tile RAM
+  at different moments. Neither is MAME's answer (MAME draws the whole frame
+  at vblank). CAUTION: the dumps are every second frame and VR works on a
+  two-frame cadence, so the lost lines - all in even-numbered frames by the
+  bench's count - may sit in the frames that were not dumped. That those
+  repeats are invisible is NOT shown.
+- alm-save + this branch against ddr3-crt-wheel + this branch, board clocks:
+  307 dumped frames, 0 differ - alm-save's cycle identity holds with it.
+
+### What went wrong on the way
+
+- **The first invisibility test was `pmask(first) && pmask(last)`**: both end
+  pixels masked, but by DIFFERENT causes - the split boundary inside a column
+  whose right half the row mask hides - with visible pixels between. The new
+  fuzz in `tb_m1_tile_fetch` (repeats across masked columns, latency 3-200 with
+  jitter, 3,600 lines) failed 104 pixels on it; each cause is now tested for
+  the whole column. 60,000 fuzzed lines clean after.
+- **The unit bench's port model dropped ack with the request.** `m1_sdram`
+  holds it two cycles, and a requester that re-raises at once sees the second.
+  The model now latches on the rising edge, holds ack and counts protocol
+  errors. `tb_m1_video` still divides by 6 - the 96 MHz design's 3,936-cycle
+  line - which is 20% more time than the board has; `tb_m1_video2d` divides by
+  5.
+- **Reading the latched config arrays at a second place made Quartus 17.0 infer
+  `f_ctrl_l` as a 4 x 16 altsyncram** - a block for 64 bits, on a chip whose
+  binding resource is M10K. Caught in the quartus_map RAM summary, not in a
+  fit; `ramstyle = "logic"` on the four arrays and the new queues.
+- The descriptor first carried the 18-bit character address. It is the tile
+  number and the row side by side - the decode's `+` adds into zero bits - so
+  the requester rebuilds it from the queued tile word: -72 flops.
+
+### Not done: the next lever, modelled
+
+A line-PAIR engine - fetch four words, which are rows r and r+1 of the same
+tile, and render two lines at once (the ring already has the banks) - halves
+the fetches on every pair that does not cross a tile row: the lever for a
+screen that is dense on EVERY line, which the ring cannot help. Modelled on the
+same 20,112 frames at constant latency: the new engine clean to L ~ 24 (the RTL
+replay says ~22), the pair engine to ~32. It restructures the sequencer, and
+the one earlier use of a
+four-word burst's upper half (`3a7c6b6`, the next-scanline cache) broke
+alternate lines on hardware for a reason never found. Not attempted without a
+bench that reproduces that failure.
+
+---
+
 ## 2026-10-28 — 6,147 ALM BACK FITTED (5,478 BY quartus_map), AND NO BENCH CAN TELL THE DIFFERENCE
 
 Branch `alm-save`, from `ddr3-crt-wheel` at bba4ecd (build B: 41,303 / 41,910
