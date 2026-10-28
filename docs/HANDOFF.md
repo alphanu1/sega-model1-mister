@@ -22,6 +22,13 @@ ran through all of memory. `findings.md` 2026-10-28 (b) has the evidence.
 - Proof: `tools/run_m1_main.sh` `muldiv_memory` - before `3`/`9`, after `0`/`15`.
   V60 unit suite 29/29. `make test` identical to tile-overrun's block. The
   attract wrap itself is ~10^10 cycles of frame bench and was not run.
+- **The race is no longer cycle-identical, and should not be**: `vr_race.txt`
+  at the board's clocks matches tile-overrun's hashes through frame 400 and
+  differs from frame 425 (the course select) - the game executes MUL/DIV/REM
+  into memory there, and the old core skipped the store. Before the V60 fix,
+  this branch was identical through frame 700. Which instruction, and that the
+  new value is MAME's, is not yet traced (`make v60_trace` with a longer
+  window, or a MAME tap on the destination).
 
 **The build for the board: `build/Model1_vrfreeze_v60fix_diag_seed3_35921.rbf`**,
 md5 `40a2e33ab0de064a171c8f1a592ef120` (commit `89a636a` + the diagnostic
