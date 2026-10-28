@@ -299,12 +299,13 @@ int main(int argc, char** argv) {
       while (true) {
         tick();
         uint8_t q = r->m1_video__DOT__q;
-        if (r->m1_video__DOT__line_start) {
-          if (q != 0) {
-            int cl = r->m1_video__DOT__cur_line;
-            ovr++;
-            if (cl < V_VIS || cl == V_TOTAL - 1) ovr_vis++;
-          }
+        // A lost line is a display line whose buffer was not finished when
+        // the beam reached it: m1_video's lost_line, with the line number.
+        // (Before the ring of line buffers this was a line_start finding the
+        // sequencer busy, and the loss fell on that render line and the next.)
+        if (r->m1_video__DOT__lost_line) {
+          ovr++;
+          if (r->m1_video__DOT__lost_no < V_VIS) ovr_vis++;
         }
         // Line duration: the sequencer leaves Q_IDLE the cycle after an
         // accepted line_start and returns when the fourth layer is done.

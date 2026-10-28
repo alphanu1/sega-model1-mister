@@ -1676,25 +1676,28 @@ longint l2_over90 = 0, l2_over75 = 0;
 initial for (int i = 0; i < 17; i++) l2_hist[i] = 0;
 always @(posedge clk) if (rst_n_sys) begin
     l2_now = l2_now + 1;
-    if (core.video.line_start) begin
-        if (4'(core.video.q) != 4'd0) begin
-            if (!loader_done) l2_ovr_dl = l2_ovr_dl + 1;
-            else begin
-                l2_ovr = l2_ovr + 1;
-                if (4'(core.video.q) != 4'd11) l2_ovr_hdr = l2_ovr_hdr + 1;  // not Q_RUN
-                if (core.video.cur_line < 384 || core.video.cur_line == 423) begin
-                    l2_ovr_vis = l2_ovr_vis + 1;
-                    if (l2_prints < 300) begin
-                        l2_prints = l2_prints + 1;
-                        $display("TILE2D: overrun frame %0d render line %0d layer %0d state %0d at %0d cycles",
-                                 frames, core.video.cur_line, core.video.cur_layer,
-                                 4'(core.video.q), l2_now);
-                    end
+    // A lost line is a DISPLAY line whose buffer was not finished when the beam
+    // reached it - m1_video's lost_line/lost_no since the ring of four line
+    // buffers. (With the double buffer it was a line_start finding the
+    // sequencer busy: render line L repeated and L+1 never drawn.)
+    if (core.video.lost_line) begin
+        if (!loader_done) l2_ovr_dl = l2_ovr_dl + 1;
+        else begin
+            l2_ovr = l2_ovr + 1;
+            if (4'(core.video.q) != 4'd11) l2_ovr_hdr = l2_ovr_hdr + 1;  // not in Q_RUN
+            if (core.video.lost_no < 384) begin
+                l2_ovr_vis = l2_ovr_vis + 1;
+                if (l2_prints < 300) begin
+                    l2_prints = l2_prints + 1;
+                    $display("TILE2D: overrun frame %0d display line %0d (rendering line %0d layer %0d state %0d) at %0d cycles",
+                             frames, core.video.lost_no, core.video.cur_line, core.video.cur_layer,
+                             4'(core.video.q), l2_now);
                 end
             end
-        end else begin
-            l2_t0 = l2_now; l2_busy = 1; l2_line = core.video.line_number;
         end
+    end
+    if (!l2_busy && 4'(core.video.q) != 4'd0) begin
+        l2_t0 = l2_now; l2_busy = 1; l2_line = core.video.cur_line;
     end else if (l2_busy && 4'(core.video.q) == 4'd0) begin
         automatic longint d = l2_now - l2_t0;
         l2_busy = 0;

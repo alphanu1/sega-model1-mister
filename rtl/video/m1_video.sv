@@ -260,8 +260,27 @@ module m1_video #(
   end
 
   // ------------------------------------------------------- line buffers
-  // Double buffered: `bank` is written while ~bank is displayed.
-  logic bank;
+  // A RING OF FOUR, NOT A DOUBLE BUFFER. Line L lives in bank L[1:0] (424 lines
+  // is 4 x 106, so the mapping is the same every frame). The renderer may run
+  // up to three lines ahead of the beam and a slow line spends the time the
+  // fast ones before it banked; with two banks every line had exactly one
+  // line period, whatever its neighbours needed.
+  //
+  // Measured, 2026-10-28, the full system at the board's clocks: with the
+  // decoupled fetch engine the race still lost isolated lines - 37 in
+  // frames 698-844, each a few dozen cycles over, its neighbours with ~800 to
+  // spare - because the 3D layer's SDRAM traffic stretches the character
+  // port's latency on exactly those lines. That is a variance problem, and a
+  // line of slack is the answer to variance; see docs/findings.md 2026-10-28.
+  //
+  // The four banks cost nothing in block RAM: each (layer, lane) is ONE
+  // 512 x 15 memory - bank and group as the address, one M10K in 512 x 20 - so
+  // the ring is 16 blocks where the double buffer was 32.
+  logic [1:0]  disp_bank;              // the bank the beam is reading
+  logic [8:0]  r_next;                 // the next line to render
+  logic [8:0]  btag [4];               // the line each bank holds, complete
+  logic        lost_line;              // a display line found no finished buffer
+  logic [8:0]  lost_no;                // ...and which (for the benches)
   logic [14:0] rd_q [4];              // {masked, prio, transparent, pal_index}
 
   // EIGHT SEPARATE RAMS, NOT ONE ARRAY INDEXED BY BANK
@@ -279,7 +298,7 @@ module m1_video #(
   // a single M10K. Both banks are read every cycle at the same address and the
   // result is muxed afterwards, which costs a 14-bit mux instead of an address
   // mux and keeps the memories inferrable.
-  wire [14:0] lb_q [2][4];
+  wire [14:0] lb_q [4];
 
   // ---------------------------------------------------------- sequencer
   typedef enum logic [3:0] {
@@ -532,6 +551,15 @@ module m1_video #(
   logic        seq_owns_tram;
   assign tram_addr = seq_owns_tram ? seq_tram_addr : f_tram_addr;
 
+  // Where r_next stands against the beam: (r_next - vcnt) mod 424, 0..423.
+  // 1..3 is the window a line may start in; 0, or more than half a frame,
+  // means the beam has reached or passed it.
+  wire [9:0] rn_sum   = {1'b0, r_next} + 10'd424 - vcnt;
+  wire [8:0] rn_diff  = (rn_sum >= 10'd424) ? 9'(rn_sum - 10'd424) : rn_sum[8:0];
+  wire       rn_behind = (rn_diff == 9'd0) || (rn_diff > 9'd212);
+  wire       rn_go     = (rn_diff <= 9'd3) && (disp_bank != r_next[1:0]);
+  wire [8:0] v_next    = (vcnt == 10'd423) ? 9'd0 : 9'(vcnt + 10'd1);
+
   m1_tile_fetch #(.COLUMNS(COLUMNS)) fetch (
     .clk(clk), .rst_n(rst_n),
     .start(f_start), .line(cur_line), .layer(cur_layer),
@@ -556,41 +584,55 @@ module m1_video #(
       dbg_ctrl[0] <= '0; dbg_ctrl[1] <= '0;
       mask_r <= '0; mask_i <= '0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
-      bank <= 1'b0; dbg_fetches <= '0; dbg_overruns <= '0;
+      dbg_fetches <= '0; dbg_overruns <= '0;
+      disp_bank <= 2'd0; r_next <= '0; lost_line <= 1'b0; lost_no <= '0;
+      for (int i = 0; i < 4; i++) btag[i] <= 9'h1ff;   // no line is 511
     end else begin
-      f_start <= 1'b0;
+      f_start   <= 1'b0;
+      lost_line <= 1'b0;
       // Arm the config latch at VBLANK BEGIN - MAME's read point - and let the
       // next line-start consume it, since the sequencer owns tile RAM only on
       // its own schedule.
       vbs_d <= vblank_start;
       if (cfg_latch_point) cfg_pending <= 1'b1;
 
-      // A line_start that finds the sequencer anywhere but Q_IDLE is lost, in
-      // whichever state it lands - the per-layer register reads and Q_NEXT as
-      // much as Q_RUN. This was counted in Q_RUN only, which missed the ones
-      // landing between layers (tb_m1_frame's TILE2D census counts them all).
-      // Saturating, not wrapping: a counter that rolls over reads as a small
-      // number on a screen and says the opposite of what happened.
-      if (line_start && q != Q_IDLE && !(&dbg_overruns))
-        dbg_overruns <= dbg_overruns + 1'd1;
+      // THE BEAM MOVES ON at line_start: the next display line takes its bank
+      // if that line is finished. If it is not, the beam shows the bank it was
+      // already reading - the previous line again, a repeated scanline, the
+      // same locally-wrong-but-stable failure the double buffer had - and the
+      // line is LOST: counted, saturating (a counter that wraps reads as a
+      // small number and says the opposite of what happened). Every lost
+      // display line is counted, vblank's included; lost_no says which.
+      if (line_start) begin
+        if (btag[v_next[1:0]] == v_next) disp_bank <= v_next[1:0];
+        else begin
+          lost_line <= 1'b1;
+          lost_no   <= v_next;
+          if (!(&dbg_overruns)) dbg_overruns <= dbg_overruns + 1'd1;
+        end
+      end
 
       case (q)
+        // The next line starts as soon as its bank is free: the line it held
+        // (r_next - 4) has been displayed, which is r_next at most three ahead
+        // of the beam, and the beam is not still reading that bank as a
+        // repeat. A line whose display has already begun is skipped - it can
+        // no longer be shown - and the renderer resumes at the line after the
+        // beam's, which is how the double buffer resynchronised too.
         Q_IDLE: begin
           seq_owns_tram <= 1'b1;
-          if (line_start) begin
-            // Fetch the config only on the FIRST visible line of a frame; every
-            // other line reuses what that pass latched.
+          if (rn_behind) r_next <= v_next;
+          else if (rn_go) begin
+            // Fetch the config only on the first render to start after vblank
+            // begins; every other line reuses what that pass latched. With the
+            // ring that render is one of the blank lines just past 383, three
+            // ahead at most, exactly as before.
             latch_cfg <= cfg_pending || !cfg_valid;
             if (cfg_pending) begin cfg_valid <= 1'b1; cfg_pending <= 1'b0; end
-            // Only reached when the previous line finished in time. If it did
-            // not, the sequencer is still in Q_RUN and this edge is ignored —
-            // see the overrun note on Q_RUN.
-            cur_line    <= line_number;
+            cur_line    <= r_next;
+            r_next      <= (r_next == 9'd423) ? 9'd0 : r_next + 9'd1;
             cur_layer   <= 2'd0;
             dbg_fetches <= '0;
-            // Flip on the line boundary: what was just rendered becomes what
-            // is displayed.
-            bank        <= ~bank;
             q           <= Q_HSCR;
           end
         end
@@ -716,14 +758,9 @@ module m1_video #(
           // m1_tile_fetch and docs/findings.md 2026-10-28. When it is,
           // line_start arrives while the sequencer is still busy.
           //
-          // Ignoring it, which is what happens by virtue of not being in
-          // Q_IDLE, means the bank does not flip and the line already in the
-          // display buffer is shown again. That is a repeated scanline: wrong,
-          // but locally wrong and stable. Flipping mid-fetch instead would
-          // send the remaining writes to the buffer being displayed, tearing
-          // every layer of every following line — a whole-screen failure from
-          // a one-line overrun.
-          // Counted below, in every state, not only here.
+          // The beam then repeats the line it has and this one is lost; see
+          // the line_start block above. A bank is only displayed once its
+          // line is finished, so a late line can never tear a shown one.
 
           if (f_done) begin
             if (f_fetches > dbg_fetches) dbg_fetches <= f_fetches;
@@ -733,8 +770,10 @@ module m1_video #(
 
         Q_NEXT: begin
           seq_owns_tram <= 1'b1;
-          if (cur_layer == 2'd3) q <= Q_IDLE;
-          else begin
+          if (cur_layer == 2'd3) begin
+            btag[cur_line[1:0]] <= cur_line;      // finished: displayable
+            q <= Q_IDLE;
+          end else begin
             cur_layer <= cur_layer + 2'd1;
             q         <= Q_HSCR;
           end
@@ -763,54 +802,56 @@ module m1_video #(
   // A per-lane byte-enable would have been the obvious alternative and Quartus
   // 17.0 does not infer RAM from it at all — see rtl/m1_mainram.sv, where that
   // idiom cost 28,816 ALM before it was found.
-  genvar gb, gl, gn;
+  genvar gl, gn;
   generate
-    for (gb = 0; gb < 2; gb++) begin : g_bank
-      for (gl = 0; gl < 4; gl++) begin : g_layer
-        logic [14:0] lane_q [4];
-        logic [1:0]  sel_q;
+    for (gl = 0; gl < 4; gl++) begin : g_layer
+      logic [14:0] lane_q [4];
+      logic [1:0]  sel_q;
 
-        for (gn = 0; gn < 4; gn++) begin : g_lane
-          logic [14:0] mem [128];
+      for (gn = 0; gn < 4; gn++) begin : g_lane
+        // All four banks in one memory, the bank as the top address bits:
+        // indices that are signals, but on the ADDRESS of a one-write one-read
+        // memory, which Quartus infers - not a select between arrays, which it
+        // does not (the 28,816-ALM note above).
+        (* ramstyle = "M10K" *) logic [14:0] mem [512];
 
-          // Which incoming pixel belongs to this lane, and which group it
-          // lands in. Pixels before the base's own lane have wrapped into the
-          // next group.
-          logic [1:0] widx;
-          logic [8:0] wpos;
-          logic [6:0] waddr;
-          logic       wen;
-          assign widx  = 2'(gn[1:0] - f_lb_addr[1:0]);
-          // The screen position this lane is writing, then its group. Written
-          // as the sum rather than "base group plus a carry" because the carry
-          // form makes lane 3's comparison constant, which is true but reads
-          // as a mistake and trips -Wall.
-          assign wpos  = f_lb_addr + 9'(widx);
-          assign waddr = wpos[8:2];
-          assign wen   = f_lb_we[widx] && (bank == gb[0])
-                       && (cur_layer == 2'(gl));
+        // Which incoming pixel belongs to this lane, and which group it
+        // lands in. Pixels before the base's own lane have wrapped into the
+        // next group.
+        logic [1:0] widx;
+        logic [8:0] wpos;
+        logic [8:0] waddr;
+        logic       wen;
+        assign widx  = 2'(gn[1:0] - f_lb_addr[1:0]);
+        // The screen position this lane is writing, then its group. Written
+        // as the sum rather than "base group plus a carry" because the carry
+        // form makes lane 3's comparison constant, which is true but reads
+        // as a mistake and trips -Wall.
+        assign wpos  = f_lb_addr + 9'(widx);
+        assign waddr = {cur_line[1:0], wpos[8:2]};
+        assign wen   = f_lb_we[widx] && (cur_layer == 2'(gl));
 
-          always_ff @(posedge clk) begin
-            if (wen)
-              mem[waddr] <= {f_lb_masked[widx], f_lb_prio[widx], f_lb_transparent[widx],
-                             f_lb_pal[widx]};
-            lane_q[gn] <= mem[hcnt[8:2]];
-          end
+        always_ff @(posedge clk) begin
+          if (wen)
+            mem[waddr] <= {f_lb_masked[widx], f_lb_prio[widx], f_lb_transparent[widx],
+                           f_lb_pal[widx]};
+          lane_q[gn] <= mem[{disp_bank, hcnt[8:2]}];
         end
-
-        // The select is registered from the same hcnt as the address, so the
-        // mux picks the lane that address fetched. Registering only the data
-        // and muxing with live hcnt would take the wrong lane for the cycles
-        // between a counter step and the read landing.
-        always_ff @(posedge clk) sel_q <= hcnt[1:0];
-        assign lb_q[gb][gl] = lane_q[sel_q];
       end
+
+      // The select is registered from the same hcnt as the address, so the
+      // mux picks the lane that address fetched. Registering only the data
+      // and muxing with live hcnt would take the wrong lane for the cycles
+      // between a counter step and the read landing.
+      always_ff @(posedge clk) sel_q <= hcnt[1:0];
+      assign lb_q[gl] = lane_q[sel_q];
     end
   endgenerate
 
-  // Writes go to the bank being rendered; reads come from the other one.
+  // The beam reads disp_bank; the renderer writes cur_line's bank, never the
+  // one being read (rn_go).
   always_comb
-    for (int L = 0; L < 4; L++) rd_q[L] = lb_q[bank ? 0 : 1][L];
+    for (int L = 0; L < 4; L++) rd_q[L] = lb_q[L];
 
   // ------------------------------------------------------------- mixing
   logic [3:0][11:0] mix_pal;
