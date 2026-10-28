@@ -188,11 +188,21 @@ localparam integer PRELOAD_WORDS = 32'h420000;
 // the real ones do instead of lining up every fourth cycle forever.
 reg clk = 0, clk_cpu = 0, clk_3d = 0, rst_n = 0;
 always #6.25 clk     = ~clk;      // 80 MHz
+`ifdef BOARD_CLOCKS
+// THE CLOCKS THE BOARD RUNS. rtl/pll's outputs are 29.473684 MHz for clk_cpu and
+// 58.947368 MHz for clk_3d (560/19 and 1120/19); the bench's 23.529/47.059 are
+// the PLL from before the 2026-09-15 fit and under-model the load the V60 and
+// the 3D layer put on the SDRAM by a quarter. Half periods 16.964/8.482 ns keep
+// clk_3d exactly double clk_cpu, which the CDC relies on.
+always #16.964 clk_cpu = ~clk_cpu;
+always #8.482  clk_3d  = ~clk_3d;
+`else
 always #21.25 clk_cpu = ~clk_cpu;   // 23.529 MHz, matching the PLL (800/34)
 // 47.059 MHz, the PLL's 800/17 and an exact double of clk_cpu. 10.625 ns is
 // expressible at this timescale's 1 ps precision; rounding it to 10 or 11 would
 // break the exact halving the CDC relies on.
 always #10.625 clk_3d = ~clk_3d;
+`endif
 
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
@@ -1642,6 +1652,99 @@ end
 always @(posedge clk) begin
     ov_tile += 16'(dbg_overruns - pv_tile); pv_tile = dbg_overruns;
 end
+
+// ------------------------------------------------ THE 2D LINE, MEASURED WHOLE
+//
+// dbg_overruns counts a line_start that lands while the sequencer is in Q_RUN.
+// A line_start in any other non-idle state (the per-layer register reads, or
+// Q_NEXT) is just as lost and is not counted, so this counts every line_start
+// the sequencer did not accept. It also says WHICH line: an overrun on render
+// line L repeats display line L and leaves L+1 unrendered, so only L < 384 or
+// L == 423 (whose neighbour is line 0) can be seen. The rest land in vblank.
+//
+// And how close the others came: the time from accepting a line_start to the
+// sequencer returning to idle, against the 3,280-cycle line (656 dots x 5).
+localparam int L2_BUDGET = 656 * 5;
+longint l2_lines = 0, l2_ovr = 0, l2_ovr_vis = 0, l2_ovr_dl = 0, l2_ovr_hdr = 0;
+longint l2_hist [0:16];
+longint l2_t0 = 0, l2_now = 0, l2_worst = 0, l2_worst_vis = 0;
+integer l2_worst_frame = 0, l2_worst_line = 0, l2_prints = 0;
+integer l2_line = 0;
+reg     l2_busy = 0;
+// Lines whose render took longer than 90% / 75% of the budget, in play.
+longint l2_over90 = 0, l2_over75 = 0;
+initial for (int i = 0; i < 17; i++) l2_hist[i] = 0;
+always @(posedge clk) if (rst_n_sys) begin
+    l2_now = l2_now + 1;
+    if (core.video.line_start) begin
+        if (4'(core.video.q) != 4'd0) begin
+            if (!loader_done) l2_ovr_dl = l2_ovr_dl + 1;
+            else begin
+                l2_ovr = l2_ovr + 1;
+                if (4'(core.video.q) != 4'd11) l2_ovr_hdr = l2_ovr_hdr + 1;  // not Q_RUN
+                if (core.video.cur_line < 384 || core.video.cur_line == 423) begin
+                    l2_ovr_vis = l2_ovr_vis + 1;
+                    if (l2_prints < 300) begin
+                        l2_prints = l2_prints + 1;
+                        $display("TILE2D: overrun frame %0d render line %0d layer %0d state %0d at %0d cycles",
+                                 frames, core.video.cur_line, core.video.cur_layer,
+                                 4'(core.video.q), l2_now);
+                    end
+                end
+            end
+        end else begin
+            l2_t0 = l2_now; l2_busy = 1; l2_line = core.video.line_number;
+        end
+    end else if (l2_busy && 4'(core.video.q) == 4'd0) begin
+        automatic longint d = l2_now - l2_t0;
+        l2_busy = 0;
+        if (loader_done) begin
+            l2_lines = l2_lines + 1;
+            l2_hist[(d / 256) > 16 ? 16 : (d / 256)] = l2_hist[(d / 256) > 16 ? 16 : (d / 256)] + 1;
+            if (d > l2_worst) l2_worst = d;
+            if (l2_line < 384 && d > l2_worst_vis) begin
+                l2_worst_vis = d; l2_worst_frame = frames; l2_worst_line = l2_line;
+            end
+            if (d * 10 > L2_BUDGET * 9) l2_over90 = l2_over90 + 1;
+            if (d * 4  > L2_BUDGET * 3) l2_over75 = l2_over75 + 1;
+        end
+    end
+end
+// The character port's latency per request, not only its mean: the line budget
+// is a sum of ~150 of these on a dense line, so the tail matters as much as the
+// average. Rising edge of char_req to the ack, in clk_sys cycles, in play.
+longint cq_hist [0:64];
+longint cq_n = 0, cq_sum = 0, cq_max = 0;
+integer cq_run = 0;
+reg     cq_d = 0;
+initial for (int i = 0; i < 65; i++) cq_hist[i] = 0;
+always @(posedge clk) if (rst_n_sys) begin
+    cq_d <= char_req;
+    if (char_req && !cq_d) cq_run = 1;
+    else if (char_req) cq_run = cq_run + 1;
+    if (char_req && p_ack[1] && loader_done) begin
+        cq_n = cq_n + 1; cq_sum = cq_sum + cq_run;
+        if (cq_run > cq_max) cq_max = cq_run;
+        cq_hist[cq_run > 64 ? 64 : cq_run] = cq_hist[cq_run > 64 ? 64 : cq_run] + 1;
+    end
+end
+always @(posedge clk) if (rst_n_sys && l2_now % 50000000 == 0)
+    $display("TILE2D-PROGRESS %0d M: in-play overruns=%0d visible=%0d worst visible line=%0d  char lat mean=%0d max=%0d n=%0d",
+             l2_now / 1000000, l2_ovr, l2_ovr_vis, l2_worst_vis, cq_n ? cq_sum / cq_n : 0, cq_max, cq_n);
+task automatic report_tile2d;
+    $display("TILE2D: char port latency in play: %0d requests, mean %0d.%02d, max %0d cycles",
+             cq_n, cq_n ? cq_sum / cq_n : 0, cq_n ? ((cq_sum * 100) / cq_n) % 100 : 0, cq_max);
+    $write("TILE2D: char latency histogram 0..64:");
+    for (int i = 0; i < 65; i++) $write(" %0d", cq_hist[i]);
+    $display("");
+    $display("TILE2D: lines rendered in play=%0d  overruns in play=%0d (visible %0d, outside Q_RUN %0d)  during download=%0d",
+             l2_lines, l2_ovr, l2_ovr_vis, l2_ovr_hdr, l2_ovr_dl);
+    $display("TILE2D: line render worst=%0d cycles (visible line worst %0d, frame %0d line %0d) against %0d; >90%%=%0d >75%%=%0d",
+             l2_worst, l2_worst_vis, l2_worst_frame, l2_worst_line, L2_BUDGET, l2_over90, l2_over75);
+    $write("TILE2D: render-time histogram, 256-cycle buckets:");
+    for (int i = 0; i < 17; i++) $write(" %0d", l2_hist[i]);
+    $display("");
+endtask
 `ifndef BASELINE_BENCH
 // DDR3 traffic while the ROM is still streaming. The Model 2 core's reader
 // starved the HPS's own download through the same bridge (its study, R380);
@@ -3393,6 +3496,7 @@ initial begin
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",
              frames, painted, nonblack);
     $display("FRAME: fetch deadline misses = %0d", dbg_overruns);
+    report_tile2d();
     if (swap_n > 0) begin
         $display("FRAME: %0d display-list swaps, mean %0d.%02d frames apart (the board is 2.00 = 100%% speed, so this is %0d%%)",
                  swap_n, swap_sum/swap_n, ((swap_sum*100)/swap_n) % 100,
