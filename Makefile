@@ -676,6 +676,20 @@ m1_tgp:
 	  $(SRCS_m1_tgp) sim/tgp/tb_m1_tgp.cpp -o tb_m1_tgp --Mdir obj_m1_tgp
 	./obj_m1_tgp/tb_m1_tgp
 
+# THE COPROCESSOR REPLAYED AGAINST MAME'S OWN TRAFFIC. tools/mame_tgp_stream.lua
+# records the V60's whole conversation with the TGP from reset; this feeds it
+# to m1_tgp alone and checks every word pushed back against MAME's. Not in
+# `make test`: it needs a ROM set and a capture.
+#   GAME=vf tools/mame_run.sh tools/mame_tgp_stream.lua -video none -sound none
+#   make tgp_replay GAME=vf TGP_STREAM=build/mamerun/tgp_stream.txt
+TGP_STREAM ?= build/mamerun/tgp_stream.txt
+tgp_replay:
+	verilator --cc --exe --build -O2 -Wno-fatal $(VFLAGS) --top-module m1_tgp \
+	  -CFLAGS "-O2 -std=c++17" \
+	  $(SRCS_m1_tgp) sim/tgp/tb_tgp_replay.cpp -o tb_tgp_replay --Mdir obj_tgp_replay
+	./obj_tgp_replay/tb_tgp_replay $(TGP_STREAM) build/rom/$(GAME)_tgp_prog.hex \
+	  build/rom/$(GAME)_tgp_tables.hex build/rom/$(GAME)_stream.bin
+
 test_copro_if:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_copro_if \
 	  -CFLAGS "-O2 -std=c++17" \

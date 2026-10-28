@@ -1785,11 +1785,72 @@ task automatic dump_frame_ppm(input integer fr);
     end
 endtask
 
+// BOTH DISPLAY LISTS beside every captured PPM, raw little-endian 16-bit,
+// so OUR V60's list for a frame can be rendered through render3d and set
+// beside MAME's list for the frame that looks the same. The word count is the
+// list RAM's own; render3d pads the rest. The selected buffer is in the name's
+// companion line of build/frames/dlsel.txt.
+task automatic dump_frame_dlists(input integer fr);
+    integer fh, k;
+    begin
+        for (k = 0; k < 2; k = k + 1) begin
+            fh = $fopen($sformatf("build/frames/d%05d_%0d.bin", fr, k), "wb");
+            if (fh != 0) begin
+                for (integer w = 0; w < 16384; w = w + 1) begin
+                    if (k == 0)
+                        $fwrite(fh, "%c%c", core.main.rams.u_dl0.mem_lo[w], core.main.rams.u_dl0.mem_hi[w]);
+                    else
+                        $fwrite(fh, "%c%c", core.main.rams.u_dl1.mem_lo[w], core.main.rams.u_dl1.mem_hi[w]);
+                end
+                $fclose(fh);
+            end
+        end
+        fh = $fopen("build/frames/dlsel.txt", "a");
+        if (fh != 0) begin
+            $fwrite(fh, "%0d listctl_sel=%0d\n", fr, core.listctl_sel);
+            $fclose(fh);
+        end
+    end
+endtask
+
 integer fb_r [0:H*W-1];
 integer fb_g [0:H*W-1];
 integer fb_b [0:H*W-1];
 integer px = 0, py = 0;
 integer frames = 0, painted = 0, nonblack = 0;
+// THE WHOLE COPROCESSOR CONVERSATION, in tools/mame_tgp_stream.lua's format,
+// so OUR V60's traffic can be set beside MAME's and replayed into the TGP
+// alone (obj_tgp_replay). Every V60 access to the CPR window as it completes,
+// every word the TGP pushes back, and a frame marker. Off unless TGPSTREAM.
+`ifdef TGPSTREAM
+integer ts_f, ts_frame = -1;
+reg ts_ack_d = 1'b0;
+initial ts_f = $fopen("build/tgp_stream.txt", "w");
+always @(posedge clk_3d) begin
+    if (frames != ts_frame) begin
+        ts_frame = frames;
+        $fwrite(ts_f, "F %0d\n", frames);
+        $fflush(ts_f);
+    end
+    ts_ack_d <= core.main.copro.ack;
+    if (core.main.copro.ack && !ts_ack_d) begin
+        if (core.main.copro.we)
+            $fwrite(ts_f, "P W %06h %04h %04h\n",
+                (core.main.copro.sel_adr ? 24'hd00000 : core.main.copro.sel_ram ? 24'hd20000 : 24'hd80000)
+                | {21'd0, core.main.copro.a1, 1'b0},
+                core.main.copro.wdata,
+                {{8{core.main.copro.be[1]}}, {8{core.main.copro.be[0]}}});
+        else
+            $fwrite(ts_f, "I R %06h %04h ffff\n",
+                (core.main.copro.sel_adr ? 24'hd00000 : core.main.copro.sel_ram ? 24'hd20000 : 24'hd80000)
+                | {21'd0, core.main.copro.a1, 1'b0},
+                core.main.copro.q);
+    end
+    if (core.main.copro.fifo_out_push && !core.main.copro.fout_full)
+        $fwrite(ts_f, "T %08h\n", core.main.copro.fifo_out_data);
+end
+`endif
+
 reg     prev_vb = 0;
 
 // PER-FRAME, NOT JUST AT THE END.
@@ -2472,8 +2533,10 @@ always @(posedge clk) begin
         end
         prev_vb <= vid_vb;
 
-        if (PPMEVERY != 0 && vid_vb && !prev_vb && (frames % PPMEVERY == 0))
+        if (PPMEVERY != 0 && vid_vb && !prev_vb && (frames % PPMEVERY == 0)) begin
             dump_frame_ppm(frames);
+            dump_frame_dlists(frames);
+        end
 
         if (!vid_hb && !vid_vb) begin
             if (px < W && py < H) begin
