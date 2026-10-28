@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
         ddr.post();
     };
 
+    d->fb_go = 1;   // the ROM is "loaded" from the start here
     d->mem_rst_n = 0; d->DDRAM_BUSY = 0; d->DDRAM_DOUT_READY = 0; d->DDRAM_DOUT = 0;
     d->rst_n = 0; d->frame_start = 0; d->frame_odd = 0; d->dl_sel = 0;
     d->scan_clk = 0; d->scan_x = 0; d->scan_y = 0; d->dl_valid = 0; d->rom_valid = 0;

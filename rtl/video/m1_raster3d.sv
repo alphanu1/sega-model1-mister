@@ -175,6 +175,11 @@ module m1_raster3d #(
   // FPGA is reconfigured, so the game reset only FLUSHES it (see
   // m1_ddram_payload, and the Model 2 study's R649).
   input  logic        mem_rst_n,
+  // THE ROM IS IN (clk domain). The frame buffer draws nothing and reads
+  // nothing until it is: DDR3 shares the HPS bridge with the download, and the
+  // Model 2 core's reader, which did not wait, killed its coprocessor's boot
+  // (its R380). The band display ignores it.
+  input  logic        fb_go,
 
   // ---- DDR3, through the framework's DDRAM port. DDRAM_CLK is clk.
   output logic        DDRAM_CLK,
@@ -1451,7 +1456,7 @@ module m1_raster3d #(
   // IT IN - the draw is not paced by the beam, so waiting for one only takes
   // time from it. The buffer is free once the last frame drawn in it has been
   // published, the one it replaced has been cleared, and nothing is drawing.
-  wire swap_now  = FB_DDR3 ? ((cst == C_IDLE) && (pst == P_READY) && fb_drawable && !fb_complete)
+  wire swap_now  = FB_DDR3 ? ((cst == C_IDLE) && (pst == P_READY) && fb_drawable && !fb_complete && fb_go)
                            : (sweep_go && (pst == P_READY));
   wire ev_handoff = !FB_DDR3 && (cst == C_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object

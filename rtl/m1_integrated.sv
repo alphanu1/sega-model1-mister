@@ -790,6 +790,8 @@ module m1_integrated (
 
   m1_raster3d u_raster3d (
     .clk(clk_3d), .rst_n(rst_n_3d), .mem_rst_n(rst_sync_m3d[1]),
+    // the ROM loaded, on clk_3d: the TGP's own release (rst_n_tgp)
+    .fb_go(rst_n_tgp),
     .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
     .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
     .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
