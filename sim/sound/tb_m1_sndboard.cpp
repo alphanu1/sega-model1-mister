@@ -4,7 +4,7 @@
 //
 // THREE HARDWARE ROUND TRIPS WENT ON THIS QUESTION AND NONE OF THEM ANSWERED IT.
 // The board is silent, the debug UART is compiled out to make the design fit, and
-// a 45-minute Quartus build per hypothesis is not a debugger. CLAUDE.md says so
+// a 45-minute Quartus build per hypothesis is not a debugger. The rules file says so
 // outright: "measure BEFORE building ... Simulation and MAME together answer most
 // questions for free."
 //

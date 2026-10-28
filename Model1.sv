@@ -732,7 +732,7 @@ module emu
   // latches when index 0 finishes and the sound ROMs come later in the MRA, so
   // gating on it releases the 68000 onto SDRAM that has not been written yet --
   // it fetches a garbage reset vector and is never heard from again. That is
-  // the coprocessor's old bug (CLAUDE.md) in a new place.
+  // the coprocessor's old bug (the rules file) in a new place.
   wire snd_ready;
 
   // ioctl_download is deliberately NOT in this reset. Holding the game side
@@ -812,7 +812,7 @@ module emu
   //
   // No widening was needed: vr's sound ROMs are epr-14870a.7 (128 KB of 68000
   // program), mpr-14873.32 and mpr-14876.4 (2 MB of PCM each) - 4.125 MB, and
-  // there is ~6 MB free above IOFW_BASE. CLAUDE.md's "8 MB of PCM" is sized
+  // there is ~6 MB free above IOFW_BASE. The rules file's "8 MB of PCM" is sized
   // for the largest Model 1 game, not this one; that assumption sent a whole
   // session into widening the controller to 64 MB for nothing.
   // FOUR MEGABYTES PER MULTIPCM, 2026-09-15. One layout for every Model 1 game.
@@ -896,7 +896,7 @@ module emu
   // serialisation: the 68000 has one bus and every RAM access still blocked a
   // prefetch.
   //
-  // An eleventh port removes the question. `NP=11 is BROKEN` stood in CLAUDE.md
+  // An eleventh port removes the question. `NP=11 is BROKEN` stood in the rules file
   // as an unexplained controller fault -- it was tb_m1_sdram driving port 10's
   // REQUEST onto port 9 while reading port 10's ACKNOWLEDGE, so the port was
   // never asked and never answered. The controller is fine at eleven ports:

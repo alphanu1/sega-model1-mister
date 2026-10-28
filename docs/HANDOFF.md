@@ -605,7 +605,7 @@ now works for all five, and `build_tgp_rom.py` knows all five microcodes.
 
 - **Disassemble the ROM and read it.** VF's freeze took fifteen minutes because
   the hardware named an address and the microcode could be read there. The 3D
-  defect took hours of hypothesise-build-measure. Now a rule in `CLAUDE.md`.
+  defect took hours of hypothesise-build-measure. Now a rule in the rules file.
 - **Test the claim before accepting it.** `MACHINE_NOT_WORKING` cost an hour of
   reading disassembly while a working oracle sat unused.
 - **Measure before designing.** "About three bands a quad" was 1.11, and the
@@ -1325,7 +1325,7 @@ any of it reached hardware:
 
 The 29-test suite passes with or without all three. It is a good regression net
 and it is NOT dense enough to prove a datapath refactor - the same reason
-CLAUDE.md records that it passed both before and after the `st_hold` fix. Sweep
+The rules file records that it passed both before and after the `st_hold` fix. Sweep
 the boundaries by construction; do not sample and hope.
 
 ## 2026-08-31 — the 3D layer draws a whole frame, and two benches were lying
@@ -1726,7 +1726,7 @@ essentially any behavioural regression before a build is spent.
 
 **`v60_trace`'s divergence point is the gate that matters for a refactor.** It diffs
 the instruction stream against MAME from reset, so a change that alters behaviour
-moves it earlier. Treat 26,945 the way the test counts in `CLAUDE.md` are treated:
+moves it earlier. Treat 26,945 the way the test counts in the rules file are treated:
 when a change legitimately moves it, update the number in the same commit.
 
 **Before dropping the FP group**, note what the `-2,984 ALM` figure does and does not
@@ -1875,7 +1875,7 @@ That also explains why the second execution is correct: by then `b0` holds `0x80
 2. **`07E6` executed and the write did not land.** `ldi` is an immediate-form write and
    `mb86233_core` lands those in `S_RETIRE` via `rf_wr_en`/`rf_wr_addr = d_ldireg`. Check
    `d_ldireg` resolves to `b0`'s index — `read_reg` case `0x00` is `m_b0` — and that the
-   write is not being lost to the register file's shared-ownership rules. **CLAUDE.md
+   write is not being lost to the register file's shared-ownership rules. **The rules file
    warns that `x0`/`x1` have two writers and the AGU wins; `b0` deserves the same
    scrutiny.**
 
@@ -2150,8 +2150,8 @@ suggests it does.
 
 #### Also worth knowing
 
-- **`CLAUDE.md` is gitignored** (`.gitignore:122`). Several commit messages today say
-  "CLAUDE.md baseline updated" — those edits are on disk but **not in the repository**,
+- **The rules file is gitignored** (`.gitignore:122`). Several commit messages today say
+  "the rules file baseline updated" — those edits are on disk but **not in the repository**,
   and a clone gets none of them. Durable findings belong in `docs/`.
 - **The hardware build grew +2,873 ALM and +43 M10K** against the recorded baseline
   and today's changes do not account for it. M10K is at 82% with the rasterizer's band
@@ -3080,7 +3080,7 @@ for the `0xc4` page, so the decode side of this exists.
 hardware on the main board. `rtl/io/m1_uart_tx.sv` is a debug printf channel into
 the HPS's `ttyS0`, instantiated nowhere and parked for hardware monitoring. The
 DE10-Nano's physical UART header is a third thing. The one-line summaries in
-`README.md` and `CLAUDE.md` used to say only "a UART", which read as though M4
+`README.md` and the rules file used to say only "a UART", which read as though M4
 needed the MiSTer's; both now name the chip and the address.
 
 The sound board itself is a 68000, a YM3438 and two MultiPCMs, with its own ROM

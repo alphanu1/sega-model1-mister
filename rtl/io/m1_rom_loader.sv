@@ -232,7 +232,7 @@ module m1_rom_loader #(
   // That is exactly what happened to the coprocessor: "m1_main wired the TGP to
   // the raw rst_n while the V60 was gated on rom_loaded, so the coprocessor
   // executed its program RAM while the HPS was still streaming ROMs into it"
-  // (CLAUDE.md). One character fixed that one too.
+  // (the rules file). One character fixed that one too.
   //
   // Stays low for a game whose MRA sends no sound stream, which holds the board
   // in reset -- silence rather than a 68000 loose in whatever SDRAM holds.

@@ -179,7 +179,7 @@ static void project(Pt& p);
 // symptom m1_geo_clip's own header describes for geometry that is NOT clipped,
 // so "the clipper agrees" needs to be qualified by how often it was asked.
 //
-// CLAUDE.md's rule, learned the expensive way: when a measurement says the
+// The rules file's rule, learned the expensive way: when a measurement says the
 // behaviour is correct, check that the instrument could have seen it fail.
 static long clip_edges = 0, clip_calls = 0, clip_split = 0;
 

@@ -159,7 +159,7 @@ Three things fall out:
     0x4000 per-line table: max 0 of 2048 words non-zero
 
 **`hscr` bit 15 is never set, so the per-line table is never read, and it is empty
-anyway.** CLAUDE.md named it the likeliest home of the missing scrolling; it is
+anyway.** The rules file named it the likeliest home of the missing scrolling; it is
 not. The RTL comment in `m1_video.sv` that said "nothing measured reaches it" was
 right, and now it is measured rather than inferred.
 

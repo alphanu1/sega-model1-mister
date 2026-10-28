@@ -1,6 +1,6 @@
 -- Sega Model 1: what does the sound driver actually write to the MULTIPCMs?
 --
--- CLAUDE.md's rule, applied to the sound board: when something is unknown, run
+-- The rules file's rule, applied to the sound board: when something is unknown, run
 -- MAME. The core produces a constant rumble instead of sound effects, and every
 -- static check -- banking, byte order, loader split, MRA layout, sample rate --
 -- has come back correct. So the question is no longer "is our path right" but
@@ -14,7 +14,7 @@
 --   0xd00000-0xd00007  YM3438
 --
 -- Assign every tap and notifier to a GLOBAL or the subscription is collected
--- and the callback stops with no error -- CLAUDE.md, learned the hard way.
+-- and the callback stops with no error -- the rules file, learned the hard way.
 
 local snd = manager.machine.devices[":m1audio:sndcpu"]
 if snd == nil then

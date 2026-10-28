@@ -66,7 +66,7 @@ module m1_geo_walk (
   // tgp_ram, for the colour word. REQUEST/VALID, not a registered read.
   //
   // tgp_ram is 786,432 words - far too large for M10K, and declaring it as an
-  // array would have Quartus build it out of flip-flops silently (CLAUDE.md
+  // array would have Quartus build it out of flip-flops silently (the rules file
   // records that costing 28,816 ALM once). So it lives in SDRAM, which answers
   // in tens of cycles rather than one, and the walker has to wait for it.
   //

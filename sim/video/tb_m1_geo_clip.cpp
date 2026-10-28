@@ -6,7 +6,7 @@
 // THE FIRST THING THIS DOES IS PROVE THE PROBE PRINTS. The previous attempt at
 // this module was debugged by patching probes into a bench, getting no output,
 // and concluding the signal never changed - when a probe that failed to patch
-// in prints exactly the same nothing. CLAUDE.md has a rule about it: when a
+// in prints exactly the same nothing. The rules file has a rule about it: when a
 // measurement says "never", check that the instrument could have seen it. So
 // the state is dumped every cycle for the first quad, whether anything
 // interesting happens or not, and a run that prints no state lines is a broken

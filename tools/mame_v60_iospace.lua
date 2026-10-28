@@ -4,7 +4,7 @@
 --   0xd00000 copro RAM address   0xd20000 copro RAM data
 --   0xd80000 FIFO (read+write)   0xdc0000 FIFO-in status
 --
--- CLAUDE.md records "does the V60 read the coprocessor back — measurement said
+-- The rules file records "does the V60 read the coprocessor back — measurement said
 -- NEVER, in 2,500 accesses". That census was of the PROGRAM space, which cannot
 -- see an `in.w`. v60_trace diverges into a block ending in `in.w [R23], R2`, so
 -- the question is open again and this is the space to ask it in.

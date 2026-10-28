@@ -151,7 +151,7 @@ module m1_quad_store #(
   // arithmetic, is 6,238.
   //
   // One vertex per memory gives each a single write port and a single read port,
-  // which is a Simple Dual Port M10K and infers cleanly. CLAUDE.md's warning that
+  // which is a Simple Dual Port M10K and infers cleanly. The rules file's warning that
   // "block RAM inference is silent when it fails" cost 28,816 ALM once before.
   localparam int unsigned VW = XW + YW;
   // {band_lo, band_hi, moire, col565}: lo > hi means no band at all.

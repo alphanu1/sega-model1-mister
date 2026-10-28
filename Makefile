@@ -88,7 +88,7 @@ SRCS_m1_copro_if := rtl/tgp/m1_copro_if.sv
 # and := would expand it to nothing here.
 SRCS_m1_tgp = rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core)
 # Standalone, for settling M10K INFERENCE on the band memory in seconds rather
-# than after a 25-minute full build. CLAUDE.md: "Block RAM inference is silent
+# than after a 25-minute full build. The rules file: "Block RAM inference is silent
 # when it fails. Quartus builds memories out of flip-flops and keeps going -
 # that cost 28,816 ALM once."
 #
@@ -666,7 +666,7 @@ test_ioboard:
 
 # WIRED IN LATE. This module and its testbench were written during the UART
 # investigation and never given a target, so `make test` did not run them and
-# `make lint` did not see them — while CLAUDE.md's baseline listed their results
+# `make lint` did not see them — while the rules file's baseline listed their results
 # as though it had. An untested module that looks tested is the worst of the three
 # states, so the target exists even though nothing instantiates m1_uart_tx yet.
 test_uart_tx:

@@ -29,7 +29,7 @@ half the sample voices and is not the board.
 The V60 reaches it through the **uPD71051C USART at `0xC40000`** on the MAIN
 board (i8251-compatible, `model1.cpp:1014` and `:1852`), clocked at 31.25 kHz x
 16. **Not** through the I/O board, and **not** through either of the other two
-things in this repo that are called a UART — see the note in `CLAUDE.md`.
+things in this repo that are called a UART — see the note in the rules file.
 `m1_decode` already asserts `sel_uart` for that page.
 
 ---

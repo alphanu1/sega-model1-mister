@@ -268,7 +268,7 @@ module m1_ioz80 #(
       ee_ld_we <= 1'b0;
       // Held until acknowledged, not pulsed. Anything talking to this
       // controller that pulses a request has it missed - the rule is in
-      // CLAUDE.md and it has cost this project two sessions.
+      // the rules file and it has cost this project two sessions.
       if ((ee_ld_go || fw_miss) && !fw_req && !fw_ack) fw_req <= 1'b1;
       if (fw_ack) begin
         fw_req <= 1'b0;

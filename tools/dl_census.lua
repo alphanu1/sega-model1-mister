@@ -1,7 +1,7 @@
 -- V60 writes to the display lists, per frame.
 -- 0x600000 (list 0) and 0x610000 (list 1), 64 KB each per m1_decode.sv:141-144.
 -- Assigned to GLOBALS: a tap or notifier held only in a local is collected and
--- stops firing with no error (CLAUDE.md).
+-- stops firing with no error (the rules file).
 local cpu   = manager.machine.devices[":maincpu"]
 local sp    = cpu.spaces["program"]
 w0, w1, frames, peak0, peak1 = 0, 0, 0, 0, 0

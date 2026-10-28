@@ -4,7 +4,7 @@
 -- m1_video implements everything in segaic24's draw_common EXCEPT item 3: the
 -- per-line H-scroll table at tile RAM 0x4000 + 0x200*layer, taken when
 -- hscr & 0x8000. Its comment claims "nothing measured reaches it" and "the game
--- keeps hscr below 0x0200". CLAUDE.md names it as the likeliest home of the
+-- keeps hscr below 0x0200". The rules file names it as the likeliest home of the
 -- missing scrolling, so those two claims are in direct conflict and only the
 -- reference can settle it.
 --

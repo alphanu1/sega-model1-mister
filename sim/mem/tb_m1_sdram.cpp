@@ -123,7 +123,7 @@ struct Harness {
   // PORT 10 HAD THE SAME BUG AND IT WAS BLAMED ON THE CONTROLLER. The setters
   // below kept `default: p9`, so a request for port 10 drove p9, while getAck
   // and getDout already read p10 -- which never acknowledged, because it was
-  // never asked. CLAUDE.md recorded that as "NP=11 is BROKEN ... the eleventh
+  // never asked. The rules file recorded that as "NP=11 is BROKEN ... the eleventh
   // port serves one read and then stalls. Unexplained." It was this, and the
   // controller is fine at eleven ports.
   void setReq(int p, int v) {

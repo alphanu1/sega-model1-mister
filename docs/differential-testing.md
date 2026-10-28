@@ -9,7 +9,7 @@ paths — every one reasoned from a plausible mechanism and refuted by measureme
 The same afternoon, differential tracing found **three real defects in about two
 hours**, two of them CPU bugs that had survived every test in the suite.
 
-`CLAUDE.md` already said "when something is unknown, run MAME, do not reason about
+The rules file already said "when something is unknown, run MAME, do not reason about
 it". This is what that looks like in practice.
 
 ---

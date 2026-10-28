@@ -452,7 +452,7 @@ always @(posedge clk_cpu) begin
         // both settles which without reading any more RTL.
         // x0/x1 as well. The divergence at 0730 `fadd` takes its operands from
         // them — `$0x43` and `$3` are read_reg 0x03 = x1, `$0x42` is 0x02 = x0 —
-        // and CLAUDE.md names x0/x1 as shared state: they live in the register file
+        // and the rules file names x0/x1 as shared state: they live in the register file
         // but the AGU's post-increment wins. So the operands are the likelier
         // suspect than the FP flag, and this prints both.
         $display("TGPPC %04h ir=%08h a=%08h d=%08h st=%08h x0=%04h x1=%04h",
@@ -1328,7 +1328,7 @@ end
 //
 // `in.w` is an IO-SPACE access. A tap on the program space sees nothing and
 // reads as "the V60 never touches the coprocessor" - that exact mistake is on
-// record in CLAUDE.md, made against MAME and believed for two months.
+// record in the rules file, made against MAME and believed for two months.
 localparam integer D20N = 12;
 integer d20_val [0:D20N-1];
 integer d20_cnt [0:D20N-1];

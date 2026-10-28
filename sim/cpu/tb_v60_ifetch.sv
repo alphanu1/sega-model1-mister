@@ -26,7 +26,7 @@
 // becomes ready satisfies the invariant vacuously, so the bench also fails if
 // fill_ready has not asserted within a bounded number of cycles. A fetch unit
 // that deadlocks is the failure mode that reads as a dead CPU, and this repo
-// has been bitten by exactly that shape twice (see CLAUDE.md on held acks).
+// has been bitten by exactly that shape twice (see the rules file on held acks).
 //
 // NOT COVERED, AND SAYING SO RATHER THAN IMPLYING OTHERWISE: the
 // self-modifying-code guard. dbus_req is held low throughout, so the
@@ -106,7 +106,7 @@ module tb_v60_ifetch #(
     // THE FIRST VERSION OF THIS BENCH PULSED IT, and the result was 73,584
     // window mismatches that looked exactly like a DUT bug - stale bytes in the
     // tail of the window, at a plausible depth, reproducible. The DUT was
-    // correct and the bench was wrong. CLAUDE.md lists held-versus-pulsed acks
+    // correct and the bench was wrong. The rules file lists held-versus-pulsed acks
     // as the fault that has cost this project the most time; it has now cost it
     // once more, in the instrument rather than the design.
     typedef enum logic [1:0] { SV_IDLE, SV_WAIT, SV_ACK } sv_e;

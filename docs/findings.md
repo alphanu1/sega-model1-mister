@@ -722,7 +722,7 @@ the tail of the window, at a plausible depth, reproducible - it read exactly lik
 a real fetch bug. The cause: the bench pulsed `if_ack` for one cycle. The CPU is
 `ce`-gated at one cycle in three, so most pulses are simply never seen.
 `m1_fetch_bridge.sv:20` states the protocol in as many words - *"`if_ack` must
-then stay high until `if_req` drops"* - and CLAUDE.md lists held-versus-pulsed
+then stay high until `if_req` drops"* - and the rules file lists held-versus-pulsed
 acknowledges as the fault that has cost the most time here.
 
 With the ack held until the request drops: **checks=400000 fails=0 ready=24913
@@ -751,7 +751,7 @@ exercises it.
 **The instrument reported `DIVERGES at instruction 2` and the CPU was correct.**
 
 **What it looked like.** `make v60_trace` — the strongest V60 verification there
-is, and what CLAUDE.md records as reporting *no mismatch at all* on 2026-09-08 —
+is, and what the rules file records as reporting *no mismatch at all* on 2026-09-08 —
 began failing at the second instruction:
 
     v60_trace: DIVERGES at instruction 2
@@ -1453,7 +1453,7 @@ the sound work so it would land in M10K -- 8 blocks -- rather than cost ~16
 LABs. With the display lists back on-chip that took M10K to 561 of 553.
 
 **Quartus does not fail when M10K is oversubscribed. It builds the overflow out
-of flip-flops and keeps going.** CLAUDE.md already says so, for inference that
+of flip-flops and keeps going.** The rules file already says so, for inference that
 fails; it applies just as much to inference that succeeds and then has nowhere
 to go. Forcing `cap` back to `ramstyle = "logic"`:
 
@@ -1481,7 +1481,7 @@ efficiency:
 About **346 blocks holding ~10 Kbit**. `m1_geo_clip` carries an explicit
 `(* ramstyle = "MLAB" *)` and Quartus **ignored it**. Fixing this is worth far
 more than the 54 blocks the display-list move was chasing, and it needs a small
-test case rather than a full build to settle -- CLAUDE.md's own advice on memory
+test case rather than a full build to settle -- the rules file's own advice on memory
 idioms. NOT attempted yet.
 
 
@@ -1591,7 +1591,7 @@ change and not a re-roll.
   out-of-range slice that **Verilator accepts and Quartus rejects**.
 - A new RTL file must be added to `tools/mister_project.sh` or the hardware
   build fails at elaboration with an error that does not name the missing file
-  (`Node instance "u_dlist" instantiates undefined entity`). CLAUDE.md warns
+  (`Node instance "u_dlist" instantiates undefined entity`). The rules file warns
   about this; it still happened.
 
 ---
@@ -1880,7 +1880,7 @@ its memory BITS in 105% of its blocks because the memories are wide and shallow,
 not because they are badly packed. Consolidating small arrays will not help;
 only moving a memory off-chip will.
 
-**Two corrections to what `CLAUDE.md` says about the display lists.** It reads
+**Two corrections to what the rules file says about the display lists.** It reads
 "the two display lists (~52 M10K), which the walker already has an SDRAM read
 path for."
 
@@ -3017,7 +3017,7 @@ so the steps above the current `clk_3d` are:
 | 800/12 | 66.667 | +16.7% |
 
 `58.947` is NOT on that ladder - it needs a different VCO, and the figure in
-`CLAUDE.md` predates the present PLL. 800/13 costs 1.25 ns of period against a
+The rules file predates the present PLL. 800/13 costs 1.25 ns of period against a
 measured `clk_3d` slack of +0.588 to +0.745 ns, so it does not close as it
 stands, and when `clk_3d` is pushed the binding path is the COPROCESSOR
 (`mb86233_core` state paths), not the geometry - `m1_geometry` reaches 59.36 and
@@ -3225,7 +3225,7 @@ records processed, and the pass length L= read across the same window.
 **AND A PROCESS NOTE THAT COST TWO DAYS.** docs/HANDOFF.md's top entry already
 said, on 2026-09-05, that the left-side cut is VR-specific, that eight causes
 were eliminated, that the mixer was the last unexamined stage and that K=/G= had
-been built for it and never read. CLAUDE.md says to read HANDOFF after it. It was
+been built for it and never read. The rules file says to read HANDOFF after it. It was
 not read, and two days went into geometry throughput - which was a real problem,
 measurably fixed, and not this one.
 
@@ -3427,7 +3427,7 @@ output PLL, which was already negative yesterday and got 0.052 ns worse.
 **A correction made while writing this entry.** The first version said the 97%
 was "not attributable to the reciprocal" and compared it against 29,771 ALM
 from 2026-08-19 - a figure three weeks stale, from before the 3D path existed.
-CLAUDE.md had the 2026-09-07 number the whole time. Comparing against the
+The rules file had the 2026-09-07 number the whole time. Comparing against the
 oldest number to hand turned a 652 ALM saving into an 11,000 ALM alarm. Take
 the most recent measurement, not the most memorable one.
 
@@ -4233,7 +4233,7 @@ extractors were worth something because their muxes are large and
 offset-dependent, not merely because they were inlined. Do not spend builds
 hoisting small functions.
 
-**The FP figure also corrects a stale one.** `CLAUDE.md` records the FP group at
+**The FP figure also corrects a stale one.** The rules file records the FP group at
 -2,984 ALM. It is 1,479 today.
 
 ### So where is the other ~15,600?
@@ -4650,7 +4650,7 @@ Measuring only the two games that are easy to test would have said "halve it" -
 VR and VF both stop at exactly half - and that would have broken Star Wars and
 Wing War silently, in games nobody runs often enough to notice quickly.
 
-`CLAUDE.md` described this region as "the one place a data cache could come
+The rules file described this region as "the one place a data cache could come
 from". It is not, and that line needs correcting.
 
 ### What it was wanted for, and what that means
@@ -5453,7 +5453,7 @@ measures the second.
 
 ### Test suite
 
-`make test` is entirely green. Three lines differ from the block in CLAUDE.md,
+`make test` is entirely green. Three lines differ from the block in the rules file,
 none from this change: `v60_alu` and `v60_shift` were added on 2026-09-02 and
 never entered; `m1_sdram`'s counts moved with an arbitration change before
 today; `m1_copro_if` went 259 -> 261 with the both-FIFOs-full proof (520cf6a). The block
@@ -5688,7 +5688,7 @@ The levers, in the order their evidence supports:
 
 1. **NOT the SDRAM constraints - those exist and are applied.** An earlier
    version of this entry said the interface was unconstrained, repeating a
-   stale line from CLAUDE.md's to-do list. Ben corrected it, pointing at the
+   stale line from the rules file's to-do list. Ben corrected it, pointing at the
    Model 2 core. `tools/mister_project.sh` writes a full set into
    `Model1.sdc`: a generated clock on SDRAM_CLK, input delays of 6.4/1.0 ns
    on DQ, output delays of 1.5/-0.8 ns on the address, bank, data and control
@@ -5755,7 +5755,7 @@ times. Verilator simulates it happily - 825,351 checks pass - so this is
 invisible without asking Quartus.
 
 `make quartus MOD=m1_raster_band` was added for exactly this and answered it in
-SIX SECONDS. CLAUDE.md's rule - "Test a memory idiom small; 1024 entries settles
+SIX SECONDS. The rules file's rule - "Test a memory idiom small; 1024 entries settles
 the question in seconds" - is why this cost minutes instead of a 25-minute full
 build and a mystery.
 
@@ -6076,7 +6076,7 @@ evidence and was not.
 DECOMPILING wangModel1 WAS CONSIDERED AND REJECTED. It is closed source, and
 writing RTL from its internals would make that RTL arguably a derivative work -
 the same reasoning that makes the s32 V60 import GPL-3.0-or-later however much
-of it is rewritten, and the same policy CLAUDE.md already sets for
+of it is rewritten, and the same policy the rules file already sets for
 `third_party/geometrizer/`: run it as an external oracle, read it for
 understanding, do not copy or adapt. Black-box observation of which files a
 binary opens is fine; reading its internals is not. In the event it was
@@ -6692,7 +6692,7 @@ Model1`, Quartus 17.0.0 Lite, 5CSEBA6U23I7. Successful, 0 errors, 138 warnings.
 | registers | 23,433 | — |
 
 M10K at 101 free matches what was already recorded as the binding resource, and
-the band buffer wants ~51 of them. The `26,663 ALM / 409 M10K` figure in CLAUDE.md
+the band buffer wants ~51 of them. The `26,663 ALM / 409 M10K` figure in the rules file
 is **stale** — it predates the row-mask, window and census work — and the numbers
 here supersede it.
 
@@ -7223,7 +7223,7 @@ useful one, because it names a specific instant rather than a distribution.
 
 ### The rule this keeps proving
 
-`CLAUDE.md` says: when something is unknown, run MAME, do not reason about it. Four
+The rules file says: when something is unknown, run MAME, do not reason about it. Four
 wrong causes today — the M10K crossing, the FIFO halt, the copro data ROM, and now
 this — every one reasoned from a plausible mechanism, and this one was refuted by a
 five-minute Lua script that could have been written at any point. The instrument
@@ -7851,7 +7851,7 @@ measurement against the oracle**: same instruction, same address, compare the tw
 It went from "the screen flashes blue" to a named stalled step in about an hour,
 after several hours of theorising had produced nothing but withdrawals.
 
-`CLAUDE.md` opens with exactly that rule.
+The rules file opens with exactly that rule.
 
 ## V60 vs MAME, instruction by instruction: they diverge at 197,251 — 2026-08-18
 
@@ -7863,7 +7863,7 @@ produces impressive counts — `mb86233_dec: checked=3,000,000` — and it only 
 each instruction correct *for the state it was handed*. Lockstep on real code needs
 a shared memory model and identically stubbed peripherals, so it was written down as
 owed and never done. The V60 arrived from the s32 project with a 29/29 unit suite
-and this core is the first thing to run Virtua Racing through it. `CLAUDE.md` warns
+and this core is the first thing to run Virtua Racing through it. The rules file warns
 "do not let the green suite imply otherwise", and the warning was written and then
 not acted on.
 
@@ -8141,13 +8141,13 @@ peripherals whose behaviour the game cannot observe.
 
 Also found while checking the baseline: `m1_uart_tx` and its testbench existed with
 **no Makefile target at all**, so `make test` never ran them and `make lint` never
-saw them — while CLAUDE.md's baseline listed `m1_uart_tx: checks=69` as though it
+saw them — while the rules file's baseline listed `m1_uart_tx: checks=69` as though it
 had. Now wired in. The module stays instantiated nowhere by intent; it is parked
 for hardware monitoring if that is ever needed.
 
 ## CORRECTED: "the V60 never reads the coprocessor back" — 2026-08-18
 
-This was recorded as a measurement, carried into `CLAUDE.md`'s table of things
+This was recorded as a measurement, carried into the rules file's table of things
 reasoning got wrong, quoted in `docs/debug-overlay.md` row `03` to justify reading
 `dbg_fifo_pops`'s zero as healthy, and written into `m1_copro_if.sv`'s own comments.
 **It is false.**
@@ -8767,8 +8767,8 @@ window as the game gets further.
 
 ### A note on where this was nearly recorded
 
-`CLAUDE.md` is gitignored (`.gitignore:122`), so it is a local-only file. Several
-commit messages on 2026-08-18 say "CLAUDE.md baseline updated" — those edits are real
+The rules file is gitignored (`.gitignore:122`), so it is a local-only file. Several
+commit messages on 2026-08-18 say "the rules file baseline updated" — those edits are real
 on disk but are **not in the repository**, and a clone gets none of them. Durable
 findings belong in `docs/`, which is tracked. The test-count baseline, the resource
 figures and the corrected "the V60 never reads the coprocessor back" entry all live
@@ -9944,7 +9944,7 @@ rewritten every pass of the V60's loop instead of settling.
 
 ## SETTLED: the V60's FP group must stay — but the evidence is a RESERVED opcode — 2026-08-23
 
-`CLAUDE.md` carried this as an unspent lever: "the V60 without its FP group is -2,984 ALM on
+The rules file carried this as an unspent lever: "the V60 without its FP group is -2,984 ALM on
 the full core. `dbg_fp_trap` has never fired, but only through boot and attract, and it is
 inert by construction in a build that has FP — so that is not yet evidence."
 
@@ -12239,7 +12239,7 @@ takes ALREADY-PROJECTED screen coordinates, which is the last stage of that pipe
                                         total     27.4 MB
 
 **There is nothing for a rasterizer to draw until those eight files are loaded.** This is the
-same class of miss as the coprocessor data ROM, which CLAUDE.md records as costing two
+same class of miss as the coprocessor data ROM, which the rules file records as costing two
 sessions of a stalled coprocessor with a 2.25 MB length mismatch sitting in plain sight -
 and `make verify_mra` exists precisely to catch it.
 
@@ -12342,7 +12342,7 @@ part supplying bytes 0-1 of each word is `0021` and one supplying bytes 2-3 is `
 
 **And `vr.zip` does not contain `mpr-14897.33`.** It has seven of the eight. The eighth is
 in `~/roms/vr decapped/` at MAME's exact CRC (`74873195`), so the file is good and the set
-is short — checked against the loose directory first, because CLAUDE.md records
+is short — checked against the loose directory first, because the rules file records
 `315-5573.bin` being declared missing on a zip-only audit when it was sitting in
 `~/roms/vr/`. `build/vr_full.zip` is the completed set used for verification; **a MiSTer
 will fail to load this MRA until that file is added to the user's `vr.zip`.**
