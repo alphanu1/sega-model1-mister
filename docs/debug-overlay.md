@@ -36,6 +36,42 @@ together, for a release build that wants nothing extra in it.
 
 ---
 
+## The freeze diagnostic build (`M1_FREEZE_DIAG`), 2026-10-28
+
+A different set of rows, for Virtua Racing's freeze to black (the 3D never
+returns and RESTART does not bring it back - `findings.md` 2026-10-28). Built
+by staging with `M1_MACROS_EXTRA=M1_FREEZE_DIAG` (see `HANDOFF.md`); the OSD's
+Debug overlay switches it on as before. The row number is the first byte, as
+everywhere else. Rows `00`-`07` are the machine now, `08`-`0F` more of it, and
+`10`-`17` are rows `00`-`07` as they stood at the last **freeze event** - kept
+through RESTART, cleared only by loading the core again.
+
+A freeze event: once the game has flipped its display list 64 times since
+reset, half a second with no flip, or half a second with no completed 3D pass.
+It re-arms after 64 more flips, so the snapshot is the LATEST stop.
+
+| Row | Contents | Reading it |
+|---|---|---|
+| `00` | V60 PC | A value that never changes across photographs is a stuck CPU. `FFE59C` is the table-driven block copy (`movcu.h`) the game uses at scene changes; seen constantly with flips stopped, it is a copy run long. |
+| `01` | `[23:19]` inbound FIFO count, `[18]` V60 held on a full inbound FIFO, `[17]` V60 held on an empty outbound FIFO, `[15:0]` TGP PC | Both FIFOs full and the V60 held is the mutual deadlock of 2026-08-29. TGP PC `004C` with an empty inbound FIFO is the TGP idle, waiting for a command. |
+| `02` | `[23:16]` display-list flips (low byte), `[15:0]` TGP retires | Flips are the game's own frame rate: ~29 a second when it runs. Retires frozen with flips running is a stopped coprocessor. |
+| `03` | `[23:16]` 3D bands presented (low byte), `[15:0]` 3D passes completed | Passes ~29 a second when the 3D is alive. |
+| `04` | `[23:21]` bank of the first dropped ROM write, `[20:16]` outbound FIFO count, `[15:0]` **V60 writes into a ROM window, dropped** | **Must be 0000.** Anything else means the game wrote into its own ROM - something MAME never does (0 in 600 s) - i.e. it had already gone wrong. Before this build that write landed in the ROM image and survived RESTART. |
+| `05` | PC of the first dropped ROM write | The instruction that did it. |
+| `06` | Address of the first dropped ROM write | `0x100000-0x1FFFFF` with bank 4-7 lands on the TGP's data ROM or the polygon models. |
+| `07` | `[23:12]` **colour uploads dropped** outside tgp_ram, `[11:8]` SDRAM port with the longest wait so far, `[7:0]` that wait in 4,096-cycle units | Colour drops must be `000`: a nonzero count is a display list walked as garbage, whose colour words before this build went into the I/O board's firmware. Ports: 0 V60 data, 1 tile characters, 2 V60 fetch, 3 TGP, 4 I/O firmware, 5 polygons, 6 tgp_ram, 7 68000 ROM, 8/9 PCM, 10 68000 RAM. |
+| `08` | `[23:16]` freeze events, `[15:14]` last cause (b15 flips stopped, b14 3D passes stopped), `[13]` V60 halted, `[12]` V60 FP trap, `[10:0]` SDRAM ports waiting now | |
+| `09` | `[23:16]` DDR3 reads refused, `[15:0]` worst DDR3 reply wait (clk_3d cycles) | Refused must be 0; a wait at `FFFF` is a reply that never came. |
+| `0A` | `[23:16]` DDR3 writes lost, `[15:8]` list walks ended on garbage, `[7:0]` list walks run off the buffer | |
+| `0B` | I/O board replies | `0001` healthy (it should NOT climb); `0000` means the boot handshake never completed - the I/O board is not answering. |
+| `0C` | Sound 68000 PC | |
+| `0D` | 3D bands presented (16 bits) | |
+| `0E` | Display-list flips (16 bits) | |
+| `0F` | Worst SDRAM wait, in clk_sys cycles, since the core loaded | `FFFFFF` is a port that never got an answer. |
+| `10`-`17` | Rows `00`-`07` at the last freeze event | Same layout. These are what to photograph after RESTART. |
+
+---
+
 ## What each row means
 
 Every row leads with its own number, so a photograph that is cropped or partly
