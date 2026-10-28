@@ -407,6 +407,14 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // DUMPALL=1: every frame's picture, build/render/f<NN>.ppm, so a
+        // fault that comes and goes can be told from one that stays.
+        if (getenv("DUMPALL")) {
+            char nm[64]; snprintf(nm, sizeof nm, "build/render/f%02d.ppm", f);
+            system("mkdir -p build/render");
+            FILE* o = fopen(nm, "wb");
+            if (o) { fprintf(o, "P6\n%d %d\n255\n", SW, SH); fwrite(fb, 1, sizeof fb, o); fclose(o); }
+        }
         long fr_rows = 0;
         for (int y = 0; y < SH; y++) if (got_row[y]) fr_rows++;
         unsigned bands_now = d->dbg_bands;

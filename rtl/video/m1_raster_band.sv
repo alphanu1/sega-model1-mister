@@ -99,6 +99,18 @@ module m1_raster_band #(
   input  logic [$clog2(HEIGHT)-1:0] rd_row,
   output logic [15:0]            rd_col,
   output logic                   rd_hit,     // 0 = nothing painted, show the 2D
+  // ALL FOUR BANKS of the group rd_x falls in, {x|3, x|2, x|1, x&~3}, each
+  // {painted, RGB565}, on the same registered read. The frame buffer's flush
+  // (m1_fb_flush) reads a band out four pixels a cycle - two DDR3 beats.
+  output logic [67:0]            rd_q4,
+  // CLEAR-BEHIND, for the flush: write zero to the group at (wc_row, wc_x),
+  // all four banks. Only while this buffer is idle (no span, no clear) - the
+  // flush owns a buffer the fill has finished with - so it never meets the
+  // paint or the clear on the one write port. The flush clears each group
+  // the cycle after it has read it, so a buffer comes back from DDR3 empty.
+  input  logic                   wc_en,
+  input  logic [$clog2(WIDTH)-1:0]  wc_x,
+  input  logic [$clog2(HEIGHT)-1:0] wc_row,
 
   // Counted, for the bench and the overlay: spans taken, spans dropped as
   // out-of-band, and pixels written. A span count alone cannot tell "the
@@ -195,6 +207,7 @@ module m1_raster_band #(
     q2 <= mem2[rd_off]; q3 <= mem3[rd_off];
     rd_bank_d <= rd_x[BW_-1:0];
   end
+  assign rd_q4 = {q3, q2, q1, q0};
   always_comb begin
     case (rd_bank_d)
       2'd0:    {rd_hit, rd_col} = q0;
@@ -253,6 +266,10 @@ module m1_raster_band #(
       wr_en   = grp_en;
       wr_addr = BAW'(cur_row) * BAW'(BCOLS) + BAW'(cur_xu >> BW_);
       wr_data = {1'b1, cur_col};
+    end else if (wc_en) begin
+      wr_en   = '1;
+      wr_addr = BAW'(wc_row) * BAW'(BCOLS) + BAW'(wc_x >> BW_);
+      wr_data = 17'd0;
     end
   end
 

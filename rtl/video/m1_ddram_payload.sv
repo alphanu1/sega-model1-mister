@@ -100,6 +100,11 @@ module m1_ddram_payload #(
   // The longest the bus has kept us waiting for a reply with a read owed, in
   // clk cycles - an upper bound on the read round trip. Sticky.
   output logic [15:0]   dbg_rd_wait,
+  // Something queued to put on the bus: a read or write waiting, the second
+  // beat of a write owed, or a command presented. For a shared port
+  // (m1_ddram_mux): this client only raises a command after a cycle of !BUSY,
+  // so an arbiter cannot wait to see one before granting it.
+  output logic          want,
 
   // MiSTer DDR3, per sys/emu_ports.vh.
   output logic          DDRAM_CLK,
@@ -202,6 +207,7 @@ module m1_ddram_payload #(
   wire [DW:0] rq_rp_nx = rq_rp + (DW+1)'(do_rd);
 
   assign wr_idle = (wq_fill == '0) && !wr_open && !DDRAM_WE;
+  assign want    = rq_avail || wq_avail || wr_open || DDRAM_RD || DDRAM_WE;
 
   always_ff @(posedge clk) begin
     if (wq_push) wq[wq_wp[WW-1:0]] <= {wr_bank, wr_idx, wr_data};

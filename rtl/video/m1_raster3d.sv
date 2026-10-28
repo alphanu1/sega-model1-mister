@@ -137,7 +137,36 @@ module m1_raster3d #(
   // prefetched by a scan that runs ahead of the fill (see m1_quad_store and
   // m1_ddram_payload). 0 keeps them on chip, for a bench without DDR3 or a
   // fallback build; the picture is the same bit for bit either way.
-  parameter bit          PAY_DDR3 = 1'b1
+  parameter bit          PAY_DDR3 = 1'b1,
+  // THE 3D FRAME BUFFER IN DDR3 (1), or the band buffers racing the beam (0).
+  //
+  // With the band buffers the fill is BEAM-PACED: a band has to be filled
+  // before the beam reaches it, every frame, from the same list. Virtua
+  // Racing's beginner course (the hills after the first corners, MAME frames
+  // 2760-2800 driven by tools/mame_vr_drive.lua) has bands whose fill runs
+  // past the beam on the board's own clock, and the rows above the beam show
+  // the 2D for that frame. Ben sees it as a small, long-standing tear.
+  //
+  // With the frame buffer - the Model 2 core's, m1_fb_write / m1_fb_read
+  // (its R340-R362, R640, R650-R660) - the list is drawn ONCE, whole, into one
+  // of two DDR3 frames, and the frame start after it is finished shows it. A
+  // frame not finished by then is not shown: the last whole one stays up
+  // (counted in dbg_late0), as the arcade's own slowdown does. The scanout
+  // reads a line a few lines ahead into four small line buffers, and the
+  // mixer sees the same rd_col/rd_hit it saw from the band buffers.
+  parameter bit          FB_DDR3 = 1'b1,
+  // The draw's band, frame buffer only: the store replays its list once per
+  // band and the fill clips to it. Nothing races the beam any more, so this
+  // trades the store's per-band scan against nothing; BAND_H keeps the band
+  // buffers' 8.
+  parameter int unsigned FB_BAND_H = BAND_H,
+  // Where the frame buffer sits in DDR3, in 64-bit words: above the quad
+  // payload (m1_ddram_payload, BASE 0x0600_0000, 16,384 words), 1.5 MB.
+  parameter logic [28:0] FB_BASE  = 29'h0601_0000,
+  // The scan line a finished frame is shown from (frame buffer only). Late in
+  // the vertical blank, so a draw has as long as possible; early enough that
+  // the frame's first lines are fetched before line 0 is drawn.
+  parameter int unsigned PUB_LINE = 416
 ) (
   input  logic        clk,            // the 3D clock, 58.95 MHz
   input  logic        rst_n,
@@ -349,7 +378,10 @@ module m1_raster3d #(
   output logic [3:0]  show_tag
 );
 
-  localparam int unsigned NBANDS = (SCR_H + BAND_H - 1) / BAND_H;
+  // The band the STORE and the FILL work in. The band buffers' when they are
+  // built; the draw's own when the frame buffer is.
+  localparam int unsigned SB_H   = FB_DDR3 ? FB_BAND_H : BAND_H;
+  localparam int unsigned NBANDS = (SCR_H + SB_H - 1) / SB_H;
   localparam int unsigned BW     = (NBANDS > 1) ? $clog2(NBANDS) : 1;
 
   // ---------------------------------------------------------------- view state
@@ -599,7 +631,7 @@ module m1_raster3d #(
       wire mine_p = (bank == 1'(k));
       m1_quad_store #(
         .NQ(NQ), .IW($clog2(NQ)),
-        .BAND_H(BAND_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H),
+        .BAND_H(SB_H), .NBANDS(NBANDS), .BW(BW), .SCR_H(SCR_H),
         .EXT_PAY(PAY_DDR3)
       ) u_store (
         .clk(clk), .rst_n(rst_n),
@@ -631,6 +663,13 @@ module m1_raster3d #(
     end
   endgenerate
 
+  // The payload client's own DDRAM port. Straight onto the framework's port
+  // with the band buffers; with the frame buffer, one side of m1_ddram_mux.
+  logic        pay_rd, pay_we, pay_busy, pay_dout_ready, pay_want;
+  logic [28:0] pay_addr;
+  logic [7:0]  pay_bc, pay_be;
+  logic [63:0] pay_din;
+
   generate
     if (PAY_DDR3) begin : g_pay_ddr3
       // The game reset, as a flush. It is asserted asynchronously, so it is
@@ -652,22 +691,22 @@ module m1_raster3d #(
         .rd_ready(px_rd_ready), .rd_valid(px_rd_valid),
         .rd_take(|px_take), .rd_data(px_rd_data),
         .dbg_wr_ovf(dbg_pay_ovf), .dbg_rd_wait(dbg_pay_wait),
-        .dbg_rd_refused(dbg_pay_refused),
-        .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
-        .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
-        .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
-        .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
-        .DDRAM_WE(DDRAM_WE)
+        .dbg_rd_refused(dbg_pay_refused), .want(pay_want),
+        .DDRAM_CLK(), .DDRAM_BUSY(pay_busy),
+        .DDRAM_BURSTCNT(pay_bc), .DDRAM_ADDR(pay_addr),
+        .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(pay_dout_ready),
+        .DDRAM_RD(pay_rd), .DDRAM_DIN(pay_din), .DDRAM_BE(pay_be),
+        .DDRAM_WE(pay_we)
       );
     end else begin : g_pay_m10k
       assign px_wr_idle = 1'b1;
       assign px_rd_ready = 1'b0; assign px_rd_valid = 1'b0; assign px_rd_data = '0;
       assign dbg_pay_ovf = '0;   assign dbg_pay_wait = '0;  assign dbg_pay_refused = '0;
-      assign DDRAM_CLK = clk;    assign DDRAM_BURSTCNT = 8'd1; assign DDRAM_ADDR = '0;
-      assign DDRAM_RD = 1'b0;    assign DDRAM_DIN = '0;        assign DDRAM_BE = 8'hff;
-      assign DDRAM_WE = 1'b0;
+      assign pay_rd = 1'b0; assign pay_we = 1'b0; assign pay_addr = '0; assign pay_bc = 8'd1;
+      assign pay_be = 8'hff; assign pay_din = '0; assign pay_want = 1'b0;
     end
   endgenerate
+  assign DDRAM_CLK = clk;
 
   // The producer's view is its own bank; the consumer's is the other one.
   assign qs_sort_busy   = qs_sort_busy_v[bank];
@@ -693,8 +732,8 @@ module m1_raster3d #(
   // The viewport handed to the fill unit is the BAND, not the screen: clipping
   // to the band is what keeps a quad that spans several bands from writing
   // outside the one being filled.
-  wire signed [31:0] band_y1 = 32'(fill_band) * 32'(BAND_H);
-  wire signed [31:0] band_y2 = band_y1 + 32'(BAND_H) - 32'd1;
+  wire signed [31:0] band_y1 = 32'(fill_band) * 32'(SB_H);
+  wire signed [31:0] band_y2 = band_y1 + 32'(SB_H) - 32'd1;
 
   m1_raster_fill u_fill (
     .clk(clk), .rst_n(rst_n),
@@ -731,6 +770,18 @@ module m1_raster3d #(
   logic [NBUF-1:0] bd_rd_hit;
   logic [15:0] bd_dbg_spans [NBUF], bd_dbg_drop [NBUF];
   logic [31:0] bd_dbg_px [NBUF];
+  // The DDR3 frame buffer's state (FB_DDR3), declared here because the band
+  // buffers' read port is the flush's when it is built.
+  logic        fb_draw, fb_show, fb_shown_ok, fb_complete, fb_drawable;
+  logic        fl_start, fl_busy, fl_tile, fl_last;   // the band flush (m1_fb_flush)
+  logic [5:0]  fl_band;
+  logic        fl_wc_en, fl_busy_d;
+  logic [8:0]  fl_wc_x;
+  logic [$clog2(BAND_H)-1:0] fl_wc_row;
+  logic [1:0]  tile_clean;             // the flush has left this band buffer empty
+  logic [8:0]  fl_rd_x;
+  logic [$clog2(BAND_H)-1:0] fl_rd_row;
+  logic [67:0] bd_q4 [NBUF];
 
   // RGB565 in the band, RGB888 out of the geometry: the band buffer is 17 bits
   // wide because that is what an M10K holds without doubling (docs/findings.md),
@@ -741,18 +792,22 @@ module m1_raster3d #(
 
   genvar b;
   generate
-    for (b = 0; b < NBUF; b++) begin : g_band
+    // With the frame buffer, TWO: the fill draws a band into one while
+    // m1_fb_flush copies the last into DDR3 from the other, and the flush -
+    // not the beam - reads them, on this clock.
+    for (b = 0; b < (FB_DDR3 ? 2 : NBUF); b++) begin : g_band
       m1_raster_band #(.WIDTH(SCR_W), .HEIGHT(BAND_H)) u_band (
-        .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
+        .clk(clk), .rd_clk(FB_DDR3 ? clk : scan_clk), .rst_n(rst_n),
         .band_y0(bd_y0[b]),
         .clear_req(bd_clear_req[b]), .clear_busy(bd_clear_busy[b]),
         .span_valid(bd_span_valid[b]), .span_ready(bd_span_ready[b]),
         .span_y(fl_span_y[15:0]),
         .span_x0(fl_span_x0[15:0]), .span_x1(fl_span_x1[15:0]),
         .span_col(span_565), .span_moire(fl_span_moire),
-        .rd_x(scan_x[$clog2(SCR_W)-1:0]),
-        .rd_row(scan_y[$clog2(BAND_H)-1:0]),
-        .rd_col(bd_rd_col[b]), .rd_hit(bd_rd_hit[b]),
+        .rd_x(FB_DDR3 ? fl_rd_x : 9'(scan_x[$clog2(SCR_W)-1:0])),
+        .rd_row(FB_DDR3 ? fl_rd_row : scan_y[$clog2(BAND_H)-1:0]),
+        .rd_col(bd_rd_col[b]), .rd_hit(bd_rd_hit[b]), .rd_q4(bd_q4[b]),
+        .wc_en(FB_DDR3 && fl_wc_en && (fl_tile == 1'(b))), .wc_x(fl_wc_x), .wc_row(fl_wc_row),
         .dbg_spans(bd_dbg_spans[b]), .dbg_dropped(bd_dbg_drop[b]),
         .dbg_pixels(bd_dbg_px[b])
       );
@@ -792,10 +847,179 @@ module m1_raster3d #(
   end
   assign fl_span_ready = bd_span_ready[fill_buf];
 
+  // ------------------------------------------------- the DDR3 frame buffer
+  //
+  // `fb_draw` is drawn into, `fb_show` is the last WHOLE frame and the only
+  // one the scanout reads (Model 2's R359). A frame is published at the scan
+  // line PUB_LINE after its draw finished; the buffer it replaces is cleared
+  // and becomes the next one drawn. A draw still running at PUB_LINE leaves
+  // the last frame on show and is counted (dbg_late0) - it is published at
+  // the next one.
+  logic [15:0] fb_rd_col;
+  logic        fb_rd_hit;
+  logic        fb_pub;                // one clk pulse: the beam is at PUB_LINE
+  logic        fb_ok_s2;              // fb_shown_ok on the scan clock
+  logic [15:0] fb_late_lines;         // scanout lines that landed late
+  logic [31:0] fb_px;                 // pixels written
+
+  generate
+    if (FB_DDR3) begin : g_fb
+      // ---- the writer and the scanout reader share m2_ddr3 through
+      // m2_ddr3_arb: the reader wins (it has the beam deadline), and the
+      // writer is not granted while the reader is hungry (R655) or while the
+      // frame's first lines are being fetched after a publish.
+      logic        w_req, w_we, w_wnext, w_wacc, w_ack;
+      logic [24:0] w_addr;
+      logic [7:0]  w_blen, w_be;
+      logic [63:0] w_din;
+      logic        r_req, r_we, r_rvalid, r_ack;
+      logic [24:0] r_addr;
+      logic [7:0]  r_blen;
+      logic        fbr_hit, fbr_hungry;
+      logic        m_req, m_we, m_wnext, m_wacc, m_rvalid, m_ack;
+      logic [24:0] m_addr;
+      logic [7:0]  m_blen, m_be;
+      logic [63:0] m_din, m_dout;
+
+      // The band the fill has finished, out of its band buffer into DDR3.
+      m1_fb_flush #(.SCR_W(SCR_W), .BAND_H(SB_H), .STRIDE(512)) u_flush (
+        .clk(clk), .rst_n(rst_n),
+        .fb_sel(fb_draw), .start(fl_start), .band(fl_band), .busy(fl_busy),
+        .rd_x(fl_rd_x), .rd_row(fl_rd_row), .rd_q4(bd_q4[fl_tile]),
+        .wc_en(fl_wc_en), .wc_x(fl_wc_x), .wc_row(fl_wc_row),
+        .m_req(w_req), .m_we(w_we), .m_addr(w_addr), .m_blen(w_blen),
+        .m_din(w_din), .m_be(w_be), .m_wnext(w_wnext), .m_wacc(w_wacc), .m_ack(w_ack),
+        .dbg_beats(fb_px)
+      );
+
+      // ---- which line to fetch, on the scan clock. LA lines ahead of the
+      // beam; the frame's first LA+1 lines just after the publish line, so
+      // they are in before line 0 is drawn (the Model 2 study's R657).
+      localparam int unsigned FB_LA = 3, V_TOT = 424;
+      logic [9:0] fl_sy_q;
+      logic [8:0] fl_line;
+      logic       fl_tog, pub_tog, pubwin_q;
+      logic [1:0] ok_s;
+      wire  [9:0] top0  = 10'(PUB_LINE + 1);
+      wire        fl_top = (scan_y >= top0) && (scan_y < top0 + 10'(FB_LA + 1));
+      wire  [9:0] fl_tgt = fl_top                              ? scan_y - top0
+                         : (scan_y + 10'(FB_LA) < 10'(SCR_H))  ? scan_y + 10'(FB_LA)
+                         : 10'(SCR_H);   // nothing
+      always_ff @(posedge scan_clk or negedge rst_n) begin
+        if (!rst_n) begin
+          fl_sy_q <= 10'd0; fl_line <= 9'd0; fl_tog <= 1'b0; pub_tog <= 1'b0;
+          pubwin_q <= 1'b0; ok_s <= 2'b00;
+        end else begin
+          fl_sy_q  <= scan_y;
+          ok_s     <= {ok_s[0], fb_shown_ok};
+          pubwin_q <= (scan_y >= 10'(PUB_LINE));
+          if (scan_y != fl_sy_q) begin
+            // nothing is fetched before a frame has been shown
+            if (fl_tgt < 10'(SCR_H) && ok_s[1]) begin
+              fl_line <= 9'(fl_tgt);
+              fl_tog  <= ~fl_tog;
+            end
+            if (scan_y == 10'(PUB_LINE)) pub_tog <= ~pub_tog;
+          end
+        end
+      end
+      assign fb_ok_s2 = ok_s[1];
+
+      // clk side: two flops on each toggle; the line number, stable for a
+      // whole line, is taken only once its toggle has arrived.
+      logic [2:0] fl_tog_s, pub_tog_s;
+      logic [1:0] pubwin_s;
+      logic [8:0] fl_line_c;
+      logic       line_pulse;
+      always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+          fl_tog_s <= 3'd0; pub_tog_s <= 3'd0; pubwin_s <= 2'd0;
+          fl_line_c <= 9'd0; line_pulse <= 1'b0; fb_pub <= 1'b0;
+        end else begin
+          fl_tog_s   <= {fl_tog_s[1:0], fl_tog};
+          pub_tog_s  <= {pub_tog_s[1:0], pub_tog};
+          pubwin_s   <= {pubwin_s[0], pubwin_q};
+          line_pulse <= fl_tog_s[2] ^ fl_tog_s[1];
+          fb_pub     <= pub_tog_s[2] ^ pub_tog_s[1];
+          if (fl_tog_s[2] ^ fl_tog_s[1]) fl_line_c <= fl_line;
+        end
+      end
+
+      m1_fb_read #(.WIDTH(SCR_W), .STRIDE(512), .LA(FB_LA), .V_TOTAL(V_TOT)) u_fbr (
+        .clk(clk), .rd_clk(scan_clk), .rst_n(rst_n),
+        .fb_sel(fb_show),
+        .line_req(line_pulse), .line_y(fl_line_c), .line_ready(), .hungry(fbr_hungry),
+        .il(1'b0), .line_f(1'b0),
+        .m_req(r_req), .m_we(r_we), .m_addr(r_addr), .m_blen(r_blen),
+        .m_rvalid(r_rvalid), .m_dout(m_dout), .m_ack(r_ack),
+        .rd_buf(scan_y[1:0]), .rd_x(scan_x[$clog2(SCR_W)-1:0]),
+        .rd_col(fb_rd_col), .rd_hit(fbr_hit),
+        .dbg_lines(), .dbg_late(fb_late_lines),
+        .dbg_st(), .dbg_busy(), .dbg_acks_seen()
+      );
+      assign fb_rd_hit = fbr_hit;
+
+      m2_ddr3_arb u_arb (
+        .clk(clk), .rst_n(rst_n),
+        .a_req(r_req), .a_we(r_we), .a_addr(r_addr), .a_blen(r_blen),
+        .a_din(64'd0), .a_be(8'hFF),
+        .a_wnext(), .a_wacc(), .a_rvalid(r_rvalid), .a_ack(r_ack),
+        .b_req(w_req), .b_hold(fbr_hungry || pubwin_s[1]), .b_we(w_we), .b_addr(w_addr),
+        .b_blen(w_blen), .b_din(w_din), .b_be(w_be),
+        .b_wnext(w_wnext), .b_wacc(w_wacc), .b_rvalid(), .b_ack(w_ack),
+        .m_req(m_req), .m_we(m_we), .m_addr(m_addr), .m_blen(m_blen),
+        .m_din(m_din), .m_be(m_be),
+        .m_wnext(m_wnext), .m_wacc(m_wacc), .m_rvalid(m_rvalid), .m_ack(m_ack),
+        .m_dout(m_dout), .dout(),
+        .dbg_a_waits(), .dbg_b_waits(), .dbg_busy(), .dbg_owner()
+      );
+
+      // ---- the DDR3 master, and the framework's one port shared with the
+      // quad payload. Both on the MEMORY reset: a burst cut short wedges the
+      // bridge (R649), so a game reset never reaches them.
+      logic        fa_rd, fa_we, fa_busy, fa_dout_ready;
+      logic [28:0] fa_addr;
+      logic [7:0]  fa_bc, fa_be;
+      logic [63:0] fa_din, mux_dout;
+      m2_ddr3 u_ddr3 (
+        .clk(clk), .rst_n(mem_rst_n),
+        .req(m_req), .we(m_we), .base(FB_BASE), .addr(m_addr), .blen(m_blen),
+        .din(m_din), .be(m_be),
+        .wnext(m_wnext), .wacc(m_wacc), .rvalid(m_rvalid), .ack(m_ack), .dout(m_dout),
+        .DDRAM_CLK(), .DDRAM_BUSY(fa_busy),
+        .DDRAM_BURSTCNT(fa_bc), .DDRAM_ADDR(fa_addr),
+        .DDRAM_DIN(fa_din), .DDRAM_BE(fa_be),
+        .DDRAM_WE(fa_we), .DDRAM_RD(fa_rd),
+        .DDRAM_DOUT(mux_dout), .DDRAM_DOUT_READY(fa_dout_ready),
+        .dbg_lat_last(), .dbg_lat_max(), .dbg_inflight_max(), .dbg_stuck_wr(), .dbg_acks()
+      );
+      m1_ddram_mux u_mux (
+        .clk(clk), .rst_n(mem_rst_n), .hold_b(fbr_hungry),
+        .a_rd(fa_rd), .a_we(fa_we), .a_addr(fa_addr), .a_burstcnt(fa_bc),
+        .a_din(fa_din), .a_be(fa_be), .a_busy(fa_busy), .a_dout_ready(fa_dout_ready),
+        .dout(mux_dout),
+        .b_rd(pay_rd), .b_we(pay_we), .b_want(pay_want), .b_addr(pay_addr), .b_burstcnt(pay_bc),
+        .b_din(pay_din), .b_be(pay_be), .b_busy(pay_busy), .b_dout_ready(pay_dout_ready),
+        .DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(DDRAM_BURSTCNT), .DDRAM_ADDR(DDRAM_ADDR),
+        .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
+        .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE),
+        .dbg_q_max(), .dbg_q_ovf()
+      );
+    end else begin : g_nofb
+      assign fl_busy = 1'b0; assign fl_rd_x = '0; assign fl_rd_row = '0;
+      assign fl_wc_en = 1'b0; assign fl_wc_x = '0; assign fl_wc_row = '0;
+      assign fb_rd_col = '0; assign fb_rd_hit = 1'b0; assign fb_pub = 1'b0;
+      assign fb_ok_s2 = 1'b0; assign fb_late_lines = '0; assign fb_px = '0;
+      assign DDRAM_RD = pay_rd; assign DDRAM_WE = pay_we; assign DDRAM_ADDR = pay_addr;
+      assign DDRAM_BURSTCNT = pay_bc; assign DDRAM_DIN = pay_din; assign DDRAM_BE = pay_be;
+      assign pay_busy = DDRAM_BUSY; assign pay_dout_ready = DDRAM_DOUT_READY;
+    end
+  endgenerate
+
   // Scanout reads the buffer that is NOT being filled, and only for the rows
   // that buffer actually covers.
-  wire [15:0] rd_col_sel = bd_rd_col[disp_buf_s2];
-  wire        rd_hit_sel = bd_rd_hit[disp_buf_s2];
+  wire [15:0] rd_col_sel = FB_DDR3 ? fb_rd_col : bd_rd_col[disp_buf_s2];
+  wire        rd_hit_sel = FB_DDR3 ? fb_rd_hit : bd_rd_hit[disp_buf_s2];
 
   // WHAT SCANOUT ACTUALLY READS BACK, by screen half, in units of 1024 pixels.
   //
@@ -820,7 +1044,7 @@ module m1_raster3d #(
     // line - to the right half, because they all fail `scan_x < SCR_W/2`. The
     // read side came out more right-biased than the write side and the bias was
     // the instrument's, not the design's.
-    end else if (rd_hit_sel && disp_valid_s2 && (scan_x < 10'(SCR_W))) begin
+    end else if (rd_hit_sel && (FB_DDR3 ? fb_ok_s2 : disp_valid_s2) && (scan_x < 10'(SCR_W))) begin
       if (scan_x < 10'(SCR_W / 2)) hit_l <= hit_l + 26'd1;
       else                         hit_r <= hit_r + 26'd1;
     end
@@ -1114,7 +1338,10 @@ module m1_raster3d #(
   assign scan_rgb = {rd_col_sel[15:11], rd_col_sel[15:13],
                      rd_col_sel[10:5],  rd_col_sel[10:9],
                      rd_col_sel[4:0],   rd_col_sel[4:2]};
-  assign scan_hit = rd_hit_sel && in_disp_band;
+  // The frame buffer is a whole frame: every visible line is its own, once a
+  // frame has been shown.
+  assign scan_hit = FB_DDR3 ? (rd_hit_sel && fb_ok_s2 && ({6'd0, scan_y} < 10'(SCR_H)))
+                            : (rd_hit_sel && in_disp_band);
 
   // ---------------------------------------------------------------- sequencer
   // TWO SEQUENCERS, NOT ONE.
@@ -1165,7 +1392,11 @@ module m1_raster3d #(
 
   wire in_bands = (cst != C_IDLE);
 
-  wire ev_present = present_now;
+  // The band buffers' ring (present / hand off) is the band display's alone:
+  // with the frame buffer the two band buffers alternate under the flush, and
+  // letting the ring rotate them as well put the fill in the wrong one - the
+  // last band of a draw left a row in a buffer the flush had never seen.
+  wire ev_present = !FB_DDR3 && present_now;
 
   // THE SWAP, at a frame boundary and only when a whole new frame is ready.
   //
@@ -1216,8 +1447,13 @@ module m1_raster3d #(
   // PRESENT before blanking, which is what keeps the picture whole.
   wire late_beam = (beam_ext >= (BW+1)'(NBANDS - 1));
   wire sweep_go  = (cst == C_IDLE) && late_beam && !swept;
-  wire swap_now  = sweep_go && (pst == P_READY);
-  wire ev_handoff = (cst == C_WAIT) && (!ready_valid || ev_present);
+  // FRAME BUFFER: AS SOON AS THE LIST IS SORTED AND THERE IS A BUFFER TO DRAW
+  // IT IN - the draw is not paced by the beam, so waiting for one only takes
+  // time from it. The buffer is free once the last frame drawn in it has been
+  // published, the one it replaced has been cleared, and nothing is drawing.
+  wire swap_now  = FB_DDR3 ? ((cst == C_IDLE) && (pst == P_READY) && fb_drawable && !fb_complete)
+                           : (sweep_go && (pst == P_READY));
+  wire ev_handoff = !FB_DDR3 && (cst == C_WAIT) && (!ready_valid || ev_present);
   logic [1:0] obj_got;                 // parameters collected for this object
   logic       obj_hud;
 
@@ -1309,7 +1545,8 @@ module m1_raster3d #(
     // At 496 cycles that cost a few pixels of band 0 of the first frame; a
     // full-band clear the same way wiped the picture entirely, 95.9% of pixels
     // to zero, which is how it was found.
-    if ((cst == C_CLR) || ((cst == C_CLRW) && !clr_seen))
+    // A band buffer the flush has already emptied is not cleared again.
+    if (((cst == C_CLR) && !(FB_DDR3 && tile_clean[fill_buf[0]])) || ((cst == C_CLRW) && !clr_seen))
       bd_clear_req[fill_buf] = 1'b1;
   end
   assign fill_band       = cur_band;
@@ -1372,8 +1609,39 @@ module m1_raster3d #(
       band_timer <= '0;
       bd_y0[0] <= '0; bd_y0[1] <= '0; bd_y0[2] <= '0;
       dbg_frames <= '0;
+      fb_draw <= 1'b0; fb_show <= 1'b1; fb_shown_ok <= 1'b0; fb_complete <= 1'b0;
+      fb_drawable <= 1'b1; fl_start <= 1'b0; fl_tile <= 1'b0; fl_last <= 1'b0; fl_band <= '0;
+      fl_busy_d <= 1'b0; tile_clean <= 2'b00;
     end else begin
       mat_we <= 1'b0;
+
+      // ---- the frame buffer's two frames (FB_DDR3)
+      fl_start <= 1'b0;
+      fl_busy_d <= fl_busy;
+      if (FB_DDR3 && fl_busy_d && !fl_busy) tile_clean[fl_tile] <= 1'b1;
+      if (FB_DDR3) begin
+        if (swap_now) fb_drawable <= 1'b0;
+        // the last band has been copied out: the frame is whole
+        if (fl_last && !fl_busy && !fl_start) begin
+          fl_last         <= 1'b0;
+          fb_complete     <= 1'b1;
+          dbg_band_cycles <= band_timer;          // the whole draw, swap to finish
+        end
+        if (fb_pub) begin
+          if (fb_complete) begin
+            fb_show     <= fb_draw;
+            fb_draw     <= ~fb_draw;
+            fb_shown_ok <= 1'b1;
+            fb_complete <= 1'b0;
+            fb_drawable <= 1'b1;                  // every pixel is rewritten: no clear
+            show_tag    <= show_tag + 4'd1;
+            disp_valid  <= 1'b1;
+          end else if (!fb_drawable) begin
+            // A list is being drawn and is not whole: the last frame stays up.
+            dbg_late0 <= dbg_late0 + 16'd1;
+          end
+        end
+      end
 
       // A PLANE RECOMPUTE STARTING WHILE AN OBJECT IS IN FLIGHT. planes_wait is
       // supposed to keep these apart by holding geo_start at P_OBJ; this counts
@@ -1392,7 +1660,8 @@ module m1_raster3d #(
       end
       if (geo_planes_wait && !pw_d && geo_busy)
         dbg_plane_race <= dbg_plane_race + 16'd1;
-      if (cst != C_IDLE && cst != C_WAIT) band_timer <= band_timer + 32'd1;
+      if (FB_DDR3 ? !fb_drawable && !fb_complete : (cst != C_IDLE && cst != C_WAIT)) band_timer <= band_timer + 32'd1;
+      if (FB_DDR3 && swap_now) band_timer <= '0;
       if (prod_go)                                pass_timer <= '0;
       else if (pst != P_IDLE && pst != P_READY)   pass_timer <= pass_timer + 32'd1;
 
@@ -1527,7 +1796,7 @@ module m1_raster3d #(
       end
 
       beam_blank_d <= beam_blank;
-      if (swap_now) begin bank <= ~bank; show_tag <= show_tag + 4'd1; end
+      if (swap_now) begin bank <= ~bank; if (!FB_DDR3) show_tag <= show_tag + 4'd1; end
       // One sweep per frame: set when a sweep starts, cleared when the beam
       // leaves the last band, so a sweep that finishes early cannot start a
       // second one before the next frame.
@@ -1575,6 +1844,8 @@ module m1_raster3d #(
       // read FFFF for the entire window that mattered. A free-running counter
       // sampled once a second only needs successive DIFFERENCES to be right.
       if (ev_present) dbg_bands <= dbg_bands + 16'd1;
+      if (FB_DDR3 && fl_start) dbg_bands <= dbg_bands + 16'd1;
+      if (FB_DDR3) dbg_late <= fb_late_lines;
       // Late: band 0 outside blanking (it was armed and caught up mid-frame),
       // any other band with the beam already below its top row.
       if (ev_present && (want_ext == '0) && !beam_blank)
@@ -1653,16 +1924,20 @@ module m1_raster3d #(
       case (cst)
         // Locked to the raster: a sweep starts at the top of a frame and runs
         // to the bottom, so band k is presented as the beam reaches it.
-        C_IDLE: if (sweep_go) begin
+        C_IDLE: if (FB_DDR3 ? swap_now : sweep_go) begin
           cur_band <= '0;
           cst      <= C_CLR;
+          if (FB_DDR3) fill_buf <= 2'd0;
         end
 
         C_CLR: begin
-          band_timer <= '0;
-          bd_y0[fill_buf] <= 16'(cur_band) * 16'(BAND_H);
+          if (!FB_DDR3) band_timer <= '0;
+          bd_y0[fill_buf] <= 16'(cur_band) * 16'(SB_H);
           clr_seen <= 1'b0;
-          cst <= C_CLRW;
+          if (FB_DDR3 && tile_clean[fill_buf[0]]) begin
+            tile_clean[fill_buf[0]] <= 1'b0;
+            cst <= C_REPLAY;
+          end else cst <= C_CLRW;
         end
         C_CLRW: begin
           if (bd_clear_busy[fill_buf])      clr_seen <= 1'b1;
@@ -1680,7 +1955,33 @@ module m1_raster3d #(
         // Filled - hand it to the ready slot. With three band buffers this
         // waits only for that slot to be free, so the fill of band N+1 starts
         // while band N is still waiting to be shown.
-        C_WAIT: begin
+        C_WAIT: if (FB_DDR3) begin
+          // The band goes to the flush as soon as the flush has finished the
+          // last one; the fill moves to the other band buffer, which that
+          // flush has just emptied.
+          // AND ONLY ONCE THE BAND BUFFER HAS PAINTED ITS LAST SPAN. Twice
+          // over: the fill's quad_done can come with the quad's last span
+          // still OFFERED (m1_raster_fill says so - span_valid is the only
+          // authority), and a span taken is then painted for up to 124
+          // cycles. Flushed before either, the copy missed the span and the
+          // clear-behind, refused while the buffer painted, left it for the
+          // next band in that buffer. render3d against the reference: one
+          // pixel in 50 of 101 MAME frames before the first, a whole row in
+          // 54 before the second.
+          if (!fl_busy && !fl_start && !fl_span_valid && bd_span_ready[fill_buf]) begin
+            fl_start <= 1'b1;
+            fl_band  <= 6'(cur_band);
+            fl_tile  <= fill_buf[0];
+            fill_buf <= {1'b0, ~fill_buf[0]};
+            if (cur_band == BW'(NBANDS - 1)) begin
+              fl_last <= 1'b1;
+              cst     <= C_IDLE;
+            end else begin
+              cur_band <= cur_band + BW'(1);
+              cst      <= C_CLR;
+            end
+          end
+        end else begin
           dbg_band_cycles <= band_timer;
           if (ev_handoff) begin
             if (cur_band == BW'(NBANDS - 1)) cst <= C_IDLE;

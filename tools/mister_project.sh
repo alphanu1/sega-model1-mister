@@ -256,6 +256,11 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geo_clip.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_geometry.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_listwalk.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_ddram_payload.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_fb_flush.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_fb_read.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m2_ddr3.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m2_ddr3_arb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_ddram_mux.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_quad_payload.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_scan15.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_drive_inputs.sv

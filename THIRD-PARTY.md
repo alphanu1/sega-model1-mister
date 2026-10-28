@@ -75,6 +75,26 @@ exact rationals of 80 MHz (547/4240, 537/4240, 4305/34768). The `[15kHz CRT]`
 MRAs follow the Model 2 core's convention (game id bit 7), made by
 `tools/make_crt_mra.py`, which is original here.
 
+### The 3D frame buffer in DDR3 — from the Model 2 core — GPL-3.0-or-later
+Taken from **sega-model2-mister at `47ad2e2`** (branch `main`), the same
+author's core:
+
+| here | there | changed |
+|---|---|---|
+| `rtl/mem/m2_ddr3.sv` | `rtl/mem/m2_ddr3.sv` | nothing but the header |
+| `rtl/mem/m2_ddr3_arb.sv` | `rtl/mem/m2_ddr3_arb.sv` | nothing but the header |
+| `rtl/video/m1_fb_read.sv` | `rtl/video/m2_fb_read.sv` | renamed; the line buffers hold Model 1's 17-bit pixel ({painted, RGB565}) |
+| `sim/mem/tb_m2_ddr3.cpp`, `sim/mem/tb_m2_ddr3_arb.cpp` | the same | unwritten memory reads 0xFFFF... in `tb_m2_ddr3` |
+| `sim/video/tb_m1_fb_read.cpp` | `sim/video/tb_m2_fb_read.cpp` | the 17-bit pixel; unwritten memory reads 0xFFFF... |
+
+The publish / show / hold control in `m1_raster3d` (FB_DDR3) follows
+`m2_raster3d`'s (fb_draw, fb_show, fb_complete; its study R359, R650,
+R655-R657). The writer is NOT Model 2's: `m2_fb_write` (a DDR3 command per
+span) was ported first and measured too slow for Model 1's polygon rows, so
+the band buffer is the write combiner and `rtl/video/m1_fb_flush.sv`,
+original here, copies each filled band into DDR3. `rtl/mem/m1_ddram_mux.sv`,
+which shares the one DDRAM port with the quad payload, is original here too.
+
 ### The wheel modes — idea from the Model 2 core
 `rtl/io/m1_drive_inputs.sv` is written here. Its Wheel A / Wheel B pedal
 mapping follows the Model 2 core's `rtl/io/m2_cab_inputs.sv` (sega-model2-mister

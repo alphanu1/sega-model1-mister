@@ -1075,6 +1075,11 @@ module m1_integrated (
     // H= carried the store's out-of-range vertex count, which has read zero
     // ever since the vertices went back to 16 bits. It carries the band-0
     // late count now; T= is every OTHER band.
+    // WITH THE DDR3 FRAME BUFFER (m1_raster3d FB_DDR3, the shipping build)
+    // nothing is presented band by band any more: T= is scanout LINES that
+    // landed from DDR3 after their display began (zero is the contract), H=
+    // is frames HELD - a list not drawn whole by the publish line, the last
+    // whole frame shown again - and W= the last draw, swap to finish.
     .dropped(r3_dbg_drop_total), .short_passes(r3_dbg_late0),
     .view_x1(r3_dbg_vx1), .fetch_miss(dbg_overruns),
     .px_left(r3_dbg_px_l), .px_right(r3_dbg_px_r), .vert_oob(r3_dbg_oob),

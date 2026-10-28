@@ -73,7 +73,7 @@ SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv rtl/video/m1_geo_cli
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_color.sv \
   rtl/video/m1_fp_pool.sv rtl/video/fp_to_int.sv rtl/video/fp_from_int.sv \
   rtl/video/m1_lightbank.sv rtl/video/m1_listwalk.sv \
-  rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
+  rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv \
   rtl/video/m1_raster3d.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
@@ -113,7 +113,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_
   rtl/video/m1_geo_xform.sv rtl/video/m1_geo_project.sv rtl/video/m1_geo_recip.sv rtl/video/m1_geo_det.sv \
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_norm.sv rtl/video/m1_geo_color.sv \
   rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv rtl/video/m1_geometry.sv rtl/video/m1_lightbank.sv \
-  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
+  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv rtl/video/m1_raster3d.sv \
   $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
@@ -203,7 +203,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -311,7 +311,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -407,7 +407,7 @@ render3d:
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
 	  rtl/video/fp_from_int.sv rtl/video/m1_lightbank.sv \
 	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv \
-	  rtl/video/m1_ddram_payload.sv \
+	  rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv \
 	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
 	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
 	./obj_render3d/tb_render3d
@@ -446,6 +446,36 @@ test_ddram_payload:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ddram_payload \
 	  $(SRCS_m1_ddram_payload) sim/video/tb_m1_ddram_payload.cpp -o tb_ddram_payload --Mdir obj_ddram_payload
 	./obj_ddram_payload/tb_ddram_payload
+
+# The 3D frame buffer's DDR3 path (m1_raster3d FB_DDR3). m2_ddr3 and
+# m2_ddr3_arb are the Model 2 core's, with its benches; m1_ddram_mux shares the
+# one DDRAM port with the quad payload; m1_fb_flush copies a band into DDR3
+# and is run through the real m2_ddr3 against the hostile DDR3 model.
+test_m2_ddr3:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m2_ddr3 \
+	  rtl/mem/m2_ddr3.sv sim/mem/tb_m2_ddr3.cpp -o tb_m2_ddr3 --Mdir obj_m2_ddr3
+	./obj_m2_ddr3/tb_m2_ddr3
+
+test_m2_ddr3_arb:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m2_ddr3_arb \
+	  rtl/mem/m2_ddr3_arb.sv sim/mem/tb_m2_ddr3_arb.cpp -o tb_m2_ddr3_arb --Mdir obj_m2_ddr3_arb
+	./obj_m2_ddr3_arb/tb_m2_ddr3_arb
+
+test_ddram_mux:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_ddram_mux \
+	  rtl/mem/m1_ddram_mux.sv sim/mem/tb_m1_ddram_mux.cpp -o tb_ddram_mux --Mdir obj_ddram_mux
+	./obj_ddram_mux/tb_ddram_mux
+
+test_fb_flush:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module fb_flush_chain \
+	  rtl/video/m1_fb_flush.sv rtl/mem/m2_ddr3.sv sim/video/fb_flush_chain.sv \
+	  sim/video/tb_m1_fb_flush.cpp -o tb_fb_flush --Mdir obj_fb_flush
+	./obj_fb_flush/tb_fb_flush
+
+test_fb_read:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_fb_read \
+	  rtl/video/m1_fb_read.sv sim/video/tb_m1_fb_read.cpp -o tb_fb_read --Mdir obj_fb_read
+	./obj_fb_read/tb_fb_read
 
 test_quad_store:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_quad_store \
