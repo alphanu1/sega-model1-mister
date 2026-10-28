@@ -23,7 +23,12 @@ ran through all of memory. `findings.md` 2026-10-28 (b) has the evidence.
   V60 unit suite 29/29. `make test` identical to tile-overrun's block. The
   attract wrap itself is ~10^10 cycles of frame bench and was not run.
 
-BUILD_B
+**The build for the board: `build/Model1_vrfreeze_v60fix_diag_seed3_35921.rbf`**,
+md5 `40a2e33ab0de064a171c8f1a592ef120` (commit `89a636a` + the diagnostic
+overlay, `M1_MACROS_EXTRA=M1_FREEZE_DIAG`; reports in
+`build/vrfreeze_v60fix_s3_reports/`): 35,921 ALM, 525 M10K, 50 DSP; setup
+clk_3d +0.975, clk_sys +0.185, clk_cpu +5.907, pll_hdmi -0.034 (the
+framework's); hold all positive. Seed 5 fitted too (clk_3d -0.170, not used).
 
 **What Ben checks:** leave Virtua Racing in attract for more than one full
 cycle (over 2 minutes; the first scene comes round again). It should carry
