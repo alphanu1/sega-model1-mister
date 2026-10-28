@@ -403,8 +403,18 @@ module m1_quad_store #(
   logic [PW-1:0] pass;                // which digit of the key
   logic [IW:0]  ri;
   logic [RADIX:0] hi;
-  logic [IW:0]  hist [NBUCK];
-  logic [IW:0]  base [NBUCK];
+  // THE HISTOGRAM AND THE BUCKET BASES ARE MLABs (2026-10-28). They were
+  // 2 x NBUCK x (IW+1) flip-flops with 16:1 read muxes, read-modify-written one
+  // element a cycle. Each is one asynchronous-read MLAB plus the previous
+  // clock's write held aside: two elements in a row with the same digit read
+  // the count the first one just wrote, and an MLAB cell is only written
+  // during that cycle. Their reset cleared values nothing reads - every pass
+  // clears hist in R_CNT and writes every base in R_SUM before using them.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [IW:0] hist [NBUCK];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [IW:0] base [NBUCK];
+  logic             hb_v, bb_v;        // hist / base written last clock...
+  logic [RADIX-1:0] hb_a, bb_a;        // ...this entry...
+  logic [IW:0]      hb_d, bb_d;        // ...with this
   logic [IW:0]  acc;
   logic         which;                // 0: a -> b, 1: b -> a
   logic [IW-1:0] cur_idx;
@@ -487,6 +497,26 @@ module m1_quad_store #(
   wire [31:0] key_shifted = key_rd >> (RADIX * pass);
   wire [RADIX-1:0] digit = key_shifted[RADIX-1:0];
 
+  // The one read and the one write of each table, as the sequencer below makes
+  // them. hist: cleared in R_CNT, counted in R_CNT_RUN, summed in R_SUM.
+  // base: set in R_SUM, read and bumped in R_SCAT_RUN.
+  wire [RADIX-1:0] hist_ra = (rst_st == R_SUM) ? hi[RADIX-1:0] : digit;
+  wire [IW:0]      hist_q  = (hb_v && hb_a == hist_ra) ? hb_d : hist[hist_ra];
+  wire             hist_we = (rst_st == R_CNT) || (rst_st == R_CNT_RUN && s2);
+  wire [RADIX-1:0] hist_wa = (rst_st == R_CNT) ? hi[RADIX-1:0] : digit;
+  wire [IW:0]      hist_wd = (rst_st == R_CNT) ? '0 : (hist_q + 1'b1);
+  wire [IW:0]      base_q  = (bb_v && bb_a == digit) ? bb_d : base[digit];
+  wire             base_we = (rst_st == R_SUM) || (rst_st == R_SCAT_RUN && s2);
+  wire [RADIX-1:0] base_wa = (rst_st == R_SUM) ? hi[RADIX-1:0] : digit;
+  wire [IW:0]      base_wd = (rst_st == R_SUM) ? acc : (base_q + 1'b1);
+  // rst_n gates the writes exactly as the asynchronous reset pre-empted them.
+  always_ff @(posedge clk) begin
+    if (rst_n && hist_we) hist[hist_wa] <= hist_wd;
+    if (rst_n && base_we) base[base_wa] <= base_wd;
+    hb_v <= rst_n && hist_we; hb_a <= hist_wa; hb_d <= hist_wd;
+    bb_v <= rst_n && base_we; bb_a <= base_wa; bb_d <= base_wd;
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       rst_st <= R_IDLE; pass <= '0; ri <= '0; hi <= '0; acc <= '0;
@@ -498,7 +528,6 @@ module m1_quad_store #(
       // the declared range". A constant that has to track a parameter and does
       // not is the same class of bug as the band mask that was still six bits
       // after the band height halved.
-      for (int i = 0; i < int'(NBUCK); i++) begin hist[i] <= '0; base[i] <= '0; end
     end else begin
       case (rst_st)
         R_IDLE: if (sort_start) begin
@@ -516,7 +545,7 @@ module m1_quad_store #(
         end
 
         R_CNT: begin                       // clear the histogram
-          hist[hi[RADIX-1:0]] <= '0;
+          // hist[hi] <= 0: the table's write port, above
           if (hi == (RADIX+1)'(NBUCK-1)) begin
             hi <= '0; ri <= '0;
             s0 <= 1'b0; s1 <= 1'b0; s2 <= 1'b0;
@@ -538,15 +567,15 @@ module m1_quad_store #(
           s0 <= more; s1 <= s0; s2 <= s1;
           cur_idx <= idx_rd;
           cidx_d  <= cur_idx;
-          if (s2) hist[digit] <= hist[digit] + 1'b1;
+          // if (s2) hist[digit] += 1: the table's write port, above
           if (!more && !pipe_busy) begin
             hi <= '0; acc <= '0; rst_st <= R_SUM;
           end
         end
 
         R_SUM: begin                       // exclusive prefix sum
-          base[hi[RADIX-1:0]] <= acc;
-          acc <= acc + hist[hi[RADIX-1:0]];
+          // base[hi] <= acc: the table's write port, above
+          acc <= acc + hist_q;                 // hist[hi]
           if (hi == (RADIX+1)'(NBUCK-1)) begin
             ri <= '0; s0 <= 1'b0; s1 <= 1'b0; s2 <= 1'b0;
             rst_st <= R_SCAT_RUN;
@@ -564,13 +593,13 @@ module m1_quad_store #(
           cidx_d  <= cur_idx;
           if (s2) begin
             if (which) begin
-              if (in_hi(base[digit][IW-1:0])) idx_a_hi[hi_a(base[digit][IW-1:0])] <= cidx_d;
-              else                            idx_a_lo[lo_a(base[digit][IW-1:0])] <= cidx_d;
+              if (in_hi(base_q[IW-1:0])) idx_a_hi[hi_a(base_q[IW-1:0])] <= cidx_d;
+              else                       idx_a_lo[lo_a(base_q[IW-1:0])] <= cidx_d;
             end else begin
-              if (in_hi(base[digit][IW-1:0])) idx_b_hi[hi_a(base[digit][IW-1:0])] <= cidx_d;
-              else                            idx_b_lo[lo_a(base[digit][IW-1:0])] <= cidx_d;
+              if (in_hi(base_q[IW-1:0])) idx_b_hi[hi_a(base_q[IW-1:0])] <= cidx_d;
+              else                       idx_b_lo[lo_a(base_q[IW-1:0])] <= cidx_d;
             end
-            base[digit] <= base[digit] + 1'b1;
+            // base[digit] += 1: the table's write port, above
           end
           if (!more && !pipe_busy) rst_st <= R_NEXT;
         end

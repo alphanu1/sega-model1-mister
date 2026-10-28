@@ -112,13 +112,43 @@ module m1_geo_xform #(
   output logic [31:0] out_x, out_y, out_z
 );
 
+  // THE MATRIX AND THE PRODUCT BANKS ARE MLABs. They were 960 flip-flops with
+  // 9:1 and 3:1 read muxes; they are storage with one writer each.
+  //
+  // The matrix has two readers - the multiplier's operand (any of m[0..8]) and
+  // the translation column for the last add round (m[9..11]) - so it is kept
+  // twice, one copy per reader. The walker can load a matrix word while a point
+  // is in flight, so the write of the previous clock is bypassed: a read of it
+  // in the very next cycle must not depend on when the MLAB cell is updated.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] mat_a [16];   // the multiplier's copy
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] mat_b [16];   // the translation copy
+  logic        mat_bw_v;
+  logic [3:0]  mat_bw_a;
+  logic [31:0] mat_bw_d;
+  always_ff @(posedge clk) begin
+    if (mat_we) begin mat_a[mat_idx] <= mat_data; mat_b[mat_idx] <= mat_data; end
+    mat_bw_v <= mat_we;
+    mat_bw_a <= mat_idx;
+    mat_bw_d <= mat_data;
+  end
+`ifdef VERILATOR
+  // The bench reads the matrix back by name; keep a flat copy for it.
   logic [31:0] mat [12] /* verilator public_flat_rd */;
   always_ff @(posedge clk) if (mat_we) mat[mat_idx] <= mat_data;
+`endif
 
   // ------------------------------------------------------------ product bank
   // Two banks of nine products: one being filled by the multiplier for point N
   // while the other is being summed for point N-1.
-  logic [31:0] r [2][9];
+  // The nine products of a point are r[bank][3*comp + term]; the adder reads a
+  // triple {term 0, 1, 2} of one comp at a time, so the bank is three MLABs,
+  // one per term, addressed {bank, comp}. The adder only starts on a bank two
+  // or more cycles after its last product landed (M_WAIT -> bank_full ->
+  // A_IDLE -> A_RUN), so no read ever meets the write of the previous clock.
+  // The old reset of r[][] cleared values nothing could read before writing.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] r_t0 [8];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] r_t1 [8];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] r_t2 [8];
   logic        fill_bank;      // bank the multiplier is writing
   logic        sum_bank;       // bank the adder is reading
   logic        bank_full;      // fill_bank holds a complete set of nine
@@ -137,7 +167,7 @@ module m1_geo_xform #(
   wire [1:0]  comp  = 2'(issue / 4'd3);       // which output component
   wire [3:0]  m_sel = 4'({2'd0, term} * 4'd3 + {2'd0, comp});
 
-  assign mul_a = mat[m_sel];
+  assign mul_a = (mat_bw_v && mat_bw_a == m_sel) ? mat_bw_d : mat_a[m_sel];
   assign mul_b = (term == 2'd0) ? px : (term == 2'd1) ? py : pz;
 
   wire mul_out_valid = mul_rsp;
@@ -182,21 +212,15 @@ module m1_geo_xform #(
   // a_slot = (a_comp <= 2). The old form relied on that too and was less safe
   // about it - a_comp == 3 would have indexed r[sum_bank][9], one past the end.
   logic [31:0] rsel0, rsel1, rsel2, matsel;
+  // a_comp == 3 maps to comp 2, as the case's default did.
+  wire [1:0] a_cmp  = (a_comp[1:0] == 2'd3) ? 2'd2 : a_comp[1:0];
+  wire [2:0] r_ra   = {sum_bank, a_cmp};
+  wire [3:0] mat_tr = 4'd9 + {2'd0, a_cmp};          // m[9], m[10], m[11]
   always_comb begin
-    case (a_comp[1:0])
-      2'd0: begin
-        rsel0 = r[sum_bank][0]; rsel1 = r[sum_bank][1]; rsel2 = r[sum_bank][2];
-        matsel = mat[9];
-      end
-      2'd1: begin
-        rsel0 = r[sum_bank][3]; rsel1 = r[sum_bank][4]; rsel2 = r[sum_bank][5];
-        matsel = mat[10];
-      end
-      default: begin
-        rsel0 = r[sum_bank][6]; rsel1 = r[sum_bank][7]; rsel2 = r[sum_bank][8];
-        matsel = mat[11];
-      end
-    endcase
+    rsel0  = r_t0[r_ra];
+    rsel1  = r_t1[r_ra];
+    rsel2  = r_t2[r_ra];
+    matsel = (mat_bw_v && mat_bw_a == mat_tr) ? mat_bw_d : mat_b[mat_tr];
   end
 
   assign add_a = (a_round == 2'd0) ? rsel0 : t[a_comp[1:0]];
@@ -230,6 +254,20 @@ module m1_geo_xform #(
   assign in_ready = (mst == M_IDLE) && !bank_full;
 
 
+  // Product n of the point (issue order) is term n%3 of comp n/3.
+  wire [1:0] r_wt = (got == 4'd0 || got == 4'd3 || got == 4'd6) ? 2'd0 :
+                    (got == 4'd1 || got == 4'd4 || got == 4'd7) ? 2'd1 : 2'd2;
+  wire [1:0] r_wc = (got < 4'd3) ? 2'd0 : (got < 4'd6) ? 2'd1 : 2'd2;
+  wire [2:0] r_wa = {fill_bank, r_wc};
+  // The async reset pre-empted this write; rst_n gates it the same way.
+  always_ff @(posedge clk) begin
+    if (rst_n && mul_out_valid && got < 4'd9) begin
+      if (r_wt == 2'd0) r_t0[r_wa] <= mul_result;
+      if (r_wt == 2'd1) r_t1[r_wa] <= mul_result;
+      if (r_wt == 2'd2) r_t2[r_wa] <= mul_result;
+    end
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       mst <= M_IDLE; ast <= A_IDLE;
@@ -238,16 +276,13 @@ module m1_geo_xform #(
       bank_trans <= 1'b0; atrans <= 1'b0;
       px <= '0; py <= '0; pz <= '0; ptrans <= 1'b0;
       out_valid <= 1'b0; out_x <= '0; out_y <= '0; out_z <= '0;
-      for (int b = 0; b < 2; b++)
-        for (int i = 0; i < 9; i++) r[b][i] <= '0;
       for (int i = 0; i < 3; i++) t[i] <= '0;
     end else begin
       out_valid <= 1'b0;
 
       // Results come back in issue order, so a counter places them.
       if (mul_out_valid && got < 4'd9) begin
-        r[fill_bank][got] <= mul_result;
-        got               <= got + 4'd1;
+        got               <= got + 4'd1;     // the product itself: r_wr below
       end
       if (add_out_valid && a_total < 4'd9) begin
         t[a_got] <= add_result;

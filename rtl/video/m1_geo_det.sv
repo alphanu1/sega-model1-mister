@@ -65,7 +65,29 @@ module m1_geo_det (
   } state_t;
   state_t st;
 
-  logic [31:0] a1x, a1y, a1z, a2x, a2y, a2z, a3x, a3y, a3z;
+  // THE THREE POINTS ARE READ WHERE THEY ARE, NOT COPIED (2026-10-28). This
+  // used to latch p1..p3 into nine 32-bit registers on in_valid. The walker
+  // drives them from its own registers (o1, o0, n0) and does not move those
+  // until it has collected this unit's answer - a record does not advance
+  // while dt_iss != dt_col, and n0 is the record's first transform, written
+  // before dt_valid can rise - so the copy always equalled the input for as
+  // long as it was read. 288 flip-flops. tb_m1_geo_det holds its inputs the
+  // same way.
+  wire  [31:0] a1x = p1x, a1y = p1y, a1z = p1z;
+  wire  [31:0] a2x = p2x, a2y = p2y, a2z = p2z;
+  wire  [31:0] a3x = p3x, a3y = p3y, a3z = p3z;
+`ifdef VERILATOR
+  // The contract, checked in every simulation: what the old copy would have
+  // held must still be on the inputs whenever the unit is working.
+  logic [287:0] chk_lat;
+  always_ff @(posedge clk) begin
+    if (st == D_IDLE && in_valid)
+      chk_lat <= {p1x, p1y, p1z, p2x, p2y, p2z, p3x, p3y, p3z};
+    else if (rst_n && st != D_IDLE && st != D_OUT &&
+             chk_lat != {p1x, p1y, p1z, p2x, p2y, p2z, p3x, p3y, p3z})
+      $display("GEO_DET INPUT MOVED while in use (state %0d)", st);
+  end
+`endif
   logic [31:0] d [6];      // x1 y1 z1 x2 y2 z2
   logic [31:0] m [6];      // the six cross-product terms
   logic [31:0] c [3];      // the three cofactors
@@ -159,9 +181,6 @@ module m1_geo_det (
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= D_IDLE; step <= '0; ngot <= '0; acc <= '0;
-      a1x <= '0; a1y <= '0; a1z <= '0;
-      a2x <= '0; a2y <= '0; a2z <= '0;
-      a3x <= '0; a3y <= '0; a3z <= '0;
       for (int i = 0; i < 6; i++) begin d[i] <= '0; m[i] <= '0; end
       for (int i = 0; i < 3; i++) begin c[i] <= '0; t[i] <= '0; end
       out_valid <= 1'b0; out_det <= '0;
@@ -190,9 +209,6 @@ module m1_geo_det (
       case (st)
         D_IDLE: begin
           if (in_valid) begin
-            a1x <= p1x; a1y <= p1y; a1z <= p1z;
-            a2x <= p2x; a2y <= p2y; a2z <= p2z;
-            a3x <= p3x; a3y <= p3y; a3z <= p3z;
             step <= '0; ngot <= '0;
             st   <= D_SUB1;
           end
