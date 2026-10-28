@@ -35,7 +35,8 @@
 // must be unchanged, and the work-RAM store must land. Before 2026-10-28 the
 // first three were written into the ROM image, which nothing reloads.
 module tb_m1_main #(parameter integer FASTIF = 1, parameter integer INJFP = 0,
-                    parameter integer ROMWR = 0);
+                    parameter integer ROMWR = 0,
+                    parameter integer REMTEST = 0);
 
 localparam integer ITERATIONS = 64;
 localparam [31:0]  PROG_PC    = 32'h00FC0000;
@@ -220,10 +221,10 @@ localparam logic [23:0] ROMWR_ADDR [4] = '{24'hFC0100, 24'h200100, 24'h100100, 2
 localparam integer      ROMWR_WORD [3] = '{32'h0A0080, 32'h000080, 32'h0C0080};
 
 // ---------------------------------------------------------- the program
-reg [7:0] prog [0:127];
+reg [7:0] prog [0:255];
 integer i, k;
 initial begin : build
-    for (i = 0; i < 128; i = i + 1) prog[i] = 8'h00;
+    for (i = 0; i < 256; i = i + 1) prog[i] = 8'h00;
     k = 0;
     if (INJFP != 0) begin
         // ADDFS: opcode 0x5c, subop 0x18. A build with the FP group executes
@@ -248,6 +249,33 @@ initial begin : build
         prog[k]=8'h2D; k=k+1; prog[k]=8'h24; k=k+1; prog[k]=8'hF3; k=k+1;
         prog[k]=ROMWR_ADDR[3][7:0];   k=k+1; prog[k]=ROMWR_ADDR[3][15:8]; k=k+1;
         prog[k]=ROMWR_ADDR[3][23:16]; k=k+1; prog[k]=8'h00; k=k+1;
+    end
+    if (REMTEST != 0) begin
+        // Virtua Racing's attract course counter, FE2074/FE207A, byte for byte
+        // but absolute instead of PC-relative: 2 -> inc -> 3 -> rem #3 -> 0.
+        //   mov.b #2, 501934 ; inc.b 501934 ; rem.b #3, 501934 ;
+        //   movz.bw 501934, R5
+        prog[k]=8'h09; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE2; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'hD8; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h50; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h0D; k=k+1; prog[k]=8'h25; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        // DIV and MUL into memory share the path: mov.w #9, 501938 ;
+        // div.w #3, 501938 ; mul.w #5, 501938 ; mov.w 501938, R7  -> 15
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE9; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'hA5; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h85; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE5; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h27; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        // The register form as a control: mov.b #3, R6 ; rem.b #3, R6
+        prog[k]=8'h09; k=k+1; prog[k]=8'h26; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'h50; k=k+1; prog[k]=8'h26; k=k+1; prog[k]=8'hE3; k=k+1;
     end
     // MOVW #ITERATIONS, R0
     prog[k]=8'h2D; k=k+1; prog[k]=8'h20; k=k+1; prog[k]=8'hF4; k=k+1;
@@ -284,7 +312,7 @@ initial begin
 
     $display("loading %0d bytes at stream offset 0x%0h", 32, PROG_STREAM);
     ioctl_download = 1;
-    for (i = 0; i < 64; i = i + 1)
+    for (i = 0; i < 128; i = i + 1)
         push(PROG_STREAM[26:0] + i[26:0]*2, {prog[2*i+1], prog[2*i]});
     // A known pattern under each ROM target, so "unchanged" is checked
     // against something written rather than against the model's default.
@@ -356,6 +384,21 @@ initial begin
         $display("M1 MAIN ROMWR: dropped=%0d first pc=%06h addr=%06h r3=%08h r4=%08h",
                  main.dbg_rom_wr, main.dbg_rom_wr_pc, main.dbg_rom_wr_addr,
                  main.cpu.r[3], main.cpu.r[4]);
+    end
+    if (REMTEST != 0 && dbg_halted) begin
+        if (main.cpu.r[5] !== 32'd0) begin
+            $display("  FAIL rem.b #3 of 3 in memory left %0d, expected 0 (VR's attract course wrap)",
+                     main.cpu.r[5]); fails = fails + 1;
+        end
+        if (main.cpu.r[6][7:0] !== 8'd0) begin
+            $display("  FAIL rem.b #3 of 3 in R6 left %0d, expected 0", main.cpu.r[6][7:0]);
+            fails = fails + 1;
+        end
+        if (main.cpu.r[7] !== 32'd15) begin
+            $display("  FAIL div.w #3 then mul.w #5 of 9 in memory gave %0d, expected 15",
+                     main.cpu.r[7]); fails = fails + 1;
+        end
+        $display("M1 MAIN REMTEST: r5=%08h r6=%08h r7=%08h", main.cpu.r[5], main.cpu.r[6], main.cpu.r[7]);
     end
     // A build without the FP group must never meet an FP opcode. This is the
     // check that turns "the ROM scan found nothing" into something a run can

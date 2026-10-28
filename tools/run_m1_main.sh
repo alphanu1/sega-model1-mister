@@ -29,10 +29,10 @@ SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60
 # testbench fails on it, so running real code answers the question.
 fail=0
 run_one() {
-  local name="$1" F="$2" extra="$3" inj="${4:-0}" romwr="${5:-0}"
+  local name="$1" F="$2" extra="$3" inj="${4:-0}" romwr="${5:-0}" remt="${6:-0}"
   local d="build/m1main_${name}"
   rm -rf "$d"
-  if ! verilator $VF $extra -GFASTIF=$F -GINJFP=$inj -GROMWR=$romwr --top-module tb_m1_main --Mdir "$d" -o m1main $SRC > "$d.log" 2>&1; then
+  if ! verilator $VF $extra -GFASTIF=$F -GINJFP=$inj -GROMWR=$romwr -GREMTEST=$remt --top-module tb_m1_main --Mdir "$d" -o m1main $SRC > "$d.log" 2>&1; then
     echo "BUILDFAIL $name (see $d.log)"; fail=1; return
   fi
   local out line
@@ -62,6 +62,11 @@ run_one "no_fp_injected" 1 "+define+S32_V60_NO_FP" 1
 # the fast-fetch configurations above do not currently run in this bench (see
 # docs/findings.md 2026-10-28).
 run_one "rom_readonly"   0 "" 0 1
+
+# MUL/DIV/REM with a MEMORY destination must store the result. They set the
+# flags and stored nothing until 2026-10-28, and Virtua Racing's attract wraps
+# its course number with exactly that (rem.b #3 at FE207A).
+run_one "muldiv_memory"  0 "" 0 0 1
 echo "======================================================"
 [ $fail -eq 0 ] && echo "M1 MAIN INTEGRATION: all configurations pass" || echo "M1 MAIN INTEGRATION: FAILED"
 exit $fail

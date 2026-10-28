@@ -2071,8 +2071,18 @@ else if (ce) begin
     // iterative multiply/divide
     S_MULDIV: begin
         if (mdcnt == 0) begin
-            md_finish();
+            // S_NEXT FIRST, THEN md_finish. md_finish ends in wb_op2, which for
+            // a MEMORY destination sets st <= S_WB_MEM - and the later of two
+            // non-blocking writes wins. This was the other way round (from
+            // s32), so MUL, MULU, DIV, DIVU, REM and REMU into memory set the
+            // flags and never stored the result. Virtua Racing's attract wraps
+            // its course number with `rem.b #3, 501934[PC]` (FE207A); the 3
+            // stayed 3, the bank register became 4 (erased ROM), the scene
+            // loader read a table of FFFFs and copied memory over itself -
+            // the freeze at the end of every attract cycle. S_EXEC already
+            // has this order. tb_m1_main REMTEST covers it.
             st <= S_NEXT;
+            md_finish();
         end
         else begin
             md_step();
