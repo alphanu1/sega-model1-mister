@@ -20,7 +20,74 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
-## 2026-10-28 — RESTART COULD NOT UNDO TWO KINDS OF WRITE: THE ROM IMAGE AND THE I/O FIRMWARE WERE WRITABLE
+## 2026-10-28 (b) — THE FREEZE IS A V60 BUG: MUL, DIV AND REM INTO MEMORY NEVER STORED THEIR RESULT
+
+**Found from the board, through the diagnostic build of entry (a) below.** Ben:
+the freeze happens only in attract, and only when the attract cycle wraps
+round. The overlay, photographed at the freeze:
+
+    00 FFE59C   V60 PC: the scene loader's block copy (movcu.h)
+    01 01004C   V60 held reading an EMPTY TGP output FIFO; TGP idle at 004C
+    04 40FFFF   >= 65,535 stores into ROM windows, the first with BANK 4
+    05 FFE59C   ...from the block copy
+    06 FFFFFE   ...to the top of memory
+    07 010000   no colour upload dropped
+    0B 00FFFF   (I/O replies saturated)
+    0E 000F93 -> 001252 ten seconds later: flips and 3D passes still running
+
+and **RESTART brought the game back** - the first time it ever has. So hole 1
+of entry (a), the ROM image taking V60 stores, is what made the freeze
+permanent, and hole 2 was not involved (`07` = 0).
+
+### Why bank 4 - read off MAME
+
+- The attract cycle is **7,026 frames** (2 min 2 s): the scene loads that
+  start it are at frames 272, 7298, 14324 (`build/wrap/wrap.log`).
+- Each demo scene selects its ROM bank at `FE216F`:
+  `R0 = ([501934] + 1) << 4 | 1; mov.b R0, E00004`. `501934` is the course
+  being demonstrated, 0-2, so banks 1-3. MAME writes `0011`, `0031`, `0021`,
+  `0031`, `0031`, `0031`, `0011` ... and never anything else.
+- The course advances at `FE2074`/`FE207A`: `inc.b 501934[PC]` then
+  **`rem.b #3, 501934[PC]`**. MAME, at the wrap (frame 7296): writes `3`, then
+  `0` (`build/wrap/course.lua`).
+- Bank 4 is SDRAM words `0x2C0000-0x33FFFF` - erased (`FFFF`) at the bottom.
+  The loader at `FFE583` takes its table from banked ROM (`0x118051`), so with
+  bank 4 every table entry is `FFFFFFFF`: destination `FFFFFFFE`, length
+  `FFFF...<<4`. The copy then runs through all of memory - palette, tile and
+  character RAM, the display lists (`0A`: walks ending on garbage), the
+  coprocessor's FIFO window, where its source finally blocks on an empty
+  output FIFO (`01`) - and, before entry (a), through the ROM image.
+
+### The bug
+
+`rtl/cpu/v60/v60.sv`, `S_MULDIV`:
+
+    md_finish();     // ends in wb_op2: st <= S_WB_MEM for a memory destination
+    st <= S_NEXT;    // ...and this later non-blocking write wins
+
+so **MUL, MULU, DIV, DIVU, REM and REMU with a memory destination set the
+flags and never stored the result**. Inherited from s32 (`s32_v60.sv` has the
+same order); `S_EXEC` has the right one. `rem.b #3` left the `3` in place.
+
+`tools/run_m1_main.sh` `muldiv_memory` runs the game's two instructions
+(absolute instead of PC-relative) and a DIV.W/MUL.W into memory: before,
+`3` and `9`; after, `0` and `15`. The register form was always right, which is
+why the V60 unit suite (29/29 before and after) and `v60_trace` (the first
+seconds of boot) never saw it.
+
+### What was right and wrong in entry (a)
+
+- Right: RESTART failed because the ROM image took stores. The board now
+  recovers on RESTART.
+- Wrong guess: a garbage display list reaching the I/O firmware. Colour drops
+  read zero on the board; the trigger was the CPU.
+- The bench never reached this: the attract wrap is ~10^10 clk_sys cycles of
+  frame bench (about two days at the speed it runs here), and the race script
+  never plays attract at all.
+
+---
+
+## 2026-10-28 (a) — RESTART COULD NOT UNDO TWO KINDS OF WRITE: THE ROM IMAGE AND THE I/O FIRMWARE WERE WRITABLE
 
 Branch `vr-freeze`, on `tile-overrun` (`4253a86`). Ben: Virtua Racing freezes to
 a black screen, the 3D never comes back, there is only the tile background and

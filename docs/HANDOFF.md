@@ -1,3 +1,36 @@
+# 2026-10-28 (b): THE VR ATTRACT FREEZE IS A V60 BUG - MUL/DIV/REM INTO MEMORY NEVER STORED. FIXED.
+
+Branch **`vr-freeze`**. The diagnostic build below went on the board, froze at
+the attract wrap exactly as Ben described, and its overlay named the path:
+PC `FFE59C` (the scene loader's block copy), ROM stores from there to `FFFFFE`
+with **ROM bank 4** selected, the V60 finally held on an empty TGP output FIFO.
+**RESTART recovered it** - the first time ever - so closing hole 1 (ROM image
+writable) was what made the freeze permanent.
+
+The trigger, from MAME: the attract advances its course number with
+`inc.b 501934` / **`rem.b #3, 501934`** (`FE2074`/`FE207A`) and selects bank
+`course + 1` at `FE216F`. Our V60's `S_MULDIV` let `st <= S_NEXT` override the
+`S_WB_MEM` that `wb_op2` sets for a memory destination, so MUL/MULU/DIV/DIVU/
+REM/REMU into memory never stored their result (inherited from s32). The 3
+stayed 3, bank 4 (erased ROM) fed the loader a table of `FFFF`s, and the copy
+ran through all of memory. `findings.md` 2026-10-28 (b) has the evidence.
+
+- Fix: `89a636a`. `vf-swa-geo` found the same bug from Virtua Fighter's ring
+  size (`mulu.w #A, 501276`) and carries an identical `v60.sv` (`32b3351`);
+  its `tb_v60_mul_mem` (every opcode and width, misaligned) passes on this
+  branch, and this branch's `muldiv_memory` passes on that one.
+- Proof: `tools/run_m1_main.sh` `muldiv_memory` - before `3`/`9`, after `0`/`15`.
+  V60 unit suite 29/29. `make test` identical to tile-overrun's block. The
+  attract wrap itself is ~10^10 cycles of frame bench and was not run.
+
+BUILD_B
+
+**What Ben checks:** leave Virtua Racing in attract for more than one full
+cycle (over 2 minutes; the first scene comes round again). It should carry
+on. Overlay rows `04` and `07` should read zero throughout.
+
+---
+
 # 2026-10-28: VR FREEZE TO BLACK - RESTART COULD NOT UNDO TWO KINDS OF WRITE. A DIAGNOSTIC BUILD FOR THE BOARD.
 
 Branch **`vr-freeze`** (local, not pushed), on `tile-overrun` (`4253a86`).
