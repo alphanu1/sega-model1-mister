@@ -50,8 +50,8 @@ and +0.037); seed 5 is the one with every clock positive by a margin.
 - `tools/mame_tile_dump.lua` + `make video2d` (`sim/video/tb_m1_video2d.cpp`):
   MAME's tile RAM, character RAM and palette replayed through `m1_video`
   against its line deadline, at a fixed, jittered or measured (`-hist`) port
-  latency; every pixel checked, every frame hashed. 20,112 frames of six
-  titles took ~20 minutes a configuration on an idle machine. The dumps are
+  latency; every pixel checked, every frame hashed. About a second a frame
+  per process, so run the 12 dump directories in parallel. The dumps are
   ROM-derived and live in `build/tiledump/` (not committed).
 - `tb_m1_tile_fetch` now models `m1_sdram`'s port exactly (rising-edge latch,
   two-cycle ack) and fuzzes repeats across masked columns at latency 3-200.
