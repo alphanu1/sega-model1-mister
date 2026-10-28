@@ -346,20 +346,18 @@ module mb86233_alu #(
       mb86233_pkg::ALU_ASRD: int_result = shr_res;
       mb86233_pkg::ALU_CXFD: int_result = cxf_result;
       mb86233_pkg::ALU_CFXD: int_result = cfx_result;
-      default:  int_result = 32'd0;
-    endcase
-  end
-
-  // Results that need no arithmetic unit at all.
-  logic [31:0] bit_result;
-  always_comb begin
-    unique case (op)
-      mb86233_pkg::ALU_FABD: bit_result = reg_d & 32'h7fffffff;
+      // Results that need no arithmetic unit at all - the bit ops. They had a
+      // 32-bit lane of their own (pbit) through the five-stage pipe beside
+      // pint; r1 read pbit only for SRC_BIT ops and pint only for SRC_INT ops,
+      // and the two op sets are disjoint, so one lane carries both. 160
+      // registers fewer, every result the same: the Model 2 core's R952
+      // (sega-model2-mister f92030c) on its copy of this ALU.
+      mb86233_pkg::ALU_FABD: int_result = reg_d & 32'h7fffffff;
       // fned leaves +0 alone rather than producing -0: MAME writes
       // `m_d ? m_d ^ 0x80000000 : 0`, so the test is on the whole word.
-      mb86233_pkg::ALU_FNED: bit_result = (reg_d != 32'd0) ? (reg_d ^ 32'h80000000) : 32'd0;
-      mb86233_pkg::ALU_FSPD: bit_result = reg_p;
-      default:  bit_result = 32'd0;
+      mb86233_pkg::ALU_FNED: int_result = (reg_d != 32'd0) ? (reg_d ^ 32'h80000000) : 32'd0;
+      mb86233_pkg::ALU_FSPD: int_result = reg_p;
+      default:  int_result = 32'd0;
     endcase
   end
 
@@ -394,7 +392,6 @@ module mb86233_alu #(
   logic        pv   [1:ALU_LAT];
   logic [4:0]  pop  [1:ALU_LAT];
   logic [31:0] pint [1:ALU_LAT];
-  logic [31:0] pbit [1:ALU_LAT];
   logic [31:0] pst  [1:ALU_LAT];
   logic        pxv  [1:ALU_LAT];
   logic [31:0] pxd  [1:ALU_LAT];
@@ -406,12 +403,12 @@ module mb86233_alu #(
       for (pi = 1; pi <= ALU_LAT; pi = pi + 1) pv[pi] <= 1'b0;
     end else begin
       pv[1] <= in_valid;   pop[1]  <= op;
-      pint[1] <= int_result; pbit[1] <= bit_result;
+      pint[1] <= int_result;
       pst[1] <= st_in;     psrc[1] <= r1_src;
       pxv[1] <= xfer_d_valid; pxd[1] <= xfer_d_data;
       for (pi = 2; pi <= ALU_LAT; pi = pi + 1) begin
         pv[pi]   <= pv[pi-1];   pop[pi]  <= pop[pi-1];
-        pint[pi] <= pint[pi-1]; pbit[pi] <= pbit[pi-1];
+        pint[pi] <= pint[pi-1];
         pst[pi]  <= pst[pi-1];  psrc[pi] <= psrc[pi-1];
         pxv[pi]  <= pxv[pi-1];  pxd[pi]  <= pxd[pi-1];
       end
@@ -422,11 +419,11 @@ module mb86233_alu #(
   // the rest of the module did not have to move.
   logic        s2_valid, s2_xv;
   logic [4:0]  s2_op;
-  logic [31:0] s2_int, s2_bit, s2_st, s2_xd;
+  logic [31:0] s2_int, s2_st, s2_xd;
   r1_src_e     s2_src;
 
   assign s2_valid = pv[ALU_LAT];   assign s2_op  = pop[ALU_LAT];
-  assign s2_int   = pint[ALU_LAT]; assign s2_bit = pbit[ALU_LAT];
+  assign s2_int   = pint[ALU_LAT];
   assign s2_st    = pst[ALU_LAT];  assign s2_src = psrc[ALU_LAT];
   assign s2_xv    = pxv[ALU_LAT];  assign s2_xd  = pxd[ALU_LAT];
 
@@ -438,7 +435,7 @@ module mb86233_alu #(
   always_comb begin
     unique case (s2_src)
       SRC_ADD:  r1 = add_result;
-      SRC_BIT:  r1 = s2_bit;
+      SRC_BIT:  r1 = s2_int;               // the bit ops ride pint (R952)
       SRC_INT:  r1 = s2_int;
       SRC_NONE: r1 = 32'd0;
     endcase

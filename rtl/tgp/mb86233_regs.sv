@@ -111,7 +111,20 @@ module mb86233_regs (
   logic [15:0] sp;
   logic [7:0]  rpc;
   logic [2:0]  vsm;
-  logic [31:0] rf [0:15];            // 0x20-0x2f, indexed by addr[3:0]
+  // THE GENERAL FILE IS AN MLAB. Sixteen 32-bit words of flip-flops with a
+  // 16:1 read mux and an asynchronous clear were the bulk of this module. Reset
+  // is kept exactly with a valid bit per word (cleared by rst_n, set by a
+  // write): an unwritten word reads 0, as the cleared flip-flop did. The
+  // previous clock's write is bypassed, so a read in the very next cycle never
+  // depends on when the MLAB cell is updated.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] rf [0:15];   // 0x20-0x2f, by addr[3:0]
+  logic [15:0] rf_v;                 // word written since reset
+  logic        rf_bw_v;              // a word was written last clock...
+  logic [3:0]  rf_bw_a;              // ...here...
+  logic [31:0] rf_bw_d;              // ...with this
+  wire  [31:0] rf_q  = rf[rd_addr[3:0]];
+  wire  [31:0] rf_rd = (rf_bw_v && rf_bw_a == rd_addr[3:0]) ? rf_bw_d :
+                       rf_v[rd_addr[3:0]] ? rf_q : 32'd0;
 
   // POWER-ON CONTENTS ARE ZERO. Sixteen 32-bit registers are flip-flops on the
   // device and come up cleared; MAME's RF space is zero-filled RAM. Verilator
@@ -143,7 +156,7 @@ module mb86233_regs (
   always_comb begin
     rd_unimpl = 1'b0;
     if (in_rf) begin
-      rd_data = rf[rd_addr[3:0]];
+      rd_data = rf_rd;
     end else begin
       unique case (rd_addr)
         6'h00: rd_data = {16'd0, b0};
@@ -200,6 +213,14 @@ module mb86233_regs (
     end
   end
 
+  // The array itself has no reset (rf_v stands in for it). rst_n gates the
+  // write exactly as the asynchronous reset branch used to pre-empt it.
+  always_ff @(posedge clk) begin
+    if (rst_n && wr_rf) rf[wr_addr[3:0]] <= wr_data;
+    rf_bw_a <= wr_addr[3:0];
+    rf_bw_d <= wr_data;
+  end
+
   integer k;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -211,9 +232,10 @@ module mb86233_regs (
       sp <= 16'd0; mask <= 16'd0;
       sft <= 8'd0; rpc <= 8'd1;
       vsm <= 3'd0; vsmr <= 16'd7;                // (8 << 0) - 1
-      for (k = 0; k < 16; k = k + 1) rf[k] <= 32'd0;
+      rf_v <= 16'd0; rf_bw_v <= 1'b0;
     end else begin
-      if (wr_rf) rf[wr_addr[3:0]] <= wr_data;
+      rf_bw_v <= wr_rf;
+      if (wr_rf) rf_v[wr_addr[3:0]] <= 1'b1;
 
       if (wr_en && !wr_rf) begin
         unique case (wr_addr)

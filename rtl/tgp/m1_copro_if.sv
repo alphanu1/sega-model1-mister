@@ -262,7 +262,17 @@ module m1_copro_if #(
   // as memory, and the fit dies with "Error (170012): Fitter requires 4236
   // LABs ... device contains only 4191".
   logic [31:0] fin  [FIFO_DEPTH];
-  logic [31:0] fout [FIFO_DEPTH];
+  // fout IS AN MLAB AS OF 2026-10-28, at 16 deep - not the 64 the warning
+  // above was written against. It was flip-flops because its read is
+  // asynchronous (Quartus: "uninferred due to asynchronous read logic"): 512
+  // registers and a 16:1 32-bit mux. The TGP's push of the previous clock is
+  // bypassed, because the V60 can pop the word the very next cycle (the FIFO
+  // was empty and the push is what released it) and an MLAB cell is only
+  // written during that cycle.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [31:0] fout [FIFO_DEPTH];
+  logic          fo_bw_v;      // fout was pushed last clock...
+  logic [FW-1:0] fo_bw_a;      // ...into this slot...
+  logic [31:0]   fo_bw_d;      // ...with this word
   logic [FW:0] fin_wr, fin_rd, fout_wr, fout_rd;
 
   wire fin_empty  = (fin_wr  == fin_rd);
@@ -275,7 +285,9 @@ module m1_copro_if #(
   assign fifo_out_full = fout_full;
 
   // What the next low access will pop.
-  wire [31:0] fout_head = fout_empty ? pop_r : fout[fout_rd[FW-1:0]];
+  wire [31:0] fout_q    = (fo_bw_v && fo_bw_a == fout_rd[FW-1:0]) ? fo_bw_d
+                                                                  : fout[fout_rd[FW-1:0]];
+  wire [31:0] fout_head = fout_empty ? pop_r : fout_q;
 
   // Hold the V60 off while there is nowhere to put its next command word. MAME
   // halts the CPU outright; stalling the access is the bus-level equivalent and
@@ -362,11 +374,21 @@ module m1_copro_if #(
     endcase
   end
 
+  // fout's cells and the bypass word: no reset, as before (only the pointers
+  // and fo_bw_v are reset). rst_n gates the push exactly as the reset branch
+  // of the block below pre-empted it.
+  always_ff @(posedge clk) begin
+    if (rst_n && fifo_out_push && !fout_full) fout[fout_wr[FW-1:0]] <= fifo_out_data;
+    fo_bw_a <= fout_wr[FW-1:0];
+    fo_bw_d <= fifo_out_data;
+  end
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st <= S_IDLE;
       adr <= '0; lat_lo <= '0; pop_r <= '0;
       fin_wr <= '0; fin_rd <= '0; fout_wr <= '0; fout_rd <= '0;
+      fo_bw_v <= 1'b0;
       q <= 16'hffff; ack <= 1'b0; served <= 1'b0;
       tgp_rdata <= '0; tgp_ack <= 1'b0;
       dbg_ram_writes <= '0; dbg_fifo_pushes <= '0;
@@ -385,8 +407,8 @@ module m1_copro_if #(
       if (!req_s) served <= 1'b0;
 
       // The TGP's FIFO ends are independent of the RAM arbiter.
+      fo_bw_v <= fifo_out_push && !fout_full;
       if (fifo_out_push && !fout_full) begin
-        fout[fout_wr[FW-1:0]] <= fifo_out_data;
         fout_wr <= fout_wr + 1'd1;
         if (dbg_fifo_returns != 16'hffff)
           dbg_fifo_returns <= dbg_fifo_returns + 16'd1;
