@@ -114,8 +114,13 @@ module m1_fetch_bridge (
   // (And no comment line here may START with the simulator's name - that parses
   // as a metacomment and fails the build. Second time in one session.)
   localparam int LINES = 8;
-  logic [63:0] cline  [LINES];
-  logic [20:0] ctag   [LINES];
+  // LINES AND TAGS ARE MLABs (2026-10-28), not 680 flip-flops with 8:1 read
+  // muxes. A hit still resolves in the cycle of the request - an MLAB read is
+  // asynchronous - and a line is never read in the cycle after it is filled:
+  // that cycle answers from if_data_r (`served`), so no read meets an MLAB
+  // write in progress. cvalid stays in flip-flops: reset clears it.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [63:0] cline  [LINES];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [20:0] ctag   [LINES];
   logic        cvalid [LINES];
   integer      ci;
 
@@ -200,12 +205,19 @@ module m1_fetch_bridge (
         // is cached UNROTATED, so a later fetch at a different offset within it
         // still hits.
         if_data_r     <= c_dout >> {off_q, 3'b000};
-        cline[idx_q]  <= c_dout;
-        ctag[idx_q]   <= tag_q;
-        cvalid[idx_q] <= 1'b1;
+        cvalid[idx_q] <= 1'b1;            // the line itself: the block below
         served        <= 1'b1;
         pending       <= 1'b0;
       end
+    end
+  end
+
+  // The fill, outside the reset block (the arrays have no reset). The reset
+  // branch above pre-empted it; cpu_rst_n gates it the same way.
+  always_ff @(posedge cpu_clk) begin
+    if (cpu_rst_n && if_req && pending && c_ack) begin   // the branch above, exactly
+      cline[idx_q] <= c_dout;
+      ctag[idx_q]  <= tag_q;
     end
   end
 

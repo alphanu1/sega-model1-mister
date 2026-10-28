@@ -586,10 +586,40 @@ module m1_sdram #(
   // the design came out 561/553, eight over, while also being over on ALM. The
   // eight blocks are the whole M10K overshoot. It costs about 16 LABs here and
   // buys the fit.
-  (* ramstyle = "logic" *) logic [NP-1:0][3:0][15:0] cap;
+  //
+  // MLAB AS OF 2026-10-28, NOW THAT ALM IS WHAT BINDS. One 16-deep array per
+  // word index instead of NP x 64 flip-flops and an 11:1 64-bit read mux. Only
+  // words 0-2 are stored: the last beat is always delivered straight from dq_r
+  // (see the assembly site), so word 3 was written and never read. The beat of
+  // the previous clock is bypassed - the final beat reads the word captured
+  // the cycle before it, and an MLAB cell is only written during that cycle.
+  // A slot is only ever read after this burst wrote it, so the arrays need no
+  // reset (they had one, which nothing could observe).
+  (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] cap0 [1 << TAGW];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] cap1 [1 << TAGW];
+  (* ramstyle = "MLAB, no_rw_check" *) logic [15:0] cap2 [1 << TAGW];
+  logic            cap_bw_v;           // a word was captured last clock...
+  logic [TAGW-1:0] cap_bw_p;           // ...for this port...
+  logic [1:0]      cap_bw_w;           // ...as this word...
+  logic [15:0]     cap_bw_d;           // ...with this value
   // The capture slots of the port whose read is completing, muxed ONCE.
   // See the assembly site for why this is hoisted rather than indexed inline.
-  wire [3:0][15:0] g_cap = cap[tag_p[0]];
+  wire cap_bw_hit = cap_bw_v && cap_bw_p == tag_p[0];
+  wire [3:0][15:0] g_cap = {16'd0,
+      (cap_bw_hit && cap_bw_w == 2'd2) ? cap_bw_d : cap2[tag_p[0]],
+      (cap_bw_hit && cap_bw_w == 2'd1) ? cap_bw_d : cap1[tag_p[0]],
+      (cap_bw_hit && cap_bw_w == 2'd0) ? cap_bw_d : cap0[tag_p[0]]};
+  always_ff @(posedge clk) begin
+    if (rst_n && tag_v[0]) begin
+      if (tag_w[0] == 2'd0) cap0[tag_p[0]] <= dq_r;
+      if (tag_w[0] == 2'd1) cap1[tag_p[0]] <= dq_r;
+      if (tag_w[0] == 2'd2) cap2[tag_p[0]] <= dq_r;
+    end
+    cap_bw_v <= rst_n && tag_v[0];
+    cap_bw_p <= tag_p[0];
+    cap_bw_w <= tag_w[0];
+    cap_bw_d <= dq_r;
+  end
 
   // Acks are per port now. A single shared hold counter was fine when only one
   // transfer existed at a time; with two ports in flight it would clear the
@@ -696,7 +726,7 @@ module m1_sdram #(
       ref_cnt <= '0; ref_pend <= 1'b0;
       bank_open <= '0;
       for (int b = 0; b < 4; b++) begin bank_row[b] <= '0; ras_cnt[b] <= '0; end
-      tag_v <= '0; tag_p <= '0; tag_w <= '0; tag_last <= '0; cap <= '0;
+      tag_v <= '0; tag_p <= '0; tag_w <= '0; tag_last <= '0;
       ack_cnt <= '0; wack_cnt <= '0; inflight <= '0; wr_inflight <= 1'b0;
       for (int b = 0; b < 4; b++) rd_bank_cnt[b] <= '0;
       p_ack <= '0; wr_ack <= 1'b0; p_dout <= '0;
@@ -763,7 +793,7 @@ module m1_sdram #(
         tag_w    <= {2'd0, tag_w[RD_LAT-1:1]};
         tag_last <= {1'b0, tag_last[RD_LAT-1:1]};
         if (tag_v[0]) begin
-          cap[tag_p[0]][tag_w[0]] <= dq_r;
+          // (the word itself goes into cap0..cap2, above)
           if (tag_last[0]) begin
             // The final word and its buffer write share an edge, so deliver
             // the staged word directly rather than reading back a stale slot.
