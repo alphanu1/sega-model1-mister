@@ -101,6 +101,13 @@ for tb in $ORDER; do
       sed -e 's/cpu\.fb\[/cpu.u_ifetch.fb[/g' "$src" > "$bdir/${tb}.sv"
       src="$bdir/${tb}.sv"
   fi
+  # THE REGISTER FILE IS BANKED MLAB NOW, so a test that PRELOADS a register
+  # (`cpu.r[31] = ...` before releasing reset) must write the banks, not just
+  # the simulation mirror `r` that reads still use. rf_poke writes all of it.
+  if grep -qE 'cpu\.r\[[0-9]+\] = [^=]' "$src"; then
+      sed -E 's/cpu\.r\[([0-9]+)\] = ([^=;][^;]*);/cpu.rf_poke(\1, \2);/g' "$src" > "$bdir/${tb}.rf.sv"
+      src="$bdir/${tb}.rf.sv"
+  fi
   # tb_v60_fp's expectations come from numpy.float32 -- the MAME host-float
   # contract -- so it must be built against the IEEE denormal path. The SHIPPED
   # core flushes denormals to zero and is 353 ALM smaller for it; see the header
@@ -119,7 +126,9 @@ for tb in $ORDER; do
     fi
     out="$(timeout 300 "$bdir/$tb" 2>&1)"
   fi
-  if echo "$out" | grep -qF "${TB[$tb]}"; then
+  # A register-file mismatch fails the test whatever the test itself checked:
+  # the banked file is compared against the flat mirror on every cycle.
+  if echo "$out" | grep -qF "${TB[$tb]}" && ! echo "$out" | grep -qF "RF MISMATCH"; then
     extra="$(echo "$out" | grep -E 'FETCH PERF:|LANES|cycles=' | head -1)"
     printf 'PASS  %-26s %s\n' "$tb" "$extra"
     pass=$((pass+1))
@@ -137,7 +146,8 @@ done
 # board, and prefetch ack-sampling bugs hide completely at ce=1. This is why
 # tb_v60_smc's build tree is the one kept above.
 if [ -x "$OUT/tb_v60_smc/tb_v60_smc" ]; then
-  if "$OUT/tb_v60_smc/tb_v60_smc" +CEDIV=3 2>&1 | grep -qF "V60 SMC PASS"; then
+  smc3="$("$OUT/tb_v60_smc/tb_v60_smc" +CEDIV=3 2>&1)"
+  if echo "$smc3" | grep -qF "V60 SMC PASS" && ! echo "$smc3" | grep -qF "RF MISMATCH"; then
     echo "PASS  tb_v60_smc(ce=/3)"; pass=$((pass+1))
   else
     echo "FAIL  tb_v60_smc(ce=/3)"; fail=$((fail+1)); failed="$failed tb_v60_smc(ce/3)"

@@ -129,14 +129,89 @@ module s32_v60 #(
 // ---------------------------------------------------------------------------
 // architectural state
 // ---------------------------------------------------------------------------
-reg [31:0] r[0:31];             // general registers, r[31]=active SP
+// THE GENERAL REGISTERS LIVE IN MLAB, NOT IN FLIP-FLOPS.
+//
+// The file has two write ports (the FSM can retire two register writes in one
+// cycle - a pop and the SP step, a MOVD/MULX/DIVX pair, XCH) and two
+// combinational read ports, plus four registers read directly (R26, R29, R30,
+// SP). An MLAB has one write port and one asynchronous read port, so the file
+// is built as a live-value table: each write port owns a bank, each bank is
+// copied once per read port, and one bit per register per lane remembers which
+// bank holds the newest value. Port 1 sets the bit after port 0, so it still
+// wins an overlapping lane exactly as the flip-flop file's ordering did.
+//
+// The lanes are the three write sizes - [7:0], [15:8], [31:16] - each its own
+// array, because every write is a byte, halfword or word lane pattern (see
+// rf_wsz below) and Quartus 17 does not infer byte enables. 4 copies x 3 lanes
+// is twelve 32-deep MLABs.
+//
+// The four registers the core reads at a FIXED address keep a flip-flop
+// shadow, written by the same ports: an extra MLAB copy per constant address
+// would cost more than 32 flops.
+//
+// Reads are the same values in the same cycle as before: an MLAB read is
+// asynchronous, so a register written at an edge reads its new value in the
+// following cycle, as the flip-flop file did. Unwritten registers power up to
+// zero (the initial block below), the same deterministic cold start; reset
+// still leaves them alone, as the real V60 does.
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf0a_l0 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf0a_l1 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf0a_l2 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf0b_l0 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf0b_l1 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf0b_l2 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf1a_l0 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf1a_l1 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf1a_l2 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf1b_l0 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf1b_l1 [0:31];
+(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf1b_l2 [0:31];
+reg [31:0] rf_lvt0 = 32'd0, rf_lvt1 = 32'd0, rf_lvt2 = 32'd0;  // 1 = bank 1 newest
+reg [31:0] rf_r26 = 32'd0, rf_r29 = 32'd0, rf_r30 = 32'd0, rf_r31 = 32'd0;
+// The last clock's writes, for the one-clock bypass - see rf_resolve.
+reg  [2:0]  rf_bw0_l = 3'd0, rf_bw1_l = 3'd0;   // lanes written last clock
+reg  [4:0]  rf_bw0_a = 5'd0, rf_bw1_a = 5'd0;
+reg  [31:0] rf_bw0_d = 32'd0, rf_bw1_d = 32'd0;
 integer init_reg_i;
-// Deterministic FPGA cold power-up without changing the real V60 reset
-// contract: subsequent reset assertions leave GPR contents untouched.
+initial begin
+    for (init_reg_i = 0; init_reg_i < 32; init_reg_i = init_reg_i + 1) begin
+        rf0a_l0[init_reg_i] = 8'd0;  rf0a_l1[init_reg_i] = 8'd0;  rf0a_l2[init_reg_i] = 16'd0;
+        rf0b_l0[init_reg_i] = 8'd0;  rf0b_l1[init_reg_i] = 8'd0;  rf0b_l2[init_reg_i] = 16'd0;
+        rf1a_l0[init_reg_i] = 8'd0;  rf1a_l1[init_reg_i] = 8'd0;  rf1a_l2[init_reg_i] = 16'd0;
+        rf1b_l0[init_reg_i] = 8'd0;  rf1b_l1[init_reg_i] = 8'd0;  rf1b_l2[init_reg_i] = 16'd0;
+    end
+end
+
+// SIMULATION ONLY: the register file as one flat array, `r`, kept in step with
+// every write. The unit suite reads and writes `cpu.r[n]` directly, and the
+// check below compares every value the core actually consumes against it, so a
+// banking or LVT fault is loud at the cycle it happens rather than as a game
+// misbehaving later. Testbenches that preload a register call rf_poke, which
+// writes the banks, the shadows and this mirror together.
+`ifdef VERILATOR
+ `define V60_RF_MIRROR
+`endif
+`ifdef __ICARUS__
+ `define V60_RF_MIRROR
+`endif
+`ifdef V60_RF_MIRROR
+reg [31:0] r[0:31];
 initial begin
     for (init_reg_i = 0; init_reg_i < 32; init_reg_i = init_reg_i + 1)
         r[init_reg_i] = 32'd0;
 end
+task rf_poke(input [4:0] n, input [31:0] v);
+    r[n] = v;
+    rf0a_l0[n] = v[7:0]; rf0a_l1[n] = v[15:8]; rf0a_l2[n] = v[31:16];
+    rf0b_l0[n] = v[7:0]; rf0b_l1[n] = v[15:8]; rf0b_l2[n] = v[31:16];
+    rf_lvt0[n] = 1'b0; rf_lvt1[n] = 1'b0; rf_lvt2[n] = 1'b0;
+    rf_bw0_l = 3'd0; rf_bw1_l = 3'd0;
+    if (n == 5'd26) rf_r26 = v;
+    if (n == 5'd29) rf_r29 = v;
+    if (n == 5'd30) rf_r30 = v;
+    if (n == 5'd31) rf_r31 = v;
+endtask
+`endif
 reg [31:0] pc;
 reg [31:0] sbr, sycw, tkcw, pir, psw2;
 reg [31:0] isp, l0sp, l1sp, l2sp, l3sp;   // shadow stacks (inactive copies)
@@ -520,6 +595,34 @@ task automatic queue_reg_write(
     end
 endtask
 
+// The flip-flop shadows of the four fixed-address registers take the same
+// lane writes as the banks. Called for port 0 then port 1, so port 1 wins.
+task automatic rf_shadow_write(input [4:0] rn, input [31:0] v, input [1:0] sz);
+    case (rn)
+        5'd26: begin
+                            rf_r26[7:0]   <= v[7:0];
+            if (sz >= 2'd1) rf_r26[15:8]  <= v[15:8];
+            if (sz >= 2'd2) rf_r26[31:16] <= v[31:16];
+        end
+        5'd29: begin
+                            rf_r29[7:0]   <= v[7:0];
+            if (sz >= 2'd1) rf_r29[15:8]  <= v[15:8];
+            if (sz >= 2'd2) rf_r29[31:16] <= v[31:16];
+        end
+        5'd30: begin
+                            rf_r30[7:0]   <= v[7:0];
+            if (sz >= 2'd1) rf_r30[15:8]  <= v[15:8];
+            if (sz >= 2'd2) rf_r30[31:16] <= v[31:16];
+        end
+        5'd31: begin
+                            rf_r31[7:0]   <= v[7:0];
+            if (sz >= 2'd1) rf_r31[15:8]  <= v[15:8];
+            if (sz >= 2'd2) rf_r31[31:16] <= v[31:16];
+        end
+        default: ;
+    endcase
+endtask
+
 // merge result into register per dim (SETREG8/16 semantics)
 task automatic setreg(input [4:0] rn, input [31:0] v, input [1:0] d);
     case (d)
@@ -531,10 +634,10 @@ endtask
 
 // stack-bank bookkeeping: swap active SP when PSW level/IS changes
 task automatic save_stack(input [31:0] oldpsw);
-    if (oldpsw[28]) isp <= r[31];
+    if (oldpsw[28]) isp <= rf_r31;
     else case (oldpsw[25:24])
-        2'd0: l0sp <= r[31]; 2'd1: l1sp <= r[31];
-        2'd2: l2sp <= r[31]; 2'd3: l3sp <= r[31];
+        2'd0: l0sp <= rf_r31; 2'd1: l1sp <= rf_r31;
+        2'd2: l2sp <= rf_r31; 2'd3: l3sp <= rf_r31;
     endcase
 endtask
 function automatic [31:0] pick_stack(input [31:0] newpsw);
@@ -589,12 +692,12 @@ endtask
 // subtractor, and whether the synthesiser shares them across branches is its
 // choice rather than ours. Naming them makes it structural.
 //
-// Safe against the write port: r[31] is only updated by non-blocking assignment
-// in the register-file block, so a continuous assignment reads exactly what an
+// Safe against the write port: the SP shadow rf_r31 is only updated by
+// non-blocking assignment in the register-file block, so a continuous assignment reads exactly what an
 // inline expression in the same cycle would.
-wire [31:0] sp_val  = r[31];
-wire [31:0] sp_m4   = r[31] - 32'd4;
-wire [31:0] sp_p4   = r[31] + 32'd4;
+wire [31:0] sp_val  = rf_r31;
+wire [31:0] sp_m4   = rf_r31 - 32'd4;
+wire [31:0] sp_p4   = rf_r31 + 32'd4;
 
 wire [7:0] modval  = fb[ea_ofs];
 wire [4:0] modreg  = modval[4:0];
@@ -640,46 +743,78 @@ reg  [4:0] rf_raddr_a, rf_raddr_b;
 // in its inferred sensitivity.  These explicit blocks are stable in all
 // simulators and still synthesize as one 32:1 mux per port.
 reg [31:0] rf_rdata_a, rf_rdata_b;
+// Each read port reads its copy of both banks and takes, lane by lane, the one
+// the live-value table names. Continuous assignments, so Quartus sees an
+// asynchronous read of each MLAB.
+wire [7:0]  rf0a_q0 = rf0a_l0[rf_raddr_a], rf1a_q0 = rf1a_l0[rf_raddr_a];
+wire [7:0]  rf0a_q1 = rf0a_l1[rf_raddr_a], rf1a_q1 = rf1a_l1[rf_raddr_a];
+wire [15:0] rf0a_q2 = rf0a_l2[rf_raddr_a], rf1a_q2 = rf1a_l2[rf_raddr_a];
+wire [7:0]  rf0b_q0 = rf0b_l0[rf_raddr_b], rf1b_q0 = rf1b_l0[rf_raddr_b];
+wire [7:0]  rf0b_q1 = rf0b_l1[rf_raddr_b], rf1b_q1 = rf1b_l1[rf_raddr_b];
+wire [15:0] rf0b_q2 = rf0b_l2[rf_raddr_b], rf1b_q2 = rf1b_l2[rf_raddr_b];
+// THE WRITE OF THE PREVIOUS CLOCK IS BYPASSED, NOT READ FROM THE MLAB.
+// An MLAB registers its write inputs at the edge and writes the cell during the
+// following cycle; Quartus calls a read of that address in that cycle "don't
+// care" (no_rw_check above says we accept that). The flip-flop file returned
+// the new value there, and the core relies on it constantly - a push reads the
+// SP it just wrote. So the last clock's two writes are held here and win over
+// the banks for exactly one clock, after which the cell is written and the
+// banks answer. Port 1 is checked first: it was the later write.
+// (rf_bw0_* / rf_bw1_*, the one-clock write bypass, are declared with the
+// banks above: Icarus binds in source order and rf_poke uses them.)
+function automatic [31:0] rf_resolve(input [4:0] ra, input [31:0] bank);
+    logic h0, h1;
+    h0 = (rf_bw0_a == ra);
+    h1 = (rf_bw1_a == ra);
+    rf_resolve[7:0]   = (h1 && rf_bw1_l[0]) ? rf_bw1_d[7:0]   :
+                        (h0 && rf_bw0_l[0]) ? rf_bw0_d[7:0]   : bank[7:0];
+    rf_resolve[15:8]  = (h1 && rf_bw1_l[1]) ? rf_bw1_d[15:8]  :
+                        (h0 && rf_bw0_l[1]) ? rf_bw0_d[15:8]  : bank[15:8];
+    rf_resolve[31:16] = (h1 && rf_bw1_l[2]) ? rf_bw1_d[31:16] :
+                        (h0 && rf_bw0_l[2]) ? rf_bw0_d[31:16] : bank[31:16];
+endfunction
+wire [31:0] rf_bank_a = {rf_lvt2[rf_raddr_a] ? rf1a_q2 : rf0a_q2,
+                         rf_lvt1[rf_raddr_a] ? rf1a_q1 : rf0a_q1,
+                         rf_lvt0[rf_raddr_a] ? rf1a_q0 : rf0a_q0};
+wire [31:0] rf_bank_b = {rf_lvt2[rf_raddr_b] ? rf1b_q2 : rf0b_q2,
+                         rf_lvt1[rf_raddr_b] ? rf1b_q1 : rf0b_q1,
+                         rf_lvt0[rf_raddr_b] ? rf1b_q0 : rf0b_q0};
 always @* begin
-    case (rf_raddr_a)
-        5'd0:  rf_rdata_a = r[0];   5'd1:  rf_rdata_a = r[1];
-        5'd2:  rf_rdata_a = r[2];   5'd3:  rf_rdata_a = r[3];
-        5'd4:  rf_rdata_a = r[4];   5'd5:  rf_rdata_a = r[5];
-        5'd6:  rf_rdata_a = r[6];   5'd7:  rf_rdata_a = r[7];
-        5'd8:  rf_rdata_a = r[8];   5'd9:  rf_rdata_a = r[9];
-        5'd10: rf_rdata_a = r[10];  5'd11: rf_rdata_a = r[11];
-        5'd12: rf_rdata_a = r[12];  5'd13: rf_rdata_a = r[13];
-        5'd14: rf_rdata_a = r[14];  5'd15: rf_rdata_a = r[15];
-        5'd16: rf_rdata_a = r[16];  5'd17: rf_rdata_a = r[17];
-        5'd18: rf_rdata_a = r[18];  5'd19: rf_rdata_a = r[19];
-        5'd20: rf_rdata_a = r[20];  5'd21: rf_rdata_a = r[21];
-        5'd22: rf_rdata_a = r[22];  5'd23: rf_rdata_a = r[23];
-        5'd24: rf_rdata_a = r[24];  5'd25: rf_rdata_a = r[25];
-        5'd26: rf_rdata_a = r[26];  5'd27: rf_rdata_a = r[27];
-        5'd28: rf_rdata_a = r[28];  5'd29: rf_rdata_a = r[29];
-        5'd30: rf_rdata_a = r[30];  default: rf_rdata_a = r[31];
-    endcase
+    rf_rdata_a = rf_resolve(rf_raddr_a, rf_bank_a);
+    rf_rdata_b = rf_resolve(rf_raddr_b, rf_bank_b);
 end
-always @* begin
-    case (rf_raddr_b)
-        5'd0:  rf_rdata_b = r[0];   5'd1:  rf_rdata_b = r[1];
-        5'd2:  rf_rdata_b = r[2];   5'd3:  rf_rdata_b = r[3];
-        5'd4:  rf_rdata_b = r[4];   5'd5:  rf_rdata_b = r[5];
-        5'd6:  rf_rdata_b = r[6];   5'd7:  rf_rdata_b = r[7];
-        5'd8:  rf_rdata_b = r[8];   5'd9:  rf_rdata_b = r[9];
-        5'd10: rf_rdata_b = r[10];  5'd11: rf_rdata_b = r[11];
-        5'd12: rf_rdata_b = r[12];  5'd13: rf_rdata_b = r[13];
-        5'd14: rf_rdata_b = r[14];  5'd15: rf_rdata_b = r[15];
-        5'd16: rf_rdata_b = r[16];  5'd17: rf_rdata_b = r[17];
-        5'd18: rf_rdata_b = r[18];  5'd19: rf_rdata_b = r[19];
-        5'd20: rf_rdata_b = r[20];  5'd21: rf_rdata_b = r[21];
-        5'd22: rf_rdata_b = r[22];  5'd23: rf_rdata_b = r[23];
-        5'd24: rf_rdata_b = r[24];  5'd25: rf_rdata_b = r[25];
-        5'd26: rf_rdata_b = r[26];  5'd27: rf_rdata_b = r[27];
-        5'd28: rf_rdata_b = r[28];  5'd29: rf_rdata_b = r[29];
-        5'd30: rf_rdata_b = r[30];  default: rf_rdata_b = r[31];
-    endcase
+
+`ifdef V60_RF_MIRROR
+// Every register, every enabled cycle: both read copies of the banks, resolved
+// through the live-value table, and the four shadows must equal the mirror.
+integer rf_mismatch = 0;
+integer rf_chk_i;
+reg [31:0] rf_chk_a, rf_chk_b;
+always @(posedge clk) begin
+    if (!rst && ce) begin
+        for (rf_chk_i = 0; rf_chk_i < 32; rf_chk_i = rf_chk_i + 1) begin
+            rf_chk_a = {rf_lvt2[rf_chk_i] ? rf1a_l2[rf_chk_i] : rf0a_l2[rf_chk_i],
+                        rf_lvt1[rf_chk_i] ? rf1a_l1[rf_chk_i] : rf0a_l1[rf_chk_i],
+                        rf_lvt0[rf_chk_i] ? rf1a_l0[rf_chk_i] : rf0a_l0[rf_chk_i]};
+            rf_chk_b = {rf_lvt2[rf_chk_i] ? rf1b_l2[rf_chk_i] : rf0b_l2[rf_chk_i],
+                        rf_lvt1[rf_chk_i] ? rf1b_l1[rf_chk_i] : rf0b_l1[rf_chk_i],
+                        rf_lvt0[rf_chk_i] ? rf1b_l0[rf_chk_i] : rf0b_l0[rf_chk_i]};
+            if (rf_chk_a !== r[rf_chk_i] || rf_chk_b !== r[rf_chk_i]) begin
+                if (rf_mismatch < 10)
+                    $display("V60 RF MISMATCH r%0d banks %08x/%08x mirror %08x", rf_chk_i,
+                             rf_chk_a, rf_chk_b, r[rf_chk_i]);
+                rf_mismatch = rf_mismatch + 1;
+            end
+        end
+        if (rf_r26 !== r[26] || rf_r29 !== r[29] || rf_r30 !== r[30] || rf_r31 !== r[31]) begin
+            if (rf_mismatch < 10)
+                $display("V60 RF MISMATCH shadows %08x %08x %08x %08x mirror %08x %08x %08x %08x",
+                         rf_r26, rf_r29, rf_r30, rf_r31, r[26], r[29], r[30], r[31]);
+            rf_mismatch = rf_mismatch + 1;
+        end
+    end
 end
+`endif
 
 // ONE INDEXED READ OF THE FETCH BUFFER, NOT FIVE.
 //
@@ -1036,7 +1171,7 @@ else if (ce) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= sp_m4;
             dbus_wdata <= pc + 3;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             wb_val <= pc + {{16{bd16[15]}}, bd16};
             st <= S_JSR1;
         end
@@ -1326,12 +1461,12 @@ else if (ce) begin
         8'h4d, 8'h4e, 8'h4f: begin instflags <= fb[1]; cls <= C_F12; st <= S_IF2; end // CHKA*
         8'h49: begin instflags <= fb[1]; cls <= C_F12; st <= S_IF2; end // CALL
         8'hcc: begin // DISPOSE: SP = FP (R30), pop FP
-            queue_reg_write(5'd31, r[30], 32'hffff_ffff);
-            dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= r[30];
+            queue_reg_write(5'd31, rf_r30, 32'hffff_ffff);
+            dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= rf_r30;
             st <= S_DISP1;
         end
         8'hca: begin // RSR (A9): pop PC ONLY (MAME opRSR: PC=[SP]; SP+=4)
-            dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= r[31];
+            dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= rf_r31;
             st <= S_RSR;
         end
         8'hcb: begin // TRAPFL
@@ -2018,7 +2153,7 @@ else if (ce) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= sp_m4;
             dbus_wdata <= wb_val;          // return PC
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
         end
         else if (dack) begin           // return-PC push done
             dbus_req <= 0; dbus_we <= 0;
@@ -2031,18 +2166,18 @@ else if (ce) begin
     S_RET1: if (dack) begin
         dbus_req <= 0;
         pc <= bus_rdata;
-        queue_reg_write(5'd31, r[31] + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
         st <= S_RET2;
     end
     S_RET2: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-            dbus_addr <= r[31];
+            dbus_addr <= rf_r31;
         end
         else if (dack) begin
             dbus_req <= 0;
             queue_reg_write(5'd29, bus_rdata, 32'hffff_ffff); // AP (R29)
-            queue_reg_write(5'd31, r[31] + 4 + wb_val, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 + 4 + wb_val, 32'hffff_ffff);
             st <= S_FILL; st_after_fill <= S_DECODE;
         end
     end
@@ -2067,8 +2202,8 @@ else if (ce) begin
     S_RETI3: begin
         // pops (8) + frame-destroy operand (MAME: SP += amout), then the
         // PSW write may bank-switch SP — order matters: adjust THEN switch.
-        queue_reg_write(5'd31, r[31] + 8 + xch_addr, 32'hffff_ffff);
-        write_psw_after_sp(alu_r, r[31] + 8 + xch_addr);
+        queue_reg_write(5'd31, rf_r31 + 8 + xch_addr, 32'hffff_ffff);
+        write_psw_after_sp(alu_r, rf_r31 + 8 + xch_addr);
         pc <= wb_val;
         st <= S_FILL; st_after_fill <= S_DECODE;
     end
@@ -2077,7 +2212,7 @@ else if (ce) begin
     S_DISP1: if (dack) begin
         dbus_req <= 0;
         queue_reg_write(5'd30, bus_rdata, 32'hffff_ffff); // FP = R30
-        queue_reg_write(5'd31, r[31] + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
         pc <= pc + 1;
         st <= S_FILL; st_after_fill <= S_DECODE;
     end
@@ -2086,7 +2221,7 @@ else if (ce) begin
     S_RSR: if (dack) begin
         dbus_req <= 0;
         pc <= bus_rdata;
-        queue_reg_write(5'd31, r[31] + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
         st <= S_FILL; st_after_fill <= S_DECODE;
     end
 
@@ -2106,7 +2241,7 @@ else if (ce) begin
             // Mask bit 31 pushes PSW, not r31 (audit R20 V60-11): the old code
             // pushed the SP value there and PSW save/restore was lost.
             dbus_wdata <= (idx == 5'd31) ? psw : rf_rdata_a;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             reg_ptr <= idx;
         end
         else if (dack) begin
@@ -2122,7 +2257,7 @@ else if (ce) begin
             for (int i = 31; i >= 0; i--) if (op1[i]) idx = i[4:0];
             // pop lowest-numbered... (POPM restores in reverse of PUSHM)
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-            dbus_addr <= r[31];
+            dbus_addr <= rf_r31;
             reg_ptr <= idx;
         end
         else if (dack) begin
@@ -2134,7 +2269,7 @@ else if (ce) begin
                 write_psw((psw & 32'hffff_0000) | (bus_rdata & 32'h0000_ffff));
             else
                 queue_reg_write(reg_ptr, bus_rdata, 32'hffff_ffff);
-            queue_reg_write(5'd31, r[31] + 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
             op1[reg_ptr] <= 1'b0;
         end
     end
@@ -2173,8 +2308,8 @@ else if (ce) begin
     // PREPARE: push FP, FP=SP, SP-=imm
     S_PREP1: if (dack) begin
         dbus_req <= 0; dbus_we <= 0;
-        queue_reg_write(5'd30, r[31] - 4, 32'hffff_ffff); // FP = R30
-        queue_reg_write(5'd31, r[31] - 4 - op1, 32'hffff_ffff);
+        queue_reg_write(5'd30, rf_r31 - 4, 32'hffff_ffff); // FP = R30
+        queue_reg_write(5'd31, rf_r31 - 4 - op1, 32'hffff_ffff);
         st <= S_NEXT;
     end
 
@@ -2376,7 +2511,7 @@ else if (ce) begin
                 shf  = cur_op[1] ? 5'd1 : 5'd0;
                 a = cur_op[1] ? {16'b0,alu_r[15:0]} : {24'b0,alu_r[7:0]};
                 b = cur_op[1] ? {16'b0,bus_rdata[15:0]} : {24'b0,bus_rdata[7:0]};
-                fb26 = cur_op[1] ? {16'b0, r[26][15:0]} : {24'b0, r[26][7:0]};
+                fb26 = cur_op[1] ? {16'b0, rf_r26[15:0]} : {24'b0, rf_r26[7:0]};
                 cmin = (str_len1 < str_len2) ? str_len1 : str_len2;
                 ci   = cmin - str_cnt;               // index of this element (i)
                 if (a != b) begin
@@ -2403,7 +2538,7 @@ else if (ce) begin
                 // just-copied element equals the R26 stop byte (op7a bStop).
                 logic [31:0] elem, fb26;
                 elem = cur_op[1] ? {16'b0, alu_r[15:0]} : {24'b0, alu_r[7:0]};
-                fb26 = cur_op[1] ? {16'b0, r[26][15:0]} : {24'b0, r[26][7:0]};
+                fb26 = cur_op[1] ? {16'b0, rf_r26[15:0]} : {24'b0, rf_r26[7:0]};
                 if (subop[4:0] == 5'h0c && elem == fb26) begin
                     logic [31:0] cmin;
                     cmin = (str_len1 < str_len2) ? str_len1 : str_len2;
@@ -2427,7 +2562,7 @@ else if (ce) begin
             dbus_req <= 1; dbus_we <= 1;
             dbus_size <= cur_op[1] ? 2'd1 : 2'd0;
             dbus_addr <= str_faddr;
-            dbus_wdata <= r[26];
+            dbus_wdata <= rf_r26;
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
@@ -3079,7 +3214,7 @@ else if (ce) begin
         if (task_phase == 0) begin
             // v60SaveStack() after setting IS: r31 now names the interrupt
             // stack selected by write_psw() in the execute cycle.
-            isp <= r[31];
+            isp <= rf_r31;
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= task_addr; dbus_wdata <= tkcw;
             st <= S_TASK_ST_ACK;
@@ -3139,7 +3274,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             st <= S_EXC_CODE;
         end
     end
@@ -3151,7 +3286,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             st <= S_EXC_PUSH2;
         end
     end
@@ -3163,7 +3298,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             st <= S_EXC_JMP;   // reused as "push PC" state
         end
     end
@@ -3175,7 +3310,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
             st <= S_EXC_VEC;
         end
     end
@@ -3207,7 +3342,7 @@ else if (ce) begin
             wb_val <= bus_rdata;
             st <= S_WB_MEM;
         end
-        queue_reg_write(5'd31, r[31] + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
     end
 
     S_HALT: begin
@@ -3235,16 +3370,60 @@ else if (ce) begin
     // Three lane enables per port instead of thirty-two bit enables. Port 1 is
     // still applied second, so it still wins on an overlapping lane exactly as
     // the per-bit loop's nonblocking ordering did.
+    //
+    // Each port writes its own bank (both read copies) and claims the lanes it
+    // wrote in the live-value table; port 1's claim is the later assignment.
     if (rf_we0) begin
-                            r[rf_waddr0][7:0]   <= rf_wdata0[7:0];
+        rf0a_l0[rf_waddr0] <= rf_wdata0[7:0];
+        rf0b_l0[rf_waddr0] <= rf_wdata0[7:0];
+        rf_lvt0[rf_waddr0] <= 1'b0;
+        if (rf_wsz0 >= 2'd1) begin
+            rf0a_l1[rf_waddr0] <= rf_wdata0[15:8];
+            rf0b_l1[rf_waddr0] <= rf_wdata0[15:8];
+            rf_lvt1[rf_waddr0] <= 1'b0;
+        end
+        if (rf_wsz0 >= 2'd2) begin
+            rf0a_l2[rf_waddr0] <= rf_wdata0[31:16];
+            rf0b_l2[rf_waddr0] <= rf_wdata0[31:16];
+            rf_lvt2[rf_waddr0] <= 1'b0;
+        end
+        rf_shadow_write(rf_waddr0, rf_wdata0, rf_wsz0);
+`ifdef V60_RF_MIRROR
+                             r[rf_waddr0][7:0]   <= rf_wdata0[7:0];
         if (rf_wsz0 >= 2'd1) r[rf_waddr0][15:8]  <= rf_wdata0[15:8];
         if (rf_wsz0 >= 2'd2) r[rf_waddr0][31:16] <= rf_wdata0[31:16];
+`endif
     end
     if (rf_we1) begin
-                            r[rf_waddr1][7:0]   <= rf_wdata1[7:0];
+        rf1a_l0[rf_waddr1] <= rf_wdata1[7:0];
+        rf1b_l0[rf_waddr1] <= rf_wdata1[7:0];
+        rf_lvt0[rf_waddr1] <= 1'b1;
+        if (rf_wsz1 >= 2'd1) begin
+            rf1a_l1[rf_waddr1] <= rf_wdata1[15:8];
+            rf1b_l1[rf_waddr1] <= rf_wdata1[15:8];
+            rf_lvt1[rf_waddr1] <= 1'b1;
+        end
+        if (rf_wsz1 >= 2'd2) begin
+            rf1a_l2[rf_waddr1] <= rf_wdata1[31:16];
+            rf1b_l2[rf_waddr1] <= rf_wdata1[31:16];
+            rf_lvt2[rf_waddr1] <= 1'b1;
+        end
+        rf_shadow_write(rf_waddr1, rf_wdata1, rf_wsz1);
+`ifdef V60_RF_MIRROR
+                             r[rf_waddr1][7:0]   <= rf_wdata1[7:0];
         if (rf_wsz1 >= 2'd1) r[rf_waddr1][15:8]  <= rf_wdata1[15:8];
         if (rf_wsz1 >= 2'd2) r[rf_waddr1][31:16] <= rf_wdata1[31:16];
+`endif
     end
+    // This cycle's writes, for the one-clock bypass. Held until the next
+    // enabled cycle, which is harmless: they stay the newest values of those
+    // registers until then.
+    rf_bw0_l <= rf_we0 ? {rf_wsz0 >= 2'd2, rf_wsz0 >= 2'd1, 1'b1} : 3'd0;
+    rf_bw0_a <= rf_waddr0;
+    rf_bw0_d <= rf_wdata0;
+    rf_bw1_l <= rf_we1 ? {rf_wsz1 >= 2'd2, rf_wsz1 >= 2'd1, 1'b1} : 3'd0;
+    rf_bw1_a <= rf_waddr1;
+    rf_bw1_d <= rf_wdata1;
 end
 end
 
@@ -3772,8 +3951,8 @@ task automatic exec_op;
         // MAME opCALL: SP-=4; [SP]=AP; AP=op2; SP-=4; [SP]=retPC; PC=op1.
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
-        dbus_wdata <= r[29];          // push AP (R29) first
-        queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+        dbus_wdata <= rf_r29;          // push AP (R29) first
+        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
         queue_reg_write(5'd29, op2, 32'hffff_ffff); // AP (R29) = op2
         wb_val <= pc + 5'd2 + len1 + len2; // return PC, pushed in S_CALL1
         alu_r  <= op1;               // target
@@ -3869,30 +4048,30 @@ task automatic exec_op;
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
         dbus_wdata <= pc + 5'd1 + len1;
-        queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
         wb_val <= op1;
         st <= S_JSR1;
     end
     8'he2, 8'he3: begin // RET: adjustment in op1
         wb_val <= op1;
-        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= r[31];
+        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= rf_r31;
         st <= S_RET1;
     end
     8'hea, 8'heb, 8'hfa, 8'hfb: begin // RETIU/RETIS
         xch_addr <= op1;   // frame-destroy adjustment (added to SP at the end)
-        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= r[31];
+        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= rf_r31;
         st <= S_RETI1;
     end
     8'hee, 8'hef: begin // PUSH
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
         dbus_wdata <= op1;
-        queue_reg_write(5'd31, r[31] - 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
         total_len <= 5'd1 + len1;
         st <= S_PUSH;
     end
     8'he6, 8'he7: begin // POP: op1 = dest addr/reg
-        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= r[31];
+        dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= rf_r31;
         total_len <= 5'd1 + len1;
         st <= S_POP;
     end
@@ -3911,7 +4090,7 @@ task automatic exec_op;
     8'hde, 8'hdf: begin // PREPARE: push FP (R30); FP=SP; SP -= imm
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
-        dbus_wdata <= r[30];
+        dbus_wdata <= rf_r30;
         total_len <= 5'd1 + len1;
         st <= S_PREP1;
     end

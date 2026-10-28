@@ -156,7 +156,17 @@ module tb_m1_frame #(
     // Every CPU write, in order, with the PC that made it — the counterpart to
     // PCTRACE. Identical instruction streams with different memory means a write
     // went somewhere different, and this is what finds it.
-    parameter bit     WRTRACE    = 0
+    parameter bit     WRTRACE    = 0,
+
+    // CYCLE-IDENTITY HASHES. Three running 64-bit hashes, one per clock domain
+    // that matters, folded on EVERY enabled cycle rather than on events: the
+    // V60's whole external port plus its PC and state (clk_cpu), the 3D
+    // block's memory, list, ROM, texture and band ports (clk_3d), and the video
+    // output (clk_sys, ce_pix). Printed every HASHEVERY frames and at the end.
+    // A change that is meant to be invisible - an area change, a restructure -
+    // must leave all three identical to the cycle; the first frame whose line
+    // differs says when it stopped being so. 0 disables it.
+    parameter integer HASHEVERY  = 0
 );
 
 // Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
@@ -1887,6 +1897,44 @@ always @(posedge clk_cpu) begin
     end
 end
 
+// CYCLE-IDENTITY HASHES - see HASHEVERY. FNV-1a style, 64-bit, folded over a
+// wide vector each cycle; the vectors are what the domain shows the rest of the
+// design, plus the V60's PC and sequencer state as an earlier tripwire.
+longint unsigned hash_cpu = 64'hcbf29ce484222325, hash_3d = 64'hcbf29ce484222325,
+                 hash_vid = 64'hcbf29ce484222325;
+longint unsigned hcyc_cpu = 0, hcyc_3d = 0;
+function automatic longint unsigned hfold(input longint unsigned h, input logic [255:0] v);
+    longint unsigned x;
+    x = h;
+    for (int i = 0; i < 4; i++) x = (x ^ v[i*64 +: 64]) * 64'h100000001b3;
+    return x;
+endfunction
+always @(posedge clk_cpu) if (HASHEVERY != 0 && rst_n_cpu) begin
+    hcyc_cpu <= hcyc_cpu + 1;
+    hash_cpu <= hfold(hash_cpu, {
+        core.main.cpu.bus_req, core.main.cpu.bus_we, core.main.cpu.bus_size,
+        core.main.cpu.bus_addr, core.main.cpu.bus_wdata, core.main.cpu.bus_ack,
+        core.main.cpu.bus_rdata, core.main.cpu.if_req, core.main.cpu.if_addr,
+        core.main.cpu.if_ack, core.main.cpu.irq_ack, core.main.ce,
+        core.main.cpu.dbg_pc, 7'(core.main.cpu.st), core.main.cpu.dbg_fp_trap});
+end
+always @(posedge clk_3d) if (HASHEVERY != 0 && rst_n_cpu) begin
+    hcyc_3d <= hcyc_3d + 1;
+    hash_3d <= hfold(hash_3d, {
+        core.u_raster3d.DDRAM_ADDR, core.u_raster3d.DDRAM_RD, core.u_raster3d.DDRAM_WE,
+        core.u_raster3d.DDRAM_BURSTCNT, core.u_raster3d.DDRAM_BE,
+        core.u_raster3d.dl_addr, core.u_raster3d.dl_req,
+        core.u_raster3d.rom_addr, core.u_raster3d.rom_req,
+        core.u_raster3d.tex_addr, core.u_raster3d.tex_req, core.u_raster3d.tex_we,
+        core.u_raster3d.pal_addr, core.u_raster3d.xlat_addr,
+        core.u_raster3d.disp_band, core.u_raster3d.disp_valid,
+        core.u_raster3d.dbg_quads, core.u_raster3d.dbg_objects,
+        core.u_raster3d.dbg_dropped}) ^ hfold(64'd0, {core.u_raster3d.DDRAM_DIN,
+        core.u_raster3d.tex_wdata, core.u_raster3d.dbg_late, core.u_raster3d.dbg_bands});
+end
+always @(posedge clk) if (HASHEVERY != 0 && ce_pix)
+    hash_vid <= hfold(hash_vid, {vid_r, vid_g, vid_b, vid_hs, vid_vs, vid_hb, vid_vb});
+
 // THE COMPARE THAT DIVERGES. MAME and our core run 197,250 identical instructions,
 // then at FE0DCC `cmp.h R0, FE[R11]` the reference branches and we do not. R11 is
 // 0x40e800, so the operand is 0x40e8fe in NVRAM, and MAME reads 0x0000 there.
@@ -2271,6 +2319,9 @@ always @(posedge clk) begin
         if (vid_vb && !prev_vb) begin
             px <= 0; py <= 0;
             frames = frames + 1;
+            if (HASHEVERY != 0 && (frames % HASHEVERY) == 0)
+                $display("HASH f=%0d cpu=%0d:%016h 3d=%0d:%016h vid=%016h",
+                         frames, hcyc_cpu, hash_cpu, hcyc_3d, hash_3d, hash_vid);
             // The census is latched inside m1_video on this same edge, so it
             // reads as the frame that just finished.
             if (frames == 300 || frames == 600) begin
@@ -3811,6 +3862,9 @@ initial begin
     end
     report_snd_rom();
     report_audio();
+    if (HASHEVERY != 0)
+        $display("HASH end f=%0d cpu=%0d:%016h 3d=%0d:%016h vid=%016h",
+                 frames, hcyc_cpu, hash_cpu, hcyc_3d, hash_3d, hash_vid);
     $finish;
 end
 
