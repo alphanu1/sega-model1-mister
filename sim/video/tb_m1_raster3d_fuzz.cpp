@@ -40,6 +40,13 @@
 #include "Vm1_raster3d___024root.h"
 #include "verilated.h"
 #include "../mem/ddr3_model.h"
+// The base RTL (before 2026-10-28) has no dbg_tex_drop; build it with
+// -CFLAGS -DNO_TEX_DROP to measure where its colour uploads went.
+#ifdef NO_TEX_DROP
+#define TEX_DROP(d) 0u
+#else
+#define TEX_DROP(d) ((d)->dbg_tex_drop)
+#endif
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -55,6 +62,11 @@ static const long CLK3D_HZ = 58947368, PIXCLK_HZ = 15996000;
 static const uint32_t TGPRAM_WORDS = 0xC0000;   // MAME: 0x100000 - 0x40000
 
 static std::vector<uint16_t> dlist, palette, xlat, tgpram, tgpram_snap;
+// The two display-list buffers. Every mode but the torn-list one keeps both
+// equal to `dlist`; that mode lets the "game" rewrite the buffer it flipped
+// away from while the walker may still be reading it.
+static std::vector<uint16_t> dlbuf[2];
+static bool torn_mode = false;
 static std::vector<uint32_t> prom;
 static uint8_t fb[SH][SW][3];
 
@@ -62,6 +74,9 @@ static Vm1_raster3d* d;
 static Ddr3Model<Vm1_raster3d> ddr;
 static long cycles = 0;
 static long tex_escapes = 0, tex_writes = 0;
+// Of the escapes, those landing on the I/O board's firmware (SDRAM word
+// 0xD00000, tgp_ram offset 0xE0000) or its EEPROM image 16 KB above it.
+static long tex_iofw = 0, tex_eeprom = 0;
 static uint32_t tex_escape_first = 0;
 static std::mt19937 rng;
 
@@ -84,7 +99,8 @@ static uint32_t rom_word(uint32_t a) {
 }
 
 static void memories() {
-    d->dl_data   = dlist[d->dl_addr & 0x7fff];
+    d->dl_data   = torn_mode ? dlbuf[d->dl_sel_q & 1][d->dl_addr & 0x7fff]
+                             : dlist[d->dl_addr & 0x7fff];
     d->rom_data  = rom_word(d->rom_addr);
     d->tex_data  = tgpram[d->tex_addr & 0xfffff];
     d->pal_data  = palette[d->pal_addr & 0x1fff];
@@ -92,6 +108,30 @@ static void memories() {
 }
 
 static int rom_lat = 0, rom_wait = 0;
+
+// The game's writer, for the torn-list mode: after each flip it writes the
+// next list into the buffer it flipped away from, one word every WR_EVERY
+// clk_3d cycles (the V60 at ~29 MHz storing a word every few instructions).
+static std::vector<std::vector<uint16_t>> torn_lists;
+static int  wr_buf = -1, wr_list = 0, wr_every = 40, wr_tick = 0;
+static size_t wr_pos = 0, wr_len = 0;
+static long torn_ahead = 0, torn_any = 0;
+static size_t list_len(const std::vector<uint16_t>& l) {
+    for (size_t i = 0; i + 1 < l.size(); i += 2) if (l[i] == 0x0f && l[i+1] == 0) return i + 2;
+    return l.size();
+}
+static void writer_step() {
+    if (wr_buf < 0 || wr_pos >= wr_len) return;
+    if (++wr_tick < wr_every) return;
+    wr_tick = 0;
+    const std::vector<uint16_t>& src = torn_lists[wr_list];
+    if (d->rootp->m1_raster3d__DOT__u_walk__DOT__st != 0 && (d->dl_sel_q & 1) == wr_buf) {
+        torn_any++;
+        if (wr_pos >= d->rootp->m1_raster3d__DOT__u_walk__DOT__cur) torn_ahead++;
+    }
+    dlbuf[wr_buf][wr_pos] = src[wr_pos];
+    wr_pos++;
+}
 static void tick(bool pixel_edge) {
     int rreq = d->rom_req, treq = d->tex_req;
     uint32_t taddr = d->tex_addr;
@@ -107,10 +147,13 @@ static void tick(bool pixel_edge) {
         tex_writes++;
         if (taddr >= TGPRAM_WORDS) {
             if (tex_escapes++ == 0) tex_escape_first = taddr;
+            if (taddr >= 0xE0000 && taddr < 0xE2000) tex_iofw++;
+            if (taddr >= 0xE2000 && taddr < 0xE2040) tex_eeprom++;
         }
         tgpram[taddr & 0xfffff] = d->tex_wdata;
     }
     d->tex_valid = treq; d->tex_data = tgpram[taddr & 0xfffff];
+    if (torn_mode) writer_step();
     memories();
     ddr.pre();
     d->clk = 1; if (pixel_edge) d->scan_clk = 1; d->eval();
@@ -126,7 +169,15 @@ static uint64_t run_frame() {
     for (int y = 0; y < V_TOTAL; y++) {
         for (int x = 0; x < H_TOTAL; x++) {
             d->frame_start = (y == SH && x == 0) ? 1 : 0;
-            if (y == SH && x == 0 && (frame_no % 2) == 0) d->dl_sel ^= 1;
+            if (y == SH && x == 0 && (torn_mode || (frame_no % 2) == 0)) {
+                d->dl_sel ^= 1;
+                if (torn_mode) {
+                    // The buffer just flipped away from is the game's again.
+                    wr_buf  = (d->dl_sel ^ 1) & 1;
+                    wr_list = (wr_list + 1) % (int)torn_lists.size();
+                    wr_pos  = 0; wr_len = list_len(torn_lists[wr_list]); wr_tick = 0;
+                }
+            }
             d->scan_x = x; d->scan_y = y;
             acc += CLK3D_HZ;
             bool first = true;
@@ -335,6 +386,38 @@ int main(int argc, char** argv) {
         if (last2) *last2 = prev;
         return h;
     };
+    // ---- TORN=n: the game rewriting the list the walker is still reading.
+    //
+    // Flip every frame, and after each flip write the next real list into
+    // the buffer just flipped away from, as the game does. Any pass longer
+    // than the flip interval then walks a list being rewritten under it.
+    if (getenv("TORN")) {
+        const int TF = atoi(getenv("TORN"));
+        const char* dumps[] = {"build/framedump/frame2500", "build/framedump/frame5460"};
+        torn_lists.push_back(real);
+        for (const char* dd : dumps) {
+            std::vector<uint16_t> l; snprintf(p, sizeof p, "%s/dlist.bin", dd);
+            if (!load(p, l, 0x8000)) return 1;
+            torn_lists.push_back(l);
+        }
+        wr_every = getenv("WR_EVERY") ? atoi(getenv("WR_EVERY")) : 40;
+        dlist = pro;
+        for (int i = 0; i < PRO_FRAMES; i++) run_frame();
+        torn_mode = true;
+        dlbuf[0] = real; dlbuf[1] = real;
+        unsigned bad0 = d->dbg_lw_bad, over0 = d->dbg_lw_over, pass0 = d->dbg_frames;
+        unsigned tex0 = TEX_DROP(d);
+        for (int i = 0; i < TF; i++) run_frame();
+        printf("render3d_fuzz TORN: frames=%d rom_lat=%d wr_every=%d passes=%u "
+               "writes into the walked buffer=%ld (ahead of the walker %ld) "
+               "walks ended on garbage=%u run off the buffer=%u colour uploads dropped=%u \n",
+               TF, rom_lat, wr_every, (unsigned)(uint16_t)(d->dbg_frames - pass0),
+               torn_any, torn_ahead,
+               (unsigned)(uint16_t)(d->dbg_lw_bad - bad0), (unsigned)(uint16_t)(d->dbg_lw_over - over0),
+               (unsigned)(uint16_t)(TEX_DROP(d) - tex0));
+        return 0;
+    }
+
     uint64_t golden_prev = 0;
     uint64_t golden = known_frame(nullptr);
     golden_prev = run_frame();     // one more frame of the same list: must not move
@@ -363,7 +446,7 @@ int main(int argc, char** argv) {
         unsigned g_passes = (unsigned)(uint16_t)(d->dbg_frames - passes0);
         unsigned g_bands  = (unsigned)(uint16_t)(d->dbg_bands - bands0);
         unsigned pst_g = st_pst(), cst_g = st_cst();
-        unsigned tex_drop_g = d->dbg_tex_drop;   // cleared by the reset below
+        unsigned tex_drop_g = TEX_DROP(d);   // cleared by the reset below
         bool wedged = (g_passes == 0);
         if (wedged) wedges++;
 
@@ -394,10 +477,10 @@ int main(int argc, char** argv) {
     }
 
     printf("render3d_fuzz: episodes=%d wedged=%d stuck_without_reset=%d "
-           "unrecovered_after_reset=%d tex_escapes=%ld (first at word %05x) "
+           "unrecovered_after_reset=%d tex_escapes=%ld (first at word %05x; onto the I/O firmware %ld, its EEPROM image %ld) "
            "tex_dropped=%u ddr3_protocol_errors=%ld\n",
            EPISODES, wedges, unrecovered_noreset, unrecovered_reset, esc_total,
-           tex_escape_first, (unsigned)tex_dropped_total, ddr.protocol_errs);
+           tex_escape_first, tex_iofw, tex_eeprom, (unsigned)tex_dropped_total, ddr.protocol_errs);
     bool pass = (unrecovered_reset == 0) && (unrecovered_noreset == 0) &&
                 (esc_total == 0) && (ddr.protocol_errs == 0);
     printf("%s\n", pass ? "PASS" : "FAIL");
