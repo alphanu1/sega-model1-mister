@@ -33,7 +33,15 @@ findings); reports in `build/3dfb_tile_s17_reports/`.
   payload: any 3D freeze or garbage is the first suspect; alm-save's rbf is the
   comparison.
 
-## THE DECISION: a frame of latency on about a quarter of lists
+## DECIDED (Ben, 2026-10-28): the frame of latency is accepted for now
+
+Ben, after testing the frame buffer build on the board (the heavy corners clean,
+nothing noticed in play): keep it as it is, "unless it's noticed in another
+game". Nothing is to be built for it now. If a game does show it, the fix to
+take is option 2 below, the faster fill, which keeps "an incomplete frame is
+never shown"; option 1 breaks that rule and is the fallback only.
+
+## The question that was put to Ben: a frame of latency on about a quarter of lists
 
 The band display could show a list from the frame after its pass was ready by
 line 376. The frame buffer must also DRAW it (70-118 lines) by line 416. In

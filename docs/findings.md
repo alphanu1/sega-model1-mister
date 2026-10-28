@@ -13930,3 +13930,13 @@ instructions will not find it. The end-to-end metric is the display-list swap
 rate - one swap per completed game-logic frame - and the reference's is measured
 at exactly 2 video frames (`tools/mame_listctl_rate.lua`, 993 of 996). Ours
 against that number is the game-speed ratio with no modelling in it at all.
+
+## 2026-10-28: the frame buffer's extra frame, accepted
+
+Decision recorded from Ben after the board test of the DDR3 frame buffer build
+(3d-overrun, seed 17, md5 903cf718): about 9.7% of lists in the full-system race
+(26 of 101 render3d MAME frames) reach the screen one frame later than the band
+display showed them, because a frame must be fully drawn by line 416. Ben
+noticed nothing and accepts it for now, unless another game shows it. If one
+does, the fix is a faster fill (about 2.5x, a fill-unit redesign), not the racing
+publish, which would show unfinished frames. See HANDOFF.md.
