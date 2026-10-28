@@ -1171,8 +1171,46 @@ localparam REG_SSP = 16;
 localparam REG_DT = 17;
 
 	// Register file
+	//
+	// MODIFIED FOR THE SEGA MODEL 1 CORE, 2026-10-28: IN MLAB, NOT FLIP-FLOPS.
+	// The file has two write ports (Rx and Ry, both at T3, Ry applied second)
+	// and two read addresses, each read on several buses. It is built as a
+	// live-value table: a bank per write port, a copy of each bank per read
+	// address, one bit per register and lane naming the newest bank. The low
+	// word keeps a separate byte lane because a data register can take a byte
+	// write. The previous clock's writes are bypassed so no read depends on
+	// when an MLAB cell is updated. Values and timing are unchanged; the flat
+	// regs68L/regs68H arrays remain in simulation as a mirror and a check.
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_lo_xx[ 32];	// low byte, Rx bank, read at Rx
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_lo_xy[ 32];	// low byte, Rx bank, read at Ry
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_lo_yx[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_lo_yy[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_mi_xx[ 32];	// high byte of the low word
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_mi_xy[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_mi_yx[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [7:0]  rf_mi_yy[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf_hi_xx[ 32];	// high word
+	(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf_hi_xy[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf_hi_yx[ 32];
+	(* ramstyle = "MLAB, no_rw_check" *) reg [15:0] rf_hi_yy[ 32];
+	reg [31:0] rf_lvt_lo = '0, rf_lvt_mi = '0, rf_lvt_hi = '0;		// 1 = Ry bank newest
+	initial begin
+		for( int i = 0; i < 32; i++) begin
+			rf_lo_xx[i] = '0; rf_lo_xy[i] = '0; rf_lo_yx[i] = '0; rf_lo_yy[i] = '0;
+			rf_mi_xx[i] = '0; rf_mi_xy[i] = '0; rf_mi_yx[i] = '0; rf_mi_yy[i] = '0;
+			rf_hi_xx[i] = '0; rf_hi_xy[i] = '0; rf_hi_yx[i] = '0; rf_hi_yy[i] = '0;
+		end
+	end
+`ifdef VERILATOR
+ `define FX68K_RF_MIRROR
+`endif
+`ifdef __ICARUS__
+ `define FX68K_RF_MIRROR
+`endif
+`ifdef FX68K_RF_MIRROR
 	reg [15:0] regs68L[ 18];
 	reg [15:0] regs68H[ 18];
+`endif
 
 // synthesis translate off
 	/*
@@ -1184,6 +1222,7 @@ localparam REG_DT = 17;
 		and that the result should be zero even when it's 'X - 'X.
 	*/
 	
+`ifdef FX68K_RF_MIRROR
 	initial begin
 		for( int i = 0; i < 18; i++) begin
 			regs68L[i] <= '0;
@@ -1193,6 +1232,7 @@ localparam REG_DT = 17;
 	
 	// For simulation display only
 	wire [31:0] SSP = { regs68H[REG_SSP], regs68L[REG_SSP]};
+`endif
 	
 // synthesis translate on
 	
@@ -1228,6 +1268,7 @@ localparam REG_DT = 17;
 	// RX RY muxes	
 	// RX and RY actual registers
 	logic [4:0] actualRx, actualRy;
+	wire [15:0] rfL_rx, rfL_ry, rfH_rx, rfH_ry;		// the register file's reads (MLAB, below)
 	logic [3:0] movemRx;
 	logic byteNotSpAlign;			// Byte instruction and no sp word align
 	
@@ -1331,8 +1372,8 @@ localparam REG_DT = 17;
 		{dbhIdle, dblIdle, dbdIdle} = '0;
 
 		unique case( 1'b1)
-		ryl2Dbd:				dbdMux = regs68L[ actualRy];
-		rxl2Dbd:				dbdMux = regs68L[ actualRx];
+		ryl2Dbd:				dbdMux = rfL_ry;
+		rxl2Dbd:				dbdMux = rfL_rx;
 		Nanod.alue2Dbd:			dbdMux = alue;
 		Nanod.dbin2Dbd:			dbdMux = dbin;
 		Nanod.alu2Dbd:			dbdMux = aluOut;
@@ -1341,8 +1382,8 @@ localparam REG_DT = 17;
 		endcase
 	
 		unique case( 1'b1)
-		rxl2Dbl:				dblMux = regs68L[ actualRx];
-		ryl2Dbl:				dblMux = regs68L[ actualRy];
+		rxl2Dbl:				dblMux = rfL_rx;
+		ryl2Dbl:				dblMux = rfL_ry;
 		Nanod.ftu2Dbl:			dblMux = ftu;
 		Nanod.au2Db:			dblMux = auReg[15:0];
 		Nanod.atl2Dbl:			dblMux = Atl;
@@ -1351,8 +1392,8 @@ localparam REG_DT = 17;
 		endcase
 			
 		unique case( 1'b1)
-		Nanod.rxh2dbh:			dbhMux = regs68H[ actualRx];
-		Nanod.ryh2dbh:			dbhMux = regs68H[ actualRy];
+		Nanod.rxh2dbh:			dbhMux = rfH_rx;
+		Nanod.ryh2dbh:			dbhMux = rfH_ry;
 		Nanod.au2Db:			dbhMux = auReg[31:16];
 		Nanod.ath2Dbh:			dbhMux = Ath;
 		Pch2Dbh:				dbhMux = PcH;
@@ -1360,8 +1401,8 @@ localparam REG_DT = 17;
 		endcase
 
 		unique case( 1'b1)
-		ryl2Abd:				abdMux = regs68L[ actualRy];
-		rxl2Abd:				abdMux = regs68L[ actualRx];
+		ryl2Abd:				abdMux = rfL_ry;
+		rxl2Abd:				abdMux = rfL_rx;
 		Nanod.dbin2Abd:			abdMux = dbin;
 		Nanod.alu2Abd:			abdMux = aluOut;
 		default: begin			abdMux = 'X;	abdIdle = 1'b1;				end
@@ -1369,8 +1410,8 @@ localparam REG_DT = 17;
 
 		unique case( 1'b1)
 		Pcl2Abl:				ablMux = PcL;
-		rxl2Abl:				ablMux = regs68L[ actualRx];
-		ryl2Abl:				ablMux = regs68L[ actualRy];
+		rxl2Abl:				ablMux = rfL_rx;
+		ryl2Abl:				ablMux = rfL_ry;
 		Nanod.ftu2Abl:			ablMux = ftu;
 		Nanod.au2Ab:			ablMux = auReg[15:0];
 		Nanod.aob2Ab:			ablMux = aob[15:0];
@@ -1380,8 +1421,8 @@ localparam REG_DT = 17;
 			
 		unique case( 1'b1)		
 		Pch2Abh:				abhMux = PcH;
-		Nanod.rxh2abh:			abhMux = regs68H[ actualRx];
-		Nanod.ryh2abh:			abhMux = regs68H[ actualRy];
+		Nanod.rxh2abh:			abhMux = rfH_rx;
+		Nanod.ryh2abh:			abhMux = rfH_ry;
 		Nanod.au2Ab:			abhMux = auReg[31:16];
 		Nanod.aob2Ab:			abhMux = aob[31:16];
 		Nanod.ath2Abh:			abhMux = Ath;
@@ -1518,36 +1559,94 @@ localparam REG_DT = 17;
 	
 	// Main A/D registers
 	
+	// The two write ports, as data and lane enables. Exactly the original's
+	// cases: a data register takes Dbd, or Abd as a word or (abdIsByte) as its
+	// low byte only; an address register takes Dbl or Abl. Ry is applied
+	// after Rx, so it wins a lane both write.
+	wire        wLx = enT3 & (Nanod.dbl2rxl | Nanod.abl2rxl);
+	wire        wLy = enT3 & (Nanod.dbl2ryl | Nanod.abl2ryl);
+	wire [15:0] dLx = ~rxIsAreg ? (Nanod.dbl2rxl ? Dbd : Abd) : (Nanod.dbl2rxl ? Dbl : Abl);
+	wire [15:0] dLy = ~ryIsAreg ? (Nanod.dbl2ryl ? Dbd : Abd) : (Nanod.dbl2ryl ? Dbl : Abl);
+	wire        wMx = wLx & ~(~rxIsAreg & ~Nanod.dbl2rxl & abdIsByte);	// high byte too
+	wire        wMy = wLy & ~(~ryIsAreg & ~Nanod.dbl2ryl & abdIsByte);
+	wire        wHx = enT3 & (Nanod.dbh2rxh | Nanod.abh2rxh);
+	wire        wHy = enT3 & (Nanod.dbh2ryh | Nanod.abh2ryh);
+	wire [15:0] dHx = Nanod.dbh2rxh ? Dbh : Abh;
+	wire [15:0] dHy = Nanod.dbh2ryh ? Dbh : Abh;
+
+	// Last clock's writes, for the bypass.
+	reg        bw_lx, bw_ly, bw_mx, bw_my, bw_hx, bw_hy;
+	reg [4:0]  bw_ax, bw_ay;
+	reg [15:0] bw_dlx, bw_dly, bw_dhx, bw_dhy;
+
 	always_ff @( posedge Clks.clk) begin
-		if( enT3) begin
-			if( Nanod.dbl2rxl | Nanod.abl2rxl) begin
-				if( ~rxIsAreg) begin
-					if( Nanod.dbl2rxl)			regs68L[ actualRx] <= Dbd;
-					else if( abdIsByte)			regs68L[ actualRx][7:0] <= Abd[7:0];
-					else						regs68L[ actualRx] <= Abd;
-				end
-				else
-					regs68L[ actualRx] <= Nanod.dbl2rxl ? Dbl : Abl;
-			end
-				
-			if( Nanod.dbl2ryl | Nanod.abl2ryl) begin
-				if( ~ryIsAreg) begin
-					if( Nanod.dbl2ryl)			regs68L[ actualRy] <= Dbd;
-					else if( abdIsByte)			regs68L[ actualRy][7:0] <= Abd[7:0];
-					else						regs68L[ actualRy] <= Abd;				
-				end
-				else
-					regs68L[ actualRy] <= Nanod.dbl2ryl ? Dbl : Abl;
-			end
-			
-			// High registers are easier. Both A & D on the same buses, and not byte ops.
-			if( Nanod.dbh2rxh | Nanod.abh2rxh)
-				regs68H[ actualRx] <= Nanod.dbh2rxh ? Dbh : Abh;
-			if( Nanod.dbh2ryh | Nanod.abh2ryh)
-				regs68H[ actualRy] <= Nanod.dbh2ryh ? Dbh : Abh;
-				
-		end	
+		if( wLx) begin
+			rf_lo_xx[ actualRx] <= dLx[7:0]; rf_lo_xy[ actualRx] <= dLx[7:0]; rf_lvt_lo[ actualRx] <= 1'b0;
+		end
+		if( wMx) begin
+			rf_mi_xx[ actualRx] <= dLx[15:8]; rf_mi_xy[ actualRx] <= dLx[15:8]; rf_lvt_mi[ actualRx] <= 1'b0;
+		end
+		if( wHx) begin
+			rf_hi_xx[ actualRx] <= dHx; rf_hi_xy[ actualRx] <= dHx; rf_lvt_hi[ actualRx] <= 1'b0;
+		end
+		if( wLy) begin
+			rf_lo_yx[ actualRy] <= dLy[7:0]; rf_lo_yy[ actualRy] <= dLy[7:0]; rf_lvt_lo[ actualRy] <= 1'b1;
+		end
+		if( wMy) begin
+			rf_mi_yx[ actualRy] <= dLy[15:8]; rf_mi_yy[ actualRy] <= dLy[15:8]; rf_lvt_mi[ actualRy] <= 1'b1;
+		end
+		if( wHy) begin
+			rf_hi_yx[ actualRy] <= dHy; rf_hi_yy[ actualRy] <= dHy; rf_lvt_hi[ actualRy] <= 1'b1;
+		end
+		{ bw_lx, bw_ly, bw_mx, bw_my, bw_hx, bw_hy} <= { wLx, wLy, wMx, wMy, wHx, wHy};
+		bw_ax <= actualRx; bw_ay <= actualRy;
+		bw_dlx <= dLx; bw_dly <= dLy; bw_dhx <= dHx; bw_dhy <= dHy;
+`ifdef FX68K_RF_MIRROR
+		if( wLx) begin
+			regs68L[ actualRx][7:0] <= dLx[7:0];
+			if( wMx) regs68L[ actualRx][15:8] <= dLx[15:8];
+		end
+		if( wLy) begin
+			regs68L[ actualRy][7:0] <= dLy[7:0];
+			if( wMy) regs68L[ actualRy][15:8] <= dLy[15:8];
+		end
+		if( wHx) regs68H[ actualRx] <= dHx;
+		if( wHy) regs68H[ actualRy] <= dHy;
+`endif
 	end
+
+	// Reads: each lane from the newest bank, unless last clock wrote it.
+	// Ry's write is checked first: it was the later one.
+	function automatic [7:0] rf_pick8( input [4:0] a, input lvt, input [7:0] qx, input [7:0] qy,
+	                                   input wy, input [7:0] dy, input wx, input [7:0] dx);
+		rf_pick8 = (wy && bw_ay == a) ? dy : (wx && bw_ax == a) ? dx : (lvt ? qy : qx);
+	endfunction
+	function automatic [15:0] rf_pick16( input [4:0] a, input lvt, input [15:0] qx, input [15:0] qy,
+	                                     input wy, input [15:0] dy, input wx, input [15:0] dx);
+		rf_pick16 = (wy && bw_ay == a) ? dy : (wx && bw_ax == a) ? dx : (lvt ? qy : qx);
+	endfunction
+	wire [7:0]  q_lo_xx = rf_lo_xx[ actualRx], q_lo_yx = rf_lo_yx[ actualRx];
+	wire [7:0]  q_lo_xy = rf_lo_xy[ actualRy], q_lo_yy = rf_lo_yy[ actualRy];
+	wire [7:0]  q_mi_xx = rf_mi_xx[ actualRx], q_mi_yx = rf_mi_yx[ actualRx];
+	wire [7:0]  q_mi_xy = rf_mi_xy[ actualRy], q_mi_yy = rf_mi_yy[ actualRy];
+	wire [15:0] q_hi_xx = rf_hi_xx[ actualRx], q_hi_yx = rf_hi_yx[ actualRx];
+	wire [15:0] q_hi_xy = rf_hi_xy[ actualRy], q_hi_yy = rf_hi_yy[ actualRy];
+	assign rfL_rx = { rf_pick8( actualRx, rf_lvt_mi[ actualRx], q_mi_xx, q_mi_yx, bw_my, bw_dly[15:8], bw_mx, bw_dlx[15:8]),
+	                  rf_pick8( actualRx, rf_lvt_lo[ actualRx], q_lo_xx, q_lo_yx, bw_ly, bw_dly[7:0],  bw_lx, bw_dlx[7:0])};
+	assign rfL_ry = { rf_pick8( actualRy, rf_lvt_mi[ actualRy], q_mi_xy, q_mi_yy, bw_my, bw_dly[15:8], bw_mx, bw_dlx[15:8]),
+	                  rf_pick8( actualRy, rf_lvt_lo[ actualRy], q_lo_xy, q_lo_yy, bw_ly, bw_dly[7:0],  bw_lx, bw_dlx[7:0])};
+	assign rfH_rx = rf_pick16( actualRx, rf_lvt_hi[ actualRx], q_hi_xx, q_hi_yx, bw_hy, bw_dhy, bw_hx, bw_dhx);
+	assign rfH_ry = rf_pick16( actualRy, rf_lvt_hi[ actualRy], q_hi_xy, q_hi_yy, bw_hy, bw_dhy, bw_hx, bw_dhx);
+
+`ifdef FX68K_RF_MIRROR
+	// Every read the buses can take must match the flat file.
+	always_ff @( posedge Clks.clk) begin
+		if( rfL_rx !== regs68L[ actualRx] || rfL_ry !== regs68L[ actualRy] ||
+		    rfH_rx !== regs68H[ actualRx] || rfH_ry !== regs68H[ actualRy])
+			if( actualRx < 18 && actualRy < 18)
+				$display( "FX68K RF MISMATCH rx=%0d ry=%0d", actualRx, actualRy);
+	end
+`endif
 		
 	// PC & AT
 	reg dbl2Pcl, dbh2Pch, abh2Pch, abl2Pcl;

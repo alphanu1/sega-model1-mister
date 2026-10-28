@@ -42,6 +42,15 @@ elaboration, by bare filename — so a bench must run from a directory where
 those files resolve, or the 68000 executes nothing and reports no instructions
 with no error.
 
+**Modified here (2026-10-28), one change, marked in the file:** the register
+file (`regs68L`/`regs68H` in `excUnit`) is built in MLAB as a live-value table
+- a bank per write port, a copy per read address, one bit per register and
+lane naming the newest bank, the previous clock's writes bypassed - instead of
+576 flip-flops and their read muxes. Same values on the same cycles; the flat
+arrays remain in simulation as a mirror and every read is checked against
+them. Worth about 500 ALM on the full design. The sound board bench's WAV and
+the frame bench's audio are byte-identical before and after.
+
 GPL-3 to GPL-3. Copyright remains theirs on those files.
 
 ### The 15 kHz scan converter — retrorepair, via the Model 2 core — GPL-3.0-or-later

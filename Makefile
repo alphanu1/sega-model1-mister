@@ -184,8 +184,8 @@ SRCS_v60_fp_mulonly := sim/microbench/v60_fp_mulonly.sv
 # ---------------------------------------------------------------- sound (M4)
 # Model 2's m2_sound_board IS the Model 1 sound board - model2.cpp instantiates
 # SEGAM1AUDIO for model2o, the same device model1.cpp uses - so it is brought
-# over whole rather than rewritten. fx68k stays byte-for-byte upstream, which is
-# what -Wno-BLKANDNBLK in the lint flags is for.
+# over whole rather than rewritten. fx68k is upstream apart from its register
+# file (see THIRD-PARTY.md), which is what -Wno-BLKANDNBLK in the lint flags is for.
 JT12_RTL := $(wildcard rtl/sound/jt12/*.v)
 SRCS_m2_sound_board := rtl/sound/fx68k/fx68k.sv rtl/sound/fx68k/fx68kAlu.sv \
             rtl/sound/fx68k/uaddrPla.sv rtl/sound/m2_i8251.sv \

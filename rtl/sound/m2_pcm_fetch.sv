@@ -81,7 +81,16 @@ module m2_pcm_fetch #(
   // PLAIN, MATCHING MODEL 2. The MLAB attribute here was an area saving added
   // while chasing the fit; it is not what Model 2 ships and the sound is worth
   // more than the ALM.
-  logic [21:3] tag_q [32];
+  //
+  // MLAB AGAIN (2026-10-28), WITH THE READ-DURING-WRITE QUESTION ANSWERED. A
+  // tag is written only at F_FETCH's m_ack, and `hit` is only acted on in
+  // F_LOOK, which is three or more cycles later (F_ARM, F_ACK, the request
+  // dropping, F_IDLE) - so no consulted read ever meets an MLAB write in
+  // progress, and the attribute changes where the bits live, not what any
+  // read returns. no_rw_check is what lets Quartus infer it at all with an
+  // asynchronous read (a bare "MLAB" is silently left in flip-flops). The
+  // sound bench's WAV and the frame bench's audio are byte-identical.
+  (* ramstyle = "MLAB, no_rw_check" *) logic [21:3] tag_q [32];
   logic [31:0] val_q;
   logic        m_req_r, c_ack_r;
 

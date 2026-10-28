@@ -47,6 +47,18 @@ assign rdata = 8'h00;
 assign rom_slot = rom_is_desc ? df_slot : play_slot;
 
 reg [7:0] sreg [0:27][0:7];
+// REGISTER 1 (THE SAMPLE NUMBER) IS AN MLAB (2026-10-28). The descriptor pick
+// reads only reg 1 and reg 2 bit 0 of `sreg`, at `picked`; everything else in
+// it is never read and synthesis drops it. Reg 1 was 224 flip-flops and a 28:1
+// mux a chip. Reset is kept with a valid bit per slot (an unwritten slot reads
+// 0, as the cleared flip-flop did - a key-on can pick a slot whose reg 1 was
+// never written), and the write of the previous clock is bypassed: a reg 1
+// write sets desc_pending, so the very next enabled cycle can read it back.
+(* ramstyle = "MLAB, no_rw_check" *) reg [7:0] smp1_ram [0:31];
+reg [27:0] smp1_v;
+reg        smp1_bw_v;
+reg [4:0]  smp1_bw_a;
+reg [7:0]  smp1_bw_d;
 // THE FIVE REGISTER FIELDS THE CHIP READS ARE MLABs TOO (R221). The mixer
 // reads pan (reg 0[7:4]) and level (reg 5[7:1]) at play_slot; the stepper
 // reads pitch (reg 2[7:2]) and octave/pitch (reg 3) at `slot`; the
@@ -236,6 +248,24 @@ begin
 end
 endfunction
 
+// The pick, as a wire: the lowest pending slot (the loop below finds the same).
+function automatic [4:0] pick_low(input [27:0] p);
+    integer k;
+    pick_low = 5'd0;
+    for (k = 27; k >= 0; k = k - 1) if (p[k]) pick_low = k[4:0];
+endfunction
+wire [4:0] pick_w  = pick_low(desc_pending);
+wire [7:0] smp1_q  = (smp1_bw_v && smp1_bw_a == pick_w) ? smp1_bw_d :
+                     smp1_v[pick_w] ? smp1_ram[pick_w] : 8'd0;
+// rst gates the write exactly as the reset branch below pre-empted it.
+wire smp1_we = !rst && cs && we && (addr == 2'd0) && cur_slot_valid && (cur_reg == 3'd1);
+always @(posedge clk) begin
+    if (smp1_we) smp1_ram[cur_slot] <= wdata;
+    smp1_bw_v <= smp1_we;
+    smp1_bw_a <= cur_slot;
+    smp1_bw_d <= wdata;
+end
+
 always @(posedge clk) begin
     if (rst) begin
         cur_slot <= 0;
@@ -246,6 +276,7 @@ always @(posedge clk) begin
         rom_addr <= 0;
         rom_is_desc <= 0;
         desc_pending <= 0;
+        smp1_v <= 0;
         key_wait <= 0;
         pos_zero <= 0;
         desc_fwd <= 0;
@@ -285,6 +316,7 @@ always @(posedge clk) begin
                 2'd2: cur_reg <= (wdata > 8'd7) ? 3'd7 : wdata[2:0];
                 2'd0: if (cur_slot_valid) begin
                     sreg[cur_slot][cur_reg] <= wdata;
+                    if (cur_reg == 3'd1) smp1_v[cur_slot] <= 1'b1;
                     if (cur_reg == 3'd1) begin
                         // Sample index is nine bits; bit 8 lives in pitch reg2.
                         desc_pending[cur_slot] <= 1'b1;
@@ -371,7 +403,7 @@ always @(posedge clk) begin
                     end
                 end
                 df_slot <= picked;
-                df_sample <= {sreg[picked][2][0], sreg[picked][1]};
+                df_sample <= {sreg[picked][2][0], smp1_q};      // smp1_q: reg 1 at picked
                 df_idx <= 0;
                 df_busy <= 1'b1;
                 desc_pending[picked] <= 1'b0;
