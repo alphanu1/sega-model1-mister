@@ -2072,7 +2072,15 @@ else if (ce) begin
     S_MULDIV: begin
         if (mdcnt == 0) begin
             md_finish();
-            st <= S_NEXT;
+            // THE THIRD INSTANCE OF THE DROPPED-STORE PATTERN (S_IN_RD and S_ROTC
+            // were the first two). md_finish ends in wb_op2, whose non-blocking
+            // `st <= S_WB_MEM` this unconditional `st <= S_NEXT` overrode, so
+            // MUL/MULU/DIV/DIVU/REM/REMU with a MEMORY destination computed the
+            // result and threw it away. Virtua Fighter's ring size is
+            // `mulu.w #A, 501276` at FCCA40: it stayed 70 where MAME has 700,
+            // and the arena was drawn - and fought on - at a tenth of its size.
+            // tb_v60_mul_mem runs the game's own bytes.
+            if (flag2) st <= S_NEXT;
         end
         else begin
             md_step();
