@@ -316,10 +316,13 @@ module m1_video #(
   // The ROW MASK stays per line. MAME indexes it by screen line inside the same
   // call - `mask += yy1*4` walks the destination rectangle - so it is genuinely
   // per line and latching it would be the opposite mistake.
-  logic [15:0] f_hscr_l  [4];
-  logic [15:0] f_vscr_l  [4];
-  logic [15:0] f_ctrl_l  [4];
-  logic [15:0] f_hctrl_l [4];
+  // Flip-flops by instruction. Read at two places now (the latching pass and
+  // the latched shortcut in Q_HSCR), Quartus 17.0 inferred f_ctrl_l as a 4 x 16
+  // altsyncram - a whole block for 64 bits, with M10K the binding resource.
+  (* ramstyle = "logic" *) logic [15:0] f_hscr_l  [4];
+  (* ramstyle = "logic" *) logic [15:0] f_vscr_l  [4];
+  (* ramstyle = "logic" *) logic [15:0] f_ctrl_l  [4];
+  (* ramstyle = "logic" *) logic [15:0] f_hctrl_l [4];
   logic        cfg_valid;          // set once the first frame has been latched
   // The first visible line of a frame: the point MAME's prepare_common() would
   // have run. Latching here means the frame being drawn uses the values the
@@ -561,6 +564,15 @@ module m1_video #(
       vbs_d <= vblank_start;
       if (cfg_latch_point) cfg_pending <= 1'b1;
 
+      // A line_start that finds the sequencer anywhere but Q_IDLE is lost, in
+      // whichever state it lands - the per-layer register reads and Q_NEXT as
+      // much as Q_RUN. This was counted in Q_RUN only, which missed the ones
+      // landing between layers (tb_m1_frame's TILE2D census counts them all).
+      // Saturating, not wrapping: a counter that rolls over reads as a small
+      // number on a screen and says the opposite of what happened.
+      if (line_start && q != Q_IDLE && !(&dbg_overruns))
+        dbg_overruns <= dbg_overruns + 1'd1;
+
       case (q)
         Q_IDLE: begin
           seq_owns_tram <= 1'b1;
@@ -590,9 +602,27 @@ module m1_video #(
         // `0x5000 + cur_layer` are THE SAME ADDRESS, and the quoted formulas
         // above read as an off-by-one against this code only if the two
         // meanings of "layer" are conflated. They were, here, on 2026-08-29.
+        // Once a frame's configuration is latched, the four words come out of
+        // the latch arrays at once and the sequencer goes straight to the row
+        // mask: seven cycles a layer that were spent re-reading tile RAM only
+        // to discard what it returned. The values are the ones the latching
+        // pass stored, exactly as the long path selects them. dbg_ctrl takes
+        // the latched ctrl too - it is what drives the window decision, which
+        // is what that register is for.
         Q_HSCR: begin
-          seq_tram_addr <= 15'h5000 + {13'd0, cur_layer};
-          q             <= Q_HSCR_W;
+          if (latch_cfg) begin
+            seq_tram_addr <= 15'h5000 + {13'd0, cur_layer};
+            q             <= Q_HSCR_W;
+          end else begin
+            hscr_r                 <= f_hscr_l[cur_layer];
+            vscr_r                 <= f_vscr_l[cur_layer];
+            ctrl_r                 <= f_ctrl_l[cur_layer];
+            hctrl_r                <= f_hctrl_l[cur_layer];
+            dbg_ctrl[cur_layer[1]] <= f_ctrl_l[cur_layer];
+            seq_tram_addr          <= mask_base;
+            mask_i                 <= 2'd0;
+            q                      <= Q_MASK;
+          end
         end
         Q_HSCR_W: begin
           hscr_r        <= latch_cfg ? tram_data : f_hscr_l[cur_layer];
@@ -690,9 +720,7 @@ module m1_video #(
           // send the remaining writes to the buffer being displayed, tearing
           // every layer of every following line — a whole-screen failure from
           // a one-line overrun.
-          // Saturating, not wrapping: a counter that rolls over reads as a
-          // small number on a screen and says the opposite of what happened.
-          if (line_start && !(&dbg_overruns)) dbg_overruns <= dbg_overruns + 1'd1;
+          // Counted below, in every state, not only here.
 
           if (f_done) begin
             if (f_fetches > dbg_fetches) dbg_fetches <= f_fetches;

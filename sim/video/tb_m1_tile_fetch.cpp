@@ -60,9 +60,22 @@ struct Fetch {
   uint8_t  lb_tr[512], lb_pr[512], lb_mk[512];
   bool     lb_written[512];
 
-  // Character port model with latency.
-  int lat = 0, lat_cnt = 0;
-  long tw_pulses = 0;
+  // Character port model: m1_sdram's contract, not a convenience version of
+  // it. The request is latched on its RISING edge with the address on that
+  // edge; the answer comes when the request has been high `lat` cycles (what
+  // tb_m1_frame measures as the character wait - 16 in play; minimum 3); the
+  // ack is then held for TWO cycles whatever the request does, as ACK_HOLD = 2
+  // does; and the data stays until the next answer. A requester that took the
+  // second held cycle as the answer to its NEXT request would read the
+  // previous row, and the reference catches it. The old model dropped ack with
+  // the request, so it could not.
+  int lat = 3;
+  int jit = 0;                 // plus 0..jit per request
+  std::mt19937 jrng{7};
+  bool req_d = false, pend = false;
+  int cnt = 0, ack_hold = 0;
+  uint32_t addr_l = 0;
+  long tw_pulses = 0, proto_err = 0, requests = 0;
 
   Fetch() {
     d = new Vm1_tile_fetch;
@@ -77,18 +90,30 @@ struct Fetch {
     // Tile RAM: combinational address, data available next cycle.
     d->tram_data = tile_ram[d->tram_addr & 0x7fff];
 
-    // Character RAM: two consecutive words, acked after `lat` cycles.
-    if (d->char_req) {
-      if (lat_cnt >= lat) {
-        uint32_t a = d->char_addr & 0x3ffff;
-        d->char_data = ((uint32_t)char_ram[(a + 1) & 0x3ffff] << 16) | char_ram[a];
-        d->char_ack = 1;
-      } else { lat_cnt++; d->char_ack = 0; }
-    } else { lat_cnt = 0; d->char_ack = 0; }
+    // What the controller samples at this edge is what the DUT drives now.
+    bool     req_s  = d->char_req;
+    uint32_t addr_s = d->char_addr & 0x3ffff;
 
     d->clk = 0; d->eval();
     d->clk = 1; d->eval();
     cyc++;
+
+    // The controller's own edge.
+    if (ack_hold > 0 && --ack_hold == 0) d->char_ack = 0;
+    if (pend) {
+      if (cnt == 0) {
+        d->char_data = ((uint32_t)char_ram[(addr_l + 1) & 0x3ffff] << 16) | char_ram[addr_l];
+        d->char_ack = 1; ack_hold = 2; pend = false;
+      } else cnt--;
+    }
+    if (req_s && !req_d) {
+      if (pend) proto_err++;           // a second request while one is out
+      pend = true; addr_l = addr_s; requests++;
+      cnt = std::max(lat - 3 + (jit ? (int)(jrng() % (unsigned)(jit + 1)) : 0), 0);
+    }
+    if (!req_s && req_d && pend) proto_err++;   // dropped before its answer
+    req_d = req_s;
+    d->eval();
     if (d->tw_nonblank) tw_pulses++;
 
     // Four pixels a cycle now, with lb_we a per-pixel valid mask: the group is
@@ -156,6 +181,11 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
                    const char* what, uint64_t rmask = 0, bool loff = false,
                    bool sen = false, int h = 0, bool sright = false) {
   long bad = 0;
+  checks++;
+  if (f.proto_err) {
+    printf("  FAIL %s: %ld character-port protocol errors\n", what, f.proto_err);
+    fails++; f.proto_err = 0;
+  }
   for (int sx = 0; sx < COLUMNS * 8; sx++) {
     uint32_t map_x = ((uint32_t)sx - (hscr & 0x1ff)) & 0x1ff;
     uint32_t map_y = ((uint32_t)line + (vscr & 0x1ff)) & 0x1ff;
@@ -174,8 +204,14 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
       bad++; fails++; continue;
     }
     int want_mk = want_mask_bit(rmask, sx, loff, sen, h, sright);
-    if (f.lb_pal[sx] != want_pal || f.lb_tr[sx] != want_tr ||
-        f.lb_pr[sx] != want_pr || f.lb_mk[sx] != want_mk) {
+    // A MASKED PIXEL IS CHECKED FOR ITS MASK BIT ONLY. The mixer never reads
+    // anything else of it (m1_tile_mixer: !masked gates both passes), and the
+    // engine does not fetch a column whose every pixel is masked, so the other
+    // fields there hold whatever the emitter last had.
+    bool mismatch = want_mk ? (f.lb_mk[sx] != 1)
+                            : (f.lb_pal[sx] != want_pal || f.lb_tr[sx] != want_tr ||
+                               f.lb_pr[sx] != want_pr || f.lb_mk[sx] != 0);
+    if (mismatch) {
       if (bad < 6)
         printf("  FAIL %s x=%d got pal=%03x tr=%d pr=%d mk=%d want pal=%03x tr=%d pr=%d mk=%d\n",
                what, sx, f.lb_pal[sx], f.lb_tr[sx], f.lb_pr[sx], f.lb_mk[sx],
@@ -362,17 +398,94 @@ int main(int argc, char** argv) {
     printf("  64 scroll combinations across all four layers\n");
   }
 
+  // ------------------------------------------- masked columns are not fetched
+  // The mixer never reads a masked pixel's colour, so a column whose every
+  // pixel is masked needs no tile word and no character row. Asserted as a
+  // fetch COUNT, because a skip that silently stopped working would still draw
+  // every pixel right and only the deadline would notice.
+  printf("test: a fully masked column costs no fetch\n");
+  {
+    for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = (uint16_t)(rng() & 0x7fff);
+    Fetch f; f.lat = 16; f.reset();
+    f.render(40, 0, 0, 0, 0, true);                       // layer_off: nothing
+    verify(f, 40, 0, 0, 0, "skip-layer-off", 0, true);
+    checks++;
+    if (f.d->fetches != 0) {
+      printf("  FAIL layer_off fetched %u rows\n", (unsigned)f.d->fetches); fails++;
+    }
+    f.render(40, 1, 0, 0, ~0ull, false);                  // every column masked
+    verify(f, 40, 1, 0, 0, "skip-all-masked", ~0ull, false);
+    checks++;
+    if (f.d->fetches != 0) {
+      printf("  FAIL an all-masked line fetched %u rows\n", (unsigned)f.d->fetches); fails++;
+    }
+    // Half the mask columns set, aligned scroll: exactly the clear half fetch.
+    const uint64_t half = 0xaaaaaaaaaaaaaaaaull;
+    f.render(41, 2, 0, 0, half, false);
+    verify(f, 41, 2, 0, 0, "skip-half", half, false);
+    checks++;
+    if (f.d->fetches > 31) {
+      printf("  FAIL half-masked aligned line fetched %u rows, expected <= 31\n",
+             (unsigned)f.d->fetches); fails++;
+    }
+    // Unaligned: a tile straddles two mask columns and is fetched if EITHER is
+    // clear, so the visible pixels on the straddle are still right.
+    f.render(41, 2, 3, 0, half, false);
+    verify(f, 41, 2, 3, 0, "skip-half-unaligned", half, false);
+  }
+
+  // ------------------------------- the decoupled engine under random everything
+  // Repeats, masked columns between repeats (a REPEAT after an INVIS must still
+  // find its row), every scroll, layer_off, the split, and the character port
+  // answering anywhere from 3 to 200 cycles with jitter - an order of magnitude
+  // past the 16 measured in play. The queues between lookahead, requester and
+  // emitter only fill and drain differently with latency, so latency is swept
+  // rather than fixed.
+  printf("test: fuzz - repeats across masked columns, latency 3..200\n");
+  {
+    long lines = 0;
+    const int fuzz_n = getenv("FUZZ_N") ? atoi(getenv("FUZZ_N")) : 1200;
+    for (int it = 0; it < fuzz_n; it++) {
+      // A small alphabet so repeats are common and REPEAT/INVIS interleave.
+      int alpha = 1 + (int)(rng() % 6);
+      uint16_t a[6];
+      for (int k = 0; k < 6; k++) a[k] = (uint16_t)(rng() & 0xffff);
+      for (size_t i = 0; i < tile_ram.size(); i++)
+        tile_ram[i] = (rng() % 8 == 0) ? (uint16_t)rng() : a[rng() % alpha];
+      static const int lats[] = {3, 4, 5, 8, 16, 17, 24, 40, 64, 120, 200};
+      Fetch f; f.lat = lats[rng() % 11]; f.jit = (rng() & 1) ? (int)(rng() % 40) : 0;
+      f.reset();
+      for (int k = 0; k < 3; k++) {
+        int ln = rng() & 0x1ff, ly = rng() & 3;
+        uint16_t hs = (uint16_t)(rng() & 0x81ff), vs = (uint16_t)(rng() & 0x81ff);
+        uint64_t rm = ((uint64_t)rng() << 32) | rng();
+        if (rng() & 1) rm &= ((uint64_t)rng() << 32) | rng();   // sparser
+        bool loff = (rng() % 10) == 0;
+        bool sen = (rng() % 4) == 0;
+        int h = (int)(rng() % 500);
+        bool sr = rng() & 1;
+        f.render(ln, ly, hs, vs, rm, loff, sen, h, sr);
+        char what[64];
+        snprintf(what, sizeof what, "fuzz it=%d lat=%d jit=%d", it, f.lat, f.jit);
+        verify(f, ln, ly, hs, vs, what, rm, loff, sen, h, sr);
+        lines++;
+      }
+    }
+    printf("  %ld fuzzed lines\n", lines);
+  }
+
   // ------------------------------------------------------------- budget
   printf("test: cycles per line against the scanline budget\n");
   {
     // A scanline is 656 pixel clocks at 16 MHz; at 100 MHz that is ~4100
     // cycles for all four layers, so one layer has ~1025.
     for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = (uint16_t)rng();
-    Fetch f; f.lat = 14; f.reset();          // measured burst latency
+    Fetch f; f.lat = 16; f.reset();          // in-play mean, tb_m1_frame
     long c = f.render(99, 0, 0, 0);
-    printf("  worst case (all distinct, lat=14): %ld cycles/layer/line\n", c);
+    printf("  worst case (all distinct, lat=16): %ld cycles/layer/line, %u fetches\n",
+           c, (unsigned)f.d->fetches);
     for (size_t i = 0; i < tile_ram.size(); i++) tile_ram[i] = 0x0040;
-    Fetch g; g.lat = 14; g.reset();
+    Fetch g; g.lat = 16; g.reset();
     long c2 = g.render(99, 0, 0, 0);
     printf("  text case (one repeated tile):     %ld cycles/layer/line\n", c2);
   }
