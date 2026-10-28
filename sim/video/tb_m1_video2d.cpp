@@ -36,6 +36,10 @@
 //   -lat N     cycles a request is high before its answer (default 16, the
 //              in-play mean tb_m1_frame measures; minimum 3)
 //   -jit N     plus a uniform 0..N extra per request (default 0)
+//   -hist F    draw each request's latency from a histogram instead: F holds
+//              the 65 counts tb_m1_frame prints as "char latency histogram
+//              0..64" (the last bucket is 64 and over); -lat is then ignored
+//              and -scale N/100 stretches every draw (default 100)
 //   -seed N    for the jitter
 //   -max N     frames per directory (default all)
 //   -every N   use every Nth manifest entry
@@ -162,7 +166,8 @@ int main(int argc, char** argv) {
   int lat = 16, jit = 0, maxf = 1 << 30, every = 1;
   unsigned seed = 1;
   bool quiet = false, ppmall = false;
-  std::string ppmdir;
+  std::string ppmdir, histf;
+  int scale = 100;
   std::vector<std::string> dirs;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -172,6 +177,8 @@ int main(int argc, char** argv) {
     else if (a == "-max"  && i + 1 < argc) maxf  = atoi(argv[++i]);
     else if (a == "-every"&& i + 1 < argc) every = atoi(argv[++i]);
     else if (a == "-ppm"  && i + 1 < argc) ppmdir = argv[++i];
+    else if (a == "-hist" && i + 1 < argc) histf = argv[++i];
+    else if (a == "-scale"&& i + 1 < argc) scale = atoi(argv[++i]);
     else if (a == "-ppmall") ppmall = true;
     else if (a == "-q") quiet = true;
     else if (a[0] == '+') ;                       // verilator plusargs
@@ -183,6 +190,18 @@ int main(int argc, char** argv) {
   auto* r = d->rootp;
   std::mt19937 rng(seed);
   std::uniform_int_distribution<int> jd(0, jit > 0 ? jit : 0);
+  std::vector<double> hw;
+  if (!histf.empty()) {
+    FILE* hf = fopen(histf.c_str(), "r");
+    if (!hf) { fprintf(stderr, "cannot read %s\n", histf.c_str()); return 2; }
+    double v; while (fscanf(hf, "%lf", &v) == 1) hw.push_back(v);
+    fclose(hf);
+  }
+  std::discrete_distribution<int> hd(hw.begin(), hw.end());
+  auto draw_lat = [&]() -> int {
+    if (hw.empty()) return lat + (jit ? jd(rng) : 0);
+    return std::max(3, (hd(rng) * scale + 50) / 100);
+  };
 
   d->clk = 0; d->rst_n = 0; d->ce_pix = 0; d->tile_mask = TILE_MASK;
   d->tram_data = 0; d->char_data = 0; d->char_ack = 0; d->pal_data = 0;
@@ -217,7 +236,7 @@ int main(int argc, char** argv) {
     if (req_s && !req_d) {
       if (pend) proto_err++;
       pend = true; addr_l = addr_s;
-      cnt = std::max(lat - 3 + (jit ? jd(rng) : 0), 0);
+      cnt = std::max(draw_lat() - 3, 0);
     }
     if (!req_s && req_d && pend) proto_err++;
     req_d = req_s;
@@ -342,6 +361,7 @@ int main(int argc, char** argv) {
            BUDGET, lat, jit);
     fflush(stdout);
   }
+  if (!hw.empty()) printf("LATENCY drawn from %s at %d%%\n", histf.c_str(), scale);
   printf("TOTAL frames=%ld overrun_frames=%ld overruns=%ld visible=%ld bad_frames=%ld px_fail=%ld worst=%ld lines=%ld >90%%=%ld >75%%=%ld proto_err=%ld\n",
          tot_frames, tot_ovr_frames, tot_ovr, tot_ovr_vis, tot_bad_frames, tot_px_fail,
          worst_all, tot_lines, over90, over75, proto_err);
