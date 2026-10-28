@@ -104,11 +104,12 @@ module m1_video #(
 
   // HOW OFTEN THE FETCH ENGINE MISSED ITS DEADLINE.
   //
-  // A line's worth of fetching is about 3,280 core cycles at 80 MHz and four
-  // dense layers want roughly 6,456, so the budget can be exceeded — see
-  // docs/m1-m4-plan.md and task 2a in HANDOFF. When it is, line_start arrives
-  // while the sequencer is still in Q_RUN, the bank does not flip and the
-  // previous line is displayed again.
+  // A line's worth of fetching is 3,280 core cycles at 80 MHz, and a dense
+  // real line wants up to 148 character fetches, so the budget can be
+  // exceeded — see docs/findings.md 2026-10-28, and
+  // docs/m1-m4-plan.md. When it is, line_start arrives while the sequencer is
+  // still busy, the bank does not flip and the previous line is displayed
+  // again - and the next line is never rendered, so two lines are wrong.
   //
   // That is a deliberate, locally-wrong-but-stable failure, and it is invisible
   // from the outside: the picture is merely wrong. Counted here so "the image
@@ -708,10 +709,12 @@ module m1_video #(
         Q_RUN: begin
           // OVERRUN
           //
-          // A line's worth of fetching is 3,936 core cycles and four dense
-          // layers need about 6,456, so the budget can be exceeded — see
-          // docs/m1-m4-plan.md. When it is, line_start arrives while this is
-          // still running.
+          // A line's worth of fetching is 3,280 core cycles (656 dots x 5 at
+          // 80 MHz; the 3,936 that stood here was the 96 MHz design). The
+          // densest real line - Virtua Racing's course select - is 148
+          // character rows, and the line is lost when they do not fit; see
+          // m1_tile_fetch and docs/findings.md 2026-10-28. When it is,
+          // line_start arrives while the sequencer is still busy.
           //
           // Ignoring it, which is what happens by virtue of not being in
           // Q_IDLE, means the bank does not flip and the line already in the

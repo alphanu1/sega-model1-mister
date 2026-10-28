@@ -64,7 +64,8 @@ module m1_video_timing #(
   // dot clocks — 960 core cycles — and four layers need 2,796 even on repeated
   // tiles, so rendering ran on into the line it was supposed to be displaying
   // and the picture was a mixture of two lines. A whole line period is 656 dot
-  // clocks, 3,936 core cycles, which is the budget the tilemap fetch was
+  // clocks, 3,280 core cycles at 80 MHz (3,936 at the 96 MHz this was written
+  // for), which is the budget the tilemap fetch was
   // measured against.
   output logic       line_start,
   output logic [8:0] line_number,
