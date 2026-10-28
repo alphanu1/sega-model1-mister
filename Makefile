@@ -412,6 +412,24 @@ render3d:
 	  sim/video/tb_m1_raster3d.cpp -o tb_render3d --Mdir obj_render3d
 	./obj_render3d/tb_render3d
 
+# The 3D layer fed garbage display lists (NaN/inf/denormal floats, wild
+# addresses and lengths, corrupted and unterminated lists), then the game reset,
+# then the real frame: no list may wedge it, a reset must restore the cold-start
+# picture hash for hash, and no colour upload may leave tgp_ram.
+# See sim/video/tb_m1_raster3d_fuzz.cpp. Needs build/framedump and the ROM image.
+FUZZ_EPISODES ?= 40
+FUZZ_SEED     ?= 1
+FUZZ_MDIR     ?= obj_render3d_fuzz
+render3d_fuzz:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_raster3d \
+	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
+	  rtl/video/fp_from_int.sv rtl/video/m1_lightbank.sv \
+	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv \
+	  rtl/video/m1_ddram_payload.sv \
+	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
+	  sim/video/tb_m1_raster3d_fuzz.cpp -o tb_render3d_fuzz --Mdir $(FUZZ_MDIR)
+	FUZZ_EPISODES=$(FUZZ_EPISODES) FUZZ_SEED=$(FUZZ_SEED) ./$(FUZZ_MDIR)/tb_render3d_fuzz
+
 render:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_render_top \
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) $(SRCS_m1_raster_fill) sim/video/render_top.sv \
@@ -969,7 +987,7 @@ elab:
 	  head -10 $(TMPDIR)/elab_real.txt; exit 1; \
 	else echo "elab: Model1 elaborates, every port and module resolves"; fi
 
-.PHONY: test_v60_ifetch test_snd_report elab render render3d video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: test_v60_ifetch test_snd_report elab render render3d render3d_fuzz video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

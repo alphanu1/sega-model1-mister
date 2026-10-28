@@ -1040,6 +1040,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   // the phase is an OSD option. It defaults to CL+2, one cycle earlier than the
   // model needs, which is what the measured shift implies.
   wire [7:0] sdram_occ, sdram_wait1;
+  wire [10:0] sd_pend;     // ports with a request outstanding (FREEZE_DIAG)
 
   // ------------------------------------------------------------ SOUND BOARD
   // Model 2's m2_sound_board IS the Model 1 board - see rtl/sound/README.md.
@@ -1221,7 +1222,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .wr_be(ldr_wr_be), .wr_ack(ldr_wr_ack),
     .p_req(p_req), .p_we(p_we), .p_addr(p_addr), .p_din(p_din), .p_be(p_be),
     .p_dout(p_dout), .p_ack(p_ack),
-    .dbg_req(), .dbg_grant(),
+    .dbg_req(sd_pend), .dbg_grant(),
     // The memory's own account of how busy it is, and of how long the tile
     // fetch waits for it. Both go to the UART, because whether the SDRAM is
     // the constraint is a hardware question.
@@ -1281,6 +1282,13 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   wire  [7:0] dbg_fetches;
   wire [15:0] dbg_overruns;
   wire [15:0] dbg_io_replies;
+
+  // The freeze diagnostic's taps (FREEZE_DIAG, below). Observation only.
+  wire [15:0] fz_rom_wr, fz_tex_drop, fz_passes, fz_bands, fz_swaps;
+  wire [23:0] fz_rom_wr_pc, fz_rom_wr_addr;
+  wire [2:0]  fz_rom_wr_bank;
+  wire [11:0] fz_copro_fifo;
+  wire [15:0] fz_lw_bad, fz_lw_over, fz_pay_ovf, fz_pay_refused, fz_pay_wait;
 
   m1_integrated core (
     .DDRAM_CLK(DDRAM_CLK), .DDRAM_BUSY(DDRAM_BUSY),
@@ -1358,7 +1366,14 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .dbg_ucode_words(dbg_ucode_words), .dbg_ucode_csum(dbg_ucode_csum),
     .dbg_sdram_csum(dbg_sdram_csum), .dbg_sdram_words(dbg_sdram_words),
     .dbg_copro_pops(dbg_copro_pops),
-    .dbg_copro_drains(dbg_copro_drains)
+    .dbg_copro_drains(dbg_copro_drains),
+    .dbg_rom_wr(fz_rom_wr), .dbg_rom_wr_pc(fz_rom_wr_pc),
+    .dbg_rom_wr_addr(fz_rom_wr_addr), .dbg_rom_wr_bank(fz_rom_wr_bank),
+    .dbg_copro_fifo(fz_copro_fifo), .dbg_tex_drop(fz_tex_drop),
+    .dbg_r3_passes(fz_passes), .dbg_r3_bands(fz_bands),
+    .dbg_r3_lw_bad(fz_lw_bad), .dbg_r3_lw_over(fz_lw_over),
+    .dbg_r3_pay_ovf(fz_pay_ovf), .dbg_r3_pay_refused(fz_pay_refused),
+    .dbg_r3_pay_wait(fz_pay_wait), .dbg_swaps(fz_swaps)
   );
 
   // -------------------------------------------------------------- diagnostics
@@ -1381,6 +1396,18 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   // that port instead of an eighth being added - Ben's observation, and the
   // reason the board now costs no port growth at all.
   localparam bit DEBUG_OVERLAY = 0;
+
+  // THE FREEZE DIAGNOSTIC (2026-10-28). Virtua Racing freezes to black on the
+  // board, the 3D never comes back, and RESTART does not recover it. Built
+  // with M1_FREEZE_DIAG defined, the overlay (OSD Debug overlay = On) shows
+  // the rows below instead of the old ones, and a snapshot of the machine at
+  // the moment it stopped, which survives RESTART. docs/HANDOFF.md says how to
+  // read it. Off in every normal build.
+`ifdef M1_FREEZE_DIAG
+  localparam bit FREEZE_DIAG = 1;
+`else
+  localparam bit FREEZE_DIAG = 0;
+`endif
 
   //
   // Six words painted over the top left of the picture, readable off a phone
@@ -1817,6 +1844,116 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   //     number that was 71,456 before the rate stage was told the clock.
   assign dw[23] = {8'h1B, sb_pcm_smp[23:0]};
 
+  // ------------------------------------------------- the freeze diagnostic
+  //
+  // Rows 00-07 are the machine now; 08-0F more of it; 10-17 are rows 00-07
+  // as they stood at the last FREEZE EVENT, held through RESTART (they are in
+  // the memory reset's domain, which only a core reload clears). Every field
+  // is whole hex digits, so a photograph reads without bit arithmetic.
+  //
+  //   00  V60 PC
+  //   01  [23:20] 1 = V60 held pushing into a FULL inbound FIFO
+  //       [19:16] 1 = V60 held reading an EMPTY outbound FIFO   [15:0] TGP PC
+  //   02  [23:16] inbound FIFO count  [15:8] outbound count (each 00-10)
+  //       [7:0]   display-list flips, low byte
+  //   03  [23:16] 3D passes completed, low byte   [15:0] TGP retires
+  //   04  [23:20] bank of the first dropped ROM write   [15:0] V60 writes
+  //       into ROM windows, dropped
+  //   05  PC of the first dropped ROM write      06  its address
+  //   07  [23:16] SDRAM port with the longest wait so far (00-0A)
+  //       [15:0]  colour uploads dropped outside tgp_ram
+  //   08  [23:16] freeze events  [15:12] last cause (2 flips stopped,
+  //       1 3D passes stopped, 3 both)  [10:0] SDRAM ports waiting now
+  //   09  [23:16] DDR3 reads refused  [15:0] worst DDR3 reply wait (clk_3d)
+  //   0A  [23:16] DDR3 writes lost  [15:8] list walks ended on garbage
+  //       [7:0] list walks run off the buffer
+  //   0B  [23:20] V60 halted  [19:16] V60 FP trap  [15:0] I/O board replies
+  //   0C  sound 68000 PC         0D  3D passes (16 bits)
+  //   0E  display-list flips     0F  worst SDRAM wait, clk_sys cycles
+  //
+  // A FREEZE EVENT: after the game has flipped its display list 64 times
+  // since reset, half a second with no flip, or half a second with no
+  // completed 3D pass. It then needs 64 more flips to re-arm.
+  wire [31:0] dwf [NDW];
+
+  // SDRAM: how long each port's request has been outstanding, and the worst.
+  logic [23:0] sd_age [11];
+  logic [23:0] sd_worst;
+  logic [3:0]  sd_worst_port;
+  always_ff @(posedge clk_sys or negedge mem_rst_n) begin
+    if (!mem_rst_n) begin
+      for (int k = 0; k < 11; k++) sd_age[k] <= '0;
+      sd_worst <= '0; sd_worst_port <= '0;
+    end else if (FREEZE_DIAG) begin
+      for (int k = 0; k < 11; k++) begin
+        if (!sd_pend[k])          sd_age[k] <= '0;
+        else if (~&sd_age[k])     sd_age[k] <= sd_age[k] + 24'd1;
+        if (sd_pend[k] && sd_age[k] > sd_worst) begin
+          sd_worst <= sd_age[k]; sd_worst_port <= 4'(k);
+        end
+      end
+    end
+  end
+
+  // Liveness: the flip and the pass, each crossed by its low bit.
+  logic [2:0]  fz_sw_s, fz_pa_s;
+  logic [25:0] fz_sw_idle, fz_pa_idle;
+  logic [6:0]  fz_since;          // flips since reset or since the last event
+  logic [7:0]  fz_events;
+  logic [1:0]  fz_cause;
+  logic [23:0] fz_snap [8];
+  logic        fz_grst_s0, fz_grst_s1;
+  localparam logic [25:0] FZ_HALF_S = 26'd40_000_000;   // 0.5 s of clk_sys
+  wire [23:0] fz_live [8];
+  assign fz_live[0] = dbg_pc;
+  assign fz_live[1] = {3'd0, fz_copro_fifo[1], 3'd0, fz_copro_fifo[0], dbg_tgp_pc};
+  assign fz_live[2] = {3'd0, fz_copro_fifo[11:7], 3'd0, fz_copro_fifo[6:2], fz_swaps[7:0]};
+  assign fz_live[3] = {fz_passes[7:0], dbg_tgp_retires};
+  assign fz_live[4] = {1'b0, fz_rom_wr_bank, 4'd0, fz_rom_wr};
+  assign fz_live[5] = fz_rom_wr_pc;
+  assign fz_live[6] = fz_rom_wr_addr;
+  assign fz_live[7] = {4'd0, sd_worst_port, fz_tex_drop};
+  always_ff @(posedge clk_sys or negedge mem_rst_n) begin
+    if (!mem_rst_n) begin
+      fz_sw_s <= '0; fz_pa_s <= '0; fz_sw_idle <= '0; fz_pa_idle <= '0;
+      fz_since <= '0; fz_events <= '0; fz_cause <= '0;
+      fz_grst_s0 <= 1'b1; fz_grst_s1 <= 1'b1;
+      for (int k = 0; k < 8; k++) fz_snap[k] <= '0;
+    end else if (FREEZE_DIAG) begin
+      fz_grst_s0 <= ~rst_n; fz_grst_s1 <= fz_grst_s0;
+      fz_sw_s <= {fz_sw_s[1:0], fz_swaps[0]};
+      fz_pa_s <= {fz_pa_s[1:0], fz_passes[0]};
+      fz_sw_idle <= (fz_sw_s[2] != fz_sw_s[1]) ? 26'd0 : fz_sw_idle + 26'd1;
+      fz_pa_idle <= (fz_pa_s[2] != fz_pa_s[1]) ? 26'd0 : fz_pa_idle + 26'd1;
+      if (fz_grst_s1) begin
+        fz_since <= '0; fz_sw_idle <= '0; fz_pa_idle <= '0;
+      end else begin
+        if (fz_sw_s[2] != fz_sw_s[1] && !fz_since[6]) fz_since <= fz_since + 7'd1;
+        if (fz_since[6] && (fz_sw_idle == FZ_HALF_S || fz_pa_idle == FZ_HALF_S)) begin
+          for (int k = 0; k < 8; k++) fz_snap[k] <= fz_live[k];
+          fz_cause  <= {fz_sw_idle == FZ_HALF_S, fz_pa_idle == FZ_HALF_S};
+          fz_events <= fz_events + 8'd1;
+          fz_since  <= '0;
+        end
+      end
+    end
+  end
+  genvar fzi;
+  generate
+    for (fzi = 0; fzi < 8; fzi = fzi + 1) begin : g_fz
+      assign dwf[fzi]      = {8'(fzi),      fz_live[fzi]};
+      assign dwf[fzi + 16] = {8'(fzi + 16), fz_snap[fzi]};
+    end
+  endgenerate
+  assign dwf[8]  = {8'h08, fz_events, 2'd0, fz_cause, 1'b0, sd_pend};
+  assign dwf[9]  = {8'h09, fz_pay_refused[7:0], fz_pay_wait};
+  assign dwf[10] = {8'h0A, fz_pay_ovf[7:0], fz_lw_bad[7:0], fz_lw_over[7:0]};
+  assign dwf[11] = {8'h0B, 3'd0, dbg_halted, 3'd0, dbg_fp_trap, dbg_io_replies};
+  assign dwf[12] = {8'h0C, sb_pc[23:0]};
+  assign dwf[13] = {8'h0D, 8'd0, fz_passes};
+  assign dwf[14] = {8'h0E, 8'd0, fz_swaps};
+  assign dwf[15] = {8'h0F, sd_worst};
+
   wire [7:0] dg_r, dg_g, dg_b;
 
   // PACKED BY A LOOP, NOT BY A HAND-WRITTEN CONCATENATION.
@@ -1844,12 +1981,12 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   genvar gi;
   generate
     for (gi = 0; gi < NDW; gi = gi + 1) begin : g_pack
-      assign dw_packed[gi*32 +: 32] = dw[gi];
+      assign dw_packed[gi*32 +: 32] = FREEZE_DIAG ? dwf[gi] : dw[gi];
     end
   endgenerate
 
   generate
-  if (DEBUG_OVERLAY) begin : g_diag
+  if (DEBUG_OVERLAY || FREEZE_DIAG) begin : g_diag
   m1_diag #(.NWORDS(NDW)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
     // Off by default: it is an instrument, not a feature, and it sits on top

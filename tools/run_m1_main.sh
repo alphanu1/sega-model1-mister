@@ -20,7 +20,7 @@ VF="--binary --timing -j 8 -Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOP
 # "BUILDFAIL fast_ifetch" with the real cause three lines into a log file. Adding
 # a module to m1_main means adding it here, the same rule as
 # tools/mister_project.sh.
-SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_ioboard.sv rtl/io/m1_rom_loader.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv sim/mem/sdram_model.sv rtl/video/m1_listctl.sv rtl/tgp/mb86233_pkg.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv rtl/tgp/mb86233_alu.sv rtl/tgp/mb86233_agu.sv rtl/tgp/mb86233_seq.sv rtl/tgp/mb86233_regs.sv rtl/tgp/mb86233_mem.sv rtl/tgp/mb86233_dec.sv rtl/tgp/mb86233_xfer.sv rtl/tgp/mb86233_core.sv rtl/tgp/m1_copro_if.sv rtl/tgp/m1_tgp.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
+SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/io/m1_rom_loader.sv rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv sim/mem/sdram_model.sv rtl/video/m1_listctl.sv rtl/tgp/mb86233_pkg.sv rtl/tgp/fp_mul.sv rtl/tgp/fp_add.sv rtl/tgp/fp_div.sv rtl/tgp/mb86233_alu.sv rtl/tgp/mb86233_agu.sv rtl/tgp/mb86233_seq.sv rtl/tgp/mb86233_regs.sv rtl/tgp/mb86233_mem.sv rtl/tgp/mb86233_dec.sv rtl/tgp/mb86233_xfer.sv rtl/tgp/mb86233_core.sv rtl/tgp/m1_copro_if.sv rtl/tgp/m1_tgp.sv rtl/m1_main.sv sim/top/tb_m1_main.sv"
 
 # Third configuration: no FP group. Whether Model 1 code executes V60
 # floating point decides a ~2,000 ALM and near-doubled-Fmax build option, and a
@@ -29,10 +29,10 @@ SRC="rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60
 # testbench fails on it, so running real code answers the question.
 fail=0
 run_one() {
-  local name="$1" F="$2" extra="$3" inj="${4:-0}"
+  local name="$1" F="$2" extra="$3" inj="${4:-0}" romwr="${5:-0}" remt="${6:-0}"
   local d="build/m1main_${name}"
   rm -rf "$d"
-  if ! verilator $VF $extra -GFASTIF=$F -GINJFP=$inj --top-module tb_m1_main --Mdir "$d" -o m1main $SRC > "$d.log" 2>&1; then
+  if ! verilator $VF $extra -GFASTIF=$F -GINJFP=$inj -GROMWR=$romwr -GREMTEST=$remt --top-module tb_m1_main --Mdir "$d" -o m1main $SRC > "$d.log" 2>&1; then
     echo "BUILDFAIL $name (see $d.log)"; fail=1; return
   fi
   local out line
@@ -55,6 +55,18 @@ run_one "no_fp"        1 "+define+S32_V60_NO_FP"
 # Proves the detector is not dead: the same build with an FP opcode planted in
 # the program must raise it.
 run_one "no_fp_injected" 1 "+define+S32_V60_NO_FP" 1
+
+# Stores into ROM0, ROMX and ROMO must be dropped and the ROM image in SDRAM
+# left as loaded; a store into work RAM, in the same program, must land.
+# Through the data bus (FAST_IFETCH=0): the property is the data port's, and
+# the fast-fetch configurations above do not currently run in this bench (see
+# docs/findings.md 2026-10-28).
+run_one "rom_readonly"   0 "" 0 1
+
+# MUL/DIV/REM with a MEMORY destination must store the result. They set the
+# flags and stored nothing until 2026-10-28, and Virtua Racing's attract wraps
+# its course number with exactly that (rem.b #3 at FE207A).
+run_one "muldiv_memory"  0 "" 0 0 1
 echo "======================================================"
 [ $fail -eq 0 ] && echo "M1 MAIN INTEGRATION: all configurations pass" || echo "M1 MAIN INTEGRATION: FAILED"
 exit $fail

@@ -36,6 +36,45 @@ together, for a release build that wants nothing extra in it.
 
 ---
 
+## The freeze diagnostic build (`M1_FREEZE_DIAG`), 2026-10-28
+
+A different set of rows, for Virtua Racing's freeze to black (the 3D never
+returns and RESTART does not bring it back - `findings.md` 2026-10-28). Built
+by staging with `M1_MACROS_EXTRA=M1_FREEZE_DIAG` (see `HANDOFF.md`); the OSD's
+Debug overlay switches it on as before. The row number is the first byte, as
+everywhere else. Rows `00`-`07` are the machine now, `08`-`0F` more of it, and
+`10`-`17` are rows `00`-`07` as they stood at the last **freeze event** - kept
+through RESTART, cleared only by loading the core again.
+
+A freeze event: once the game has flipped its display list 64 times since
+reset, half a second with no flip, or half a second with no completed 3D pass.
+It re-arms after 64 more flips, so the snapshot is the LATEST stop.
+
+Every field is whole hex digits. Digits are numbered from the left of the six
+after the row number.
+
+| Row | Contents | Reading it |
+|---|---|---|
+| `00` | V60 PC | A value that never changes across photographs is a stuck CPU. `FFE59C` is the table-driven block copy (`movcu.h`) the game uses at scene changes; seen constantly with flips stopped, it is a copy run long. |
+| `01` | digit 1: `1` = V60 held pushing into a FULL inbound FIFO; digit 2: `1` = V60 held reading an EMPTY outbound FIFO; digits 3-6: TGP PC | TGP PC `004C` is the coprocessor idle at its command read. A held V60 that stays held is a deadlock; row `02` says which FIFO. |
+| `02` | digits 1-2 inbound FIFO count, 3-4 outbound count (`00`-`10`), 5-6 display-list flips (low byte) | Both counts `10` with the V60 held is the mutual deadlock of 2026-08-29. Flips should move by about 29 a second. |
+| `03` | digits 1-2 3D passes completed (low byte), 3-6 TGP retires | Passes move with flips when the 3D is alive; retires frozen is a stopped coprocessor. |
+| `04` | digit 1: bank of the first dropped ROM write; digits 3-6: **V60 writes into a ROM window, dropped** | **Must be 0000.** Anything else means the game wrote into its own ROM - something MAME never does (0 in 600 s) - i.e. it had already gone wrong. Before this build that write landed in the ROM image and survived RESTART. |
+| `05` | PC of the first dropped ROM write | The instruction that did it. |
+| `06` | Address of the first dropped ROM write | `0x100000-0x1FFFFF` with bank 4-7 lands on the TGP's data ROM or the polygon models. |
+| `07` | digits 1-2: SDRAM port with the longest wait so far; digits 3-6: **colour uploads dropped** outside tgp_ram | Colour drops must be `0000`: anything else is a display list walked as garbage, whose colour words before this build went into the I/O board's firmware. Ports: `00` V60 data, `01` tile characters, `02` V60 fetch, `03` TGP, `04` I/O firmware, `05` polygons, `06` tgp_ram, `07` 68000 ROM, `08`/`09` PCM, `0A` 68000 RAM. |
+| `08` | digits 1-2 freeze events; digit 3 last cause (`2` flips stopped, `1` 3D passes stopped, `3` both); digits 4-6 SDRAM ports waiting now (bit per port) | A port bit that stays set across photographs, with `0F` at `FFFFFF`, is a port that never gets its answer. |
+| `09` | digits 1-2 DDR3 reads refused, 3-6 worst DDR3 reply wait (clk_3d cycles) | Refused must be `00`; a wait of `FFFF` is a reply that never came. |
+| `0A` | digits 1-2 DDR3 writes lost, 3-4 list walks ended on garbage, 5-6 list walks run off the buffer | Garbage endings are lists read while the game rewrote them (`findings.md` 2026-10-28). |
+| `0B` | digit 1 V60 halted, digit 2 V60 FP trap, digits 3-6 I/O board replies | Replies `0001` is healthy (it should NOT climb); `0000` means the boot handshake never completed - the I/O board is not answering. |
+| `0C` | Sound 68000 PC | |
+| `0D` | 3D passes completed (16 bits) | |
+| `0E` | Display-list flips (16 bits) | |
+| `0F` | Worst SDRAM wait, in clk_sys cycles, since the core loaded | `FFFFFF` is a port that never got an answer. |
+| `10`-`17` | Rows `00`-`07` at the last freeze event | Same layout. These are what to photograph after RESTART. |
+
+---
+
 ## What each row means
 
 Every row leads with its own number, so a photograph that is cropped or partly

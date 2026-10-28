@@ -263,6 +263,30 @@ module m1_integrated (
 
   // The TGP taking a command — see m1_copro_if.
   output logic [15:0] dbg_copro_drains,
+  // ---- the freeze diagnostic (Model1.sv FREEZE_DIAG). Observation only.
+  // V60 writes into a ROM window, dropped: count, and the first one's PC,
+  // address and bank (m1_main).
+  output logic [15:0] dbg_rom_wr,
+  output logic [23:0] dbg_rom_wr_pc,
+  output logic [23:0] dbg_rom_wr_addr,
+  output logic [2:0]  dbg_rom_wr_bank,
+  // The coprocessor FIFO interlock (m1_copro_if dbg_fifo_state), clk_3d.
+  output logic [11:0] dbg_copro_fifo,
+  // The 3D layer: colour uploads dropped outside tgp_ram, passes completed,
+  // bands presented, list walks that ended on garbage or ran off the buffer,
+  // and the DDR3 payload's lost writes, refused reads and worst reply wait.
+  // All clk_3d.
+  output logic [15:0] dbg_tex_drop,
+  output logic [15:0] dbg_r3_passes,
+  output logic [15:0] dbg_r3_bands,
+  output logic [15:0] dbg_r3_lw_bad,
+  output logic [15:0] dbg_r3_lw_over,
+  output logic [15:0] dbg_r3_pay_ovf,
+  output logic [15:0] dbg_r3_pay_refused,
+  output logic [15:0] dbg_r3_pay_wait,
+  // Display-list flips by the V60 (listctl), clk_cpu: the game's own frame
+  // rate, alive or not.
+  output logic [15:0] dbg_swaps,
 
   // DDR3, through the framework's DDRAM port: the 3D layer's quad payload.
   // DDRAM_CLK is clk_3d, the clock of every master and consumer on it.
@@ -416,6 +440,9 @@ module m1_integrated (
     .dbg_mask_nz_writes(dbg_mask_nz_writes),
     .dbg_copro_pops(dbg_copro_pops),
     .dbg_copro_drains(dbg_copro_drains),
+    .dbg_rom_wr(dbg_rom_wr), .dbg_rom_wr_pc(dbg_rom_wr_pc),
+    .dbg_rom_wr_addr(dbg_rom_wr_addr), .dbg_rom_wr_bank(dbg_rom_wr_bank),
+    .dbg_copro_fifo(dbg_copro_fifo),
     .rom_bank(rom_bank)
   );
 
@@ -797,7 +824,9 @@ module m1_integrated (
     .DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY),
     .DDRAM_RD(DDRAM_RD), .DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE),
     .DDRAM_WE(DDRAM_WE),
-    .dbg_pay_ovf(), .dbg_pay_wait(), .dbg_pay_refused(), .show_tag(r3d_show_tag),
+    .dbg_pay_ovf(dbg_r3_pay_ovf), .dbg_pay_wait(dbg_r3_pay_wait),
+    .dbg_pay_refused(dbg_r3_pay_refused), .show_tag(r3d_show_tag),
+    .dbg_tex_drop(dbg_tex_drop),
     .frame_start(frame_start_3d), .dl_sel(listctl_sel), .dl_sel_q(r3d_dl_sel),
     .dl_addr(r3_dl_addr), .dl_req(r3_dl_req),
     .dl_valid(r3_dl_valid), .dl_data(r3_dl_data),
@@ -831,6 +860,22 @@ module m1_integrated (
     .dbg_zoomx(r3_zoomx), .dbg_zoomy(r3_zoomy),
     .dbg_plane_l(r3_dbg_plane_l), .dbg_hud_obj(r3_dbg_hudobj)
   );
+
+  assign dbg_r3_passes  = r3_dbg_frames;
+  assign dbg_r3_bands   = r3_dbg_bands;
+  assign dbg_r3_lw_bad  = r3_lw_bad;
+  assign dbg_r3_lw_over = r3_lw_over;
+
+  // Display-list flips, counted where listctl_sel lives (clk_cpu).
+  logic listctl_sel_d;
+  always_ff @(posedge clk_cpu or negedge rst_n_cpu) begin
+    if (!rst_n_cpu) begin
+      listctl_sel_d <= 1'b0; dbg_swaps <= '0;
+    end else begin
+      listctl_sel_d <= listctl_sel;
+      if (listctl_sel != listctl_sel_d) dbg_swaps <= dbg_swaps + 16'd1;
+    end
+  end
 
   // The display list's data comes back from m1_main's second port.
   assign r3_dl_data    = r3d_dl_data;

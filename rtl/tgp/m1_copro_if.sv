@@ -141,6 +141,13 @@ module m1_copro_if #(
   // note above — this is the board's flow control, not an optimisation.
   output logic        v60_stall,
 
+  // The interlock's state in one word, for the board overlay: inbound and
+  // outbound FIFO occupancy, and whether the V60 is held right now on a push
+  // into a full inbound FIFO (bit 1) or a read of an empty outbound one
+  // (bit 0). Both FIFOs full with the V60 held is the mutual deadlock of
+  // docs/findings.md 2026-08-29; the TGP's PC says which side it is on.
+  output logic [11:0] dbg_fifo_state,
+
   // Telemetry. A count that never moves separates "the V60 is not talking to
   // us" from "we are not answering", which has been the difference between two
   // very different days on this project.
@@ -341,6 +348,9 @@ module m1_copro_if #(
   logic served;
 
   wire v60_acc = req_s && !served && (sel_adr || sel_ram || sel_fifo);
+  assign dbg_fifo_state = {5'(fin_wr - fin_rd), 5'(fout_wr - fout_rd),
+                           v60_acc && we && sel_fifo && a1 && fin_full,
+                           v60_acc && !we && sel_fifo && !a1 && fout_empty};
   wire v60_ram = req_s && !served && sel_ram;
 
   // Post-increment: on the completing cycle of a HIGH-half RAM access, read or

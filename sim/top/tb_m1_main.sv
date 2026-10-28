@@ -29,7 +29,14 @@
 // run is expected to trap rather than complete. Without it, fp_trap reading
 // zero says nothing — the program has no FP in it, so a detector wired to
 // nothing would look identical to a detector that works.
-module tb_m1_main #(parameter integer FASTIF = 1, parameter integer INJFP = 0);
+// ROMWR=1 has the program store into all three ROM windows - ROM0, ROMX and
+// ROMO - and into work RAM, then read back. The board's ROM is mask ROM and
+// MAME maps it `.rom()`: the stores must be dropped, the ROM image in SDRAM
+// must be unchanged, and the work-RAM store must land. Before 2026-10-28 the
+// first three were written into the ROM image, which nothing reloads.
+module tb_m1_main #(parameter integer FASTIF = 1, parameter integer INJFP = 0,
+                    parameter integer ROMWR = 0,
+                    parameter integer REMTEST = 0);
 
 localparam integer ITERATIONS = 64;
 localparam [31:0]  PROG_PC    = 32'h00FC0000;
@@ -132,6 +139,10 @@ wire int_unused;
 
 m1_sdram #(.NP(5), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n), .ready(mem_ready),
+    // CL+3: sdram_model presents data on the same edge. The selector was
+    // renumbered (index n is CL+n) and this bench, which left it unconnected,
+    // silently got CL+0 and fetched zeros: the CPU executed HALT at once.
+    .rd_lat_sel(3'd3),
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
     .sd_we_n(we_n), .sd_ba(ba), .sd_a(a), .sd_dqm(dqm),
     .sd_dq_o(dq_c2m), .sd_dq_oe(dq_oe_c), .sd_dq_i(dq_m2c),
@@ -203,17 +214,68 @@ end
 
 reg trace = 0;
 
+// The stores' targets, and the SDRAM words each ROM one lands on in the packed
+// layout (m1_decode): ROM0 0x080000 + (a & 0x7ffff)/2, ROMX a/2 - 0x100000,
+// ROMO 0x0C0000 + bank*0x80000 + (a & 0xfffff)/2 with bank 0.
+localparam logic [23:0] ROMWR_ADDR [4] = '{24'hFC0100, 24'h200100, 24'h100100, 24'h500100};
+localparam integer      ROMWR_WORD [3] = '{32'h0A0080, 32'h000080, 32'h0C0080};
+
 // ---------------------------------------------------------- the program
-reg [7:0] prog [0:31];
+reg [7:0] prog [0:255];
 integer i, k;
 initial begin : build
-    for (i = 0; i < 32; i = i + 1) prog[i] = 8'h00;
+    for (i = 0; i < 256; i = i + 1) prog[i] = 8'h00;
     k = 0;
     if (INJFP != 0) begin
         // ADDFS: opcode 0x5c, subop 0x18. A build with the FP group executes
         // it; a build without takes the reserved-instruction vector.
         prog[k]=8'h5C; k=k+1; prog[k]=8'h18; k=k+1;
         prog[k]=8'h00; k=k+1; prog[k]=8'h00; k=k+1;
+    end
+    if (ROMWR != 0) begin
+        // MOVW #A5A5A5A5, R2
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h22; k=k+1; prog[k]=8'hF4; k=k+1;
+        prog[k]=8'hA5; k=k+1; prog[k]=8'hA5; k=k+1; prog[k]=8'hA5; k=k+1; prog[k]=8'hA5; k=k+1;
+        // MOVW R2, /addr  for ROM0, ROMX, ROMO and work RAM
+        for (int t = 0; t < 4; t++) begin
+            prog[k]=8'h2D; k=k+1; prog[k]=8'h02; k=k+1; prog[k]=8'hF3; k=k+1;
+            prog[k]=ROMWR_ADDR[t][7:0];   k=k+1; prog[k]=ROMWR_ADDR[t][15:8]; k=k+1;
+            prog[k]=ROMWR_ADDR[t][23:16]; k=k+1; prog[k]=8'h00; k=k+1;
+        end
+        // MOVW /FC0100, R3 ; MOVW /500100, R4
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h23; k=k+1; prog[k]=8'hF3; k=k+1;
+        prog[k]=ROMWR_ADDR[0][7:0];   k=k+1; prog[k]=ROMWR_ADDR[0][15:8]; k=k+1;
+        prog[k]=ROMWR_ADDR[0][23:16]; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h24; k=k+1; prog[k]=8'hF3; k=k+1;
+        prog[k]=ROMWR_ADDR[3][7:0];   k=k+1; prog[k]=ROMWR_ADDR[3][15:8]; k=k+1;
+        prog[k]=ROMWR_ADDR[3][23:16]; k=k+1; prog[k]=8'h00; k=k+1;
+    end
+    if (REMTEST != 0) begin
+        // Virtua Racing's attract course counter, FE2074/FE207A, byte for byte
+        // but absolute instead of PC-relative: 2 -> inc -> 3 -> rem #3 -> 0.
+        //   mov.b #2, 501934 ; inc.b 501934 ; rem.b #3, 501934 ;
+        //   movz.bw 501934, R5
+        prog[k]=8'h09; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE2; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'hD8; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h50; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h0D; k=k+1; prog[k]=8'h25; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h34; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        // DIV and MUL into memory share the path: mov.w #9, 501938 ;
+        // div.w #3, 501938 ; mul.w #5, 501938 ; mov.w 501938, R7  -> 15
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE9; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'hA5; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h85; k=k+1; prog[k]=8'h80; k=k+1; prog[k]=8'hE5; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        prog[k]=8'h2D; k=k+1; prog[k]=8'h27; k=k+1;
+        prog[k]=8'hF3; k=k+1; prog[k]=8'h38; k=k+1; prog[k]=8'h19; k=k+1; prog[k]=8'h50; k=k+1; prog[k]=8'h00; k=k+1;
+        // The register form as a control: mov.b #3, R6 ; rem.b #3, R6
+        prog[k]=8'h09; k=k+1; prog[k]=8'h26; k=k+1; prog[k]=8'hE3; k=k+1;
+        prog[k]=8'h50; k=k+1; prog[k]=8'h26; k=k+1; prog[k]=8'hE3; k=k+1;
     end
     // MOVW #ITERATIONS, R0
     prog[k]=8'h2D; k=k+1; prog[k]=8'h20; k=k+1; prog[k]=8'hF4; k=k+1;
@@ -250,8 +312,18 @@ initial begin
 
     $display("loading %0d bytes at stream offset 0x%0h", 32, PROG_STREAM);
     ioctl_download = 1;
-    for (i = 0; i < 16; i = i + 1)
+    for (i = 0; i < 128; i = i + 1)
         push(PROG_STREAM[26:0] + i[26:0]*2, {prog[2*i+1], prog[2*i]});
+    // A known pattern under each ROM target, so "unchanged" is checked
+    // against something written rather than against the model's default.
+    if (ROMWR != 0)
+        for (i = 0; i < 3; i = i + 1) begin
+            push(ROMWR_WORD[i] * 2,     16'h1357);
+            push(ROMWR_WORD[i] * 2 + 2, 16'h2468);
+        end
+    // The HPS holds the download a while after its last write; dropping it on
+    // the same edge as the final ioctl_wr loses that word here.
+    repeat (8) @(posedge clk);
     ioctl_download = 0;
 
     while (!rom_loaded) @(posedge clk);
@@ -283,6 +355,50 @@ initial begin
             $display("  FAIL r1=%08h expected 12345678", main.cpu.r[1]);
             fails = fails + 1;
         end
+    end
+    if (ROMWR != 0 && dbg_halted) begin
+        for (i = 0; i < 3; i = i + 1)
+            if (device.read_at(ROMWR_WORD[i]) !== 16'h1357 ||
+                device.read_at(ROMWR_WORD[i] + 1) !== 16'h2468) begin
+                $display("  FAIL ROM image at word %06h changed to %04h %04h by a V60 store",
+                         ROMWR_WORD[i], device.read_at(ROMWR_WORD[i]),
+                         device.read_at(ROMWR_WORD[i] + 1));
+                fails = fails + 1;
+            end
+        if (main.cpu.r[3] !== 32'h2468_1357) begin
+            $display("  FAIL ROM0 read back %08h after a store, expected the ROM's 24681357",
+                     main.cpu.r[3]); fails = fails + 1;
+        end
+        if (main.cpu.r[4] !== 32'hA5A5_A5A5) begin
+            $display("  FAIL work RAM read back %08h, expected A5A5A5A5 (the control)",
+                     main.cpu.r[4]); fails = fails + 1;
+        end
+        if (main.dbg_rom_wr !== 16'd6) begin
+            $display("  FAIL %0d ROM-window writes counted, expected 6 (three 32-bit stores)",
+                     main.dbg_rom_wr); fails = fails + 1;
+        end
+        if (main.dbg_rom_wr_addr !== 24'hFC0100) begin
+            $display("  FAIL first ROM-window write latched at %06h, expected FC0100",
+                     main.dbg_rom_wr_addr); fails = fails + 1;
+        end
+        $display("M1 MAIN ROMWR: dropped=%0d first pc=%06h addr=%06h r3=%08h r4=%08h",
+                 main.dbg_rom_wr, main.dbg_rom_wr_pc, main.dbg_rom_wr_addr,
+                 main.cpu.r[3], main.cpu.r[4]);
+    end
+    if (REMTEST != 0 && dbg_halted) begin
+        if (main.cpu.r[5] !== 32'd0) begin
+            $display("  FAIL rem.b #3 of 3 in memory left %0d, expected 0 (VR's attract course wrap)",
+                     main.cpu.r[5]); fails = fails + 1;
+        end
+        if (main.cpu.r[6][7:0] !== 8'd0) begin
+            $display("  FAIL rem.b #3 of 3 in R6 left %0d, expected 0", main.cpu.r[6][7:0]);
+            fails = fails + 1;
+        end
+        if (main.cpu.r[7] !== 32'd15) begin
+            $display("  FAIL div.w #3 then mul.w #5 of 9 in memory gave %0d, expected 15",
+                     main.cpu.r[7]); fails = fails + 1;
+        end
+        $display("M1 MAIN REMTEST: r5=%08h r6=%08h r7=%08h", main.cpu.r[5], main.cpu.r[6], main.cpu.r[7]);
     end
     // A build without the FP group must never meet an FP opcode. This is the
     // check that turns "the ROM scan found nothing" into something a run can

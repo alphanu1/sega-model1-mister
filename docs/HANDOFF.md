@@ -102,6 +102,158 @@ buffers (8 M10K, but the draw grows 40-50%, so more lists lag a frame).
 - **Quartus put a combinationally-read 32-entry queue in M10K**; mark small
   read-async queues `ramstyle = "logic"` or MLAB with no_rw_check.
 
+# 2026-10-28 (b): THE VR ATTRACT FREEZE IS A V60 BUG - MUL/DIV/REM INTO MEMORY NEVER STORED. FIXED.
+
+Branch **`vr-freeze`**. The diagnostic build below went on the board, froze at
+the attract wrap exactly as Ben described, and its overlay named the path:
+PC `FFE59C` (the scene loader's block copy), ROM stores from there to `FFFFFE`
+with **ROM bank 4** selected, the V60 finally held on an empty TGP output FIFO.
+**RESTART recovered it** - the first time ever - so closing hole 1 (ROM image
+writable) was what made the freeze permanent.
+
+The trigger, from MAME: the attract advances its course number with
+`inc.b 501934` / **`rem.b #3, 501934`** (`FE2074`/`FE207A`) and selects bank
+`course + 1` at `FE216F`. Our V60's `S_MULDIV` let `st <= S_NEXT` override the
+`S_WB_MEM` that `wb_op2` sets for a memory destination, so MUL/MULU/DIV/DIVU/
+REM/REMU into memory never stored their result (inherited from s32). The 3
+stayed 3, bank 4 (erased ROM) fed the loader a table of `FFFF`s, and the copy
+ran through all of memory. `findings.md` 2026-10-28 (b) has the evidence.
+
+- Fix: `89a636a`. `vf-swa-geo` found the same bug from Virtua Fighter's ring
+  size (`mulu.w #A, 501276`) and carries an identical `v60.sv` (`32b3351`);
+  its `tb_v60_mul_mem` (every opcode and width, misaligned) passes on this
+  branch, and this branch's `muldiv_memory` passes on that one.
+- Proof: `tools/run_m1_main.sh` `muldiv_memory` - before `3`/`9`, after `0`/`15`.
+  V60 unit suite 29/29. `make test` identical to tile-overrun's block. The
+  attract wrap itself is ~10^10 cycles of frame bench and was not run.
+- **The race is no longer cycle-identical, and should not be**: `vr_race.txt`
+  at the board's clocks matches tile-overrun's hashes through frame 400 and
+  differs from frame 425 (the course select) - the game executes MUL/DIV/REM
+  into memory there, and the old core skipped the store. Before the V60 fix,
+  this branch was identical through frame 700. Which instruction, and that the
+  new value is MAME's, is not yet traced (`make v60_trace` with a longer
+  window, or a MAME tap on the destination).
+
+**The build for the board: `build/Model1_vrfreeze_v60fix_diag_seed3_35921.rbf`**,
+md5 `40a2e33ab0de064a171c8f1a592ef120` (commit `89a636a` + the diagnostic
+overlay, `M1_MACROS_EXTRA=M1_FREEZE_DIAG`; reports in
+`build/vrfreeze_v60fix_s3_reports/`): 35,921 ALM, 525 M10K, 50 DSP; setup
+clk_3d +0.975, clk_sys +0.185, clk_cpu +5.907, pll_hdmi -0.034 (the
+framework's); hold all positive. Seed 5 fitted too (clk_3d -0.170, not used).
+
+**What Ben checks:** leave Virtua Racing in attract for more than one full
+cycle (over 2 minutes; the first scene comes round again). It should carry
+on. Overlay rows `04` and `07` should read zero throughout.
+
+---
+
+# 2026-10-28: VR FREEZE TO BLACK - RESTART COULD NOT UNDO TWO KINDS OF WRITE. A DIAGNOSTIC BUILD FOR THE BOARD.
+
+Branch **`vr-freeze`** (local, not pushed), on `tile-overrun` (`4253a86`).
+`findings.md` 2026-10-28 has the whole of it. Short version:
+
+- **RESTART resets every piece of logic** that could hold the 3D or the
+  coprocessor stopped (checked module by module; the only memory-reset logic is
+  the SDRAM controller, the loader and the DDR3 client, read in full). What it
+  does NOT reset is memory - and two paths could write memory that nothing
+  reloads short of a new MRA load:
+  1. **A V60 store into a ROM window went into the ROM image** (program,
+     banked data, and through ROMO banks 4-7 the TGP's data ROM and the polygon
+     models). The board's ROM is mask ROM and MAME's is `.rom()`; MAME's VR never
+     writes it (0 in 600 s). Now dropped and counted. `rom_readonly` in
+     `tools/run_m1_main.sh` shows before/after.
+  2. **A colour upload (display-list command 4) could write the I/O board's
+     firmware and EEPROM image** at SDRAM `0xD00000`: tgp_ram's 20-bit offset
+     reached `0xD1FFFF`. The Z80 fetches its program from there and reloads its
+     EEPROM from there at every reset. Real lists stay below `0x80000` of
+     `0xC0000` (MAME, 128 distinct uploads); garbage lists do not. Now dropped
+     and counted. `make render3d_fuzz` shows before/after.
+- With the firmware overwritten in the full-system bench, RESTART reboots the
+  game into the I/O board's poll loop (`fe022c/fe0232`) on a flat screen, for
+  ever; the same RESTART without the damage reboots normally. That is Ben's
+  report, reproduced from the damage onward.
+- **Not established**: that this is the board's trigger. The diagnostic
+  build answers that.
+
+## The build for the board
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| tile-overrun, seed 5 (the base) | 2d561d3 | 35,230 | 525 | 50 | +0.891 | +1.229 | +5.289 | +0.732 | +0.245 |
+| **vr-freeze diagnostic, seed 5** | a87fcb9 | **36,095** | 525 | 50 | +0.839 | +0.127 | +6.837 | +0.432 | +0.185 |
+
+**`build/Model1_vrfreeze_diag_seed5_36095.rbf`**, md5
+`04ec211e8049c15e23253062fabb76e5`, staged with `M1_MACROS_EXTRA=M1_FREEZE_DIAG`
+(`build/wt-freeze/build/qstage.sh`); reports in `build/vrfreeze_diag_s5_reports/`.
+One seed, fitted as a fourth concurrent fit with Ben's approval. Every clock
+positive; clk_sys only just (+0.127).
+quartus_map: the fix alone 34,549 ALM (tile-overrun 34,572 - no cost); the
+diagnostic adds ~900.
+
+It is the fix (both holes closed) **plus the freeze diagnostic** - an overlay
+that is OFF unless switched on. With the overlay off it is the fix build.
+
+## What Ben runs, in order
+
+1. Copy it to `/media/fat/_Arcade/cores/` as the only `Model1*.rbf` there (see
+   `releases/README.md` on the name rule) and start Virtua Racing.
+2. Play - attract and races, whatever froze it before. Leave the overlay off.
+3. **When it freezes, BEFORE pressing RESTART:** OSD -> `Debug overlay` -> On,
+   and photograph the screen. Wait five seconds and photograph again (what
+   moves between the two matters).
+4. Press RESTART (OSD `Reset`). Wait 20 seconds. Photograph again with the
+   overlay on. **Note whether the 3D came back** - with both holes closed it
+   should, unless the trigger is something else.
+5. If it never freezes in a long session, photograph the overlay anyway at the
+   end: rows `04` and `07` should both read zero, and nonzero there means the
+   game went wrong somewhere without showing it.
+
+## Reading the photographs (`debug-overlay.md` has every row)
+
+| what the rows say | it means |
+|---|---|
+| `04` last four digits nonzero | the game stored into its own ROM - it had already gone wrong. `05`/`06` are the PC and address of the first store: disassemble the PC (`findings.md` has the MAME recipe). Before this build that store wrecked the ROM image for good. |
+| `07` last four digits nonzero | a display list was walked as garbage and its colour words aimed outside tgp_ram - the path to the I/O firmware. `0A` digits 3-4 count walks that ended on garbage. |
+| `0B` last four digits `0000` after RESTART | the I/O board never answered the boot handshake - the firmware-damage picture. Should not happen with this build. |
+| `02` starts `1010` and `01` has a `1` in digit 1 or 2 | the V60/TGP mutual deadlock (findings 2026-08-29); `01`'s last four digits are the TGP PC. |
+| `08` digits 4-6 nonzero in both photographs and `0F` = `FFFFFF` | an SDRAM port that never gets its answer; `07` digits 1-2 name it. |
+| `09` = `xxFFFF` | a DDR3 read reply that never came. |
+| rows `10`-`17` | rows `00`-`07` at the moment it stopped, kept through RESTART: the most important photograph is of these after the RESTART. `08` digit 3 says why the snapshot fired. |
+
+## Instruments added
+
+- `make render3d_fuzz` - m1_raster3d fed garbage lists (NaN/inf/denormal floats,
+  wild addresses and lengths, corrupted and unterminated real lists), then the
+  game reset, then the real frame hash for hash. `TORN=n` - the game rewriting
+  the list the walker is still reading.
+- `tb_m1_frame`: `GRST_AT` (RESTART mid-run, game reset only), `IOFW_TRASH_AT`,
+  `PROTECTED WRITE:`, `TORN:` and a `FREEZE:` summary line.
+- `tools/run_m1_main.sh` `rom_readonly`, and the bench repaired (stale source
+  list; capture phase unconnected = CL+0).
+
+## make test, identity
+
+Clean and identical to `tile-overrun`'s block - no count moved.
+`tb_m1_frame` race, board clocks, `FRAME_HASH=25`: the final RTL against
+tile-overrun **identical on every HASH line through frame 700** (3D live from
+~frame 690) when this was written; the runs continue in
+`build/wt-freeze/build/run_torn.log` and `build/wt-freeze-base/build/run_hash.log`
+(compare the `^HASH` lines). The same run's `TORN:` count was 0 so far.
+
+## Not done / open
+
+- **The trigger.** If the board freezes with `04` and `07` at zero, it is not
+  either hole; the snapshot rows name the stage.
+- **Torn list walks are real**: a pass longer than what is left of the game's
+  two-frame flip walks a buffer being rewritten. With hole 2 closed a torn walk
+  costs one frame of wrong geometry, not the I/O board. Making passes fit the
+  flip (or walking a private copy) is the cure and belongs with the 3D frame
+  buffer work on `3d-overrun`.
+- The DDR3 client has no timeout on a reply that never comes; the diagnostic's
+  row `09` would show one (`FFFF`). Not seen in any bench.
+- `tb_m1_main`'s three FAST_IFETCH configurations fail (the wide fetch port
+  returns zeros in that bench); predates this branch.
+
 ---
 
 # 2026-10-28: TILE OVERRUNS - 0 LOST LINES IN THE FULL SYSTEM AT THE BOARD'S CLOCKS. NOT YET ON HARDWARE.

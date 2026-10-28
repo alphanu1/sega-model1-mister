@@ -172,7 +172,23 @@ module tb_m1_frame #(
     // each vertical blank, and the accelerator is held down (eased in a hard
     // turn). tools/mame_vr_drive.lua is the same rule in MAME, and it laps
     // Virtua Racing's beginner course. 0 = off: the wheel stays centred.
-    parameter longint AUTO_AT    = 0
+    parameter longint AUTO_AT    = 0,
+    // THE OSD's RESTART, mid-run. At GRST_AT clk_sys cycles (0 = never) the
+    // GAME reset is held for GRST_LEN cycles and released, while the memory
+    // side - SDRAM controller, loader, DDR3 client - stays up, exactly as
+    // Model1.sv splits rst_n from mem_rst_n. A second press at GRST_AT2.
+    // The board's report is that after the freeze RESTART does not bring the
+    // 3D back; this is how the bench presses the same button.
+    parameter longint GRST_AT    = 0,
+    parameter longint GRST_AT2   = 0,
+    parameter longint GRST_LEN   = 8000,
+    // THE ESCAPED COLOUR UPLOADS' EFFECT, injected. At IOFW_TRASH_AT (0 =
+    // never) the I/O board's firmware and EEPROM image in the SDRAM model
+    // (words 0xD00000-0xD03FFF) are overwritten with noise, as display-list
+    // command 4 could overwrite them before 2026-10-28 (tgp_ram's 20-bit
+    // offset reached 0xD1FFFF). Pair with GRST_AT to see whether RESTART
+    // brings the game back.
+    parameter longint IOFW_TRASH_AT = 0
 );
 
 // Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
@@ -209,6 +225,25 @@ always #21.25 clk_cpu = ~clk_cpu;   // 23.529 MHz, matching the PLL (800/34)
 // break the exact halving the CDC relies on.
 always #10.625 clk_3d = ~clk_3d;
 `endif
+
+// The game reset, separate from the memory reset (see GRST_AT).
+reg grst = 0;
+wire g_rst_n = rst_n & ~grst;
+longint grst_cyc = 0;
+integer grst_presses = 0;
+always @(posedge clk) begin
+    grst_cyc <= grst_cyc + 1;
+    if ((GRST_AT  != 0 && grst_cyc == GRST_AT) ||
+        (GRST_AT2 != 0 && grst_cyc == GRST_AT2)) begin
+        grst <= 1'b1;
+        grst_presses <= grst_presses + 1;
+        $display("RESTART: game reset asserted at %0d cycles (press %0d)", grst_cyc, grst_presses + 1);
+    end
+    if (grst && ((grst_cyc == GRST_AT + GRST_LEN) || (grst_cyc == GRST_AT2 + GRST_LEN))) begin
+        grst <= 1'b0;
+        $display("RESTART: game reset released at %0d cycles", grst_cyc);
+    end
+end
 
 reg [1:0] rs_sys = 0, rs_cpu = 0;
 wire rst_n_sys = rs_sys[1];
@@ -426,7 +461,7 @@ m1_integrated core (
     .r3d_tex_req(r3d_tex_req), .r3d_tex_we(r3d_tex_we),
     .r3d_tex_addr(r3d_tex_addr), .r3d_tex_din(r3d_tex_din),
     .r3d_tex_dout(p_dout[6][15:0]), .r3d_tex_ack(p_ack[6]),
-    .rst_n(rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
+    .rst_n(g_rst_n), .mem_rst_n(rst_n), .mem_ready(cpu_release),
     // The control region as the board presents it at rest, with one byte
     // overridden. Not uniformly idle-high: the three ADC channels at 0x00-0x02
     // rest at 0x80 (steering centred) and 0x01 (each pedal released).
@@ -534,7 +569,7 @@ always @(posedge clk_cpu) begin
         snd_tx_stb_tog <= ~snd_tx_stb_tog;
         snd_tx_data_h  <= snd_tx_data;
     end
-    if (!rst_n) begin snd_tx_stb_tog <= 1'b0; snd_tx_data_h <= 8'd0; end
+    if (!g_rst_n) begin snd_tx_stb_tog <= 1'b0; snd_tx_data_h <= 8'd0; end
 end
 
 wire       snd_rx_ack;
@@ -549,11 +584,11 @@ always @(posedge clk) begin
         snd_rx_data  <= snd_tx_data_h;
         snd_rx_valid <= 1'b1;
     end else if (snd_rx_ack) snd_rx_valid <= 1'b0;
-    if (!rst_n) begin snd_rx_valid <= 1'b0; snd_rx_data <= 8'd0; end
+    if (!g_rst_n) begin snd_rx_valid <= 1'b0; snd_rx_data <= 8'd0; end
 end
 
 m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
-    .clk(clk), .rst_n(rst_n && snd_ready),
+    .clk(clk), .rst_n(g_rst_n && snd_ready),
     .rx_data(snd_rx_data), .rx_valid(snd_rx_valid), .rx_ack(snd_rx_ack),
     .tx_data(), .tx_valid(), .tx_ack(1'b1),
     .rom_req(snd_rom_req), .rom_addr(snd_rom_addr),
@@ -3395,6 +3430,71 @@ always @(posedge clk) begin
     end
 end
 
+// WRITES INTO REGIONS NOTHING SHOULD WRITE AFTER THE DOWNLOAD: the ROM image
+// (program, banked data, copro data and tables, polygon models), the I/O
+// board's firmware and EEPROM image, the sound program and samples. Nothing
+// reloads any of them short of a new MRA load, so a write there survives the
+// core's reset - the shape of the board's "RESTART does not recover it". Every
+// port, at the request's rising edge, after the loader has finished.
+integer prot_wr = 0;
+reg [10:0] prot_req_d = 0;
+function automatic bit prot_region(input logic [25:1] w);
+    prot_region = (w < 25'hC20000) ||                         // ROM image
+                  (w >= 25'hD00000 && w < 25'hD10000) ||      // I/O fw + EEPROM
+                  (w >= 25'h1000000 && w < 25'h1040000) ||    // 68000 program
+                  (w >= 25'h1080000 && w < 25'h1480000);      // MultiPCM samples
+endfunction
+always @(posedge clk) begin
+    prot_req_d <= p_req;
+    if (loader_done) begin
+        for (int k = 0; k < 11; k++)
+            if (p_req[k] && !prot_req_d[k] && p_we[k] && prot_region(p_addr[k])) begin
+                if (prot_wr < 20)
+                    $display("PROTECTED WRITE: port %0d word %07h data %04h at %0d cycles, V60 pc=%06h",
+                             k, {p_addr[k], 1'b0} >> 1, p_din[k], grst_cyc, dbg_pc);
+                prot_wr = prot_wr + 1;
+            end
+    end
+end
+
+// See IOFW_TRASH_AT.
+always @(posedge clk) begin
+    if (IOFW_TRASH_AT != 0 && grst_cyc == IOFW_TRASH_AT) begin
+        for (int w = 0; w < 'h4000; w++)
+            device.mem[64'hD00000 + w] = 16'(((w * 32'h9E3779B1) >> 13) ^ w);
+        $display("IOFW-TRASH: I/O board firmware and EEPROM image overwritten at %0d cycles", grst_cyc);
+    end
+end
+
+// TORN LISTS. The walker reads the buffer it latched when its pass began
+// (dl_sel_q). If the pass is still walking when the game flips, the game's next
+// list goes into THAT buffer - and a word written ahead of the walker is read as
+// part of a list it was never part of: the command stream desynchronises and
+// the rest decodes as garbage. Counted here: V60 writes into the buffer being
+// walked while the walk is live, and of those the ones at or ahead of the
+// walker's read position.
+integer torn_any = 0, torn_ahead = 0, torn_walks = 0;
+reg     torn_this = 0;
+always @(posedge clk_cpu) begin
+    if (core.u_raster3d.lw_start) torn_this <= 1'b0;
+    if (core.u_raster3d.lw_busy &&
+        ((core.main.rams.dl0_we && !core.u_raster3d.dl_sel_q) ||
+         (core.main.rams.dl1_we &&  core.u_raster3d.dl_sel_q))) begin
+        torn_any = torn_any + 1;
+        if ({1'b0, core.main.rams.addr[14:1]} >= {1'b0, core.u_raster3d.u_walk.cur}) begin
+            torn_ahead = torn_ahead + 1;
+            if (!torn_this) begin
+                torn_walks = torn_walks + 1;
+                if (torn_walks <= 10)
+                    $display("TORN: walk of buffer %0d rewritten ahead of the walker at %0d cycles: write word %04h, walker at %04h, pass objects so far %0d",
+                             core.u_raster3d.dl_sel_q, grst_cyc, core.main.rams.addr[14:1],
+                             core.u_raster3d.u_walk.cur, core.u_raster3d.u_walk.dbg_objects);
+            end
+            torn_this <= 1'b1;
+        end
+    end
+end
+
 // ---------------------------------------------------------------- the run
 longint cycles;
 integer fd, x, y;
@@ -3624,6 +3724,13 @@ initial begin
         // is not a proof that we never do. Nonzero here means the cap is wrong.
         $display("FRAME: display-list writes above the 16,384-word cap: %0d",
                  core.main.rams.dbg_dl_oob);
+        $display("FREEZE: writes into protected SDRAM regions after the download=%0d  V60 ROM-window writes dropped=%0d (first pc=%06h addr=%06h bank=%0d)  colour uploads dropped=%0d  RESTART presses=%0d",
+                 prot_wr, core.main.dbg_rom_wr, core.main.dbg_rom_wr_pc,
+                 core.main.dbg_rom_wr_addr, core.main.dbg_rom_wr_bank,
+                 core.u_raster3d.dbg_tex_drop, grst_presses);
+        $display("FREEZE: list walks rewritten ahead of the walker=%0d (writes into the walked buffer %0d, ahead %0d)  walks ended on garbage=%0d  run off the buffer=%0d",
+                 torn_walks, torn_any, torn_ahead,
+                 core.u_raster3d.dbg_lw_bad, core.u_raster3d.dbg_lw_over);
         $display("FRAME: %0d data accesses, mean %0d.%02d clk_sys cycles req->ack",
                  blat_n, blat_sum/blat_n, ((blat_sum*100)/blat_n) % 100);
         for (blat_i = 0; blat_i < 5; blat_i = blat_i + 1)

@@ -227,6 +227,230 @@ exactly what killed the Model 2 core's coprocessor boot (its R380). The 3D
 block's reset is the game reset, not the load. No draw starts now until the
 TGP's own release (the ROM loaded, on clk_3d): **0 and 0** in the same run.
 
+## 2026-10-28 (b) — THE FREEZE IS A V60 BUG: MUL, DIV AND REM INTO MEMORY NEVER STORED THEIR RESULT
+
+**Found from the board, through the diagnostic build of entry (a) below.** Ben:
+the freeze happens only in attract, and only when the attract cycle wraps
+round. The overlay, photographed at the freeze:
+
+    00 FFE59C   V60 PC: the scene loader's block copy (movcu.h)
+    01 01004C   V60 held reading an EMPTY TGP output FIFO; TGP idle at 004C
+    04 40FFFF   >= 65,535 stores into ROM windows, the first with BANK 4
+    05 FFE59C   ...from the block copy
+    06 FFFFFE   ...to the top of memory
+    07 010000   no colour upload dropped
+    0B 00FFFF   (I/O replies saturated)
+    0E 000F93 -> 001252 ten seconds later: flips and 3D passes still running
+
+and **RESTART brought the game back** - the first time it ever has. So hole 1
+of entry (a), the ROM image taking V60 stores, is what made the freeze
+permanent, and hole 2 was not involved (`07` = 0).
+
+### Why bank 4 - read off MAME
+
+- The attract cycle is **7,026 frames** (2 min 2 s): the scene loads that
+  start it are at frames 272, 7298, 14324 (`build/wrap/wrap.log`).
+- Each demo scene selects its ROM bank at `FE216F`:
+  `R0 = ([501934] + 1) << 4 | 1; mov.b R0, E00004`. `501934` is the course
+  being demonstrated, 0-2, so banks 1-3. MAME writes `0011`, `0031`, `0021`,
+  `0031`, `0031`, `0031`, `0011` ... and never anything else.
+- The course advances at `FE2074`/`FE207A`: `inc.b 501934[PC]` then
+  **`rem.b #3, 501934[PC]`**. MAME, at the wrap (frame 7296): writes `3`, then
+  `0` (`build/wrap/course.lua`).
+- Bank 4 is SDRAM words `0x2C0000-0x33FFFF` - erased (`FFFF`) at the bottom.
+  The loader at `FFE583` takes its table from banked ROM (`0x118051`), so with
+  bank 4 every table entry is `FFFFFFFF`: destination `FFFFFFFE`, length
+  `FFFF...<<4`. The copy then runs through all of memory - palette, tile and
+  character RAM, the display lists (`0A`: walks ending on garbage), the
+  coprocessor's FIFO window, where its source finally blocks on an empty
+  output FIFO (`01`) - and, before entry (a), through the ROM image.
+
+### The bug
+
+`rtl/cpu/v60/v60.sv`, `S_MULDIV`:
+
+    md_finish();     // ends in wb_op2: st <= S_WB_MEM for a memory destination
+    st <= S_NEXT;    // ...and this later non-blocking write wins
+
+so **MUL, MULU, DIV, DIVU, REM and REMU with a memory destination set the
+flags and never stored the result**. Inherited from s32 (`s32_v60.sv` has the
+same order); `S_EXEC` has the right one. `rem.b #3` left the `3` in place.
+
+`tools/run_m1_main.sh` `muldiv_memory` runs the game's two instructions
+(absolute instead of PC-relative) and a DIV.W/MUL.W into memory: before,
+`3` and `9`; after, `0` and `15`. The register form was always right, which is
+why the V60 unit suite (29/29 before and after) and `v60_trace` (the first
+seconds of boot) never saw it.
+
+### What was right and wrong in entry (a)
+
+- Right: RESTART failed because the ROM image took stores. The board now
+  recovers on RESTART.
+- Wrong guess: a garbage display list reaching the I/O firmware. Colour drops
+  read zero on the board; the trigger was the CPU.
+- The bench never reached this: the attract wrap is ~10^10 clk_sys cycles of
+  frame bench (about two days at the speed it runs here), and the race script
+  never plays attract at all.
+
+---
+
+## 2026-10-28 (a) — RESTART COULD NOT UNDO TWO KINDS OF WRITE: THE ROM IMAGE AND THE I/O FIRMWARE WERE WRITABLE
+
+Branch `vr-freeze`, on `tile-overrun` (`4253a86`). Ben: Virtua Racing freezes to
+a black screen, the 3D never comes back, there is only the tile background and
+random colours, and **RESTART does not recover it** - a core reload does.
+Long-standing.
+
+### What RESTART does not reset, listed rather than guessed
+
+RESTART is the game reset (`status[0]`, `buttons[1]`, the framework's `RESET`);
+`mem_rst_n` is PLL lock only. Checked for state that survives it:
+
+- **Logic.** Every `always_ff` without a reset in `rtl/video`, `rtl/tgp` and
+  `rtl/mem` was read: all are memories or data pipelines, none holds control
+  state. On the memory reset alone are `m1_sdram` (a request left pending by a
+  client that was reset is served and acknowledged into nothing; a new request
+  edge re-latches the mailbox - at worst one wrong word, no wedge), the ROM
+  loader, the DDR3 payload client (flushed by the game reset; it finishes any
+  burst it started and discards replies still owed - read in full), the overlay
+  and the 15 kHz converter.
+- **Memory.** In SDRAM: the ROM image, the I/O board's firmware and EEPROM
+  image, the sound program and samples - **nothing reloads any of them short of
+  a new MRA load** - and the RAM regions. On chip: the TGP program RAM (written
+  only by the loader), display lists, tile RAM, palette (the game rewrites them).
+
+So a stop that survives RESTART is a **write into memory RESTART does not
+reload**. Two paths could make one, and neither exists on the board.
+
+### Hole 1: a V60 store into a ROM window went into the ROM image
+
+`m1_main` sent `sel_rom | sel_wram | sel_nvram | sel_charram` to SDRAM with
+`sdr_we = m_we`: a store to ROMA, ROMO, ROMX or ROM0 was written into the packed
+ROM image. MAME maps all four `.rom()`/`.bankr()` (`model1.cpp:985`); the board's
+are mask ROM. ROMO at banks 4-7 reaches past the banked data onto the TGP's data
+ROM and tables and the polygon models, so one stray store could break the 3D for
+good and leave the 2D alone.
+
+- **MAME never does it**: a write tap on all four windows, 600 s of `vr` attract
+  (34,500 frames): **0 writes**. The frame bench's region census agrees (`rom ...
+  0 writes` in every run on record).
+- **Before/after**, `tools/run_m1_main.sh` configuration `rom_readonly` (a
+  program stores `A5A5A5A5` into ROM0, ROMX, ROMO and work RAM, then reads back).
+  Fix disabled: all three ROM words in the SDRAM model read `a5a5 a5a5`, ROM0
+  reads back `a5a5a5a5`. Fixed: the image is as loaded, ROM0 reads back the ROM,
+  the work-RAM control lands, `dbg_rom_wr` = 6, first at `FC0100`.
+
+### Hole 2: a colour upload could overwrite the I/O board's firmware
+
+Display-list command 4 writes tgp_ram at `adr - 0x40000 + i`. Our offset was 20
+bits from SDRAM word `0xC20000`, so it reached `0xD1FFFF`; tgp_ram is 786,432
+words (`0xC20000-0xCDFFFF`). **The I/O board's Z80 firmware is at `0xD00000` and
+its EEPROM image at `0xD02000`**: `m1_ioz80` fetches its program from there a
+word at a time and preloads the 93C46 from there at every reset. A header whose
+address has low 20 bits in about `0x10000-0x23FFF` writes over them.
+
+- A real list never does it: MAME, 400 s of attract, **128 distinct colour
+  uploads, every one at `0x40000` or above and ending by offset `0x80000`** of
+  `0xC0000` (`build/mame_col_census.lua`, a walk of both buffers every frame).
+  The new bound has half of tgp_ram to spare.
+- A list walked as garbage does: one misaligned command boundary that lands on
+  a word holding 4 reads the next two words as an address and a length.
+- `make render3d_fuzz` (new, `sim/video/tb_m1_raster3d_fuzz.cpp`). Base RTL:
+  2,091,036 uploads escaped tgp_ram in 4 of 34 episodes, then 73,308 in 40 more
+  (seed 1, with the escape census added). **None of those happened to land on
+  the firmware window itself** - the fuzz's hostile addresses rarely have the
+  low bits that reach it - so the firmware hit is shown by address arithmetic,
+  not by the fuzz. Fixed RTL: 0 escapes in 218 episodes (seeds 1, 2 and 4, the
+  last with a 48-cycle polygon ROM, 200-cycle DDR3 and 10% BUSY).
+
+### What the board's report looks like with the firmware gone - reproduced
+
+`tb_m1_frame`, `vr_race.txt`, board clocks: `IOFW_TRASH_AT=330M` overwrites the
+firmware and EEPROM image in the SDRAM model, `GRST_AT=430M` presses RESTART
+(game reset only). A control run presses the same RESTART with the firmware
+intact.
+
+    after RESTART       control                 firmware overwritten
+    V60 PC              fe0e8d -> fe1435 ...    fe022c / fe0232 for ever
+    screen (frame 425)  the game's test menu    one flat colour, nothing drawn
+    display list walks  resume                  none
+
+`fe022c/fe0232` is the boot's poll of the I/O board - the loop the rules file
+records for a board that never answers. So: firmware gone -> RESTART reboots the
+V60 and the Z80 onto the same damage -> the boot waits for ever on a flat
+screen, and only a reload (which re-streams the firmware) clears it. In this run
+the game did NOT visibly stop in the ~1.25 s between the overwrite and the
+RESTART (it was in the course select, where the I/O board was not being waited
+on); what it does in a race when the board stops answering was not run.
+
+### The 3D layer itself does not wedge on garbage, and the game reset clears it
+
+The fuzz feeds `m1_raster3d` random words, well-formed commands carrying NaN,
+both infinities, denormals, 1e38 and wild addresses and lengths, real lists
+with hundreds of words flipped, and real lists with the terminator removed;
+then the game reset (memory reset left alone, as RESTART); then the real list.
+258 episodes across both RTLs: no pass sequence stopped for good, and every
+reset gave the cold-start frame hash for hash. The Model 2 shape - one NaN
+wedging the walk - was looked for and is not present here.
+
+### How garbage reaches the walker in normal play: torn lists
+
+The walker reads the buffer it latched at the pass start; the pass starts a
+frame after the game's flip; the game flips every second frame and then writes
+its next list into the buffer it flipped away from. A pass longer than what is
+left of the two frames walks a list being rewritten under it.
+`render3d_fuzz TORN=24` (flip every frame, the game's writer at one word per 40
+clk_3d cycles, the captured lists of frames 900, 2500 and 5460):
+
+    polygon ROM latency   writes into the walked buffer   ahead of the walker   walks ended on garbage
+    16 cycles             40,746                          30,608                0
+    48 cycles             11,058                           1,190                1
+
+Lists of adjacent frames are alike, so a torn walk mostly yields last frame's
+geometry, and occasionally garbage. With hole 2 closed a garbage walk costs one
+frame of wrong geometry, never the I/O board. `tb_m1_frame` now counts torn
+walks in the full system (`TORN:`); the race at the board's clocks had not yet
+reached its busy stretch when this was written - see `HANDOFF.md`.
+
+### Not established
+
+**That either hole is the board's trigger.** Neither a ROM store nor an escaped
+upload has been seen on the board, and the bench cannot run long enough to wait
+for one. The freeze diagnostic build (`M1_FREEZE_DIAG`, `debug-overlay.md`) is
+how to find out: rows `04`-`07` count both, and the snapshot rows keep the
+moment of the stop through RESTART. If the board freezes with both at zero, the
+cause is something else and the snapshot names the stage.
+
+### Identity, cost
+
+- Frame bench, `vr_race.txt`, board clocks, `FRAME_HASH=25`: base against the
+  final RTL, identical on every HASH line compared (see `HANDOFF.md` for how far
+  the run had got).
+- `make test`: every count as on `tile-overrun`.
+- quartus_map: 34,549 ALM for the fix (tile-overrun recorded 34,572; map noise
+  is +/-50). The diagnostic build maps ~35,450.
+
+### Failure modes met on the way
+
+- **`tb_m1_main` had rotted twice over.** Its source list predated five modules
+  (`BUILDFAIL` on every configuration), and it left `rd_lat_sel` unconnected,
+  which since the selector was renumbered is CL+0: every read returned zero and
+  the CPU executed `HALT` at once. Both fixed. The three FAST_IFETCH
+  configurations still fail (the wide fetch port returns zeros in this bench);
+  that predates this branch.
+- **The bench dropped the last word of its own download**: `ioctl_download` fell
+  on the edge of the final `ioctl_wr`. A final word of zeros had hidden it.
+- **MAME's `-debugscript` does nothing with `-debugger none`.** Disassemble with
+  `manager.machine.debugger:command("dasm file,addr,len")` in an autoboot script.
+- **A MAME census of NaN/denormal bit patterns through the TGP FIFOs is not an
+  answer**: integer commands share the FIFO and read as denormals (`00000024`)
+  or NaN patterns - 757,640 and 1,213,207 in, 127,726 and 86,039 out over
+  21,000 frames - meaningless without the command grammar.
+- `FFE583`, where an earlier capture found the V60 pinned, is the scene change's
+  table-driven copy of glyphs and palettes out of banked ROM (MAME: lengths
+  `0x0003`-`0x0938` blocks of 16 halfwords, at every scene change). A wrong
+  length would sweep memory - and, before hole 1, the ROM image with it.
+
 ---
 
 ## 2026-10-28 — THE TILE OVERRUNS ARE THE FETCH ENGINE'S OWN OVERHEAD ON DENSE SCREENS, AND THE BENCH RAN AT CLOCKS THAT HID THEM
