@@ -1,3 +1,101 @@
+# 2026-10-28 (b): 3D-OVERRUN - THE 3D DRAWN WHOLE INTO DDR3. ON THE BOARD: "RUNS GREAT". ONE DECISION OWED.
+
+Branch **`3d-overrun`** (local, not pushed), on **`tile-overrun`** (4253a86), so
+the build carries both fixes. The
+board's 3D overrun is BANDS FILLED PAST THE BEAM on the hills after the
+beginner course's first corners; the 3D is now drawn whole into DDR3 as the
+Model 2 core does, and no band races the beam. `docs/findings.md` 2026-10-28
+(b) has every number.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| tile-overrun s5 | 2d561d3 | 35,230 | 525 | 50 | +0.891 | +1.229 | +5.289 | +0.732 | +0.245 |
+| **3d-overrun s17** | 786fcfb | **35,849** | **523** | 50 | **+0.833** | **+0.830** | **+6.093** | **+0.389** | **+0.223** |
+
+**On the board: `build/Model1_3dfb_rb2_seed17_35849.rbf`** (md5
+`903cf718a7311114af54bdf08311b4d3`). Ben: "runs great", track 1's heavy
+corners fine, no late 3D bands. Seeds 5 and 11 also close every clock (table in
+findings); reports in `build/3dfb_tile_s17_reports/`.
+
+## What to check on the board
+
+- Done: Virtua Racing's beginner course, the hills - no late bands.
+- Still worth a look: Virtua Fighter, Star Wars and Wing War's 3D (only VR
+  has been driven through the frame buffer), and 15 kHz (show_tag now steps
+  at the publish line, 416, still inside vertical blanking).
+- **UART fields change meaning with the frame buffer:** T= is scanout lines
+  that landed from DDR3 after their display began (contract: zero); H= is
+  frames HELD (a list not drawn whole by line 416; the last frame shown again);
+  W= the last draw, swap to finish, in 16-cycle units.
+- **Watch for the 3D lagging a frame** - see the decision below. It would look
+  like the 3D a touch behind the 2D HUD and the road a frame late into turns.
+- DDR3 now carries the frame buffer (0x30080000-0x3020xxxx) as well as the
+  payload: any 3D freeze or garbage is the first suspect; alm-save's rbf is the
+  comparison.
+
+## THE DECISION: a frame of latency on about a quarter of lists
+
+The band display could show a list from the frame after its pass was ready by
+line 376. The frame buffer must also DRAW it (70-118 lines) by line 416. In
+render3d's timing 26 of 101 MAME frames - passes of 0.84-0.96 of a frame - show
+every list one frame later than the band display did; in the full-system race
+48 of 494 lists (9.7%). Ben did not notice it on the board.
+Two ways out, neither built:
+
+1. **Publish without waiting for the whole frame**: show it from the first
+   publish line after its draw starts; each line is drawn long before the beam
+   needs it (least margin over 457 draws +8.0 lines when the draw started 5+
+   lines before the publish line). Removes the extra frame. Contradicts "an
+   incomplete one is never shown" - Ben's call.
+2. **A faster fill**: the draw must be under ~40 lines to never lag. It is
+   fill-bound (per-quad setup, replay waits, 4-pixel painting); 2.5x is a
+   fill-unit redesign, not a tweak.
+
+## M10K: why 525 -> 523, not -24
+
+Two band buffers stay (16 M10K): the fill draws into them and m1_fb_flush
+copies from them - they are the write combiner (Model 2's per-span writer took
+0.53 of a frame on the hills). The scanout's line buffers are 6. What could
+still come back: the painted-bit RAM into MLAB (2 M10K, free); four-row band
+buffers (8 M10K, but the draw grows 40-50%, so more lists lag a frame).
+
+## How it was proven, and how to repeat it
+
+- `tools/mame_vr_drive.lua` (MAME autopilot, dumps frames for render3d):
+  `cd build/mamerun && AUTO_AT=1100 SNAP_EVERY=0 LAST=3100 DUMP_FROM=1100
+  DUMP_TO=3100 DUMP_EVERY=20 mame vr -rompath ... -autoboot_script
+  ../../tools/mame_vr_drive.lua` -> `framedump/fNNNNN`.
+- render3d: `CLK3D=58947368 DDR_LAT=40 ./obj_render3d/tb_render3d <framedir>`
+  (FRAMES, DDR_BUSY, DDR_HOLD, DUMPALL); `-GFB_DDR3=0` builds the band display.
+- `make m1_frame ... FRAME_DEFS=+define+BOARD_CLOCKS FRAME_AUTO=1350000000 FRAME_HASH=1`
+  (the autopilot from that cycle; LATE3D and SHOW3D lines). The base
+  (alm-save) race: 24 frames, 108 rows, 48 bands late at frames 2410-2455 -
+  with OVERRUN late=0, the board's T= blind spot.
+- `make test`: the 62 existing suites' counts unchanged; new lines for the
+  untracked instructions file's expected block:
+  `m2_ddr3: checks=19 fails=0`, `m2_ddr3_arb: checks=26 fails=0`,
+  `m1_ddram_mux: checks=796258 fails=0 stray=0 readsA=4926 readsB=87810 writesA=4854 writesB=29154`,
+  `m1_fb_flush: checks=93120 fails=0 bands=30`, `m1_fb_read: checks=24 fails=0`.
+
+## Failure modes found on the way - read before touching the frame buffer
+
+- **quad_done is not "the band is painted".** The fill's last span can still
+  be offered, and a taken span paints for up to 124 cycles. Anything that
+  hands a band buffer on must wait for `!fl_span_valid` and the buffer idle.
+- **The band ring's handoff fired in frame-buffer mode** and rotated the
+  buffers under the copy. ev_present/ev_handoff are band-display only.
+- **Bench DDR3 models ignored byte enables.** Fixed; any half-word writer needs
+  them.
+- **A registered Avalon master (m1_ddram_payload) never raises a command while
+  it sees BUSY**, so an arbiter that grants on a presented command deadlocks
+  it. Grant on its `want`.
+- **Model 2's per-span writer is too slow for Model 1** (0.53 frame on the
+  hills); the band buffer is the write combiner here.
+- **Quartus put a combinationally-read 32-entry queue in M10K**; mark small
+  read-async queues `ramstyle = "logic"` or MLAB with no_rw_check.
+
+---
+
 # 2026-10-28: TILE OVERRUNS - 0 LOST LINES IN THE FULL SYSTEM AT THE BOARD'S CLOCKS. NOT YET ON HARDWARE.
 
 Branch **`tile-overrun`** (local, not pushed), on `alm-save`. Build to test:

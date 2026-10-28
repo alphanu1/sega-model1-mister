@@ -20,6 +20,215 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-28 (b) — THE 3D OVERRUN IS BANDS FILLED PAST THE BEAM ON THE BEGINNER COURSE'S HILLS; THE 3D NOW DRAWS WHOLE INTO DDR3
+
+Branch `3d-overrun`, written on `alm-save` (0ac55df) and rebased onto
+`tile-overrun` (4253a86) so one board build carries both. Ben: a small, long-standing
+3D overrun in Virtua Racing, track 1, the second or third corner - the 3D
+bands running late, not quads dropped.
+
+### Reproduced, and why no bench had
+
+**Instrument: `tools/mame_vr_drive.lua`** drives MAME round the beginner
+course (an autopilot that steers toward the grey road just above the car, read
+off MAME's own screen - it laps Big Forest at full throttle) and dumps every
+20th frame from 1100 to 3100 for render3d (101 frames). **render3d at the
+board's clk_3d, 58.947 MHz** (new `CLK3D`; it had always run at the old
+47.059), DDR3 at 40 cycles, the base (`alm-save`):
+
+| MAME frame | where | least band slack | rows on screen |
+|---|---|---|---|
+| 2760 | the hills after the first corners, checkpoint ahead | **-1.13 lines** | 383 of 384 |
+| 2780 | the same | **-1.36 lines** (band 22, a fill of 31,766 cycles, 149% of a band) | 383 of 384 |
+| 2800 | the same | -0.02 | |
+| 2880, 2900 | further on | +1.35, +1.43 | |
+
+Slack is the lines between a band's hand-off and the beam reaching its first
+row. Negative is a band put up with the beam already inside it: the rows above
+the beam show the 2D for that frame. The same frames against DDR3 latency
+(the payload): -1.1 at 10 cycles, -1.2 at 100, **-7.3 at 400, -53 at 1,000**.
+It is the FILL, not the memory: the worst band is 1,244 quads replayed.
+
+Why it was never seen:
+
+- **No bench reached the hills.** The race bench stops at the pit start.
+- **`dbg_late` (the board's T=) does not count it.** It counts a band
+  presented with the beam in a LATER band (`beam_ext > want_ext`); a band
+  presented with the beam inside its own first rows - every one of the above -
+  counts nothing. tb_m1_frame now counts rows lost (`LATE3D`).
+- render3d's own constants were stale: BAND_H 16 for its "% of a slot" and
+  47.059 MHz, which overstated every slot by 2x and understated the clock.
+
+**The full-system bench, `tb_m1_frame`, with the same autopilot** (AUTO_AT,
+reading its own picture) and the board's clocks (29.474 / 58.947 MHz - the
+base run used this branch's REALCLK before the rebase, the same half periods
+as tile-overrun's BOARD_CLOCKS, which replaced it):
+alm-save (the build on the board), `vr_race.txt` then the autopilot from
+cycle 1.35e9, DDR3 at 40. The bench lapped the course to the same hills and
+checkpoint (its frames ~2300-2450). **LATE3D: 24 frames lost 3D rows - 108
+rows in 48 late bands, all between frames 2410 and 2455, up to 18 rows in one
+frame (2444-2445). The same run's `OVERRUN` line - dbg_late, the board's T= -
+read late=0 throughout.** That is the board's tear, reproduced in the full
+system, and the blind spot in the counter that let it hide. No DDR3 traffic
+before the ROM was in. (Run: `build/snap_base/race.log`, 3,158 frames.)
+
+### The fix: the 3D drawn whole into DDR3 (Ben's call: the Model 2 core's frame buffer)
+
+`m1_raster3d FB_DDR3=1` (the build default; `FB_DDR3=0` is the band display,
+cycle for cycle - render3d's logs and pictures are identical to the base's):
+
+- The list is drawn ONCE, band by band, into one of two DDR3 frames
+  (0x30080000 up, above the quad payload). Nothing races the beam.
+- A frame drawn whole by scan line 416 is shown from the next frame start; one
+  that is not is not shown, and the last whole frame stays up (counted: H=).
+- The scanout fetches each line three lines ahead into four line buffers
+  (`m1_fb_read`, the Model 2 core's m2_fb_read at 47ad2e2) - the mixer's
+  rd_col/rd_hit are unchanged; the frame's first four lines are fetched just
+  after the publish line, before line 0 (Model 2's R657); the writer is held
+  while a line is owed (R655) and through the publish window.
+- `m2_ddr3` and `m2_ddr3_arb` are Model 2's, unchanged. `m1_ddram_mux` shares
+  the one DDRAM port with the quad payload (in-order read replies routed by a
+  queue of owners; a write burst never split; the grant never moved under BUSY).
+
+**The writer is not Model 2's**, and that was measured, not assumed:
+`m2_fb_write` (a DDR3 command per span, head/body/tail) was ported first and
+drew MAME frame 2780 in **538,361 cycles (0.53 of a frame)** against a fill
+of about 290,000 - Model 1's spans are polygon rows, each its own command, and
+Model 2's combining writer (R661) combines adjacent words on one row, which
+successive Model 1 spans never are. So the band buffer is the write combiner:
+the fill draws a band into one of TWO band buffers exactly as before, and
+`m1_fb_flush` copies the finished band into DDR3 (16-beat bursts) while the
+fill draws the next into the other, emptying the buffer behind its reads so no
+band clear is needed and the frame needs no clear either (every pixel of every
+line is rewritten). The line in DDR3 is 124 words of RGB565 (four pixels a
+word) then 8 words of painted bits - half the beats of Model 2's 32-bit
+pixel; frame 1180's draw had been waiting on the copy longer than it filled.
+
+| | per-span writer | band copy, 32-bit | + clear-behind | + 16-bit layout |
+|---|---:|---:|---:|---:|
+| frame 2780 draw (cycles) | 538,361 | 337,043 | 289,636 | ~287,000 |
+| render3d default frame (47 MHz) | 281,478 | 177,432 | 152,199 | 123,631 |
+
+### Proof
+
+- **101 MAME frames, render3d at 58.947 MHz, DDR3 40: every picture byte
+  identical to the reference** - the base rendered at 200 MHz, where no band
+  is late. The base itself differs on the late frames (rows 176-177 of 2780
+  missing).
+- **The worst six frames x nine DDR3 settings** (latency 10/40/100/400/1,000;
+  BUSY 50-500 per mille with 30-50% of reply beats withheld): all 54 pictures
+  identical to the reference, **0 scanout lines late, 0 protocol errors**. The
+  draw stretches from 0.27 to 0.65 of a frame at the hostile end; the picture
+  does not change.
+- `make test`: every existing suite's count identical to `tile-overrun`'s (and
+  to `alm-save`'s bar its m1_tile_fetch), and five new:
+  `m1_ddram_mux: checks=796258 fails=0` (two masters of the two real shapes,
+  four DDR3 settings to 1,000 cycles / 90% BUSY; three mutations of the grant
+  logic each caught), `m1_fb_flush: checks=93120 fails=0 bands=30` (through
+  the real m2_ddr3, every DDR3 word and every clear checked; two of three
+  mutations caught, the third is unreachable by timing), `m1_fb_read: checks=24`,
+  `m2_ddr3: checks=19`, `m2_ddr3_arb: checks=26` (Model 2's benches).
+
+### Bugs found on the way, none of which a unit bench saw
+
+1. **The fill reports a quad done with its last span still offered**
+   (m1_raster_fill says so), and a span taken is painted for up to 124 cycles
+   after. A band handed to the copy at quad_done lost that span, and the
+   clear-behind - refused while the buffer painted - left it for the next band
+   in that buffer. Before the clear-behind the copy just missed it: one pixel
+   wrong in 50 of 101 frames. With it, the late span survived into the next
+   band in that buffer: a whole row (row 8, band 47's bottom road) in 54. The
+   band display has the same race and never cared, because a band is shown a
+   band-time later.
+2. **The band ring rotated the band buffers under the copy.** ev_handoff fired
+   every cycle of C_WAIT in frame-buffer mode too; it is the band display's
+   alone now.
+3. **The DDR3 models ignored byte enables** (render3d's and tb_m1_frame's):
+   harmless while the payload wrote whole words, 4,110 wrong pixels the first
+   time a half word was written - every odd span end.
+4. **A grant on a presented command deadlocks m1_ddram_payload**, which raises
+   a command only after a cycle of !BUSY: it got neither. The mux grants on its
+   `want`.
+5. Quartus put the mux's owner queue (read combinationally) in two M10K;
+   it is `ramstyle = "logic"` now.
+
+### What it costs - LATENCY, and Ben has to decide this
+
+The band display could start showing a list the frame after its pass was ready
+by line 376; the frame buffer must also DRAW it by line 416. The draw is 70-118
+lines. It is fill-bound: on MAME frame 1940, of the draw's cycles 22% wait
+on the store's replay, 19% on the band buffer painting (four pixels a
+cycle), 15% on the copy, and 44% are the fill's own per-quad work.
+render3d's own timing (flip at vblank, polygon ROM in a cycle), list by list
+against `FB_DDR3=0`: **75 of 101 frames show each list on the same frame; 26
+show every list ONE FRAME LATER** - all of them passes of 0.84-0.96 frames that
+are ready at lines 316-367, after which a band display could still sweep but a
+whole draw cannot finish by 416. The heavy hills frames, whose passes run 1.18
+frames, are on time.
+
+A publish that does not wait for the whole frame - the frame shown at the first
+publish line after its draw STARTS, each line fetched only once its band is in
+DDR3 - would remove all of that. render3d's race margin (how far ahead of the
+beam's fetch each band landed, had the frame been shown that way), over 457
+draws: every one +8.0 lines or more except a single draw that started one
+line before the publish line (-2.7). Such a publish would need the draw a few
+lines under way first (or the band in DDR3 before its line is fetched). It is
+not what the brief said ("an incomplete one is never shown"), so it is not
+built.
+
+In the full system the number is smaller. The frame-buffer race (the rebased
+tree, board clocks, the same autopilot; `build/snap_fbrb/race.log`), list by
+list from the race start, against when a band display would have started
+sweeping the same pass (the first line 376 after it was ready): **of 494
+lists, 446 reached the screen on the same frame and 48 (9.7%) one frame
+later**. (The game's passes there run 1.1-1.5 frames, so fewer end in the
+window than render3d's 0.84-0.96.)
+
+**On the board (Ben, seed 17 of 786fcfb, md5 903cf718...): "runs great",
+track 1's heavy corners fine, no late 3D bands.** No lag was remarked on.
+
+### Resources (Quartus 17.0, Slow 1100mV 100C)
+
+quartus_map on alm-save: 35,264 ALMs needed against 34,530 (+734). Fitted:
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| alm-save s3 (on the board) | 16e6d88 | 35,156 | 541 | 50 | +1.038 | +1.070 | +4.141 | +0.100 | +0.189 |
+| tile-overrun s5 (tested by Ben) | 2d561d3 | 35,230 | 525 | 50 | +0.891 | +1.229 | +5.289 | +0.732 | +0.245 |
+| this on alm-save, s11 | 905badc | 35,820 | 539 | 50 | +1.296 | +1.315 | +6.080 | +0.421 | +0.147 |
+| **this on tile-overrun, s17 (ON THE BOARD)** | 786fcfb | **35,849** | **523** | 50 | **+0.833** | **+0.830** | **+6.093** | **+0.389** | **+0.223** |
+| the same, s5 | 786fcfb | 35,889 | 523 | 50 | +0.689 | +0.955 | +6.461 | +0.561 | +0.242 |
+| the same, s11 | 786fcfb | 35,802 | 523 | 50 | +1.410 | +0.504 | +6.282 | +0.046 | +0.197 |
+| the same, s29 / s3 / s7 | 786fcfb | 35,809 / 35,781 / 35,810 | 523 | 50 | | | | -0.101 / -0.357 / -0.078 | |
+
+**M10K went 525 -> 523, not -24, and that is the design, not a leftover.**
+Two of the three 8-block band buffers are still built: they are the write
+combiner the fill draws into and m1_fb_flush copies from (the per-span
+alternative drew the hills frame in 0.53 of a frame). The scanout's line
+buffers take 6: four 512x16 colour banks (four lines, R655's slack) and the
+painted bits, 32x64 in two blocks. 24 -> 16 + 6. What more could come back:
+
+- the painted-bit RAM into MLAB: **2 M10K**, a few dozen ALMs, no behaviour change
+- four-row band buffers (4 M10K each): **8 M10K**, but the store replays 96
+  bands instead of 48 - measured, the draw grows 40-50% (MAME 1180 222k ->
+  317k cycles, 1940 259k -> 366k, 2780 287k -> 432k), so more lists lag a frame
+- one band buffer: 8 M10K, and the fill waits on every copy
+
+`build/Model1_3dfb_rb2_seed17_35849.rbf` (= `Model1_3dfb_tile_seed17_35849.rbf`),
+md5 `903cf718a7311114af54bdf08311b4d3`; reports in `build/3dfb_tile_s17_reports/`.
+(905badc predates the ROM gate below; it is not a candidate.)
+
+### And one fault the full-system bench found that render3d could not
+
+**The frame buffer used DDR3 during the ROM download**: 9.2 M write beats and
+36,864 read beats before `rom_loaded` in a 200 M-cycle run - empty lists drawn
+and shown while the HPS was streaming the ROM over the same bridge, which is
+exactly what killed the Model 2 core's coprocessor boot (its R380). The 3D
+block's reset is the game reset, not the load. No draw starts now until the
+TGP's own release (the ROM loaded, on clk_3d): **0 and 0** in the same run.
+
+---
+
 ## 2026-10-28 — THE TILE OVERRUNS ARE THE FETCH ENGINE'S OWN OVERHEAD ON DENSE SCREENS, AND THE BENCH RAN AT CLOCKS THAT HID THEM
 
 Branch `tile-overrun`, on `alm-save` (`0ac55df`; first written on `ddr3-crt-wheel`,
