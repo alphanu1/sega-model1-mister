@@ -83,8 +83,18 @@ frames to the pit start: **identical** - same progress lines throughout, same
 final frame byte for byte, and the same overrun totals: 42,817 bands, **0 late,
 0 dropped**, 451 passes; **18,844 tile fetch overruns, 18,841 of them during the
 ROM download** and 3 in play (frames 735-850, as the 3D load rises). No DDR3
-traffic before `rom_loaded`. (That run's DDR3 answered at once - see above;
-latency 40 and 200-with-BUSY reruns are in HANDOFF.)
+traffic before `rom_loaded`. That run's DDR3 answered at once (see above), so
+it was rerun with the model fixed at 40 cycles, and at 200 with BUSY 100 per
+mille: worst reply waits 41 and 225 cycles, and both again identical to main -
+final frame byte for byte, the same overrun totals, no protocol error.
+
+### NQ 4,096
+
+With the payload off chip a bank's cost is att, key and the index arrays, so
+4,096 quads a bank (from 3,072) cost 16 M10K: fitted at seed 11, 41,303 ALM,
+542 M10K, every clock positive (clk_3d +0.472, clk_sys +0.752, clk_cpu +4.781,
+pll_hdmi +0.130). Frames under 3,072 quads are cycle-identical on render3d.
+The board's busy-driving peaks of 3,034-3,193 quads now fit.
 
 ### Room
 

@@ -1,11 +1,20 @@
 # 2026-10-27: QUAD PAYLOAD IN DDR3, 15 kHz, WHEEL MODES, MORE ROOM. NOT YET ON HARDWARE.
 
-Branch **`ddr3-crt-wheel`** (local, not pushed). The build to test is
-**`build/Model1_ddr3crt_seed29_41205.rbf`**, md5 `a20a32f42d3849b56f80dbf60a51728a`,
-fitted from `f5111d4`: 41,205/41,910 ALM, 526/553 M10K, 62/112 DSP, every
-clock better than the release (clk_3d +0.486, clk_sys +1.519, clk_cpu +5.043,
-pll_hdmi +0.138, hold +0.216). Full numbers and the method in `findings.md`
-2026-10-27.
+Branch **`ddr3-crt-wheel`** (local, not pushed). Two builds to test, both
+fitted with Quartus 17.0 and both with every clock positive:
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| release (main, re-fitted s3) | 8d466e3 | 41,267 | 551 | 56 | +0.407 | +0.848 | +4.549 | +0.074 | +0.154 |
+| **A** `build/Model1_ddr3crt_seed29_41205.rbf` | f5111d4 | 41,205 | 526 | 62 | +0.486 | +1.519 | +5.043 | +0.138 | +0.216 |
+| **B** `build/Model1_ddr3crt_nq4096_seed11_41303.rbf` | fc418ba | 41,303 | 542 | 62 | +0.472 | +0.752 | +4.781 | +0.130 | +0.251 |
+
+md5: A `a20a32f42d3849b56f80dbf60a51728a`, B `87cb9136c25d7424380135c284ecd842`.
+B is A plus a 4,096-quad store (was 3,072), which the payload's move to DDR3
+made cheap: the board measured 3,034-3,193 quads at peaks, and the overflow is
+the scenery the list draws last. **Test A first** - it is better than the
+release on every figure - then B for the busy stretches. Fit reports:
+`build/ddr3crt_s29_reports/`, `build/ddr3crt_nq4096_s11_reports/`.
 
 ## What is in it
 
@@ -31,12 +40,19 @@ pll_hdmi +0.138, hold +0.216). Full numbers and the method in `findings.md`
 - **Wheel A / Wheel B** on a real wheel. Neither has been driven on one; the
   axis assignment is Model 2's (R958), reported by a user, not measured.
 
-## Bench-only follow-ups still running at handoff
+## The full-system race, with a DDR3 that answers late
 
-`build/wt-r40` and `build/wt-r200`: the full race with the DDR3 model at 40
-cycles, and at 200 cycles with BUSY 100/1000. Each prints `OVERRUN:` and
-`DDR3:` lines at the end of `build/race.log`; both should match main's
-`OVERRUN: ... late=0 ... dropped=0 ... tile fetch overruns=18844`.
+`make m1_frame GAME=vr FRAME_CYCLES=1100000000 FRAME_DDR_LAT=<n>` on
+`vr_race.txt` (879 frames, to the pit start), at commit ca2ddd5:
+
+| run | DDR3 | worst reply wait | final frame | 3D late / dropped | tile overruns |
+|---|---|---|---|---|---|
+| main | - | - | (reference) | 0 / 0 | 18,844 |
+| latency 40 | 998,332 reads, 130,776 writes | 41 cycles | identical | 0 / 0 | 18,844 |
+| latency 200, BUSY 100/1000 | same | 225 cycles | identical | 0 / 0 | 18,844 |
+
+No protocol error, no lost write, no refused read, no DDR3 traffic before the
+ROM is loaded.
 
 ## Overruns: what the benches say
 
