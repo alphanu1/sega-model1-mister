@@ -120,6 +120,11 @@ module v60_ifetch #(
 
     assign fill_ready = (fb_base_r == pc) && (fb_valid_r >= fb_need);
 
+    // The address of the first byte not yet in the window. Written out three
+    // times (the prefetch issue, its acknowledge check, the write guard) it
+    // was three 32-bit adders on the same two registers.
+    wire [31:0] fb_frontier = fb_base_r + {27'b0, fb_wr_r};
+
     // SYNCHRONOUS RESET, GATED BY ce - matching v60.sv's own main block exactly
     // (`always @(posedge clk)` / `if (rst)` / `else if (ce)`). The first version
     // of this module used an asynchronous reset and failed 27 of the 29 unit
@@ -251,7 +256,7 @@ module v60_ifetch #(
         // fb_wr_r<=20 keeps the append within the 24-byte window.
         if (fb_base_r == pc && !fb_realigning && fb_wr_r <= 5'd20
             && (fb_wr_r < fb_need || (fb_wr_r < PF_HIGH && !pf_suppress))) begin
-            pf_addr      <= fb_base_r + {27'b0, fb_wr_r};
+            pf_addr      <= fb_frontier;
             pf_iss_epoch <= pf_epoch;
             pf_busy      <= 1'b1;
             if (FAST_IFETCH) if_req <= 1'b1;   // wide 8-byte icache line via if_addr
@@ -263,7 +268,7 @@ module v60_ifetch #(
         if_req  <= 1'b0;
         pf_busy <= 1'b0;
         if (pf_iss_epoch == pf_epoch
-            && pf_addr == fb_base_r + {27'b0, fb_wr_r}
+            && pf_addr == fb_frontier
             && !(fill_active && fb_base_r != pc)) begin
             if (FAST_IFETCH) begin
                 // append the 8-byte line from the frontier offset to the line end
@@ -328,7 +333,7 @@ module v60_ifetch #(
         // count (fb_valid_r): prefetched-but-not-yet-decoded bytes must also be
         // dropped if a store overwrites them (fb_wr_r==fb_valid_r pre-prefetch, so
         // this is bit-identical today).
-        fb_end = fb_base_r + {27'b0, fb_wr_r};
+        fb_end = fb_frontier;
         pv_end = fb_prev_base + {27'b0, fb_prev_valid};
         if (fb_wr_r != 0 && dbus_addr < fb_end && wr_end > fb_base_r) begin
             fb_valid_r <= 5'd0;

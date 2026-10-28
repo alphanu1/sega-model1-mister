@@ -292,29 +292,33 @@ function automatic [76:0] fp_mul(input [31:0] x, input [31:0] y,
     fp_mul = out;
 endfunction
 
-function automatic [31:0] fp_scale(input [31:0] x, input signed [15:0] n);
-    logic s; logic [23:0] m; logic [31:0] out;
+// SCLFS, up to the pack: {special, special_value, sign, E, sg}. When special
+// is clear the result is fp_pack(sign, E, sg) - see the shared pack below.
+function automatic [76:0] fp_scale_pre(input [31:0] x, input signed [15:0] n);
+    logic s; logic [23:0] m;
     logic signed [15:0] e; logic signed [17:0] esum;
-    if (fp_isnan(x) || fp_isinf(x) || fp_iszero(x)) out = x;
+    fp_scale_pre = '0;
+    if (fp_isnan(x) || fp_isinf(x) || fp_iszero(x)) fp_scale_pre = {1'b1, x, 44'd0};
     else begin
         {s, e, m} = fp_unpack(x);
         // value = 1.m * 2^e; scaled exponent e+n; mantissa is 24-bit at
         // bit23.  Widened sum: an int16 e+n wraps for |n| near 32768 and
         // would turn a huge scale into the wrong extreme.
         esum = 18'(e) + 18'(n);
-        if (esum > 18'sd254)       out = {s, 8'hff, 23'd0};   // overflow: inf
-        else if (esum < -18'sd180) out = {s, 31'd0};          // deep underflow: 0
-        else                       out = fp_pack(s, 16'(esum), {m, 3'b000});
+        if (esum > 18'sd254)       fp_scale_pre = {1'b1, {s, 8'hff, 23'd0}, 44'd0};  // overflow: inf
+        else if (esum < -18'sd180) fp_scale_pre = {1'b1, {s, 31'd0}, 44'd0};         // deep underflow: 0
+        else                       fp_scale_pre = {1'b0, 32'd0, s, 16'(esum), {m, 3'b000}};
     end
-    fp_scale = out;
 endfunction
 
-function automatic [31:0] cvt_w_s(input [31:0] iv);
+// CVTWS, up to the pack: {sign, E, sg}. The result is 0 for iv == 0 and
+// fp_pack(sign, E, sg) otherwise - see the shared pack below.
+function automatic [43:0] cvt_w_s_pre(input [31:0] iv);
     logic sign; logic [31:0] mag; logic [4:0] lz; logic [5:0] p;
     logic signed [15:0] e; logic [26:0] sg;
     logic [5:0] sh; logic [31:0] shifted; logic lost; logic done; integer i;
-    if (iv == 32'd0) cvt_w_s = 32'd0;
-    else begin
+    cvt_w_s_pre = '0;
+    if (iv != 32'd0) begin
         sign = iv[31];
         mag  = sign ? (~iv + 32'd1) : iv;
         lz = 5'd0; done = 1'b0;
@@ -330,7 +334,7 @@ function automatic [31:0] cvt_w_s(input [31:0] iv);
             lost = ((mag & ((32'd1 << sh) - 32'd1)) != 32'd0);
             sg = {shifted[26:3], shifted[2], shifted[1], shifted[0] | lost};
         end
-        cvt_w_s = fp_pack(sign, e, sg);
+        cvt_w_s_pre = {sign, e, sg};
     end
 endfunction
 
@@ -348,7 +352,7 @@ function automatic fp_eq(input [31:0] a, input [31:0] b);
     else fp_eq = (a == b);
 endfunction
 
-function automatic [31:0] fdiv_finish(input [26:0] q, input [49:0] rem);
+function automatic [43:0] fdiv_finish_pre(input [26:0] q, input [49:0] rem);
     logic [23:0] mant; logic g, r, s; logic signed [15:0] e;
     if (q[26]) begin                        // quotient in [1,2)
         mant = q[26:3]; g = q[2]; r = q[1]; s = q[0] | (rem != 0);
@@ -358,12 +362,10 @@ function automatic [31:0] fdiv_finish(input [26:0] q, input [49:0] rem);
         mant = q[25:2]; g = q[1]; r = q[0]; s = (rem != 0);
         e = fdiv_exp - 16'sd1;
     end
-    fdiv_finish = fp_pack(fdiv_sign, e, {mant, g, r, s});
+    fdiv_finish_pre = {fdiv_sign, e, {mant, g, r, s}};
 endfunction
 
-function automatic [31:0] fp_pk_result(input [76:0] b);
-    fp_pk_result = b[76] ? b[75:44] : fp_pack(b[43], $signed(b[42:27]), b[26:0]);
-endfunction
+
 task automatic cvt_s_w(input [31:0] x, input [2:0] mode,
                        output logic [31:0] iv, output logic ov);
     logic s; logic signed [15:0] e; logic [23:0] m;
@@ -468,6 +470,28 @@ task automatic fp_div_start(input [31:0] x, input [31:0] y);
 
 endtask
 
+// ONE fp_pack, NOT FOUR.
+//
+// CVTWS, SCLFS, the add/multiply pack and the divide's finish each called
+// fp_pack - rounding adder, exponent range checks, result assembly - with
+// their own arguments, so each call built its own copy. They run in
+// different states (F_IDLE for the first two, F_PACK, F_DIV), so one pack
+// takes whichever state's inputs are live. Same results in the same cycles.
+wire [43:0] cvt_pre = cvt_w_s_pre(a);
+wire [76:0] scl_pre = fp_scale_pre(b, $signed(a[15:0]));
+wire        fdiv_ge = (fdiv_rem >= {26'd0, fdiv_den});
+wire [49:0] fdiv_r2 = fdiv_ge ? (fdiv_rem - {26'd0, fdiv_den}) : fdiv_rem;
+wire [43:0] div_pre = fdiv_finish_pre({fdiv_qacc[25:0], fdiv_ge}, fdiv_r2);
+logic [43:0] pk_in;                 // {sign, E, sg}
+always @* begin
+    case (fst)
+        F_PACK:  pk_in = fp_pk[43:0];
+        F_DIV:   pk_in = div_pre;
+        default: pk_in = (op == 8'h5f) ? cvt_pre : scl_pre[43:0];
+    endcase
+end
+wire [31:0] pk_res = fp_pack(pk_in[43], $signed(pk_in[42:27]), pk_in[26:0]);
+
 always @(posedge clk) begin
 if (rst) begin
     fst <= F_IDLE;
@@ -486,7 +510,7 @@ else if (ce) begin
 
     if (op == 8'h5f) begin
         if (subop == 5'h00) begin              // CVTWS int->float
-            r = cvt_w_s(a);
+            r = (a == 32'd0) ? 32'd0 : pk_res;     // cvt_w_s(a)
             o_ov <= 1'b0;
             o_cy <= a[31] & (a != 32'd0);     // val < 0
             o_s  <= r[31];
@@ -533,7 +557,7 @@ else if (ce) begin
             begin result <= r; writes <= 1'b1; fst <= F_DONE; end
         end
         5'h10: begin                                 // SCLFS: op1=int16 scale, op2=float
-            r = fp_scale(b, $signed(a[15:0]));
+            r = scl_pre[76] ? scl_pre[75:44] : pk_res;   // fp_scale(b, a[15:0])
             begin o_ov <= 1'b0; o_cy <= 1'b0; o_s <= r[31]; o_z <= (r == 32'd0); end begin result <= r; writes <= 1'b1; fst <= F_DONE; end
         end
         // ADDFS/SUBFS/MULFS unpack here; the arithmetic is in S_FP_EXEC2.
@@ -566,7 +590,7 @@ else if (ce) begin
     // Normalise, round, adjust the exponent, set flags.
     F_PACK: begin
         logic [31:0] rp;
-        rp = fp_pk_result(fp_pk);
+        rp = fp_pk[76] ? fp_pk[75:44] : pk_res;      // fp_pk_result(fp_pk)
         o_ov <= 1'b0; o_cy <= 1'b0; o_s <= rp[31]; o_z <= (rp == 32'd0);
         result <= rp; writes <= 1'b1; fst <= F_DONE;
     end
@@ -575,12 +599,12 @@ else if (ce) begin
     F_DIV: begin
         logic [49:0] r2;
         logic ge;
-        ge = (fdiv_rem >= {26'd0, fdiv_den});
-        r2 = ge ? (fdiv_rem - {26'd0, fdiv_den}) : fdiv_rem;
+        ge = fdiv_ge;
+        r2 = fdiv_r2;
         fdiv_qacc <= {fdiv_qacc[25:0], ge};
         if (fdiv_cnt == 6'd0) begin
             logic [31:0] q;
-            q = fdiv_finish({fdiv_qacc[25:0], ge}, r2);   // r2 != 0 -> sticky
+            q = pk_res;                    // fdiv_finish(...): r2 != 0 -> sticky
             result <= q;
             o_ov <= 1'b0; o_cy <= 1'b0;
             o_s  <= q[31];

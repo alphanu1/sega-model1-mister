@@ -102,6 +102,8 @@ module v60_shift (
     // second shifter. Amounts of 32 or more are handled explicitly because a
     // 5-bit shift amount would otherwise wrap and rotate.
     wire [5:0] sh = (mag >= 8'd32) ? 6'd32 : {1'b0, mag[4:0]};
+    wire [5:0]  ovn      = (mag >= 8'd32) ? 6'd32 : {1'b0, mag[4:0]};
+    wire [5:0]  ovsh     = w[5:0] - ovn;
     wire       big = (sh >= 6'd32);
 
 
@@ -127,7 +129,13 @@ module v60_shift (
     // left/right pair gives it.
     wire [5:0] rot_ramt = w[5:0] - rot_amt;
     wire [4:0] l_amt  = is_rot ? rot_amt[4:0]  : sh[4:0];
-    wire [4:0] r_amt  = is_rot ? rot_ramt[4:0] : sh[4:0];
+    // A LEFT SHA ALSO USES THE RIGHT SHIFTER, for its overflow field: the top
+    // n bits of the w-bit value are (value >> (w - n)) masked to n bits, and
+    // the right shifter is otherwise idle on a left shift. Its input is xs,
+    // not xz, but the two differ only above bit w-1, which the n-bit mask
+    // removes. This was a third 32-bit barrel shifter of its own.
+    wire       sha_l  = is_sha && left;
+    wire [4:0] r_amt  = is_rot ? rot_ramt[4:0] : sha_l ? ovsh[4:0] : sh[4:0];
     wire [31:0] sh_in = is_sha ? xs : xz;
     wire [31:0] l_res = sh_in << l_amt;
     wire [31:0] r_res = sh_in >> r_amt;
@@ -182,11 +190,9 @@ module v60_shift (
     // minus one gives 0xffffffff, the full-width mask - which is MAME's
     // count == bitsize case. Truncating to five bits produced an empty mask and
     // OV=0 where the reference gives OV=1; tb_v60_shift caught it at cnt=32.
-    wire [5:0]  ovn      = (mag >= 8'd32) ? 6'd32 : {1'b0, mag[4:0]};
     wire [31:0] ov_ones  = (ovn >= 6'd32) ? 32'hffff_ffff
                                           : ((32'd1 << ovn[4:0]) - 32'd1);
-    wire [5:0]  ovsh     = w[5:0] - ovn;
-    wire [31:0] ov_field = ((ovsh >= 6'd32) ? 32'd0 : (xz >> ovsh[4:0])) & ov_ones;
+    wire [31:0] ov_field = ((ovsh >= 6'd32) ? 32'd0 : r_res) & ov_ones;   // r_res: see r_amt
 
     always_comb begin
         ov = 1'b0;

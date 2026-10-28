@@ -213,12 +213,71 @@ task rf_poke(input [4:0] n, input [31:0] v);
 endtask
 `endif
 reg [31:0] pc;
-reg [31:0] sbr, sycw, tkcw, pir, psw2;
-reg [31:0] isp, l0sp, l1sp, l2sp, l3sp;   // shadow stacks (inactive copies)
-reg [31:0] atbr0, atlr0, atbr1, atlr1, atbr2, atlr2, atbr3, atlr3;
-reg [31:0] trmode;
-reg [31:0] adtr0, adtr1, adtmr0, adtmr1;
+reg [31:0] sbr, sycw, tkcw;
+// THE FIVE BANKED STACK POINTERS (ISP, L0SP-L3SP) ARE AN MLAB, entries 0-4 in
+// STPR/LDPR order. They were 160 flip-flops read through a 5:1 32-bit mux at
+// every PSW writer (pick_stack, inlined six times with six different new-PSW
+// values), at STPR and at STTASK. One asynchronous read now serves all of
+// them, its address chosen by state (stk_ra, below); one write per cycle is
+// all the core ever does. S_RESET's clear is kept with a valid bit per entry,
+// and the write of the previous clock is bypassed - LDTASK reads the pointer
+// it loaded the cycle before.
+(* ramstyle = "MLAB, no_rw_check" *) reg [31:0] stk_mem [0:7];
+reg [4:0]  stk_v = 5'd0;          // entry written since S_RESET
+reg        stk_bw_v = 1'b0;       // an entry was written last clock...
+reg [2:0]  stk_bw_a = 3'd0;       // ...this one...
+reg [31:0] stk_bw_d = 32'd0;      // ...with this
+function automatic [2:0] stk_idx(input [31:0] p);   // the bank a PSW selects
+    stk_idx = p[28] ? 3'd0 : ({1'b0, p[25:24]} + 3'd1);
+endfunction
 reg [31:0] trr;                  // TR task register
+// THE PRIVILEGED REGISTERS NOTHING BUT LDPR AND STPR TOUCH LIVE IN AN MLAB.
+//
+// PIR (9), PSW2 (15), ATBR0-3/ATLR0-3 (16-23), TRMODE (24), ADTR0-1 (25-26)
+// and ADTMR0-1 (27-28) are written only by LDPR and read only by STPR - no
+// address translation, trap or debug logic here uses them - so they are
+// storage, and fifteen 32-bit registers of flip-flops plus their share of
+// STPR's read mux is a lot of ALM for storage. One MLAB, addressed by the
+// register number itself.
+//
+// Reset is kept exactly: S_RESET clears prv_v, and a register that has not
+// been written since reads its reset value (PIR 0x6000/0x7000, PSW2 0xF002,
+// the rest 0). LDPR's write is many cycles ahead of any STPR read (S_NEXT and
+// a refill lie between), so the MLAB's write-to-read timing is never in play.
+(* ramstyle = "MLAB, no_rw_check" *) reg [31:0] prv_mem [0:31];
+reg [31:0] prv_v = 32'd0;        // register written since the last S_RESET
+function automatic prv_in_mlab(input [4:0] n);
+    prv_in_mlab = (n == 5'd9) || (n >= 5'd15 && n <= 5'd28);
+endfunction
+function automatic [31:0] prv_reset_val(input [4:0] n);
+    prv_reset_val = (n == 5'd9)  ? (IS_V70 ? 32'h0000_7000 : 32'h0000_6000) :
+                    (n == 5'd15) ? 32'h0000_f002 : 32'h0000_0000;
+endfunction
+// Named views for simulation: tb_v60_audit checks ATBR0..ADTMR1 and PIR by
+// name after an LDPR sweep. Read from the MLAB exactly as STPR reads it.
+`ifdef VERILATOR
+ `define V60_PRV_VIEWS
+`endif
+`ifdef __ICARUS__
+ `define V60_PRV_VIEWS
+`endif
+`ifdef V60_PRV_VIEWS
+wire [31:0] pir    = prv_v[9]  ? prv_mem[9]  : prv_reset_val(5'd9);
+wire [31:0] psw2   = prv_v[15] ? prv_mem[15] : prv_reset_val(5'd15);
+wire [31:0] atbr0  = prv_v[16] ? prv_mem[16] : 32'd0;
+wire [31:0] atlr0  = prv_v[17] ? prv_mem[17] : 32'd0;
+wire [31:0] atbr1  = prv_v[18] ? prv_mem[18] : 32'd0;
+wire [31:0] atlr1  = prv_v[19] ? prv_mem[19] : 32'd0;
+wire [31:0] atbr2  = prv_v[20] ? prv_mem[20] : 32'd0;
+wire [31:0] atlr2  = prv_v[21] ? prv_mem[21] : 32'd0;
+wire [31:0] atbr3  = prv_v[22] ? prv_mem[22] : 32'd0;
+wire [31:0] atlr3  = prv_v[23] ? prv_mem[23] : 32'd0;
+wire [31:0] trmode = prv_v[24] ? prv_mem[24] : 32'd0;
+wire [31:0] adtr0  = prv_v[25] ? prv_mem[25] : 32'd0;
+wire [31:0] adtr1  = prv_v[26] ? prv_mem[26] : 32'd0;
+wire [31:0] adtmr0 = prv_v[27] ? prv_mem[27] : 32'd0;
+wire [31:0] adtmr1 = prv_v[28] ? prv_mem[28] : 32'd0;
+`endif
 
 // PSW fields (MAME bit layout: Z=b0,S=b1,OV=b2,CY=b3,IE=b18,EL=b25:24,IS=b28)
 reg f_z, f_s, f_ov, f_cy;
@@ -336,10 +395,12 @@ reg        md_divov;             // DIV: signed min/-1 overflow (dest unchanged)
 // DIVX/DIVUX use a 64-bit dividend.  Keeping this path separate from the
 // 32-bit MUL/DIV accumulator avoids a 96-bit combined remainder/quotient
 // register and, critically, avoids synthesizing a combinational 64/32 divide.
-reg [63:0] xdiv_shift;
+// DIVX's dividend/quotient shifter, divisor and counter ARE mdacc, mdop and
+// mdcnt: the 64-iteration DIVX and the 32-iteration MUL/DIV/REM never run at
+// once, each initialises the registers when it starts, and nothing reads them
+// outside its own states. Sharing them drops 102 flip-flops. (xdiv_rem has no
+// counterpart and stays.)
 reg [32:0] xdiv_rem;
-reg [31:0] xdiv_den;
-reg  [5:0] xdiv_cnt;
 reg  [4:0] xdiv_dst;
 reg        xdiv_qneg, xdiv_rneg;
 reg        xdiv_active;
@@ -357,12 +418,12 @@ reg [31:0] op2val;          // loaded value of a memory op2 (V60-1)
 reg        ea_isval;        // EA mode was an immediate: result is a pure
                             // value, no address exists (quick + full imm)
 reg signed [7:0] rotc_cnt;
-reg [31:0] rotc_val;
+// ROTC's working value lives in alu_r (see the register-sharing note below).
 reg        op2val_v;
 reg [2:0]  rmw_kind;   // 0=INC 1=DEC 2=SET1 3=CLR1 4=NOT1 5=TEST1
 reg [1:0]  rmw_dim;
 reg [31:0] xch_addr;
-reg [31:0] task_mask, task_addr;
+// LDTASK/STTASK's mask and pointer live in str_fi/str_faddr (see below).
 reg [5:0]  task_phase;
 reg        task_reloaded;
 // V60 F1 encodings can carry two nine-byte effective-address operands:
@@ -390,8 +451,8 @@ reg [15:0] dec_res;            // result awaiting memory write-back
 // SUBFS/MULFS/DIVFS/CVTWS/CVTSW).  op7a-style F2 decode: op1 = ReadAM value,
 // op2 = ReadAM (CMPF) / WriteAM (MOVFS/CVTWS/CVTSW) / ReadAMAddress RMW (rest).
 `ifndef S32_V60_NO_FP
-reg [31:0] fp_a, fp_b;         // operand float bit patterns (a=op1, b=op2)
-reg [31:0] fp_res;             // packed binary32 result awaiting writeback
+reg [31:0] fp_b;               // op2's float bit pattern (op1's is op1 itself)
+// The packed result awaiting writeback lives in wb_val (see below).
 reg        fp_op2_reg;         // op2 destination is a register (else memory)
 
 // THE FP GROUP IS ITS OWN MODULE. rtl/cpu/v60/v60_fp.sv owns the arithmetic,
@@ -414,7 +475,7 @@ reg        bam_second;         // decoding the second BAM operand
 reg [1:0]  bam_flow;           // 0=EXTBF 1=INSBF 2=SCHBS 3=MOVBS
 reg [31:0] bit_len;            // field/string length
 reg [31:0] bit_val;            // op1 value / dword scratch
-reg [31:0] bs_base1, bs_off1;  // MOVBS first-operand result
+// MOVBS's first-operand base and offset live in str_len1/str_len2 (see below).
 reg [2:0]  bs_soff, bs_doff;   // bit positions in current bytes
 reg [7:0]  bs_sdata, bs_ddata; // current source/dest bytes
 reg [1:0]  bs_ph;              // MOVB per-bit micro-phase
@@ -455,11 +516,11 @@ st_t st, st_after_ea, st_after_fill;
 
 // One restoring-division bit per enabled CPU clock.  The 33-bit trial value
 // is the only compare/subtract datapath used for all 64 dividend bits.
-wire [32:0] xdiv_trial = {xdiv_rem[31:0], xdiv_shift[63]};
-wire        xdiv_take = xdiv_trial >= {1'b0, xdiv_den};
+wire [32:0] xdiv_trial = {xdiv_rem[31:0], mdacc[63]};
+wire        xdiv_take = xdiv_trial >= {1'b0, mdop};
 wire [32:0] xdiv_rem_next = xdiv_take
-                            ? xdiv_trial - {1'b0, xdiv_den} : xdiv_trial;
-wire [63:0] xdiv_shift_next = {xdiv_shift[62:0], xdiv_take};
+                            ? xdiv_trial - {1'b0, mdop} : xdiv_trial;
+wire [63:0] xdiv_shift_next = {mdacc[62:0], xdiv_take};
 wire [31:0] xdiv_qresult = xdiv_qneg
                            ? (~xdiv_shift_next[31:0] + 1'b1)
                            : xdiv_shift_next[31:0];
@@ -524,8 +585,15 @@ function automatic [7:0] bin2bcd(input [6:0] v);   // 0-99 -> packed BCD
 endfunction
 
 // C-style truncating divide-by-8 of a signed bit offset (MAME bamoffset/8)
+// Rounding toward zero is rounding UP for a negative offset, and that is
+// (off + 7) >>> 3: the same value as negate-shift-negate for every 32-bit
+// input, including 0x80000000 (both give 0xF0000000) and -1..-7 (both 0),
+// with one adder where there were two negators. Three callers (bam_byte and
+// MOVBS's two operands).
 function automatic [31:0] bitdiv8(input [31:0] off);
-    bitdiv8 = off[31] ? (32'h0 - ((32'h0 - off) >> 3)) : (off >> 3);
+    logic [31:0] t;
+    t = off + (off[31] ? 32'd7 : 32'd0);
+    bitdiv8 = {{3{t[31]}}, t[31:3]};
 endfunction
 
 function automatic [31:0] dimext(input [31:0] v, input [1:0] d);
@@ -547,6 +615,9 @@ endfunction
 // the decoders here avoids rebuilding a 32-way write network at every
 // syntactic assignment site in the monolithic instruction FSM.
 reg        rf_we0, rf_we1;
+reg        wbq_go;               // wb_op2 was called this cycle (see wb_op2)
+reg [31:0] wbq_v;
+reg [1:0]  wbq_d;
 reg [4:0]  rf_waddr0, rf_waddr1;
 reg [31:0] rf_wdata0, rf_wdata1;
 // THE WRITE MASK IS A LANE PATTERN, NOT AN ARBITRARY 32 BITS, AND HOLDING IT
@@ -633,51 +704,21 @@ task automatic setreg(input [4:0] rn, input [31:0] v, input [1:0] d);
 endtask
 
 // stack-bank bookkeeping: swap active SP when PSW level/IS changes
+task automatic stk_write(input [2:0] a, input [31:0] v);
+    stk_mem[a] <= v;
+    stk_v[a]   <= 1'b1;
+    stk_bw_v   <= 1'b1;
+    stk_bw_a   <= a;
+    stk_bw_d   <= v;
+endtask
 task automatic save_stack(input [31:0] oldpsw);
-    if (oldpsw[28]) isp <= rf_r31;
-    else case (oldpsw[25:24])
-        2'd0: l0sp <= rf_r31; 2'd1: l1sp <= rf_r31;
-        2'd2: l2sp <= rf_r31; 2'd3: l3sp <= rf_r31;
-    endcase
+    stk_write(stk_idx(oldpsw), rf_r31);
 endtask
-function automatic [31:0] pick_stack(input [31:0] newpsw);
-    if (newpsw[28]) pick_stack = isp;
-    else case (newpsw[25:24])
-        2'd0: pick_stack = l0sp; 2'd1: pick_stack = l1sp;
-        2'd2: pick_stack = l2sp; 2'd3: pick_stack = l3sp;
-    endcase
-endfunction
+// pick_stack(newpsw) is stk_q: every caller's state puts stk_idx(newpsw) on
+// stk_ra - see the table there.
 
-task automatic write_psw_after_sp(input [31:0] v, input [31:0] sp_now);
-    if (((v ^ psw) & 32'h1000_0000) != 0 ||
-        (!psw[28] && ((v ^ psw) & 32'h0300_0000) != 0)) begin
-        if (psw[28]) isp <= sp_now;
-        else case (psw[25:24])
-            2'd0: l0sp <= sp_now; 2'd1: l1sp <= sp_now;
-            2'd2: l2sp <= sp_now; 2'd3: l3sp <= sp_now;
-        endcase
-        queue_reg_write(5'd31, pick_stack(v), 32'hffff_ffff);
-    end
-    psw_rest <= v;
-    f_z  <= v[0];
-    f_s  <= v[1];
-    f_ov <= v[2];
-    f_cy <= v[3];
-endtask
-
-task automatic write_psw(input [31:0] v);
-    // stack switch on IS change, or EL change while IS=0 (MAME v60WritePSW)
-    if (((v ^ psw) & 32'h1000_0000) != 0 ||
-        (!psw[28] && ((v ^ psw) & 32'h0300_0000) != 0)) begin
-        save_stack(psw);
-        queue_reg_write(5'd31, pick_stack(v), 32'hffff_ffff);
-    end
-    psw_rest <= v;
-    f_z  <= v[0];
-    f_s  <= v[1];
-    f_ov <= v[2];
-    f_cy <= v[3];
-endtask
+// write_psw and write_psw_after_sp sit below stk_q, which they read:
+// Icarus binds names in source order.
 
 // ---------------------------------------------------------------------------
 // EA engine (combinational mode/extension parse; sequential memory derefs)
@@ -730,6 +771,15 @@ wire [7:0] fb_ea2 = fb[ea_ofs+2];
 wire [7:0] fb_ea3 = fb[ea_ofs+3];
 wire [7:0] fb_ea4 = fb[ea_ofs+4];
 wire [7:0] fb_ea5 = fb[ea_ofs+5];
+// THE SECOND DISPLACEMENT OF A DOUBLE-DISPLACEMENT MODE, FROM FIXED OFFSETS.
+// It starts right after the first, at ea_ofs + 1 + 1/2/4, so its bytes are
+// fb_ea2 (byte), fb_ea3..4 (half) or fb_ea5..8 (word). It used to be read as
+// disp_of(ea_ofs+1+disp_len(sz)) - a 4-byte 24:1 extraction at a runtime
+// offset, inlined at three sites with two different size fields (modtop and
+// modreg), so each built its own. Three more fixed-offset bytes serve all.
+wire [7:0] fb_ea6 = fb[ea_ofs+6];
+wire [7:0] fb_ea7 = fb[ea_ofs+7];
+wire [7:0] fb_ea8 = fb[ea_ofs+8];
 wire [31:0] fbw_ea1 = {fb_ea4, fb_ea3, fb_ea2, fb_ea1};
 wire [31:0] fbw_ea2 = {fb_ea5, fb_ea4, fb_ea3, fb_ea2};
 
@@ -945,6 +995,14 @@ endfunction
 function automatic [31:0] disp_of(input [4:0] base, input [1:0] sz);
     disp_of = disp_from(fb32(base), sz);
 endfunction
+// Read in clocked arms only (see the fb32 warning above): the bytes are wires.
+function automatic [31:0] disp2_of(input [1:0] sz);
+    case (sz)
+        2'd0:    disp2_of = {{24{fb_ea2[7]}}, fb_ea2};
+        2'd1:    disp2_of = {{16{fb_ea4[7]}}, fb_ea4, fb_ea3};
+        default: disp2_of = {fb_ea8, fb_ea7, fb_ea6, fb_ea5};
+    endcase
+endfunction
 function automatic [4:0] disp_len(input [1:0] sz);
     disp_len = (sz==2'd0) ? 5'd1 : (sz==2'd1) ? 5'd2 : 5'd4;
 endfunction
@@ -965,6 +1023,181 @@ endfunction
 function automatic [31:0] dim_step(input [1:0] d);
     dim_step = (d==2'd0) ? 32'd1 : (d==2'd1) ? 32'd2 : 32'd4;
 endfunction
+
+// ---------------------------------------------------------------------------
+// STRING COMPLETION ARITHMETIC, ONCE.
+//
+// CMPC and MOVC both finish by publishing R28/R27 as a base plus a scaled
+// element index, from three states (S_STR_RD on exhaustion, S_STR_WR on a
+// mismatch or stop byte, S_STR_NEXT on the last element) with three different
+// index expressions. Written inline, every site built its own comparator,
+// subtractors, shifters and adders. Here the index is chosen by state and the
+// rest is shared; the sites only route str_r28/str_r27. Same values, same
+// cycles: each state reads exactly the expression it used to compute.
+//
+//   CMPC:      R28 = len1 + i*step               R27 = len2 + i*step
+//   MOVC up:   R28 = op1  + i*step               R27 = op2  + i*step
+//   MOVC down: R28 = op1  + (len1-i-1)*step      R27 = op2  + (len2-i-1)*step
+//
+// where i is cmin (exhausted / copied all), cmin - str_cnt (broke at this
+// element) or 0 (zero-length MOVC).
+// ---------------------------------------------------------------------------
+wire        str_l1lt   = (str_len1 < str_len2);
+wire [31:0] str_cmin   = str_l1lt ? str_len1 : str_len2;
+wire [4:0]  str_shf    = cur_op[1] ? 5'd1 : 5'd0;      // 0x58 byte / 0x5a half
+wire [31:0] str_step   = cur_op[1] ? 32'd2 : 32'd1;
+wire        str_cmpc   = (subop[4:0] <= 5'h02);
+wire        str_isfill = (subop[4:0] == 5'h0a) || (subop[4:0] == 5'h0b);
+wire [31:0] str_x      = (st == S_STR_WR)              ? (str_cmin - str_cnt) :
+                         (st == S_STR_RD && !str_cmpc) ? 32'd0 : str_cmin;
+wire        str_down   = !str_cmpc && subop[0];        // MOVCD / MOVCFD
+wire [31:0] str_off28  = str_down ? (str_len1 - str_x - 32'd1) : str_x;
+wire [31:0] str_off27  = str_down ? (str_len2 - str_x - 32'd1) : str_x;
+wire [31:0] str_r28    = (str_cmpc ? str_len1 : op1) + (str_off28 << str_shf);
+wire [31:0] str_r27    = (str_cmpc ? str_len2 : op2) + (str_off27 << str_shf);
+
+// Two bit-field expressions each written out at three and two states: the
+// byte a bit offset falls in, and the field-length mask. Identical text in
+// different case arms is not reliably shared (findings: mb86233_alu's two
+// byte-identical shifters were both built), so they are wires.
+wire [31:0] bam_byte = bam_base + bitdiv8(bam_off);
+wire [31:0] bf_mask  = (32'h1 << bit_len[4:0]) - 32'h1;
+// ONE BARREL SHIFTER FOR BOTH BIT-FIELD SHIFTS. EXTBFL shifts its field LEFT
+// by 32-len and INSBFL shifts its source RIGHT by the same amount, in
+// different states. A right shift is the bit-reversal of a left shift of the
+// bit-reversed value (reversal is wiring), so one left shifter takes the
+// state's operand. Exact for every amount, including 32 (both give 0).
+function automatic [31:0] bf_rev(input [31:0] x);
+    for (int i = 0; i < 32; i++) bf_rev[i] = x[31 - i];
+endfunction
+wire [31:0] bf_v_ext = (bit_val >> bam_off[2:0]) & bf_mask;      // EXTBF*'s field
+wire [31:0] bf_sh    = ((st == S_BF_INSWR) ? bf_rev(op1) : bf_v_ext)
+                       << (6'd32 - {1'b0, bit_len[4:0]});
+
+// DIVX/DIVUX SET-UP, ONCE. The register form (S_EXEC) and the memory form
+// (S_DIVXM_RH) took the magnitude of a 64-bit dividend and a 32-bit divisor
+// with identical code on different dividends, so each built its own 64-bit and
+// 32-bit negators. The dividend is chosen by state; the rest is shared.
+wire [63:0] xdv_num     = (st == S_DIVXM_RH) ? {bus_rdata, op2val} : {rf_rdata_a, rf_rdata_b};
+wire        xdv_signed  = (cur_op == 8'ha6);               // DIVX; DIVUX is 0xb6
+wire [63:0] xdv_mag_num = (xdv_signed && xdv_num[63]) ? (~xdv_num + 1'b1) : xdv_num;
+wire [31:0] xdv_mag_den = (xdv_signed && op1[31])     ? (~op1 + 1'b1)     : op1;
+wire        xdv_qneg    = xdv_signed & (xdv_num[63] ^ op1[31]);
+wire        xdv_rneg    = xdv_signed & xdv_num[63];
+
+// STPR's read of the privileged-register MLAB (see prv_mem).
+wire [31:0] prv_q = prv_mem[op1[4:0]];
+
+// ---------------------------------------------------------------------------
+// THE ADDRESSING ADDERS, ONCE EACH.
+//
+// S_EA_MODE and its near-duplicate S_BAM_MODE form the same few addresses in
+// many arms, and the arms did not write them the same way: a displacement
+// indirect mode passes `modtop - 4` where a displacement mode passes
+// `modtop[1:0]` - the same two bits for modtop 4..6 - so Quartus saw different
+// expressions and built a sign extension and a 32-bit adder per arm. Each
+// address is now one wire and the arms only route it. Same values in the same
+// cycles; rf_rdata_a/b are the same registers in both states (rf_raddr_a/b).
+//   reg + disp           5 sites      pc + disp            3 sites
+//   reg2 + disp (idx)    2 sites      pc + disp (idx)      2 sites
+//   reg +/- step         4 sites (EA autoinc/dec by the operand size, BAM by
+//                        1 for bit strings and 4 for bit fields)
+// ---------------------------------------------------------------------------
+wire [31:0] agu_ra_d1  = rf_rdata_a + disp_from(fbw_ea1, modtop[1:0]);
+wire [31:0] agu_pc_d1  = pc + disp_from(fbw_ea1, modreg[1:0]);
+wire [31:0] agu_rb_d2  = rf_rdata_b + disp_from(fbw_ea2, modval2[6:5]);
+wire [31:0] agu_pc_d2  = pc + disp_from(fbw_ea2, modval2[1:0]);
+wire [31:0] agu_step   = (st == S_BAM_MODE) ? ((cur_op == 8'h5b) ? 32'd1 : 32'd4)
+                                            : dim_step(ea_dim);
+wire [31:0] agu_ra_inc = rf_rdata_a + agu_step;
+wire [31:0] agu_ra_dec = rf_rdata_a - agu_step;
+
+// Small sums written out identically at two to eight sites each. Identical
+// text in different arms is not reliably shared, and these are 32-bit adders.
+wire [31:0] pc_p1       = pc + 32'd1;                       // one-byte opcodes
+wire [31:0] pc_ret1     = pc + 5'd1 + len1;                 // JSR, TRAP return PC
+wire [31:0] pc_ret2     = pc + 5'd2 + len1 + len2;          // CALL, CHLVL return PC
+wire [31:0] op2_p4      = op2 + 32'd4;                      // qword high half
+wire [31:0] str_faddr_p4 = str_faddr + 32'd4;
+wire [31:0] str_cnt_m1  = str_cnt - 32'd1;
+// DIV and REM negate a different half of mdacc for the sign fix-up, never
+// both: one negator, its input chosen by the opcode (REM is 0x50-0x55).
+wire [31:0] md_neg      = ~((cur_op[7:4] == 4'h5) ? mdacc[63:32] : mdacc[31:0]) + 32'd1;
+
+// The stack-pointer MLAB's one read: which entry each reader wants.
+//   PSW writers (pick_stack of the NEW PSW):
+//     S_EXC_PUSH1  the exception PSW: IS forced for interrupts, EL = target
+//     S_RETI3      the popped PSW
+//     S_POPM       PSW low half popped - IS and EL come from the current PSW
+//     S_EXEC       LDTASK (IS cleared), STTASK (IS set), UPDPSW (EL may change
+//                  for UPDPSW.W; IS is outside both widths' limits)
+//     S_TASK_LD_NEXT  phase 5: the current PSW
+//   STPR (S_EXEC 0x02): op1, 0-4.   STTASK's save (S_TASK_ST_NEXT): task_phase.
+logic [2:0] stk_ra;
+always @* begin
+    logic [1:0] el;
+    logic [31:0] m;
+    m  = (flag2 ? rf_rdata_b : op2val);
+    el = (cur_op == 8'h13) ? ((psw[25:24] & ~m[25:24]) | (op1[25:24] & m[25:24]))
+                           : psw[25:24];
+    case (st)
+        S_EXC_PUSH1:    stk_ra = (exc_is_interrupt || exc_pushval[28]) ? 3'd0
+                                 : ({1'b0, exc_target_level} + 3'd1);
+        S_RETI3:        stk_ra = stk_idx(alu_r);
+        S_TASK_ST_NEXT: stk_ra = task_phase[2:0];
+        S_EXEC: begin
+            case (cur_op)
+                8'h02:        stk_ra = op1[2:0];                          // STPR
+                8'h01:        stk_ra = {1'b0, psw[25:24]} + 3'd1;          // LDTASK: IS=0
+                8'hfc, 8'hfd: stk_ra = 3'd0;                               // STTASK: IS=1
+                default:      stk_ra = psw[28] ? 3'd0 : ({1'b0, el} + 3'd1); // UPDPSW
+            endcase
+        end
+        default:        stk_ra = stk_idx(psw);
+    endcase
+end
+wire [31:0] stk_mq = stk_mem[stk_ra];
+wire [31:0] stk_q  = (stk_bw_v && stk_bw_a == stk_ra) ? stk_bw_d :
+                     stk_v[stk_ra] ? stk_mq : 32'd0;
+
+task automatic write_psw_after_sp(input [31:0] v, input [31:0] sp_now);
+    if (((v ^ psw) & 32'h1000_0000) != 0 ||
+        (!psw[28] && ((v ^ psw) & 32'h0300_0000) != 0)) begin
+        stk_write(stk_idx(psw), sp_now);
+        queue_reg_write(5'd31, stk_q, 32'hffff_ffff);       // pick_stack(v)
+    end
+    psw_rest <= v;
+    f_z  <= v[0];
+    f_s  <= v[1];
+    f_ov <= v[2];
+    f_cy <= v[3];
+endtask
+
+task automatic write_psw(input [31:0] v);
+    // stack switch on IS change, or EL change while IS=0 (MAME v60WritePSW)
+    if (((v ^ psw) & 32'h1000_0000) != 0 ||
+        (!psw[28] && ((v ^ psw) & 32'h0300_0000) != 0)) begin
+        save_stack(psw);
+        queue_reg_write(5'd31, stk_q, 32'hffff_ffff);       // pick_stack(v)
+    end
+    psw_rest <= v;
+    f_z  <= v[0];
+    f_s  <= v[1];
+    f_ov <= v[2];
+    f_cy <= v[3];
+endtask
+
+// REGISTERS SHARED BETWEEN INSTRUCTION GROUPS THAT NEVER OVERLAP.
+// Each pair below belongs to flows that cannot both be live: each flow writes
+// its register before it reads it, and nothing outside the flow reads it.
+//   alu_r      also ROTC's rotating value (was rotc_val)
+//   wb_val     also the FP result awaiting writeback (was fp_res)
+//   str_fi     also LDTASK/STTASK's register mask (was task_mask)
+//   str_faddr  also LDTASK/STTASK's block pointer (was task_addr)
+//   str_len1   also MOVBS's first base (was bs_base1)
+//   str_len2   also MOVBS's first bit offset (was bs_off1)
+// and v60_fp takes op1 itself as `a` (was fp_a, a copy of op1 made one state
+// before the unit reads it). 224 flip-flops.
 
 // ---------------------------------------------------------------------------
 // main FSM
@@ -1003,8 +1236,12 @@ else if (ce) begin
     end
     else if (bus_ack) bus_owner <= OWN_NONE;
 
+    stk_bw_v <= 1'b0;                 // stk_write sets it for this cycle's write
     rf_we0 = 1'b0;
     rf_we1 = 1'b0;
+    wbq_go = 1'b0;
+    wbq_v  = 32'd0;
+    wbq_d  = 2'd0;
     rf_waddr0 = 5'd0;
     rf_waddr1 = 5'd0;
     rf_wdata0 = 32'd0;
@@ -1024,14 +1261,9 @@ else if (ce) begin
         sbr  <= 32'h0000_0000;
         sycw <= 32'h0000_0070;
         tkcw <= 32'h0000_e000;
-        pir  <= IS_V70 ? 32'h0000_7000 : 32'h0000_6000;
-        psw2 <= 32'h0000_f002;
-        isp <= 0; l0sp <= 0; l1sp <= 0; l2sp <= 0; l3sp <= 0;
+        prv_v <= 32'd0;                    // PIR, PSW2, ATBR.. back to reset values
+        stk_v <= 5'd0;                     // ISP, L0SP-L3SP read 0 until written
         trr <= 0;
-        atbr0 <= 0; atlr0 <= 0; atbr1 <= 0; atlr1 <= 0;
-        atbr2 <= 0; atlr2 <= 0; atbr3 <= 0; atlr3 <= 0;
-        trmode <= 0;
-        adtr0 <= 0; adtr1 <= 0; adtmr0 <= 0; adtmr1 <= 0;
         halted <= 0;
         // The fetch window resets inside v60_ifetch.
         st <= S_FILL;
@@ -1110,12 +1342,12 @@ else if (ce) begin
         casez (opcode)
         // ---- one-byte / special ----
         8'h00: begin halted <= 1'b1; st <= S_HALT; end                    // HALT
-        8'hcd: begin pc <= pc + 1; st <= S_FILL; st_after_fill <= S_DECODE; end // NOP
+        8'hcd: begin pc <= pc_p1; st <= S_FILL; st_after_fill <= S_DECODE; end // NOP
         8'hc8: begin // BRK — MAME skips this opcode (A4)
             // synthesis translate_off
             $display("V60: BRK skipped at %08x", pc);
             // synthesis translate_on
-            pc <= pc + 1; st <= S_FILL; st_after_fill <= S_DECODE;
+            pc <= pc_p1; st <= S_FILL; st_after_fill <= S_DECODE;
         end
         8'hc9: begin // BRKV (A3): only if OV; 3-word frame code 0x1501, vector 21
             if (f_ov) begin
@@ -1123,12 +1355,12 @@ else if (ce) begin
                 exc_code     <= 32'h1501_0004;   // EXCEPTION_CODE_AND_SIZE(0x1501,4)
                 exc_extra    <= pc;
                 exc_pushval  <= psw;
-                exc_retpc    <= pc + 1;
+                exc_retpc    <= pc_p1;
                 exc_has_code <= 1'b1;
                 exc_has_extra <= 1'b1;
                 st <= S_EXC_PUSH1;
             end
-            else begin pc <= pc + 1; st <= S_FILL; st_after_fill<=S_DECODE; end
+            else begin pc <= pc_p1; st <= S_FILL; st_after_fill<=S_DECODE; end
         end
 
         // ---- Bcc disp8 (0x60-0x6a,0x6c-0x6f) / disp16 equivalent ----
@@ -1171,7 +1403,7 @@ else if (ce) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= sp_m4;
             dbus_wdata <= pc + 3;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             wb_val <= pc + {{16{bd16[15]}}, bd16};
             st <= S_JSR1;
         end
@@ -1476,11 +1708,11 @@ else if (ce) begin
             if ((tkcw & 32'h0000_01f0) & ((psw & 32'h0000_1f00) >> 4)) begin
                 exc_vector <= 8'd15; exc_pushval <= psw; st <= S_EXC_PUSH1;
             end else begin
-                pc <= pc + 1; st <= S_FILL; st_after_fill<=S_DECODE;
+                pc <= pc_p1; st <= S_FILL; st_after_fill<=S_DECODE;
             end
         end
         8'h10: begin // CLRTLBA: no MMU -> one-byte NOP
-            pc <= pc + 1;
+            pc <= pc_p1;
             st <= S_FILL; st_after_fill <= S_DECODE;
         end
         8'h20, 8'h21, 8'h22, 8'h23, 8'h24, 8'h25: begin // IN/OUT -> F12 engine
@@ -1579,8 +1811,7 @@ else if (ce) begin
         if (!ea_modm) begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // Displacement
-                d1t = disp_from(fbw_ea1, modtop[1:0]);
-                ea_addr <= rf_rdata_a + d1t;
+                ea_addr <= agu_ra_d1;              // reg + disp
                 ea_len  <= 5'd1 + disp_len(modtop[1:0]);
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
             end
@@ -1590,9 +1821,8 @@ else if (ce) begin
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
             end
             3'd4, 3'd5, 3'd6: begin // Displacement Indirect (deferred)
-                d1t = disp_from(fbw_ea1, modtop - 3'd4);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= rf_rdata_a + d1t;
+                dbus_addr <= agu_ra_d1;            // modtop-4 == modtop[1:0] here
                 ea_len  <= 5'd1 + disp_len(modtop - 3'd4);
                 st <= S_EA_IND;
             end
@@ -1606,8 +1836,7 @@ else if (ce) begin
                     st <= S_EA_DONE;  // value already
                 end
                 5'h10, 5'h11, 5'h12: begin // PC displacement
-                    d1t = disp_from(fbw_ea1, modreg[1:0]);
-                    ea_addr <= pc + d1t;
+                    ea_addr <= agu_pc_d1;
                     ea_len  <= 5'd1 + disp_len(modreg[1:0]);
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
@@ -1630,9 +1859,8 @@ else if (ce) begin
                     st <= S_EA_DONE;
                 end
                 5'h18, 5'h19, 5'h1a: begin // PC displacement indirect
-                    d1t = disp_from(fbw_ea1, modreg[1:0]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                    dbus_addr <= pc + d1t;
+                    dbus_addr <= agu_pc_d1;
                     ea_len  <= 5'd1 + disp_len(modreg[1:0]);
                     st <= S_EA_IND;
                 end
@@ -1644,10 +1872,9 @@ else if (ce) begin
                     st <= S_EA_IND;
                 end
                 5'h1c, 5'h1d, 5'h1e: begin // PC double displacement
-                    d1t = disp_from(fbw_ea1, modreg[1:0]);
-                    d2t = disp_of(ea_ofs+1+disp_len(modreg[1:0]), modreg[1:0]);
+                    d2t = disp2_of(modreg[1:0]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                    dbus_addr <= pc + d1t;
+                    dbus_addr <= agu_pc_d1;
                     ea_addr <= d2t;      // second disp follows first
                     ea_len  <= double_disp_len(modreg[1:0]); // 1 + 2*len
                     st <= S_EA_IND2;
@@ -1662,10 +1889,9 @@ else if (ce) begin
         else begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // Double displacement: [[reg+d1]+d2]
-                d1t = disp_from(fbw_ea1, modtop[1:0]);
-                d2t = disp_of(ea_ofs+1+disp_len(modtop[1:0]), modtop[1:0]);
+                d2t = disp2_of(modtop[1:0]);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= rf_rdata_a + d1t;
+                dbus_addr <= agu_ra_d1;
                 ea_addr  <= d2t;
                 ea_len   <= double_disp_len(modtop[1:0]);
                 st <= S_EA_IND2;
@@ -1681,21 +1907,20 @@ else if (ce) begin
             end
             3'd4: begin             // Autoincrement
                 ea_addr <= rf_rdata_a;
-                queue_reg_write(modreg, rf_rdata_a + dim_step(ea_dim), 32'hffff_ffff);
+                queue_reg_write(modreg, agu_ra_inc, 32'hffff_ffff);
                 ea_len <= 5'd1;
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
             end
             3'd5: begin             // Autodecrement
-                ea_addr <= rf_rdata_a - dim_step(ea_dim);
-                queue_reg_write(modreg, rf_rdata_a - dim_step(ea_dim), 32'hffff_ffff);
+                ea_addr <= agu_ra_dec;
+                queue_reg_write(modreg, agu_ra_dec, 32'hffff_ffff);
                 ea_len <= 5'd1;
                 st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
             end
             3'd6: begin             // Group 6: indexed, second mode byte
                 case (modval2[7:5])
                 3'd0, 3'd1, 3'd2: begin // Displacement indexed: [reg2+disp] + reg1*size
-                    d1t = disp_from(fbw_ea2, modval2[6:5]);
-                    ea_addr <= rf_rdata_b + d1t + ea_index;
+                    ea_addr <= agu_rb_d2 + ea_index;
                     ea_len  <= 5'd2 + disp_len(modval2[6:5]);
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
@@ -1705,9 +1930,8 @@ else if (ce) begin
                     st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                 end
                 3'd4, 3'd5, 3'd6: begin // Displacement indirect indexed
-                    d1t = disp_from(fbw_ea2, modval2[6:5]);
                     dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                    dbus_addr <= rf_rdata_b + d1t;
+                    dbus_addr <= agu_rb_d2;
                     ea_addr <= ea_index;  // index added after deref
                     ea_len  <= 5'd2 + disp_len(modval2[6:5]);
                     st <= S_EA_IND2;
@@ -1718,8 +1942,7 @@ else if (ce) begin
                     end
                     else case (modval2[3:0])
                     4'h0, 4'h1, 4'h2: begin
-                        d1t = disp_from(fbw_ea2, modval2[1:0]);
-                        ea_addr <= pc + d1t + ea_index;
+                        ea_addr <= agu_pc_d2 + ea_index;
                         ea_len  <= 5'd2 + disp_len(modval2[1:0]);
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
@@ -1730,9 +1953,8 @@ else if (ce) begin
                         st <= st_t'(ea_want_addr ? S_EA_DONE : S_EA_VAL);
                     end
                     4'h8, 4'h9, 4'ha: begin
-                        d1t = disp_from(fbw_ea2, modval2[1:0]);
                         dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                        dbus_addr <= pc + d1t;
+                        dbus_addr <= agu_pc_d2;
                         ea_addr <= ea_index;
                         ea_len  <= 5'd2 + disp_len(modval2[1:0]);
                         st <= S_EA_IND2;
@@ -1863,9 +2085,9 @@ else if (ce) begin
     // including low-32 quotient truncation when the mathematical result is
     // wider than the destination register.
     S_DIVX: begin
-        xdiv_shift <= xdiv_shift_next;
+        mdacc <= xdiv_shift_next;
         xdiv_rem <= xdiv_rem_next;
-        if (xdiv_cnt == 6'd63) begin
+        if (mdcnt == 6'd63) begin
             f_z <= (xdiv_qresult == 0);
             f_s <= xdiv_qresult[31];
             // MAME opDIVX/opDIVUX set only S/Z and leave OV unchanged; do not clear it.
@@ -1882,7 +2104,7 @@ else if (ce) begin
                 st <= S_NEXT;
             end
         end
-        else xdiv_cnt <= xdiv_cnt + 1'd1;
+        else mdcnt <= mdcnt + 1'd1;
     end
 
     // ROTC: 1 bit/cycle through carry (V60-5)
@@ -1890,9 +2112,9 @@ else if (ce) begin
         if (rotc_cnt == 0) begin
             logic [1:0] d2l;
             d2l = f12_dim2(cur_op);
-            set_zs(rotc_val, d2l);
+            set_zs(alu_r, d2l);
             f_ov <= 0;
-            wb_op2(rotc_val, d2l);
+            wb_op2(alu_r, d2l);
             // Same dropped-store pattern as S_IN_RD: the guard read the OLD st,
             // so a memory destination's S_WB_MEM was always overridden. Found by
             // scanning for the pattern after the IN fix, not by a failing test.
@@ -1902,13 +2124,13 @@ else if (ce) begin
             logic [1:0] d2l;
             logic msb;
             d2l = f12_dim2(cur_op);
-            msb = sgn(rotc_val, d2l);
+            msb = sgn(alu_r, d2l);
             // MAME opROTC*: the carry bit enters the active operand's LSB;
             // bits above a byte/halfword operand are not part of the ring.
             case (d2l)
-                2'd0: rotc_val <= {24'b0, rotc_val[6:0], f_cy};
-                2'd1: rotc_val <= {16'b0, rotc_val[14:0], f_cy};
-                default: rotc_val <= {rotc_val[30:0], f_cy};
+                2'd0: alu_r <= {24'b0, alu_r[6:0], f_cy};
+                2'd1: alu_r <= {16'b0, alu_r[14:0], f_cy};
+                default: alu_r <= {alu_r[30:0], f_cy};
             endcase
             f_cy <= msb;
             rotc_cnt <= rotc_cnt - 8'sd1;
@@ -1917,13 +2139,13 @@ else if (ce) begin
             logic [1:0] d2l;
             logic ls;
             d2l = f12_dim2(cur_op);
-            ls = rotc_val[0];
+            ls = alu_r[0];
             // Right rotate-through-carry enters at bit 7/15/31 according
             // to the destination width (op12.hxx opROTCB/H/W).
             case (d2l)
-                2'd0: rotc_val <= {24'b0, f_cy, rotc_val[7:1]};
-                2'd1: rotc_val <= {16'b0, f_cy, rotc_val[15:1]};
-                default: rotc_val <= {f_cy, rotc_val[31:1]};
+                2'd0: alu_r <= {24'b0, f_cy, alu_r[7:1]};
+                2'd1: alu_r <= {16'b0, f_cy, alu_r[15:1]};
+                default: alu_r <= {f_cy, alu_r[31:1]};
             endcase
             f_cy <= ls;
             rotc_cnt <= rotc_cnt + 8'sd1;
@@ -2001,28 +2223,16 @@ else if (ce) begin
     // op2val), set up the restoring divide, and mark the result for memory
     // writeback (audit V60-9).
     S_DIVXM_RH: begin
-        if (!dbus_req) begin dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= op2 + 32'd4; end
+        if (!dbus_req) begin dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2; dbus_addr <= op2_p4; end
         else if (dack) begin
-            logic [63:0] num, mag_num;
-            logic [31:0] mag_den;
             dbus_req <= 0;
-            num = {bus_rdata, op2val};   // {high, low}
-            if (cur_op == 8'ha6) begin   // DIVX (signed)
-                mag_num = num[63] ? (~num + 1'b1) : num;
-                mag_den = op1[31] ? (~op1 + 1'b1) : op1;
-                xdiv_qneg <= num[63] ^ op1[31];
-                xdiv_rneg <= num[63];
-            end
-            else begin                   // DIVUX (unsigned)
-                mag_num = num;
-                mag_den = op1;
-                xdiv_qneg <= 1'b0;
-                xdiv_rneg <= 1'b0;
-            end
-            xdiv_shift  <= mag_num;
+            // dividend {bus_rdata, op2val} = {high, low}: see xdv_num
+            xdiv_qneg <= xdv_qneg;
+            xdiv_rneg <= xdv_rneg;
+            mdacc  <= xdv_mag_num;
             xdiv_rem    <= 0;
-            xdiv_den    <= mag_den;
-            xdiv_cnt    <= 0;
+            mdop    <= xdv_mag_den;
+            mdcnt    <= 0;
             xdiv_active <= 1'b1;
             divx_mem    <= 1'b1;
             st <= S_DIVX;
@@ -2108,7 +2318,7 @@ else if (ce) begin
         else if (dack) begin dbus_req <= 0; dbus_we <= 0; st <= S_MOVD_WH; end
     end
     S_MOVD_WH: begin
-        if (!dbus_req) begin dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2; dbus_addr <= op2 + 32'd4; dbus_wdata <= movd_hi; end
+        if (!dbus_req) begin dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2; dbus_addr <= op2_p4; dbus_wdata <= movd_hi; end
         else if (dack) begin dbus_req <= 0; dbus_we <= 0; st <= S_NEXT; end
     end
 
@@ -2153,7 +2363,7 @@ else if (ce) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= sp_m4;
             dbus_wdata <= wb_val;          // return PC
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
         end
         else if (dack) begin           // return-PC push done
             dbus_req <= 0; dbus_we <= 0;
@@ -2166,7 +2376,7 @@ else if (ce) begin
     S_RET1: if (dack) begin
         dbus_req <= 0;
         pc <= bus_rdata;
-        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, sp_p4, 32'hffff_ffff);
         st <= S_RET2;
     end
     S_RET2: begin
@@ -2177,7 +2387,7 @@ else if (ce) begin
         else if (dack) begin
             dbus_req <= 0;
             queue_reg_write(5'd29, bus_rdata, 32'hffff_ffff); // AP (R29)
-            queue_reg_write(5'd31, rf_r31 + 4 + wb_val, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_p4 + wb_val, 32'hffff_ffff);
             st <= S_FILL; st_after_fill <= S_DECODE;
         end
     end
@@ -2212,8 +2422,8 @@ else if (ce) begin
     S_DISP1: if (dack) begin
         dbus_req <= 0;
         queue_reg_write(5'd30, bus_rdata, 32'hffff_ffff); // FP = R30
-        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
-        pc <= pc + 1;
+        queue_reg_write(5'd31, sp_p4, 32'hffff_ffff);
+        pc <= pc_p1;
         st <= S_FILL; st_after_fill <= S_DECODE;
     end
 
@@ -2221,7 +2431,7 @@ else if (ce) begin
     S_RSR: if (dack) begin
         dbus_req <= 0;
         pc <= bus_rdata;
-        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, sp_p4, 32'hffff_ffff);
         st <= S_FILL; st_after_fill <= S_DECODE;
     end
 
@@ -2235,13 +2445,13 @@ else if (ce) begin
             // push highest set register first (MAME pushes from r31 down? actual: PUSHM pushes ascending list to stack)
             // idx = lowest set bit; push in increasing register order
             logic [4:0] idx;
-            idx = pushm_index(op1);
+            idx = rf_raddr_a;           // == pushm_index(op1) in S_PUSHM; one encoder, not two
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
             dbus_addr <= sp_m4;
             // Mask bit 31 pushes PSW, not r31 (audit R20 V60-11): the old code
             // pushed the SP value there and PSW save/restore was lost.
             dbus_wdata <= (idx == 5'd31) ? psw : rf_rdata_a;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             reg_ptr <= idx;
         end
         else if (dack) begin
@@ -2269,7 +2479,7 @@ else if (ce) begin
                 write_psw((psw & 32'hffff_0000) | (bus_rdata & 32'h0000_ffff));
             else
                 queue_reg_write(reg_ptr, bus_rdata, 32'hffff_ffff);
-            queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_p4, 32'hffff_ffff);
             op1[reg_ptr] <= 1'b0;
         end
     end
@@ -2308,8 +2518,8 @@ else if (ce) begin
     // PREPARE: push FP, FP=SP, SP-=imm
     S_PREP1: if (dack) begin
         dbus_req <= 0; dbus_we <= 0;
-        queue_reg_write(5'd30, rf_r31 - 4, 32'hffff_ffff); // FP = R30
-        queue_reg_write(5'd31, rf_r31 - 4 - op1, 32'hffff_ffff);
+        queue_reg_write(5'd30, sp_m4, 32'hffff_ffff); // FP = R30
+        queue_reg_write(5'd31, sp_m4 - op1, 32'hffff_ffff);
         st <= S_NEXT;
     end
 
@@ -2431,18 +2641,14 @@ else if (ce) begin
                 // compare (MAME opCMPSTR tail).  The index must be scaled by the
                 // element size — halfword CMPC previously stored len+min (audit
                 // V60-13 residual: byte was correct, halfword off by *2).
-                logic [31:0] cmin;
-                logic [4:0]  shf;
-                shf  = cur_op[1] ? 5'd1 : 5'd0;
-                cmin = (str_len1 < str_len2) ? str_len1 : str_len2;
-                queue_reg_write(5'd28, str_len1 + (cmin << shf), 32'hffff_ffff);
-                queue_reg_write(5'd27, str_len2 + (cmin << shf), 32'hffff_ffff);
+                queue_reg_write(5'd28, str_r28, 32'hffff_ffff);   // len1 + cmin*step
+                queue_reg_write(5'd27, str_r27, 32'hffff_ffff);   // len2 + cmin*step
                 if (str_len1 > str_len2)      begin f_s <= 1'b1; f_z <= 1'b0; end
                 else if (str_len2 > str_len1) begin f_s <= 1'b0; f_z <= 1'b0; end
                 else                          begin f_s <= 1'b0; f_z <= 1'b1; end
                 st <= S_NEXT;
             end
-            else movc_finish(32'd0);   // zero-length MOVC/MOVCF tail registers
+            else movc_finish();   // zero-length MOVC/MOVCF tail registers
         end
         else if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0;
@@ -2473,7 +2679,7 @@ else if (ce) begin
                 end
                 else begin
                     str_src <= subop[0] ? str_src - (cur_op[1]?2:1) : str_src + (cur_op[1]?2:1);
-                    str_cnt <= str_cnt - 1;
+                    str_cnt <= str_cnt_m1;
                     st <= S_STR_RD;
                 end
             end
@@ -2505,20 +2711,17 @@ else if (ce) begin
                 // (byte was correct, halfword previously dropped the *2).  CMPCS
                 // (0x02, bStop) additionally breaks with CY=0 when either element
                 // equals the R26 fill byte (audit V60-13 + fill/stop completion).
-                logic [31:0] a, b, cmin, ci;
-                logic [4:0]  shf;
+                logic [31:0] a, b;
                 logic [31:0] fb26;
-                shf  = cur_op[1] ? 5'd1 : 5'd0;
                 a = cur_op[1] ? {16'b0,alu_r[15:0]} : {24'b0,alu_r[7:0]};
                 b = cur_op[1] ? {16'b0,bus_rdata[15:0]} : {24'b0,bus_rdata[7:0]};
                 fb26 = cur_op[1] ? {16'b0, rf_r26[15:0]} : {24'b0, rf_r26[7:0]};
-                cmin = (str_len1 < str_len2) ? str_len1 : str_len2;
-                ci   = cmin - str_cnt;               // index of this element (i)
+                // str_r28/str_r27 are len1/len2 + i*step here, i = cmin - str_cnt.
                 if (a != b) begin
                     f_z <= 1'b0;
                     f_s <= (a > b);
-                    queue_reg_write(5'd28, str_len1 + (ci << shf), 32'hffff_ffff);
-                    queue_reg_write(5'd27, str_len2 + (ci << shf), 32'hffff_ffff);
+                    queue_reg_write(5'd28, str_r28, 32'hffff_ffff);
+                    queue_reg_write(5'd27, str_r27, 32'hffff_ffff);
                     st <= S_NEXT;
                 end
                 else if (subop[4:0] == 5'h02 && (a == fb26 || b == fb26)) begin
@@ -2527,8 +2730,8 @@ else if (ce) begin
                     f_cy <= 1'b0;
                     f_z  <= 1'b0;
                     f_s  <= 1'b0;
-                    queue_reg_write(5'd28, str_len1 + (ci << shf), 32'hffff_ffff);
-                    queue_reg_write(5'd27, str_len2 + (ci << shf), 32'hffff_ffff);
+                    queue_reg_write(5'd28, str_r28, 32'hffff_ffff);
+                    queue_reg_write(5'd27, str_r27, 32'hffff_ffff);
                     st <= S_NEXT;
                 end
                 else st <= S_STR_NEXT;               // equal: tail flags set at exhaustion
@@ -2539,11 +2742,8 @@ else if (ce) begin
                 logic [31:0] elem, fb26;
                 elem = cur_op[1] ? {16'b0, alu_r[15:0]} : {24'b0, alu_r[7:0]};
                 fb26 = cur_op[1] ? {16'b0, rf_r26[15:0]} : {24'b0, rf_r26[7:0]};
-                if (subop[4:0] == 5'h0c && elem == fb26) begin
-                    logic [31:0] cmin;
-                    cmin = (str_len1 < str_len2) ? str_len1 : str_len2;
-                    movc_finish(cmin - str_cnt);     // break index i
-                end
+                if (subop[4:0] == 5'h0c && elem == fb26)
+                    movc_finish();                   // break index i = cmin - str_cnt
                 else st <= S_STR_NEXT;
             end
         end
@@ -2691,7 +2891,8 @@ else if (ce) begin
     // single-precision FP group (0x5C/0x5F).  op1 already decoded as a value;
     // set up op2 per its role, then load/compute/write.
     S_FP_OP2: begin
-        fp_a <= op1;
+        // op1 is v60_fp's `a` directly: nothing writes op1 again before the
+        // unit samples it on start (op2's decode only writes op2).
         ea_want_addr <= fp_op2_value(cur_op, subop[4:0]) ? 1'b0 : 1'b1;
         ea_dim   <= 2'd2;
         ea_modm  <= subop[5];
@@ -2731,21 +2932,21 @@ else if (ce) begin
             if (fp_done) begin
                 f_z  <= fp_o_z;  f_s  <= fp_o_s;
                 f_ov <= fp_o_ov; f_cy <= fp_o_cy;
-                fp_res  <= fp_result;
+                wb_val  <= fp_result;
                 fp_busy <= 1'b0;
                 st      <= st_t'(fp_writes ? S_FP_WB : S_NEXT);
             end
         end
     end
     S_FP_WB: begin
-        // flags were set by fp_exec (or the FDIV completion); just store fp_res.
+        // flags were set by fp_exec (or the FDIV completion); just store wb_val.
         if (fp_op2_reg) begin
-            queue_reg_write(op2[4:0], fp_res, 32'hffff_ffff);
+            queue_reg_write(op2[4:0], wb_val, 32'hffff_ffff);
             st <= S_NEXT;
         end
         else if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= op2; dbus_wdata <= fp_res;
+            dbus_addr <= op2; dbus_wdata <= wb_val;
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0; st <= S_NEXT;
@@ -2776,9 +2977,8 @@ else if (ce) begin
             end
             3'd4, 3'd5, 3'd6: begin // [reg + disp] deref -> base, off 0
                 logic [31:0] bdt;
-                bdt = disp_from(fbw_ea1, modtop - 3'd4);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= rf_rdata_a + bdt;
+                dbus_addr <= agu_ra_d1;            // modtop-4 == modtop[1:0] here
                 bam_off <= 32'd0;
                 bam_fill_len(5'd1 + disp_len(modtop - 3'd4));
                 st <= S_BAM_IND;
@@ -2813,10 +3013,9 @@ else if (ce) begin
             case (modtop)
             3'd0, 3'd1, 3'd2: begin // double displacement: deref d1, off = d2
                 logic [31:0] bdt, bdt2;
-                bdt  = disp_from(fbw_ea1, modtop[1:0]);
-                bdt2 = disp_of(ea_ofs+1+disp_len(modtop[1:0]), modtop[1:0]);
+                bdt2 = disp2_of(modtop[1:0]);
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= rf_rdata_a + bdt;
+                dbus_addr <= agu_ra_d1;
                 bam_off  <= bdt2;
                 bam_fill_len(double_disp_len(modtop[1:0]));
                 st <= S_BAM_IND;
@@ -2824,21 +3023,13 @@ else if (ce) begin
             3'd4: begin             // autoincrement (+1 strings, +4 fields)
                 bam_base <= rf_rdata_a;
                 bam_off  <= 32'd0;
-                queue_reg_write(
-                    modreg,
-                    rf_rdata_a + ((cur_op == 8'h5b) ? 32'd1 : 32'd4),
-                    32'hffff_ffff
-                );
+                queue_reg_write(modreg, agu_ra_inc, 32'hffff_ffff);   // +1 strings, +4 fields
                 bam_fill_len(5'd1);
                 st <= bam_next();
             end
             3'd5: begin             // autodecrement
-                bam_base <= rf_rdata_a - ((cur_op == 8'h5b) ? 32'd1 : 32'd4);
-                queue_reg_write(
-                    modreg,
-                    rf_rdata_a - ((cur_op == 8'h5b) ? 32'd1 : 32'd4),
-                    32'hffff_ffff
-                );
+                bam_base <= agu_ra_dec;
+                queue_reg_write(modreg, agu_ra_dec, 32'hffff_ffff);
                 bam_off  <= 32'd0;
                 bam_fill_len(5'd1);
                 st <= bam_next();
@@ -2869,7 +3060,7 @@ else if (ce) begin
     S_BAM_VAL: begin
         if (!dbus_req) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-            dbus_addr <= bam_base + bitdiv8(bam_off);
+            dbus_addr <= bam_byte;
         end
         else if (dack) begin
             dbus_req <= 0;
@@ -2897,13 +3088,13 @@ else if (ce) begin
     end
     S_BF_EXTW: begin
         logic [31:0] mask, v, res;
-        mask = (32'h1 << bit_len[4:0]) - 32'h1;
-        v = (bit_val >> bam_off[2:0]) & mask;
+        mask = bf_mask;
+        v = bf_v_ext;                                    // (bit_val >> off) & mask
         if (bam_flow == 2'd2) res = bit_val;             // SCHBS result
         else case (subop[4:0])
             5'h08: res = (v & ((mask + 32'h1) >> 1)) ? (v | ~mask) : v; // S
             5'h09: res = v;                                             // Z
-            default: res = v << (6'd32 - {1'b0, bit_len[4:0]});         // L
+            default: res = bf_sh;                        // L: v << (32 - len)
         endcase
         if (flag2) begin
             queue_reg_write(op2[4:0], res, 32'hffff_ffff);
@@ -2934,7 +3125,7 @@ else if (ce) begin
         logic [7:0] lb;
         lb = fb_lenb_12;
         bit_len <= lb[7] ? rf_rdata_a : {24'b0, lb};
-        str_dst <= bam_base + bitdiv8(bam_off);
+        str_dst <= bam_byte;
         bam_off <= {29'b0, bam_off[2:0]};
         total_len <= 5'd3 + len1 + len2;
         st <= S_BF_INSRD;
@@ -2952,8 +3143,8 @@ else if (ce) begin
     end
     S_BF_INSWR: begin
         logic [31:0] mask, v, neww;
-        mask = (32'h1 << bit_len[4:0]) - 32'h1;
-        v = subop[0] ? (op1 >> (6'd32 - {1'b0, bit_len[4:0]})) : op1;  // L pre-shifts
+        mask = bf_mask;
+        v = subop[0] ? bf_rev(bf_sh) : op1;          // L pre-shifts: op1 >> (32 - len)
         neww = (bit_val & ~(mask << bam_off[2:0]))
              | ((v & mask) << bam_off[2:0]);
         if (!dbus_req) begin
@@ -2974,7 +3165,7 @@ else if (ce) begin
         lb = fb_lenb_1;
         l = lb[7] ? rf_rdata_a : {24'b0, lb};
         bit_len <= l;
-        str_src <= bam_base + bitdiv8(bam_off);
+        str_src <= bam_byte;
         bs_soff <= bam_off[2:0];
         str_cnt <= 0;
         if (l == 0) begin
@@ -3035,8 +3226,8 @@ else if (ce) begin
         logic [7:0] lb;
         lb = fb_lenb_1;
         bit_len <= lb[7] ? rf_rdata_a : {24'b0, lb};
-        bs_base1 <= bam_base;
-        bs_off1  <= bam_off;
+        str_len1 <= bam_base;
+        str_len2  <= bam_off;
         bam_second <= 1'b1;
         ea_modm <= subop[5];
         ea_ofs  <= 5'd3 + len1;
@@ -3045,9 +3236,9 @@ else if (ce) begin
     S_BS_MOV2: begin
         // resolve byte addresses / bit positions (down: offsets += len-1)
         logic [31:0] o1, o2;
-        o1 = subop[0] ? bs_off1 + bit_len - 1 : bs_off1;
+        o1 = subop[0] ? str_len2 + bit_len - 1 : str_len2;
         o2 = subop[0] ? bam_off + bit_len - 1 : bam_off;
-        str_src <= bs_base1 + bitdiv8(o1);
+        str_src <= str_len1 + bitdiv8(o1);
         str_dst <= bam_base + bitdiv8(o2);
         bs_soff <= o1[2:0];
         bs_doff <= o2[2:0];
@@ -3148,7 +3339,7 @@ else if (ce) begin
         else begin
             str_src <= str_src + stp; str_dst <= str_dst + stp;
         end
-        str_cnt <= str_cnt - 1;
+        str_cnt <= str_cnt_m1;
         if (str_cnt == 1) begin
             // CMPC finishes through S_STR_RD's exhaustion branch so the MAME
             // length-tail flags/registers apply; MOVC finalizes R28/R27 from the
@@ -3158,7 +3349,7 @@ else if (ce) begin
             if (subop[4:0] <= 5'h02)
                 st <= S_STR_RD;
             else
-                movc_finish((str_len1 < str_len2) ? str_len1 : str_len2);
+                movc_finish();                       // index = cmin
         end
         else st <= S_STR_RD;
     end
@@ -3169,26 +3360,26 @@ else if (ce) begin
     S_TASK_LD_NEXT: begin
         if (task_phase == 0) begin
             dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-            dbus_addr <= task_addr;
+            dbus_addr <= str_faddr;
             st <= S_TASK_LD_ACK;
         end
         else if (task_phase <= 4) begin
             if (sycw[7 + task_phase]) begin
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= task_addr;
+                dbus_addr <= str_faddr;
                 st <= S_TASK_LD_ACK;
             end
             else task_phase <= task_phase + 1'd1;
         end
         else if (task_phase == 5 && !task_reloaded) begin
             // Stack fields loaded on prior cycles are now stable.
-            queue_reg_write(5'd31, pick_stack(psw), 32'hffff_ffff);
+            queue_reg_write(5'd31, stk_q, 32'hffff_ffff);   // pick_stack(psw)
             task_reloaded <= 1'b1;
         end
         else if (task_phase <= 35) begin
-            if (task_mask[task_phase - 5]) begin
+            if (str_fi[task_phase - 5]) begin
                 dbus_req <= 1; dbus_we <= 0; dbus_size <= 2'd2;
-                dbus_addr <= task_addr;
+                dbus_addr <= str_faddr;
                 st <= S_TASK_LD_ACK;
             end
             else task_phase <= task_phase + 1'd1;
@@ -3199,13 +3390,10 @@ else if (ce) begin
         dbus_req <= 0;
         case (task_phase)
             0: tkcw <= bus_rdata;
-            1: l0sp <= bus_rdata;
-            2: l1sp <= bus_rdata;
-            3: l2sp <= bus_rdata;
-            4: l3sp <= bus_rdata;
+            1, 2, 3, 4: stk_write(task_phase[2:0], bus_rdata);   // L0SP-L3SP
             default: queue_reg_write(task_phase - 5, bus_rdata, 32'hffff_ffff);
         endcase
-        task_addr <= task_addr + 4;
+        str_faddr <= str_faddr_p4;
         task_phase <= task_phase + 1'd1;
         st <= S_TASK_LD_NEXT;
     end
@@ -3214,27 +3402,24 @@ else if (ce) begin
         if (task_phase == 0) begin
             // v60SaveStack() after setting IS: r31 now names the interrupt
             // stack selected by write_psw() in the execute cycle.
-            isp <= rf_r31;
+            stk_write(3'd0, rf_r31);       // ISP
             dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-            dbus_addr <= task_addr; dbus_wdata <= tkcw;
+            dbus_addr <= str_faddr; dbus_wdata <= tkcw;
             st <= S_TASK_ST_ACK;
         end
         else if (task_phase <= 4) begin
             if (sycw[7 + task_phase]) begin
                 dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-                dbus_addr <= task_addr;
-                case (task_phase)
-                    1: dbus_wdata <= l0sp; 2: dbus_wdata <= l1sp;
-                    3: dbus_wdata <= l2sp; default: dbus_wdata <= l3sp;
-                endcase
+                dbus_addr <= str_faddr;
+                dbus_wdata <= stk_q;           // L0SP-L3SP: stk_ra = task_phase
                 st <= S_TASK_ST_ACK;
             end
             else task_phase <= task_phase + 1'd1;
         end
         else if (task_phase <= 35) begin
-            if (task_mask[task_phase - 5]) begin
+            if (str_fi[task_phase - 5]) begin
                 dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
-                dbus_addr <= task_addr; dbus_wdata <= rf_rdata_a;
+                dbus_addr <= str_faddr; dbus_wdata <= rf_rdata_a;
                 st <= S_TASK_ST_ACK;
             end
             else task_phase <= task_phase + 1'd1;
@@ -3243,7 +3428,7 @@ else if (ce) begin
     end
     S_TASK_ST_ACK: if (dack) begin
         dbus_req <= 0; dbus_we <= 0;
-        task_addr <= task_addr + 4;
+        str_faddr <= str_faddr_p4;
         task_phase <= task_phase + 1'd1;
         st <= S_TASK_ST_NEXT;
     end
@@ -3274,7 +3459,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             st <= S_EXC_CODE;
         end
     end
@@ -3286,7 +3471,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             st <= S_EXC_PUSH2;
         end
     end
@@ -3298,7 +3483,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             st <= S_EXC_JMP;   // reused as "push PC" state
         end
     end
@@ -3310,7 +3495,7 @@ else if (ce) begin
         end
         else if (dack) begin
             dbus_req <= 0; dbus_we <= 0;
-            queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+            queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
             st <= S_EXC_VEC;
         end
     end
@@ -3342,7 +3527,7 @@ else if (ce) begin
             wb_val <= bus_rdata;
             st <= S_WB_MEM;
         end
-        queue_reg_write(5'd31, rf_r31 + 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, sp_p4, 32'hffff_ffff);
     end
 
     S_HALT: begin
@@ -3355,7 +3540,7 @@ else if (ce) begin
         // so benches that use HALT as an end marker are unaffected.
         if (nmi_seen || (!irq_n && psw_ie)) begin
             halted <= 0;
-            pc <= pc + 1;
+            pc <= pc_p1;
             st <= S_DECODE;
         end
     end
@@ -3364,6 +3549,12 @@ else if (ce) begin
     endcase
 
     // The prefetch unit and the self-modifying-code guard live in v60_ifetch.
+
+    // wb_op2's result, applied once (see the task).
+    if (wbq_go) begin
+        if (flag2) setreg(op2[4:0], wbq_v, wbq_d);
+        else       wb_val <= wbq_v;
+    end
 
     // Port 1 is applied second so the final queued write retains the original
     // nonblocking-assignment priority when both ports address the same bit.
@@ -3504,57 +3695,54 @@ endtask
 
 task automatic wb_op2(input [31:0] v, input [1:0] d);
     // write result to op2 (register or memory)
-    if (flag2) begin
-        setreg(op2[4:0], v, d);
-    end
-    else begin
-        wb_val <= v;
-        st <= S_WB_MEM;
-    end
+    //
+    // THE VALUE IS ROUTED ONCE, AFTER THE CASE. This task is called from ~25
+    // places with ~25 different values, and it used to apply each one to both
+    // destinations on the spot - the register file's write data AND wb_val -
+    // so Quartus built a 25-way 32-bit selection for each of them. The value
+    // is now captured here (wbq_v) and applied after the state case, once.
+    // Same values, same cycles: no caller writes another register in the
+    // cycle it calls this, so the register write still takes port 0, and the
+    // state change stays here so a later `st <=` in the caller still wins.
+    wbq_go = 1'b1;
+    wbq_v  = v;
+    wbq_d  = d;
+    if (!flag2) st <= S_WB_MEM;
 endtask
 
 // MOVC completion (MAME opMOVSTRU*/opMOVSTRD*): publish R28/R27 for the final
-// element index `idx`, and — for the fill variants (MOVCFU/MOVCFD) with the
-// source shorter than the destination — kick off the R26 tail-fill phase.
-// `idx` is the break index for a stop hit, else the copied count `dest`.
-task automatic movc_finish(input [31:0] idx);
-    logic [4:0]  shf;
-    logic [31:0] step, dest, r28, r27;
-    logic        down, isfill;
-    shf    = cur_op[1] ? 5'd1 : 5'd0;             // 0x58 byte / 0x5a half
-    step   = cur_op[1] ? 32'd2 : 32'd1;
-    dest   = (str_len1 < str_len2) ? str_len1 : str_len2;
-    down   = subop[0];                            // 0x09 MOVCD / 0x0b MOVCFD
-    isfill = (subop[4:0] == 5'h0a) || (subop[4:0] == 5'h0b);
-    if (down) begin
-        r28 = op1 + ((str_len1 - idx - 32'd1) << shf);
-        r27 = op2 + ((str_len2 - idx - 32'd1) << shf);
-    end
-    else begin
-        r28 = op1 + (idx << shf);
-        r27 = op2 + (idx << shf);
-    end
-    queue_reg_write(5'd28, r28, 32'hffff_ffff);
-    if (isfill && (str_len1 < str_len2)) begin
-        // Stop is never set for a fill opcode, so idx == dest here.  MAME pads
-        // the destination tail elements [idx, lenop2) with R26; the down form
-        // uses op2+dest+(lenop2-j-1) for bytes and op2+(lenop2-j-1)*2 for halves.
+// element index, and - for the fill variants (MOVCFU/MOVCFD) with the source
+// shorter than the destination - kick off the R26 tail-fill phase. The index
+// is the break index for a stop hit, else the copied count `dest`.
+//
+// THE ARITHMETIC IS COMPUTED ONCE, OUTSIDE THE TASK (str_x and friends below).
+// This task used to take the index as an argument and was called from three
+// states with three different expressions - 0, cmin-str_cnt and cmin - so each
+// call inlined its own copy of every adder and shifter in here: the "different
+// argument at every call site" shape that Quartus cannot share. The index now
+// comes from one state-selected wire and the task only routes results.
+task automatic movc_finish;
+    queue_reg_write(5'd28, str_r28, 32'hffff_ffff);
+    if (str_isfill && str_l1lt) begin
+        // Stop is never set for a fill opcode, so the index is dest here. MAME
+        // pads the destination tail elements [idx, lenop2) with R26; the down
+        // form uses op2+dest+(lenop2-j-1) for bytes and op2+(lenop2-j-1)*2 for
+        // halves - which is r27 itself for halves and r27+dest for bytes.
         str_fill_after <= 1'b1;
-        str_fi     <= str_len2 - idx;
-        str_fdelta <= down ? (32'd0 - step) : step;
-        if (down) begin
-            str_faddr <= cur_op[1] ? (op2 + ((str_len2 - idx - 32'd1) << 1))
-                                   : (op2 + dest + (str_len2 - idx - 32'd1));
-            str_fr27  <= op2 - step;
+        str_fi     <= str_len2 - str_x;
+        str_fdelta <= subop[0] ? (32'd0 - str_step) : str_step;
+        if (subop[0]) begin
+            str_faddr <= cur_op[1] ? str_r27 : (str_r27 + str_cmin);
+            str_fr27  <= op2 - str_step;
         end
         else begin
-            str_faddr <= op2 + (idx << shf);
-            str_fr27  <= op2 + (str_len2 << shf);
+            str_faddr <= str_r27;
+            str_fr27  <= op2 + (str_len2 << str_shf);
         end
         st <= S_STR_FILL;
     end
     else begin
-        queue_reg_write(5'd27, r27, 32'hffff_ffff);
+        queue_reg_write(5'd27, str_r27, 32'hffff_ffff);
         st <= S_NEXT;
     end
 endtask
@@ -3612,6 +3800,27 @@ v60_shift u_shift (
     .result(shf_result), .cy(shf_cy), .ov(shf_ov),
     .z(shf_z), .s(shf_s), .valid(shf_valid)
 );
+
+// ONE MULTIPLIER, NOT FOUR.
+//
+// MULX/MULUX need a 32x32 product in S_EXEC and MUL/MULU's overflow flag needs
+// one in S_MULDIV, signed or unsigned. Written inline that was four 32x32
+// multipliers - two ternary arms in MULX, uprod and sprod in md_finish - each
+// a set of DSP blocks plus its partial-product adders in ALMs. Only one is
+// ever in use, so one signed 33x33 multiplier takes the operands of whichever
+// state is running, sign- or zero-extended to 33 bits. The low 64 bits are
+// the exact product either way, which is all any user reads.
+wire        mul_exec = (st == S_EXEC);
+wire        mul_sgn  = mul_exec ? (cur_op == 8'h86) : !cur_op[4];   // MULX / MUL
+wire [31:0] mul_sa32 = (alu_d2 == 2'd0) ? {{24{mdop[7]}}, mdop[7:0]} :
+                       (alu_d2 == 2'd1) ? {{16{mdop[15]}}, mdop[15:0]} : mdop;
+wire [31:0] mul_sb32 = (alu_d2 == 2'd0) ? {{24{md_savb[7]}}, md_savb[7:0]} :
+                       (alu_d2 == 2'd1) ? {{16{md_savb[15]}}, md_savb[15:0]} : md_savb;
+wire [31:0] mul_xa   = mul_exec ? op1   : (mul_sgn ? mul_sa32 : mdop);
+wire [31:0] mul_xb   = mul_exec ? alu_b : (mul_sgn ? mul_sb32 : md_savb);
+wire signed [32:0] mul_x = {mul_sgn & mul_xa[31], mul_xa};
+wire signed [32:0] mul_y = {mul_sgn & mul_xb[31], mul_xb};
+wire signed [65:0] mul_p = mul_x * mul_y;
 
 task automatic exec_op;
     logic [31:0] a, b, res;
@@ -3748,7 +3957,7 @@ task automatic exec_op;
         end
         else begin
             rotc_cnt <= a[7:0];
-            rotc_val <= dimext(b, d2);
+            alu_r <= dimext(b, d2);
             st <= S_ROTC;
         end
     end
@@ -3854,12 +4063,9 @@ task automatic exec_op;
     end
     8'h86, 8'h96: begin // MULX/MULUX: 32x32 -> 64 into reg pair (op2 = reg)
         logic [63:0] p;
-        logic mul_signed;
-        // Do not name this temporary "sgn": Quartus 17 treats block-local
-        // declarations as task-wide and shadows the sgn() helper above.
-        mul_signed = (cur_op == 8'h86);
-        p = mul_signed ? $signed({{32{op1[31]}}, op1}) * $signed({{32{b[31]}}, b})
-                       : {32'b0, op1} * {32'b0, b};
+        // The shared multiplier (mul_p, below the ALU): signed for MULX,
+        // unsigned for MULUX, operands op1 and b. Exact 64-bit product.
+        p = mul_p[63:0];
         f_z <= (p == 0); f_s <= p[63];   // MAME opMULX/opMULUX leave OV unchanged
         if (flag2) begin
             queue_reg_write(op2[4:0], p[31:0], 32'hffff_ffff);
@@ -3879,25 +4085,13 @@ task automatic exec_op;
             st <= S_NEXT;   // MAME: no zero-divide trap
         end
         else if (flag2) begin
-            logic [63:0] num, mag_num;
-            logic [31:0] mag_den;
-            num = {rf_rdata_a, rf_rdata_b};
-            if (cur_op == 8'ha6) begin
-                mag_num = num[63] ? (~num + 1'b1) : num;
-                mag_den = op1[31] ? (~op1 + 1'b1) : op1;
-                xdiv_qneg <= num[63] ^ op1[31];
-                xdiv_rneg <= num[63];
-            end
-            else begin
-                mag_num = num;
-                mag_den = op1;
-                xdiv_qneg <= 1'b0;
-                xdiv_rneg <= 1'b0;
-            end
-            xdiv_shift <= mag_num;
+            // dividend {rf_rdata_a, rf_rdata_b}: see xdv_num
+            xdiv_qneg <= xdv_qneg;
+            xdiv_rneg <= xdv_rneg;
+            mdacc <= xdv_mag_num;
             xdiv_rem <= 0;
-            xdiv_den <= mag_den;
-            xdiv_cnt <= 0;
+            mdop <= xdv_mag_den;
+            mdcnt <= 0;
             xdiv_dst <= op2[4:0];
             xdiv_active <= 1'b1;
             divx_mem <= 1'b0;
@@ -3952,9 +4146,9 @@ task automatic exec_op;
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
         dbus_wdata <= rf_r29;          // push AP (R29) first
-        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
         queue_reg_write(5'd29, op2, 32'hffff_ffff); // AP (R29) = op2
-        wb_val <= pc + 5'd2 + len1 + len2; // return PC, pushed in S_CALL1
+        wb_val <= pc_ret2; // return PC, pushed in S_CALL1
         alu_r  <= op1;               // target
         st <= S_CALL1;
     end
@@ -3995,7 +4189,7 @@ task automatic exec_op;
             exc_vector   <= 8'd48 + {4'b0, op1[3:0]};
             exc_code     <= {4'h3, op1[3:0], 8'h00, 16'h0004};
             exc_pushval  <= psw;
-            exc_retpc    <= pc + 5'd1 + len1;
+            exc_retpc    <= pc_ret1;
             exc_has_code <= 1'b1;
             st <= S_EXC_PUSH1;
         end
@@ -4047,8 +4241,8 @@ task automatic exec_op;
     8'he8, 8'he9: begin // JSR
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
-        dbus_wdata <= pc + 5'd1 + len1;
-        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+        dbus_wdata <= pc_ret1;
+        queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
         wb_val <= op1;
         st <= S_JSR1;
     end
@@ -4066,7 +4260,7 @@ task automatic exec_op;
         dbus_req <= 1; dbus_we <= 1; dbus_size <= 2'd2;
         dbus_addr <= sp_m4;
         dbus_wdata <= op1;
-        queue_reg_write(5'd31, rf_r31 - 4, 32'hffff_ffff);
+        queue_reg_write(5'd31, sp_m4, 32'hffff_ffff);
         total_len <= 5'd1 + len1;
         st <= S_PUSH;
     end
@@ -4095,8 +4289,8 @@ task automatic exec_op;
         st <= S_PREP1;
     end
     8'hfc, 8'hfd: begin // STTASK: save selected task state at TR
-        task_mask <= op1;
-        task_addr <= trr;
+        str_fi <= op1;
+        str_faddr <= trr;
         task_phase <= 0;
         task_reloaded <= 0;
         total_len <= 5'd1 + len1;
@@ -4115,8 +4309,8 @@ task automatic exec_op;
     8'h01: begin // LDTASK: load selected task state from operand-2 pointer
         logic [31:0] task_pointer;
         task_pointer = flag2 ? rf_rdata_b : (op2val_v ? op2val : op2);
-        task_mask <= flag1 ? rf_rdata_a : op1;
-        task_addr <= task_pointer;
+        str_fi <= flag1 ? rf_rdata_a : op1;
+        str_faddr <= task_pointer;
         task_phase <= 0;
         task_reloaded <= 0;
         trr <= task_pointer;
@@ -4126,18 +4320,11 @@ task automatic exec_op;
     8'h02: begin // STPR: op1 = priv reg #, op2 = dest
         logic [31:0] v;
         case (op1[4:0])
-            5'd0: v = isp;  5'd1: v = l0sp; 5'd2: v = l1sp;
-            5'd3: v = l2sp; 5'd4: v = l3sp; 5'd5: v = sbr;
+            5'd0, 5'd1, 5'd2, 5'd3, 5'd4: v = stk_q;   // stk_ra = op1[2:0]
+            5'd5: v = sbr;
             5'd6: v = trr;  5'd7: v = sycw; 5'd8: v = tkcw;
-            5'd9: v = pir;  5'd15: v = psw2;
-            5'd16: v = atbr0; 5'd17: v = atlr0;
-            5'd18: v = atbr1; 5'd19: v = atlr1;
-            5'd20: v = atbr2; 5'd21: v = atlr2;
-            5'd22: v = atbr3; 5'd23: v = atlr3;
-            5'd24: v = trmode;
-            5'd25: v = adtr0; 5'd26: v = adtr1;
-            5'd27: v = adtmr0; 5'd28: v = adtmr1;
-            default: v = 0;
+            default: v = !prv_in_mlab(op1[4:0]) ? 32'd0 :
+                         prv_v[op1[4:0]] ? prv_q : prv_reset_val(op1[4:0]);
         endcase
         if (op1 <= 32'd28) wb_op2(v, 2'd2);
         else begin
@@ -4146,18 +4333,14 @@ task automatic exec_op;
     end
     8'h12: begin // LDPR: op1 = value, op2 = priv reg #
         case (op2[4:0])
-            5'd0: isp <= op1;  5'd1: l0sp <= op1; 5'd2: l1sp <= op1;
-            5'd3: l2sp <= op1; 5'd4: l3sp <= op1; 5'd5: sbr <= op1;
+            5'd0, 5'd1, 5'd2, 5'd3, 5'd4: stk_write(op2[2:0], op1);
+            5'd5: sbr <= op1;
             5'd6: trr <= op1;  5'd7: sycw <= op1; 5'd8: tkcw <= op1;
-            5'd9: pir <= op1;  5'd15: psw2 <= op1;
-            5'd16: atbr0 <= op1; 5'd17: atlr0 <= op1;
-            5'd18: atbr1 <= op1; 5'd19: atlr1 <= op1;
-            5'd20: atbr2 <= op1; 5'd21: atlr2 <= op1;
-            5'd22: atbr3 <= op1; 5'd23: atlr3 <= op1;
-            5'd24: trmode <= op1;
-            5'd25: adtr0 <= op1; 5'd26: adtr1 <= op1;
-            5'd27: adtmr0 <= op1; 5'd28: adtmr1 <= op1;
-            default: ;
+            default:
+                if (prv_in_mlab(op2[4:0])) begin
+                    prv_mem[op2[4:0]] <= op1;
+                    prv_v[op2[4:0]]   <= 1'b1;
+                end
         endcase
         if (op2 <= 32'd28) st <= S_NEXT;
         else begin
@@ -4177,7 +4360,7 @@ task automatic exec_op;
             exc_code <= {8'h18 + op1[1:0], 8'h00, 16'h0008};
             exc_extra <= chlvl_data;
             exc_pushval <= psw;
-            exc_retpc <= pc + 5'd2 + len1 + len2;
+            exc_retpc <= pc_ret2;
             exc_has_code <= 1'b1;
             exc_has_extra <= 1'b1;
             exc_target_level <= op1[1:0];
@@ -4337,15 +4520,13 @@ task automatic md_finish;
         // and, for signed MUL, tested the unsigned product's high half (audit
         // R20 V60-6).  Compute the exact width-correct signed/unsigned product
         // overflow from the retained operands.
+        // The shared multiplier (mul_p): in S_MULDIV it forms the width-
+        // extended signed product for MUL and the unsigned one for MULU, so one
+        // of these two is the very product the other used to be built beside.
         logic [63:0] uprod;
-        logic signed [63:0] sprod;
-        logic signed [31:0] sa32, sb32;
-        uprod = {32'b0, mdop} * {32'b0, md_savb};                 // unsigned product
-        sa32  = (d2==2'd0) ? {{24{mdop[7]}},   mdop[7:0]}   :
-                (d2==2'd1) ? {{16{mdop[15]}},  mdop[15:0]}  : mdop;
-        sb32  = (d2==2'd0) ? {{24{md_savb[7]}},md_savb[7:0]}:
-                (d2==2'd1) ? {{16{md_savb[15]}},md_savb[15:0]} : md_savb;
-        sprod = $signed({{32{sa32[31]}}, sa32}) * $signed({{32{sb32[31]}}, sb32});
+        logic [63:0] sprod;
+        uprod = mul_p[63:0];
+        sprod = mul_p[63:0];
         set_zs(mdacc[31:0], d2);
         // MAME opMUL/opMULU: OV = (product >> width) != 0 on the product's
         // unsigned bit pattern (signed product for MUL, unsigned for MULU).
@@ -4363,14 +4544,14 @@ task automatic md_finish;
     end
     8'ha1, 8'ha3, 8'ha5, 8'hb1, 8'hb3, 8'hb5: begin // DIV: quotient (signed applied)
         logic [31:0] q;
-        q = md_qsign ? (~mdacc[31:0] + 1'b1) : mdacc[31:0];
+        q = md_qsign ? md_neg : mdacc[31:0];        // md_neg: -mdacc[31:0] here
         set_zs(q, d2);
         f_ov <= md_divov;      // signed min/-1 overflow (audit R20 V60-8)
         wb_op2(q, d2);
     end
     8'h50, 8'h51, 8'h52, 8'h53, 8'h54, 8'h55: begin // REM: remainder (sign of dividend)
         logic [31:0] rem;
-        rem = md_rsign ? (~mdacc[63:32] + 1'b1) : mdacc[63:32];
+        rem = md_rsign ? md_neg : mdacc[63:32];     // md_neg: -mdacc[63:32] here
         set_zs(rem, d2);
         f_ov <= 1'b0;          // MAME clears OV for REM/REMU (audit R20 V60-8)
         wb_op2(rem, d2);
@@ -4432,7 +4613,7 @@ v60_ifetch #(
 v60_fp u_fp (
     .clk(clk), .ce(ce), .rst(rst),
     .start(fp_start), .op(cur_op), .subop(subop[4:0]),
-    .a(fp_a), .b(fp_b), .cw(tkcw[2:0]),
+    .a(op1), .b(fp_b), .cw(tkcw[2:0]),
     .done(fp_done), .writes(fp_writes), .result(fp_result),
     .o_z(fp_o_z), .o_s(fp_o_s), .o_ov(fp_o_ov), .o_cy(fp_o_cy)
 );

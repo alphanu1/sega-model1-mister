@@ -104,6 +104,12 @@ for tb in $ORDER; do
   # THE REGISTER FILE IS BANKED MLAB NOW, so a test that PRELOADS a register
   # (`cpu.r[31] = ...` before releasing reset) must write the banks, not just
   # the simulation mirror `r` that reads still use. rf_poke writes all of it.
+  # v60_fp TAKES op1 ITSELF AS ITS `a` OPERAND now (fp_a was a copy of op1 made
+  # one state earlier), so a test seeding the FP stage seeds op1.
+  if grep -q 'cpu\.fp_a = ' "$src"; then
+      sed -e 's/cpu\.fp_a = /cpu.op1 = /g' "$src" > "$bdir/${tb}.fpa.sv"
+      src="$bdir/${tb}.fpa.sv"
+  fi
   if grep -qE 'cpu\.r\[[0-9]+\] = [^=]' "$src"; then
       sed -E 's/cpu\.r\[([0-9]+)\] = ([^=;][^;]*);/cpu.rf_poke(\1, \2);/g' "$src" > "$bdir/${tb}.rf.sv"
       src="$bdir/${tb}.rf.sv"
