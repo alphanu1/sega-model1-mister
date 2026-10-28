@@ -373,6 +373,22 @@ test_video:
 	  $(SRCS_m1_video) sim/video/tb_m1_video.cpp -o tb_video --Mdir obj_video
 	./obj_video/tb_video
 
+# THE 2D PATH ON REAL SCENES, AGAINST ITS LINE DEADLINE. Not in `make test`: it
+# needs MAME dumps, which are ROM-derived and stay in build/. Make them with
+#   mkdir -p build/tiledump/vr_attract
+#   DUMP_DIR=$PWD/build/tiledump/vr_attract DUMP_FROM=100 DUMP_TO=6000 DUMP_STEP=4 \
+#     GAME=vr tools/mame_run.sh tools/mame_tile_dump.lua -video none -seconds_to_run 100000
+# (DUMP_DIR absolute: mame_run.sh runs MAME from build/mamerun) and
+# PRESS="1500:Coin 1:10,1560:1 Player Start:10" to play rather than attract,
+# then `make video2d DUMPS="build/tiledump/*/" V2D_ARGS="-lat 16 -q"`.
+# See sim/video/tb_m1_video2d.cpp for the options.
+DUMPS    ?= build/tiledump/*/
+V2D_ARGS ?= -q
+video2d:
+	verilator --cc --exe --build -O2 $(VFLAGS) --public-flat-rw --top-module m1_video \
+	  $(SRCS_m1_video) sim/video/tb_m1_video2d.cpp -o tb_video2d --Mdir obj_video2d
+	./obj_video2d/tb_video2d $(V2D_ARGS) $(DUMPS)
+
 # ~15 s and the longest single test here, which is the price of comparing 31 M
 # spans rather than a painted bitmap. An extra or duplicated span fails even
 # where it would paint identical pixels, and that is the class of bug — the
@@ -923,7 +939,7 @@ elab:
 	  head -10 $(TMPDIR)/elab_real.txt; exit 1; \
 	else echo "elab: Model1 elaborates, every port and module resolves"; fi
 
-.PHONY: test_v60_ifetch test_snd_report elab render render3d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: test_v60_ifetch test_snd_report elab render render3d video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
