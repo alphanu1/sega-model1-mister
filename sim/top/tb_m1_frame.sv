@@ -2505,6 +2505,10 @@ always @(posedge clk) begin
     end
 end
 
+longint swapped_t1 = 0;
+integer swapped_n = 0;
+logic [3:0] show_prev = '0;
+
 // ----------------------------------------------------------------- autopilot
 // The road is grey (r = g = b, 0x28 and up); in each of three rows just above
 // the car the grey run under the screen centre - or the nearest one - gives
@@ -3508,7 +3512,19 @@ initial begin
             pass_len_hist[(pass_lh > 31) ? 31 : pass_lh] =
                 pass_len_hist[(pass_lh > 31) ? 31 : pass_lh] + 1;
         end
+        // WHEN EACH LIST REACHES THE SCREEN. show_tag steps when a new 3D
+        // image is put up: at the swap with the band display (the sweep that
+        // follows draws it), at the publish with the frame buffer. Printed
+        // with the pass it shows and how long after that pass was READY, so
+        // the two displays' latency can be compared list by list.
+        if (core.u_raster3d.show_tag != show_prev) begin
+            $display("SHOW3D pass=%0d f=%0d line=%0d vb=%0d ready_age=%0d.%02d fr",
+                     swapped_n, frames, py, vid_vb,
+                     (cycles - swapped_t1) / 1390821, (((cycles - swapped_t1) % 1390821) * 100) / 1390821);
+            show_prev = core.u_raster3d.show_tag;
+        end
         if (pst_prev == 6 && core.u_raster3d.pst == 0) begin
+            swapped_t1 = pass_t1; swapped_n = pass_n;
             pass_t2   = cycles;
             pass_wait = cycles - pass_t1;
             pass_wait_sum = pass_wait_sum + pass_wait;

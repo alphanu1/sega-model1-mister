@@ -397,6 +397,37 @@ int main(int argc, char** argv) {
                         prev_pst = pp;
                     }
                     fhist[d->rootp->m1_raster3d__DOT__u_fill__DOT__state & 31]++;
+                    // RACE MARGIN (frame buffer). What a publish that did NOT
+                    // wait for the whole frame would have risked: published
+                    // at the first publish line after the swap, line y is
+                    // fetched FB_LA lines before it is shown; how many lines
+                    // before that fetch was the band holding it in DDR3? The
+                    // least over a draw is printed; negative means a line
+                    // would have been shown before it was drawn.
+                    {
+                        static long sw_t = -1, pub_t = 0; static double minm = 1e9; static int sw_y = 0;
+                        static int busy_prev = 0, pst_p = 0;
+                        const double LINE = (double)CLK3D_HZ / (57.52 * V_TOTAL);   // clk_3d cycles a line
+                        int pp = d->rootp->m1_raster3d__DOT__pst & 7;
+                        if (pst_p == 6 && pp == 0) {           // the swap: a draw begins
+                            sw_t = cycles; sw_y = y;
+                            int lines_to_pub = (416 - y + V_TOTAL) % V_TOTAL;
+                            pub_t = cycles + (long)(lines_to_pub * LINE);
+                            minm = 1e9;
+                        }
+                        pst_p = pp;
+                        int fb = d->rootp->m1_raster3d__DOT__fl_busy;
+                        if (sw_t >= 0 && busy_prev && !fb) {   // a band's copy is done
+                            int k = d->rootp->m1_raster3d__DOT__fl_band;
+                            double fetch = pub_t + (8 + 8 * k - 3) * LINE;
+                            double m = (fetch - cycles) / LINE;
+                            if (m < minm) minm = m;
+                            if (k == NBANDS - 1 && f >= PROLOGUE_FRAMES)
+                                printf("  draw: swap at line %d, whole %.1f lines later, race margin %.1f lines\n",
+                                       sw_y, (cycles - sw_t) / LINE, minm);
+                        }
+                        busy_prev = fb;
+                    }
                 }
                 if (x < SW && y < SH && d->scan_hit) {
                     fb[y][x][0] = (d->scan_rgb >> 16) & 0xff;
