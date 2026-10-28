@@ -1060,7 +1060,7 @@ m1_frame:
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
-	  -GHASHEVERY=$(FRAME_HASH) \
+	  -GHASHEVERY=$(FRAME_HASH) -GAUTO_AT="64'd$(FRAME_AUTO)" \
 	  --Mdir build/m1frame -o m1frame \
 	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) sim/mem/sdram_model.sv sim/mem/ddr3_model.sv sim/top/tb_m1_frame.sv
 	@# THE 68000'S MICROCODE IS LOADED BY BARE FILENAME AT RUNTIME.
@@ -1106,6 +1106,10 @@ V60_WRTRACE ?= 0
 # the V60 port, the 3D ports and the video output, folded every cycle. Two
 # builds that are meant to behave identically must print identical HASH lines.
 FRAME_HASH ?= 0
+# FRAME_AUTO=<cycle> hands the wheel and the accelerator to the bench's
+# autopilot from that clk_sys cycle on - it steers toward the road in its own
+# picture (tb_m1_frame AUTO_AT). Use it with FRAME_DEFS=+define+BOARD_CLOCKS.
+FRAME_AUTO ?= 0
 
 # The ROM arrives over ioctl by default, because that is what hardware does and
 # a preloaded memory hides an entire class of fault. FRAME_DOWNLOAD=0 restores

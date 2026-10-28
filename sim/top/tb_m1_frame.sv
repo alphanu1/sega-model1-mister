@@ -166,7 +166,13 @@ module tb_m1_frame #(
     // A change that is meant to be invisible - an area change, a restructure -
     // must leave all three identical to the cycle; the first frame whose line
     // differs says when it stopped being so. 0 disables it.
-    parameter integer HASHEVERY  = 0
+    parameter integer HASHEVERY  = 0,
+    // THE AUTOPILOT: from this clk_sys cycle on, the wheel steers toward the
+    // grey road just above the car, read off this bench's own picture at
+    // each vertical blank, and the accelerator is held down (eased in a hard
+    // turn). tools/mame_vr_drive.lua is the same rule in MAME, and it laps
+    // Virtua Racing's beginner course. 0 = off: the wheel stays centred.
+    parameter longint AUTO_AT    = 0
 );
 
 // Covers the coprocessor's regions as well: copro_data at word 0x300000 and the
@@ -392,6 +398,11 @@ ddr3_model #(.LATENCY(DDR_LAT), .BUSY_PERMILLE(DDR_BUSY)) u_ddr3 (
     .be(ddr_be), .we(ddr_we)
 );
 
+// The wheel, centred unless the autopilot (AUTO_AT) is steering.
+logic [7:0] steer_now = 8'h80;
+logic [7:0] auto_acc  = 8'h01;
+logic       auto_on   = 1'b0;
+
 m1_integrated core (
     .DDRAM_CLK(ddr_clk), .DDRAM_BUSY(ddr_busy), .DDRAM_BURSTCNT(ddr_burstcnt),
     .DDRAM_ADDR(ddr_addr), .DDRAM_DOUT(ddr_dout), .DDRAM_DOUT_READY(ddr_dout_ready),
@@ -424,8 +435,8 @@ m1_integrated core (
                in1_now,            // 0x09  IN.1  (VR shifters / VF player 1)
                in0_now,            // 0x08  IN.0
                40'hffffffffff,     // 0x07..0x03
-               8'h01, acc_now,     // 0x02 brake released, 0x01 accelerator
-               8'h80}),            // 0x00        steering centred
+               8'h01, (auto_on ? auto_acc : acc_now),   // 0x02 brake released, 0x01 accelerator
+               steer_now}),        // 0x00        steering, 0x80 centred
     // m1_integrated's own ports: the microcode arrives through the loader on
     // index 1, and the coprocessor's read-only regions come off SDRAM port 3.
     .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),
@@ -1627,6 +1638,7 @@ task automatic report_census;
                  f_tgp_retires, f_tgp_pc, f_tgp_unimpl, f_pushes, f_pops, f_returns);
         $display("OVERRUN: 3D bands presented=%0d late=%0d late_band0=%0d  quads dropped=%0d  geometry passes=%0d  | tile fetch overruns=%0d",
                  ov_bands, ov_late, ov_late0, ov_drop, ov_passes, ov_tile);
+        $display("LATE3D: frames with rows lost=%0d  rows=%0d  bands=%0d", late3d_frames, late3d_rows, late3d_bands);
 `ifndef BASELINE_BENCH
         $display("DDR3: reads=%0d writes=%0d protocol_errors=%0d  before rom_loaded: reads=%0d writes=%0d  | payload writes lost=%0d reads refused=%0d worst reply wait=%0d",
                  u_ddr3.reads, u_ddr3.writes, u_ddr3.protocol_errs, ddr_pre_rd, ddr_pre_wr,
@@ -2425,6 +2437,7 @@ always @(posedge clk) begin
         if (vid_vb && !prev_vb) begin
             px <= 0; py <= 0;
             frames = frames + 1;
+            if (AUTO_AT != 0 && cycles >= AUTO_AT) autopilot();
             if (HASHEVERY != 0 && (frames % HASHEVERY) == 0)
                 $display("HASH f=%0d cpu=%0d:%016h 3d=%0d:%016h vid=%016h",
                          frames, hcyc_cpu, hash_cpu, hcyc_3d, hash_3d, hash_vid);
@@ -2490,6 +2503,82 @@ always @(posedge clk) begin
             py <= py + 1;
         end
     end
+end
+
+// ----------------------------------------------------------------- autopilot
+// The road is grey (r = g = b, 0x28 and up); in each of three rows just above
+// the car the grey run under the screen centre - or the nearest one - gives
+// the road's centre, and the wheel turns toward it. Run on the frame that
+// just finished, so it acts a frame late, as a driver would.
+real ap_cen = 248.0;
+function automatic bit ap_grey(input integer i);
+    integer r, g, b;
+    r = fb_r[i]; g = fb_g[i]; b = fb_b[i];
+    return (r - g < 10) && (g - r < 10) && (g - b < 10) && (b - g < 10) && (r >= 'h28);
+endfunction
+task automatic autopilot;
+    integer y, x, s0, e0, n, k;
+    real sum, best_d, best_c, d, c, err, st;
+    integer rows [3];
+    rows[0] = 196; rows[1] = 206; rows[2] = 216;
+    sum = 0; n = 0;
+    for (k = 0; k < 3; k++) begin
+        y = rows[k];
+        best_d = 1e9; best_c = -1;
+        x = 0;
+        while (x < W) begin
+            if (ap_grey(y*W + x)) begin
+                s0 = x;
+                while (x < W && ap_grey(y*W + x)) x = x + 1;
+                e0 = x - 1;
+                if (e0 - s0 >= 6) begin
+                    c = (s0 + e0) / 2.0;
+                    if (248 >= s0 && 248 <= e0) d = 0;
+                    else if (248 < s0) d = s0 - 248; else d = 248 - e0;
+                    if (d < best_d) begin best_d = d; best_c = c; end
+                end
+            end else x = x + 1;
+        end
+        if (best_c >= 0) begin sum = sum + best_c; n = n + 1; end
+    end
+    if (n > 0) ap_cen = 0.5 * ap_cen + 0.5 * (sum / n);
+    err = ap_cen - 248.0;
+    st  = 128.0 + err;
+    if (st < 0) st = 0; else if (st > 255) st = 255;
+    steer_now = 8'($rtoi(st));
+    auto_acc  = (err > 60 || err < -60) ? 8'h60 : 8'hff;
+    auto_on   = 1'b1;
+    if (frames % 25 == 0)
+        $display("AUTO f=%0d cen=%0d wheel=%02h acc=%02h", frames, $rtoi(ap_cen), steer_now, auto_acc);
+endtask
+
+// ------------------------------------------------------- 3D rows lost to late bands
+// dbg_late counts a band presented with the beam already in a LATER band; a
+// band that goes up while the beam is inside its own first rows was never
+// counted, and that is most of them - the rows above the beam are 2D for a
+// frame. This counts the rows: at every presentation, the rows of the band the
+// beam has already started (its current row included).
+longint late3d_rows = 0, late3d_bands = 0, late3d_frames = 0;
+integer late3d_fr = 0;
+always @(posedge clk_3d) if (rst_n_cpu) begin
+    if (core.u_raster3d.ev_present) begin
+        automatic int k    = int'(core.u_raster3d.ready_band);
+        automatic int line = int'(core.u_raster3d.beam_band_s2) * 8 + int'(core.u_raster3d.beam_row_s2);
+        automatic int lost = 0;
+        if (k == 0) lost = core.u_raster3d.beam_blank ? 0 : line + 1;
+        else if (!core.u_raster3d.beam_blank && line >= k * 8) lost = line - k * 8 + 1;
+        if (lost > 8) lost = 8;
+        if (lost > 0) begin
+            late3d_rows  += lost;
+            late3d_bands += 1;
+            late3d_fr    += lost;
+        end
+    end
+end
+always @(posedge clk) if (rst_n_sys && ce_pix && vid_vb && !prev_vb && late3d_fr != 0) begin
+    $display("LATE3D f=%0d rows=%0d (total %0d rows, %0d bands)", frames, late3d_fr, late3d_rows, late3d_bands);
+    late3d_frames += 1;
+    late3d_fr = 0;
 end
 
 // ------------------------------------------------------------------- probe

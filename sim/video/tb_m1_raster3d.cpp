@@ -38,7 +38,7 @@
 
 static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
-static const int SW = 496, SH = 384, BAND_H = 32;
+static const int SW = 496, SH = 384;
 
 static std::vector<uint16_t> dlist, palette, xlat, tgpram;
 static std::vector<uint32_t> prom;
@@ -214,9 +214,15 @@ int main(int argc, char** argv) {
     // Derived, never written down: a band-time quoted as a constant has gone
     // stale three times on this design, once by a factor of the band height and
     // once by dividing the frame by the visible lines instead of the total.
-    const int  BAND_H    = 16;
+    // 8 since 2026-09-09 (m1_raster3d BAND_H); the 16 that stood here made
+    // every "% of a slot" figure half what it was.
+    const int  BAND_H    = 8;
     const int  NBANDS    = (SH + BAND_H - 1) / BAND_H;
-    const long CLK3D_HZ  = 47059000;
+    // CLK3D=<Hz>. The board runs clk_3d at 58.947 MHz (rtl/pll.v, 800/13.57);
+    // 47.059 is the old PLL output this bench was written for, and still the
+    // default so that earlier logs compare. The higher clock gives the fill
+    // 25% more cycles per raster line.
+    const long CLK3D_HZ  = getenv("CLK3D") ? atol(getenv("CLK3D")) : 47059000;
     const long PIXCLK_HZ = 15996000;     // 656 * 424 * 57.52
     const long BAND_TIME = CLK3D_HZ / 5752 * 100 / NBANDS;
     const uint32_t TEX_BASE = 0x40000 + 0x1234;
@@ -270,6 +276,8 @@ int main(int argc, char** argv) {
     int  worst_band_idx = -1, worst_band_frame = -1;
     long hits = 0;
     unsigned bands_prev = 0;
+    double min_slack = 1e9, fr_min_slack = 1e9; int min_slack_band = -1, min_slack_frame = -1;
+    long slack_hist[49] = {0};
     for (int f = 0; f < TOTAL_FRAMES; f++) {
         if (f == PROLOGUE_FRAMES) {
             dlist = real_list;
@@ -326,6 +334,23 @@ int main(int argc, char** argv) {
                             memcpy(worst_fh, band_fh, sizeof band_fh);
                             memcpy(worst_cst, band_cst_cyc, sizeof band_cst_cyc);
                             worst_band_idx = d->rootp->m1_raster3d__DOT__cur_band; worst_band_frame = f;
+                        }
+                        // BAND SLACK: when a band is handed to the ready slot,
+                        // how far the beam still is from its first row, in
+                        // lines. Negative is a late band. Band 0's deadline is
+                        // the top of the next frame.
+                        if (prev_cst == 6 && cs != 6 && f >= PROLOGUE_FRAMES) {
+                            int k = d->rootp->m1_raster3d__DOT__cur_band - (cs == 1 ? 1 : 0);
+                            if (cs == 0) k = NBANDS - 1;
+                            double pos = y + (double)x / H_TOTAL;
+                            double sl;
+                            if (k == 0) sl = (pos >= SH) ? (V_TOTAL - pos) : -pos;
+                            else        sl = k * BAND_H - pos;
+                            if (sl < -(double)V_TOTAL / 2) sl += V_TOTAL;   // wrapped
+                            if (sl < min_slack) { min_slack = sl; min_slack_band = k; min_slack_frame = f; }
+                            if (sl < fr_min_slack) fr_min_slack = sl;
+                            int bkt = (int)floor(sl); if (bkt < -8) bkt = -8; if (bkt > 40) bkt = 40;
+                            slack_hist[bkt + 8]++;
                         }
                         prev_cst = cs;
                     }
@@ -394,6 +419,17 @@ int main(int argc, char** argv) {
                    (unsigned)d->dbg_band_cycles, BAND_TIME,
                    worst_fill_frame, 100.0 * worst_fill_frame / BAND_TIME,
                    (unsigned)d->dbg_late);
+        if (f >= PROLOGUE_FRAMES)
+            printf("  frame %2d: least band slack %.2f lines, late0 so far %u\n",
+                   f, fr_min_slack, (unsigned)d->dbg_late0);
+        // The frame buffer's figures (FB_DDR3): frames shown so far (show_tag),
+        // frames held because the draw was not whole (dbg_late0), the last
+        // draw's length (dbg_band_cycles), scanout lines landed late (dbg_late).
+        if (f >= PROLOGUE_FRAMES)
+            printf("  frame %2d: FB shown %u, held %u, last draw %u cycles (%.2f frames), late lines %u\n",
+                   f, (unsigned)d->show_tag, (unsigned)d->dbg_late0, (unsigned)d->dbg_band_cycles,
+                   (double)d->dbg_band_cycles / (CLK3D_HZ * 100.0 / 5752), (unsigned)d->dbg_late);
+        fr_min_slack = 1e9;
         worst_fill_frame = 0;
     }
     int frames_swept = TOTAL_FRAMES;
@@ -435,6 +471,12 @@ int main(int argc, char** argv) {
         fclose(ot);
         printf("wrote %s: %zu objects of the last pass\n", getenv("OBJTABLE"), last_pass_objs.size());
     }
+    printf("BAND SLACK: least %.2f lines (band %d, frame %d); late %u, late band 0 %u; "
+           "clk_3d %ld Hz\n", min_slack, min_slack_band, min_slack_frame,
+           (unsigned)d->dbg_late, (unsigned)d->dbg_late0, CLK3D_HZ);
+    printf("slack histogram, lines:");
+    for (int i = 0; i < 49; i++) if (slack_hist[i]) printf(" %d:%ld", i - 8, slack_hist[i]);
+    printf("\n");
     printf("post-clip vertex coordinates: min %d, max %d\n", min_coord, max_coord);
     printf("producer cadence, start-to-start in frames:");
     for (int i = 0; i < 16; i++) if (cadence_hist[i]) printf(" %d:%d", i, cadence_hist[i]);

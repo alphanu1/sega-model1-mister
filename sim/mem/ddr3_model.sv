@@ -56,7 +56,15 @@ module ddr3_model #(
     if (!busy) begin
       if (we) begin
         if (wr_left == 0) begin wr_addr = addr; wr_left = burstcnt; writes++; end
-        mem[wr_addr] = din; wr_addr++; wr_left--;
+        // BYTE ENABLES ARE HONOURED (the frame buffer writes half words);
+        // an unwritten word's other bytes stay 0xFF, as a read of it would show.
+        begin
+          logic [63:0] m, o;
+          for (int k = 0; k < 8; k++) m[8*k +: 8] = be[k] ? 8'hFF : 8'h00;
+          o = mem.exists(wr_addr) ? mem[wr_addr] : '1;
+          mem[wr_addr] = (o & ~m) | (din & m);
+        end
+        wr_addr++; wr_left--;
       end
       if (rd) begin
         // ASSIGNED, NOT INITIALISED. A declaration's initialiser in an always

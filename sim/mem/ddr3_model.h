@@ -69,7 +69,17 @@ struct Ddr3Model {
     if (!d->DDRAM_BUSY) {
       if (we) {
         if (wr_left == 0) { wr_addr = d->DDRAM_ADDR; wr_left = d->DDRAM_BURSTCNT; writes++; }
-        mem[wr_addr] = d->DDRAM_DIN;
+        // BYTE ENABLES ARE HONOURED. They were ignored while the only writer
+        // was the quad payload, which always writes all eight; the frame
+        // buffer writes one pixel of a word with half of them, and a model
+        // that wrote the whole word painted the pixel beside every odd span end.
+        {
+          uint64_t m = 0;
+          for (int k = 0; k < 8; k++) if ((d->DDRAM_BE >> k) & 1) m |= 0xFFull << (8 * k);
+          auto it = mem.find(wr_addr);
+          uint64_t old = (it != mem.end()) ? it->second : 0xFFFFFFFFFFFFFFFFull;
+          mem[wr_addr] = (old & ~m) | ((uint64_t)d->DDRAM_DIN & m);
+        }
         wr_addr++;
         wr_left--;
       }
