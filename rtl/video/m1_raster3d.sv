@@ -252,6 +252,9 @@ module m1_raster3d #(
   // a single total and from what Ben could see; the two have different
   // causes and different fixes, so the counter says which.
   output logic [15:0] dbg_late0 /* verilator public_flat_rd */,
+  // Colour-word uploads (command 4) dropped because they fell outside
+  // tgp_ram. Zero on any list a real game builds; see the command 4 handler.
+  output logic [15:0] dbg_tex_drop /* verilator public_flat_rd */,
 
   // The view state the geometry is actually using. Exposed because "2,001 quads
   // in both" proves the walk agrees and says nothing about the projection - two
@@ -473,6 +476,9 @@ module m1_raster3d #(
   logic        w_tex_req;
   logic [15:0] w_tex_data;
   logic [19:0] tex_base;
+  logic        tex_base_ok;           // the header's address is inside tgp_ram
+  // tgp_ram's size in words: MAME's make_unique_clear<uint16_t[]>(0x100000-0x40000).
+  localparam int unsigned TGP_RAM_WORDS = 32'hC0000;
 
   assign tex_addr      = w_tex_req ? w_tex_addr : geo_tex_addr;
   assign tex_req       = w_tex_req || geo_tex_req;
@@ -1364,6 +1370,7 @@ module m1_raster3d #(
       rlx <= '0; rly <= '0; rlz <= '0; light_pending <= 1'b0;
       lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
+      tex_base_ok <= 1'b0; dbg_tex_drop <= '0;
       obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       dbg_mat_race <= '0; dbg_plane_race <= '0; pw_d <= 1'b0;
@@ -1405,14 +1412,30 @@ module m1_raster3d #(
       // The header gives a base address and a length; the body items are the
       // words. MAME indexes m_tgp_ram[adr - 0x40000 + i], so the base is
       // subtracted here exactly as m1_geo_walk subtracts it on the read side.
+      //
+      // AND NEVER OUTSIDE tgp_ram. MAME's array is 0x100000 - 0x40000 words and
+      // indexes it unchecked; a real list stays inside. A list that is not
+      // real - read mid-rewrite, run past its end, scribbled on - carries any
+      // address and any length, and this port is SDRAM: above tgp_ram's
+      // 786,432 words sit the I/O board's firmware and its EEPROM image, which
+      // nothing reloads short of a new MRA load (tb_m1_raster3d_fuzz counted
+      // 109,875 such writes in its first eight episodes). The sum is taken one
+      // bit wider so an offset that wraps the 20-bit field is out of range
+      // too, not folded back in. Dropped writes are counted.
       if (w_tex_req && tex_valid) w_tex_req <= 1'b0;
       if (lw_ev_valid && lw_ev_kind == 8'h04) begin
         if (!lw_ev_body) begin
-          if (lw_ev_idx == 16'd0) tex_base <= lw_ev_data[19:0] - 20'h40000;
-        end else begin
+          if (lw_ev_idx == 16'd0) begin
+            tex_base    <= lw_ev_data[19:0] - 20'h40000;
+            tex_base_ok <= (lw_ev_data[31:20] == 12'd0) && (lw_ev_data[19:18] != 2'b00);
+          end
+        end else if (tex_base_ok &&
+                     ({1'b0, tex_base} + {5'd0, lw_ev_idx}) < 21'(TGP_RAM_WORDS)) begin
           w_tex_req  <= 1'b1;
           w_tex_addr <= tex_base + {4'd0, lw_ev_idx};
           w_tex_data <= lw_ev_data[15:0];
+        end else if (dbg_tex_drop != 16'hffff) begin
+          dbg_tex_drop <= dbg_tex_drop + 16'd1;
         end
       end
 
