@@ -171,8 +171,9 @@ seed lottery, as recorded for build A.)
   two-frame cadence, so the lost lines - all in even-numbered frames by the
   bench's count - may sit in the frames that were not dumped. That those
   repeats are invisible is NOT shown.
-- alm-save + this branch against ddr3-crt-wheel + this branch, board clocks:
-  307 dumped frames, 0 differ - alm-save's cycle identity holds with it.
+- alm-save + this branch against ddr3-crt-wheel + this branch, board clocks,
+  the whole VR race: 447 dumped frames, 0 differ, 0 lines lost - alm-save's
+  cycle identity holds with it, and the fitted candidate is that tree.
 
 ### What went wrong on the way
 
