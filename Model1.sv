@@ -1848,27 +1848,28 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   //
   // Rows 00-07 are the machine now; 08-0F more of it; 10-17 are rows 00-07
   // as they stood at the last FREEZE EVENT, held through RESTART (they are in
-  // the memory reset's domain, which only a core reload clears).
+  // the memory reset's domain, which only a core reload clears). Every field
+  // is whole hex digits, so a photograph reads without bit arithmetic.
   //
   //   00  V60 PC
-  //   01  [23:16] coprocessor FIFO: inbound count(5) full-hold(1) empty-hold(1)
-  //       [15:0]  TGP PC
-  //   02  [23:16] display-list flips, low byte   [15:0] TGP retires
-  //   03  [23:16] 3D bands presented, low byte   [15:0] 3D passes completed
-  //   04  [23:21] bank of the first dropped ROM write  [20:16] outbound FIFO
-  //       count  [15:0] V60 writes into ROM windows, dropped
+  //   01  [23:20] 1 = V60 held pushing into a FULL inbound FIFO
+  //       [19:16] 1 = V60 held reading an EMPTY outbound FIFO   [15:0] TGP PC
+  //   02  [23:16] inbound FIFO count  [15:8] outbound count (each 00-10)
+  //       [7:0]   display-list flips, low byte
+  //   03  [23:16] 3D passes completed, low byte   [15:0] TGP retires
+  //   04  [23:20] bank of the first dropped ROM write   [15:0] V60 writes
+  //       into ROM windows, dropped
   //   05  PC of the first dropped ROM write      06  its address
-  //   07  [23:12] colour uploads dropped outside tgp_ram  [11:8] SDRAM port
-  //       with the longest wait so far  [7:0] that wait, in 4,096-cycle units
-  //   08  [23:16] freeze events  [15:14] last cause (b15 flips stopped, b14
-  //       3D passes stopped)  [13] V60 halted  [12] V60 FP trap
-  //       [10:0] SDRAM ports with a request outstanding
-  //   09  [23:16] DDR3 reads refused  [15:0] DDR3 worst reply wait (clk_3d)
+  //   07  [23:16] SDRAM port with the longest wait so far (00-0A)
+  //       [15:0]  colour uploads dropped outside tgp_ram
+  //   08  [23:16] freeze events  [15:12] last cause (2 flips stopped,
+  //       1 3D passes stopped, 3 both)  [10:0] SDRAM ports waiting now
+  //   09  [23:16] DDR3 reads refused  [15:0] worst DDR3 reply wait (clk_3d)
   //   0A  [23:16] DDR3 writes lost  [15:8] list walks ended on garbage
   //       [7:0] list walks run off the buffer
-  //   0B  I/O board replies              0C  sound 68000 PC
-  //   0D  3D bands presented             0E  display-list flips
-  //   0F  the SDRAM's worst wait, full, in clk_sys cycles
+  //   0B  [23:20] V60 halted  [19:16] V60 FP trap  [15:0] I/O board replies
+  //   0C  sound 68000 PC         0D  3D passes (16 bits)
+  //   0E  display-list flips     0F  worst SDRAM wait, clk_sys cycles
   //
   // A FREEZE EVENT: after the game has flipped its display list 64 times
   // since reset, half a second with no flip, or half a second with no
@@ -1905,14 +1906,13 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   localparam logic [25:0] FZ_HALF_S = 26'd40_000_000;   // 0.5 s of clk_sys
   wire [23:0] fz_live [8];
   assign fz_live[0] = dbg_pc;
-  assign fz_live[1] = {fz_copro_fifo[11:7], fz_copro_fifo[1], fz_copro_fifo[0],
-                       1'b0, dbg_tgp_pc};
-  assign fz_live[2] = {fz_swaps[7:0], dbg_tgp_retires};
-  assign fz_live[3] = {fz_bands[7:0], fz_passes};
-  assign fz_live[4] = {fz_rom_wr_bank, fz_copro_fifo[6:2], fz_rom_wr};
+  assign fz_live[1] = {3'd0, fz_copro_fifo[1], 3'd0, fz_copro_fifo[0], dbg_tgp_pc};
+  assign fz_live[2] = {3'd0, fz_copro_fifo[11:7], 3'd0, fz_copro_fifo[6:2], fz_swaps[7:0]};
+  assign fz_live[3] = {fz_passes[7:0], dbg_tgp_retires};
+  assign fz_live[4] = {1'b0, fz_rom_wr_bank, 4'd0, fz_rom_wr};
   assign fz_live[5] = fz_rom_wr_pc;
   assign fz_live[6] = fz_rom_wr_addr;
-  assign fz_live[7] = {fz_tex_drop[11:0], sd_worst_port, sd_worst[19:12]};
+  assign fz_live[7] = {4'd0, sd_worst_port, fz_tex_drop};
   always_ff @(posedge clk_sys or negedge mem_rst_n) begin
     if (!mem_rst_n) begin
       fz_sw_s <= '0; fz_pa_s <= '0; fz_sw_idle <= '0; fz_pa_idle <= '0;
@@ -1945,12 +1945,12 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
       assign dwf[fzi + 16] = {8'(fzi + 16), fz_snap[fzi]};
     end
   endgenerate
-  assign dwf[8]  = {8'h08, fz_events, fz_cause, dbg_halted, dbg_fp_trap, 1'b0, sd_pend};
+  assign dwf[8]  = {8'h08, fz_events, 2'd0, fz_cause, 1'b0, sd_pend};
   assign dwf[9]  = {8'h09, fz_pay_refused[7:0], fz_pay_wait};
   assign dwf[10] = {8'h0A, fz_pay_ovf[7:0], fz_lw_bad[7:0], fz_lw_over[7:0]};
-  assign dwf[11] = {8'h0B, 8'd0, dbg_io_replies};
+  assign dwf[11] = {8'h0B, 3'd0, dbg_halted, 3'd0, dbg_fp_trap, dbg_io_replies};
   assign dwf[12] = {8'h0C, sb_pc[23:0]};
-  assign dwf[13] = {8'h0D, 8'd0, fz_bands};
+  assign dwf[13] = {8'h0D, 8'd0, fz_passes};
   assign dwf[14] = {8'h0E, 8'd0, fz_swaps};
   assign dwf[15] = {8'h0F, sd_worst};
 
