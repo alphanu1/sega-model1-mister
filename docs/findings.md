@@ -20,6 +20,112 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-28 (c) — STAR WARS' SECOND SOUND BOARD, MEASURED: WHAT IT IS AND WHAT IT WOULD COST
+
+Branch `swa-sound` (on `3d-overrun`, `786fcfb`). Research only -- **nothing is
+built**, because the faithful design does not fit the budget it was given
+(<= ~1,500 ALM, >= 10 M10K left) and that is Ben's decision. Instruments:
+`tools/mame_dsb_cap.lua` (MAME 0.289, headless, 300 emulated seconds: attract,
+coin at 150 s, start at 152 s), MAME's debugger `dasm` of `epr-16471.2`, a
+bit-level scan of `mpr-16514/16515`, and `tools/dsb/` (a bit-accurate C model
+of the planned decoder against MAME's own `mpeg_audio.cpp`).
+
+### The board (MAME `dsbz80.cpp`, `model1.cpp` swa())
+
+- **Z80 at 4 MHz** (MAME: "unknown clock"). `0000-7fff` ROM = the first 32 KB
+  of the 128 KB `epr-16471.2`; `8000-ffff` 32 KB RAM.
+- Ports: `e0` trigger (0 stop, 1 play, 2 play+loop), `e2-e4` start (reading
+  them returns the play position), `e5-e7` end, `e8` volume (`~d & 0x7f`),
+  `e9` pan (0 stereo, 1 left on both, 2 right on both), `f0/f1` an i8251.
+  Writes to `ea`/`eb` are unmapped in MAME (the firmware writes them).
+- **Its only input is the sound 68000's UART TRANSMIT line**, not the V60's:
+  `m_m1audio->rxd_handler().append(dsbz80 write_txd)`. In this core
+  `m2_sound_board`'s `tx_*` is tied off (`tx_ack(1'b1)`), so the wire exists
+  and is unconnected.
+- **Interrupts play no part.** The IM1 vector at `0x38` is `di; ei; reti`, and
+  the main loop runs with `di` (at `0x01a3`), polling the UART status.
+- Output: MPEG-1 Layer II, 32 kHz stereo, scaled `sample * vol / 128` and
+  summed with the main sound board's speaker.
+
+### The firmware is 725 bytes
+
+`0x0100-0x03d4` is the whole program; `0x03d5` is a 15-entry song table. Command
+bytes: `00` stop, `01-0f` play song n, `10-7f` ignored, `80-ef` fade out
+(rate from the low 7 bits), `f0-fe` volume step, `ff` restore volume. Fade and
+delayed-stop timing is **counted in main-loop passes**, so it depends on the
+Z80's speed -- a Z80 slowed by memory stalls fades slower.
+
+**A volume quirk the reference carries:** the main loop writes `e8 c4` every
+256 passes (26,628 times in 300 s). MAME treats every `e8` write as volume, so
+in MAME the music sits at `0x3b/0x7f` (46 %) most of the time, not at the
+song's table volume. MAME's own TODO says bit 7's purpose is unknown; on the
+real board those writes are probably something else. Unresolved.
+
+### What the game actually sends
+
+In 300 s, **six bytes**: `00` at 0.23 s, 3.74 s, 14.35 s, 150.31 s; `01` (song 1,
+`0x334000-0x3f4000`, no loop, volume `0x50`) at **55.62 s** in attract and at
+**191.58 s** after the start. So the attract theme is song 1 and appears 55 s in.
+
+### The MPEG data
+
+All 4 MB is **7,281 frames, every one MPEG-1 Layer II, 32 kHz, 128 kbit/s,
+stereo, no CRC** -- 576 bytes each, ~262 s of audio. **They are not byte
+aligned**: the first sync word is at bit 3,651. One header, one allocation
+table (table 0, 27 subbands), so the decoder only ever needs that one format.
+MAME scans for sync bit by bit, continues from where a frame's data ended,
+**drops a frame that would cross the end address**, never clears the synthesis
+history between songs, and rounds with `int(x*32768 + 0.5)` (truncation toward
+zero).
+
+### Precision, priced in M10K (`tools/dsb/`, all 15 songs + loop restarts, 22,481 frames, 51.8 M samples)
+
+    S / V width   error vs MAME (16-bit samples)      V RAM (2 ch x 512)
+    40 bits       0: 99.88 %   1: 0.12 %   max 1      -   (first 6 entries only)
+    24 bits       0: 81.5 %    1: 18.5 %   max 1      3 M10K
+    20 bits       0: 73.3 %    1: 26.5 %   2: 0.16 %  2 M10K
+
+No position ever diverged from MAME's. MAME decodes in doubles, so bit-exact
+against MAME is not available to fixed point at any width; the RTL is meant to
+be bit-exact against `dsb_fixmodel.h`, and that against MAME as above. The
+synthesis window is exactly k/65536 (max 75,038, 18 bits signed) and 504 of
+its 511 pairs are antisymmetric.
+
+### Reusable HDL
+
+No open-source Layer II decoder found; the nearest is an OpenCores MP3
+(Layer III) VHDL project, and Maintech's Layer II core is commercial. The Model
+2 core has none either (its STCC uses the same DSB, unbuilt). tv80s is already
+here (I/O board).
+
+### Cost
+
+    piece                                      ALM            M10K   DSP   basis
+    tv80s                                       834            0      0     MEASURED, I/O board instance, 3dfb fit
+    Z80 glue (pacing, cache, RAM/ROM/MPEG mux,
+      port decode, i8251 from m2_i8251)         150-250        0      0     estimate
+    SDRAM port 12 (+CDC if on clk_cpu)          60-120         0      0     estimate; m1_cdc_port 7-27 measured
+    MPEG register file, trigger/loop logic      ~100           0      0     estimate
+    Layer II decoder (one MAC, bit-serial)      600-900        3-5    1-2   estimate
+    32 kHz pacing, vol/pan, mix                 ~50            0      1     estimate
+    ---------------------------------------------------------------------
+    faithful total                             1,800-2,250     3-5    2-3
+
+Against 35,849 that is 37,650-38,100 ALM -- **at or over the 90 % line**, with
+nothing left for the V60 fix or a polygon RAM. Replacing the Z80 with a state
+machine that runs the same 15 commands off the real song table (in SDRAM)
+would be ~150-250 ALM instead of ~1,000-1,100, for **~950-1,400 total** --
+inside the budget, but an imitation of a program, which is what R60 moved the
+I/O board away from. That choice is Ben's; see `docs/HANDOFF.md`.
+
+### Where its data would live (nothing moves)
+
+SDRAM word `0x1048000-0x107ffff` (448 KB, free between `SND_RAM` and
+`SND_PCM1`) for the Z80 ROM (128 KB) and RAM (32 KB); the 4 MB of MPEG at word
+`0x1480000` (41 MB), above `SND_PCM2`, which is where the map currently ends.
+The Z80 does write all 32 KB (a boot-time clear) but lives in `0x8100-0x8126`,
+`0x8200`, `0x8300` and the stack, so off-chip RAM costs only stalls.
+
 ## 2026-10-28 — THE TILE OVERRUNS ARE THE FETCH ENGINE'S OWN OVERHEAD ON DENSE SCREENS, AND THE BENCH RAN AT CLOCKS THAT HID THEM
 
 Branch `tile-overrun`, on `alm-save` (`0ac55df`; first written on `ddr3-crt-wheel`,

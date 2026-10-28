@@ -1,3 +1,39 @@
+# 2026-10-28 (swa-sound): STAR WARS' MUSIC BOARD IS MEASURED, AND THE FAITHFUL BUILD DOES NOT FIT THE BUDGET. NEEDS A DECISION.
+
+Branch **`swa-sound`** (local, not pushed), on `3d-overrun` (`786fcfb`).
+**Nothing is built; no RTL changed.** The whole record is in
+`docs/findings.md`, 2026-10-28 (c). In brief:
+
+- The DSB is a Z80 (4 MB of MPEG-1 Layer II, 32 kHz stereo, 128 kbit/s, one
+  format throughout) listening to the **sound 68000's transmit line**, which
+  this core has but ties off. Its firmware is 725 bytes and the game sent it six
+  bytes in 300 s (song 1 at 55.6 s of attract).
+- A fixed-point decoder matches MAME to within 1 LSB at 24 bits (3 M10K of
+  synthesis RAM) or 2 LSB at 20 bits (2 M10K) over all 51.8 M samples of every
+  song (`tools/dsb/`).
+- Budget was <= ~1,500 ALM. **Faithful (tv80s + decoder): ~1,800-2,250 ALM**,
+  3-5 M10K, 2-3 DSP -- tv80s alone is 834 measured. That puts the board at
+  ~37,650-38,100, at or over 90 %, with no room for the V60 fix or polygon RAM.
+
+**Decision needed (Ben):**
+
+1. **Faithful, over budget**: tv80s running `epr-16471.2` + decoder,
+   ~1,800-2,250 ALM. Only if the other two branches' room can be found
+   elsewhere.
+2. **State machine in place of the Z80**: the 15 commands of that 725-byte
+   program, reading its song table from the real ROM in SDRAM, plus the same
+   decoder: **~950-1,400 ALM**. Fits. It is an imitation of a program -- the
+   thing R60 moved the I/O board away from -- but this program is small, fully
+   disassembled, and every behaviour (fade counts, the `e8 c4` volume writes,
+   the loop/end latching) can be checked against the MAME capture.
+3. **Defer** until the V60 fix and polygon RAM have landed and the real
+   headroom is known.
+
+The decoder (600-900 ALM, the dominant estimate) is common to 1 and 2, so it
+can be started either way. Data placement does not move anything: Z80 ROM and
+RAM in SDRAM word `0x1048000-0x107ffff`, MPEG at word `0x1480000` (41 MB), a new
+MRA index for the DSB stream.
+
 # 2026-10-28: TILE OVERRUNS - 0 LOST LINES IN THE FULL SYSTEM AT THE BOARD'S CLOCKS. NOT YET ON HARDWARE.
 
 Branch **`tile-overrun`** (local, not pushed), on `alm-save`. Build to test:
