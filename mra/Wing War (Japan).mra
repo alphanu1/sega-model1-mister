@@ -76,9 +76,7 @@
              core reads the data ROM. MAME's wingwarj carries the same
              copro_data as wingwar (mpr-16739..16742) and the same
              MODEL1_CPU_BOARD tables, so these blocks are the parent's.
-             HAND-EDITED: tools/gen_mra.py lists copro data for parent
-             sets only, and regenerating reverts this. Untested - no
-             wingwarj.zip on the machine it was written on. -->
+             Untested - no wingwarj.zip on the machine it was written on. -->
         <!-- stream 0x600000: the coprocessor's DATA ROM, 2 MB.
              MAME's copro_data. The TGP reads it through IO 0x8000-0xffff
              and it is read BEFORE any math unit, so without it the
@@ -148,10 +146,7 @@
          (Model1.sv io_board2). On EPR-14869 the game's V60 waits forever
          for the I/O board to accept its settings block and never leaves
          boot. EPR-16891 is in MAME's model1io2 device set, which MAME also
-         requires to run this game. Only its first 16 KB are sent.
-
-         HAND-EDITED, NOT GENERATED: tools/gen_mra.py still writes
-         EPR-14869 here, so regenerating reverts this block. -->
+         requires to run this game. Only its first 16 KB are sent. -->
     <rom index="2" zip="model1io2.zip" md5="none">
         <part name="epr-16891.6"/>
     </rom>
@@ -186,7 +181,7 @@
         -->
         <interleave output="16">
             <!-- epr-16751.7, not the World set's epr-17126.7: MAME's wingwaru and
-                 wingwarj both load 16751 here. Hand-edited, as above. -->
+                 wingwarj both load 16751 here. -->
             <part name="epr-16751.7" map="12"/>
         </interleave>
         <interleave output="16">

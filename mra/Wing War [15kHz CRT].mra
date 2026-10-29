@@ -144,10 +144,7 @@
          (Model1.sv io_board2). On EPR-14869 the game's V60 waits forever
          for the I/O board to accept its settings block and never leaves
          boot. EPR-16891 is in MAME's model1io2 device set, which MAME also
-         requires to run this game. Only its first 16 KB are sent.
-
-         HAND-EDITED, NOT GENERATED: tools/gen_mra.py still writes
-         EPR-14869 here, so regenerating reverts this block. -->
+         requires to run this game. Only its first 16 KB are sent. -->
     <rom index="2" zip="model1io2.zip" md5="none">
         <part name="epr-16891.6"/>
     </rom>

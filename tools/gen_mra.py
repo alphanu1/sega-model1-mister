@@ -70,7 +70,22 @@ COPRO_DATA = {                       # ROM_LOAD32_BYTE x4, 2 MB
     # the 3D read whatever happened to be there.
     'swa':      ['mpr-16472.39', 'mpr-16473.40', 'mpr-16474.41', 'mpr-16475.42'],
     'wingwar':  ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
+    # THE WING WAR CLONES CARRY THE PARENT'S copro_data (MAME lists the same
+    # four files in wingwaru, wingwarj and wingwar360). Missing from this table
+    # until 2026-10-29, which put each clone's polygon ROMs at 0x600000 where
+    # the core reads the data ROM. The clone MRAs note it (CLONE_COPRO_NOTE).
+    'wingwaru':   ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
+    'wingwarj':   ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
+    'wingwar360': ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
+    # NOT swaj, although MAME gives it the same copro_data as swa: its MRA has
+    # never carried the region and this table reproduces the MRA as shipped.
+    # That is the Wing War clones' fault again (polygons at 0x600000) and is
+    # recorded in docs/findings.md 2026-10-29 as owed.
 }
+# Clones whose copro blocks were added after their MRA first shipped, and the
+# parent they share them with: the MRA says so above the blocks.
+CLONE_COPRO_NOTE = {'wingwaru': 'wingwar', 'wingwarj': 'wingwar',
+                    'wingwar360': 'wingwar'}
 # The polygon model ROMs: the 3D geometry, and by a long way the largest region.
 # ROM_LOAD32_WORD in PAIRS - each pair is the low and high 16 bits of a 32-bit
 # word - with successive pairs 4 MB apart. Eight files for vr/vf/wingwar (16 MB),
@@ -115,6 +130,9 @@ COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
     'swa':      ['opr14742.bin', 'opr14743.bin'],
     'vf':       ['opr14742.bin', 'opr14743.bin'],
     'wingwar':  ['opr14742.bin', 'opr14743.bin'],
+    'wingwaru':   ['opr14742.bin', 'opr14743.bin'],
+    'wingwarj':   ['opr14742.bin', 'opr14743.bin'],
+    'wingwar360': ['opr14742.bin', 'opr14743.bin'],
     'netmerc':  ['opr14742.bin', 'opr14743.bin'],
 }
 # THE TGP MICROCODE, on its own download index.
@@ -165,6 +183,98 @@ TITLES = {
 # The sets tools/build_rom_image.py packs independently, so a generated MRA for
 # them can be diffed against a second source rather than only against itself.
 CROSS_CHECKED = ('vr', 'vf')
+
+# ---------------------------------------------------------------------------
+# EVERYTHING BELOW WAS ADDED BY HAND TO THE MRAs FIRST, AND IS GENERATED NOW.
+#
+# The game id (index 4), the I/O board's EEPROM (index 3), the sound board
+# (index 5), the per-game buttons and Wing War's I/O board were all written
+# into the MRAs directly, so regenerating them silently removed every one -
+# the coprocessor microcode's lesson, repeated. Since 2026-10-29 this script
+# reproduces the shipped MRAs byte for byte (diffed), and the [15kHz CRT]
+# MRAs follow from them through tools/make_crt_mra.py.
+
+# Model1.sv's game id: the input map, the I/O board and the DSB follow it.
+GAME_ID = {'vr': 0, 'vformula': 0, 'vf': 1, 'swa': 2, 'swaj': 2,
+           'wingwar': 3, 'wingwaru': 3, 'wingwarj': 3, 'wingwar360': 3,
+           'netmerc': 4}
+
+# Zip lists where they are not the default ("set.zip" for index 0,
+# "set.zip|set.7z" for indices 1 and 5). A clone names its parent's zip so a
+# split set loads.
+ZIPS = {
+    'vformula':   {5: 'vformula.zip|vformula.7z|vr.zip'},
+    'swaj':       {5: 'swaj.zip|swaj.7z|swa.zip'},
+    'wingwaru':   {0: 'wingwaru.zip|wingwar.zip', 1: 'wingwaru.zip|wingwar.zip',
+                   5: 'wingwaru.zip|wingwar.zip'},
+    'wingwarj':   {0: 'wingwarj.zip|wingwar.zip', 1: 'wingwarj.zip|wingwar.zip',
+                   5: 'wingwarj.zip|wingwar.zip'},
+    'wingwar360': {0: 'wingwar360.zip|wingwar.zip', 1: 'wingwar360.zip|wingwar.zip',
+                   5: 'wingwar360.zip|wingwar.zip'},
+}
+
+def zip_for(setname, index):
+    default = f'{setname}.zip' if index == 0 else f'{setname}.zip|{setname}.7z'
+    return ZIPS.get(setname, {}).get(index, default)
+
+# The I/O board each game was built with, from model1.cpp: wingwar() fits
+# SEGA_MODEL1IO2 with BIOS epr16891. NetMerc is a model1io2 game too
+# (EPR-18021) but is still sent EPR-14869 until its own firmware has been run.
+IO2_SETS = ('wingwar', 'wingwaru', 'wingwarj', 'wingwar360')
+
+# Per-family buttons, in Model1.sv's joy0 bit order (see the note in emit()).
+BUTTONS_DRIVE = ('Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,'
+                 'Start,Coin,Service,Test,Coin 2', 'R2,L2,R1,L1,A,B,X,Y,Start,Select')
+BUTTONS = {
+    'vf':  ('Punch,Kick,Guard,Unused 4,Unused 5,Unused 6,Unused 7,Unused 8,'
+            'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
+    'swa': ('Fire,Thumb,Button 3,Unused 4,Unused 5,Unused 6,Unused 7,Unused 8,'
+            'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
+    'wingwar': ('Machine Gun,Missile,Smoke,Unused 4,View 1,View 2,View 3,View 4,'
+                'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
+}
+BUTTONS['swaj'] = BUTTONS['swa']
+for _s in ('wingwaru', 'wingwarj', 'wingwar360'):
+    BUTTONS[_s] = BUTTONS['wingwar']
+
+# Notes carried inside the sound stream for one set's program ROM.
+SND_PART_NOTE = {
+    ('wingwaru', 'epr-16751.7'): 'wingwaru',
+    ('wingwarj', 'epr-16751.7'): 'wingwarj',
+}
+# Virtua Racing's MRA carries the long note above its sound stream (it was the
+# first); the others carry only the stream-shape note inside it.
+SND_PRENOTE = ('vr',)
+
+# MAME's sound regions, in stream order. The 68000 program is padded to
+# 512 KB and each MultiPCM region to 4 MB with ZEROS (see the note in emit).
+SND_REGIONS = [('M1AUDIO_CPU_REGION', 0x80000), ('M1AUDIO_MPCM1_REGION', 0x400000),
+               ('M1AUDIO_MPCM2_REGION', 0x400000)]
+# Star Wars' Digital Sound Board, appended unpadded after PCM2.
+DSB_REGIONS = ['"dsbz80:mpegcpu"', '"dsbz80:mpeg"']
+
+
+def parse_regions(path):
+    """{setname: {region: [(offset, size, filename, loadtype)]}} for the
+    regions outside maincpu that the MRAs carry: sound, DSB and EEPROM."""
+    text = open(path, encoding='utf-8', errors='replace').read()
+    out = {}
+    for m in re.finditer(r'ROM_START\(\s*(\w+)\s*\)(.*?)ROM_END', text, re.S):
+        name, body = m.group(1), m.group(2)
+        regs = {}
+        parts = re.split(r'(ROM_REGION\w*\([^)]*\))', body)
+        for i in range(1, len(parts), 2):
+            rm = re.match(r'ROM_REGION\w*\(\s*[^,]+,\s*([^,]+?)\s*,', parts[i])
+            if not rm:
+                continue
+            loads = []
+            for lm in re.finditer(r'ROM_LOAD(\w*)\(\s*"([^"]+)"\s*,\s*(0x[0-9a-fA-F]+|0)\s*,'
+                                  r'\s*(0x[0-9a-fA-F]+)', parts[i + 1]):
+                loads.append((int(lm.group(3), 0), int(lm.group(4), 16),
+                              lm.group(2), lm.group(1)))
+            regs[rm.group(1)] = sorted(loads)
+        out[name] = regs
+    return out
 
 
 def parse_sets(path):
@@ -272,7 +382,7 @@ def build_chunks(loads, setname=None):
     return chunks, warnings
 
 
-def emit(setname, chunks, cross_checked):
+def emit(setname, chunks, cross_checked, regions):
     title, year, cat = TITLES.get(setname, (setname, 0, ''))
     note = ("tools/verify_mra.py diffs this against build_rom_image.py's\n"
             "      independently written packing, so the layout has a second source."
@@ -313,7 +423,16 @@ def emit(setname, chunks, cross_checked):
         '      sound board. Those blocks do not exist in the core, so sending them would',
         '      only slow the load. They belong here as M2 and M4 land.',
         '    -->',
-        f'    <rom index="0" zip="{setname}.zip" md5="none">',
+        '    <!-- WHICH GAME THIS IS. Six titles share one bitstream and they do not',
+        '         agree about the input map, so the core has to be told. Ahead of',
+        '         index 0 deliberately: the byte must arrive before the ROM.',
+        '         0 Virtua Racing / Formula, 1 Virtua Fighter, 2 Star Wars,',
+        '         3 Wing War, 4 NetMerc. -->',
+        '    <rom index="4" md5="none">',
+        f'        <part>{GAME_ID[setname]:02X} {GAME_ID[setname]:02X}</part>',
+        '    </rom>',
+        '',
+        f'    <rom index="0" zip="{zip_for(setname, 0)}" md5="none">',
     ]
 
     off = 0
@@ -335,6 +454,14 @@ def emit(setname, chunks, cross_checked):
             out.append(f'        <part name="{c[1]}"/>')
             off += c[2]
         elif c[0] == 'quad':
+            parent = CLONE_COPRO_NOTE.get(setname)
+            if parent:
+                out.append('        <!-- THE COPROCESSOR DATA ROM AND SINCOS TABLES WERE MISSING from this')
+                out.append("             clone's MRA, and the polygon ROMs sat at 0x600000 where the")
+                out.append(f"             core reads the data ROM. MAME's {setname} carries the same")
+                out.append(f'             copro_data as {parent} (mpr-16739..16742) and the same')
+                out.append("             MODEL1_CPU_BOARD tables, so these blocks are the parent's.")
+                out.append(f'             Untested - no {setname}.zip on the machine it was written on. -->')
             out.append(f'        <!-- stream 0x{off:06x}: the coprocessor\'s DATA ROM, 2 MB.')
             out.append("             MAME's copro_data. The TGP reads it through IO 0x8000-0xffff")
             out.append('             and it is read BEFORE any math unit, so without it the')
@@ -403,7 +530,7 @@ def emit(setname, chunks, cross_checked):
             '         loader\'s old byte offset would have meant padding 25 MB of filler',
             '         through the HPS to deliver 8 KB. 2048 words of 32 bits, little-endian,',
             '         which is exactly the file. -->',
-            f'    <rom index="1" zip="{setname}.zip|{setname}.7z" md5="none">',
+            f'    <rom index="1" zip="{zip_for(setname, 1)}" md5="none">',
             f'        <part name="{prog}"/>',
             '    </rom>',
         ]
@@ -423,7 +550,22 @@ def emit(setname, chunks, cross_checked):
     # Daytona's epr-14869c is a third revision and is NOT what a Model 1 board
     # runs, which is worth stating because it is the copy nearest to hand.
     iofw = 'epr-14869b.25' if setname.startswith(('vf', 'swa')) else 'epr-14869.25'
-    out += [
+    if setname in IO2_SETS:
+        out += [
+            '',
+            "    <!-- The I/O board Z80 firmware. WING WAR'S IS NOT THE OTHER GAMES':",
+            "         model1.cpp's wingwar() fits SEGA_MODEL1IO2 with BIOS epr16891,",
+            '         a TMPZ84C015 board, and the core becomes that board for game id 3',
+            "         (Model1.sv io_board2). On EPR-14869 the game's V60 waits forever",
+            '         for the I/O board to accept its settings block and never leaves',
+            "         boot. EPR-16891 is in MAME's model1io2 device set, which MAME also",
+            '         requires to run this game. Only its first 16 KB are sent. -->',
+            '    <rom index="2" zip="model1io2.zip" md5="none">',
+            '        <part name="epr-16891.6"/>',
+            '    </rom>',
+        ]
+    else:
+      out += [
         '',
         '    <!-- The I/O board Z80 firmware, from MAME\'s model1io BIOS set.',
         '         REQUIRED: the core runs the real Z80 and there is no',
@@ -438,7 +580,10 @@ def emit(setname, chunks, cross_checked):
         f'    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">',
         f'        <part name="{iofw}"/>',
         '    </rom>',
-    ]
+      ]
+
+    out += emit_eeprom(setname, regions)
+    out += emit_sound(setname, regions)
 
     out += [
         '',
@@ -485,13 +630,140 @@ def emit(setname, chunks, cross_checked):
         # in the core, which costs nothing and is what a driving game does
         # anyway. Service and test stay named but unmapped, since both are
         # already on the OSD.
-        '    <buttons names="Accelerate,Brake,Shift Up,Shift Down,'
-        'VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" '
-        'default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>',
+        f'    <buttons names="{BUTTONS.get(setname, BUTTONS_DRIVE)[0]}" '
+        f'default="{BUTTONS.get(setname, BUTTONS_DRIVE)[1]}"/>',
         '</misterromdescription>',
         '',
     ]
     return '\n'.join(out)
+
+
+# Verbatim note texts, as the MRAs carry them.
+EEPROM_NOTE = [
+    "    <!-- The I/O board's 93C46 settings EEPROM, 128 bytes, from the GAME set",
+    '         rather than the model1io BIOS set. Its first word is the "SEGA"',
+    '         signature the V60 checks at FE078E before deciding the board has been',
+    '         configured; without it the firmware publishes an identity block that',
+    '         fails that check and the game takes its uninitialised-board branch,',
+    '         which walks a much shorter display list. Its own index because',
+    '         m1_ioz80 preloads its array from SDRAM before releasing the Z80. -->',
+]
+SND_PRENOTE_TEXT = [
+    "    <!-- THE SOUND BOARD, index 5. Its own index for the same reason the TGP's",
+    '         microcode has one: the bases are at 26 MB and beyond, so carrying this',
+    '         on index 0 would mean padding ~26 MB of filler through the HPS.',
+    '         Index 4 is the game-id byte, not free.',
+    '',
+    "         One stream, three destinations, split by m1_rom_loader's SND_*",
+    "         parameters because the bases are not contiguous - the 68000's 64 KB of",
+    '         work RAM sits between the program and PCM1:',
+    '',
+    '           0x000000  epr-14870a.7   0x20000   68000 program  -> 0xD10000',
+    '           0x020000  mpr-14873.32  0x200000   MultiPCM 1     -> 0xD40000',
+    '           0x220000  mpr-14876.4   0x200000   MultiPCM 2     -> 0xE40000',
+    '',
+    '         The 68000 ROM is ROM_LOAD16_WORD_SWAP in MAME, so it is byte-swapped',
+    '         here with map="12" on a 16-bit interleave - the same form Model 2 uses',
+    '         for its own sound 68000. The sample ROMs are byte streams and go in',
+    '         plain. -->',
+]
+SND_SHAPE_NOTE = [
+    '        <!--',
+    '             FOUR MB PER MULTIPCM, 2026-09-16. One stream shape for every game:',
+    '',
+    '               0x000000  68000 program   512 KB',
+    '               0x080000  MultiPCM 1        4 MB',
+    '               0x480000  MultiPCM 2        4 MB',
+    '',
+    "             512 KB for the program because NetMerc's is a SINGLE 512 KB ROM;",
+    '             Virtua Fighter and Wing War have two 128 KB ones and Virtua Racing',
+    '             has one. Short sets are zero-padded so every game presents the same',
+    '             shape.',
+    '',
+    '             These regions live ABOVE 32 MB, which only became addressable when',
+    '             the SDRAM controller went to ten column bits. Nothing below 32 MB',
+    '             moved, so the polygon ROM and copro tables stay exactly where the',
+    '             packer has always written them - an earlier attempt to find this',
+    '             space by sliding those regions down broke the 3D on hardware.',
+    '',
+    '             PADS ARE 00, NOT FF. Model1.sv used to mask MultiPCM reads above',
+    '             2 MB to zero, matching MAME, which gives each chip a 4 MB region',
+    '             and may load less into it. That mask is gone now the space is real,',
+    '             so the zeros must be in the data: FF would be full-scale noise',
+    '             exactly where the reference is silent.',
+    '',
+    '             68000 ROMs are ROM_LOAD16_WORD_SWAP in MAME, so each is byte-',
+    '             swapped with map="12" on a 16-bit interleave; samples go in plain.',
+    '        -->',
+]
+DSB_NOTE = [
+    '        <!--',
+    "             STAR WARS' DIGITAL SOUND BOARD, 2026-10-28: the music. Appended to",
+    '             the same stream, which the loader maps linearly on past PCM2 into',
+    '             free SDRAM (nothing else moves):',
+    '',
+    '               0x880000  DSB Z80 program, epr-16471.2   128 KB',
+    '               0x8A0000  DSB MPEG data, mpr-16514 + 16515  4 MB',
+    '               0xCA0000  end',
+    '',
+    '             Plain bytes, as MAME loads them (ROM_LOAD, no swap).',
+    '        -->',
+]
+
+
+def emit_eeprom(setname, regions):
+    """Index 3: the I/O board's 93C46 image, for a set whose MAME definition
+    has an ioboard:eeprom region (only vr)."""
+    loads = regions.get('"ioboard:eeprom"')
+    if not loads:
+        return []
+    out = [''] + EEPROM_NOTE + [f'    <rom index="3" zip="{zip_for(setname, 3)}" md5="none">']
+    out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
+    return out + ['    </rom>']
+
+
+def _region_parts(setname, loads, length, pad):
+    """Parts for one region: each load in offset order, gaps and the tail
+    filled with `pad` bytes up to `length` (no fill when length is None)."""
+    out, pos = [], 0
+    for off, size, name, kind in loads:
+        if off > pos:
+            out.append(f'        <part repeat="{off - pos}">{pad}</part>')
+        if kind == '16_WORD_SWAP':
+            out.append('        <interleave output="16">')
+            who = SND_PART_NOTE.get((setname, name))
+            if who:
+                out.append(f"            <!-- {name}, not the World set's epr-17126.7: MAME's wingwaru and")
+                out.append('                 wingwarj both load 16751 here. -->')
+            out.append(f'            <part name="{name}" map="12"/>')
+            out.append('        </interleave>')
+        else:
+            out.append(f'        <part name="{name}"/>')
+        pos = off + size
+    if length is not None and pos < length:
+        out.append(f'        <part repeat="{length - pos}">{pad}</part>')
+    return out
+
+
+def emit_sound(setname, regions):
+    """Index 5: the sound board's stream - the 68000 program padded to 512 KB,
+    each MultiPCM region padded to 4 MB, then Star Wars' DSB (Z80 program and
+    MPEG data) appended unpadded, which m1_rom_loader maps on past PCM2."""
+    if 'M1AUDIO_CPU_REGION' not in regions:
+        return []
+    out = ['']
+    if setname in SND_PRENOTE:
+        out += SND_PRENOTE_TEXT
+    out.append(f'    <rom index="5" zip="{zip_for(setname, 5)}">')
+    out += SND_SHAPE_NOTE
+    for reg, length in SND_REGIONS:
+        out += _region_parts(setname, regions.get(reg, []), length, '00')
+    dsb = [l for r in DSB_REGIONS for l in regions.get(r, [])]
+    if dsb:
+        out += DSB_NOTE
+        for r in DSB_REGIONS:
+            out += _region_parts(setname, regions.get(r, []), None, '00')
+    return out + ['    </rom>']
 
 
 def check_zip(zip_path, chunks):
@@ -528,6 +800,7 @@ def main():
         raise SystemExit(f"{MODEL1} missing — run ./tools/bootstrap.sh")
 
     sets = parse_sets(MODEL1)
+    regions = parse_regions(MODEL1)
     os.makedirs(args.out, exist_ok=True)
 
     made = skipped = 0
@@ -546,7 +819,7 @@ def main():
         title = TITLES[name][0]
         path = os.path.join(args.out, f'{title}.mra')
         with open(path, 'w') as f:
-            f.write(emit(name, chunks, name in CROSS_CHECKED))
+            f.write(emit(name, chunks, name in CROSS_CHECKED, regions.get(name, {})))
 
         zp = os.path.join(args.roms, f'{name}.zip')
         problems = check_zip(zp, chunks)
