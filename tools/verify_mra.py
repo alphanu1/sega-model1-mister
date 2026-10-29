@@ -208,6 +208,17 @@ def main():
         # per chip and are zero-padded to fill; vf, swa and wingwar carry two of
         # each and fill it outright.
         PROG_END, PCM1_END, TOTAL = 0x80000, 0x480000, 0x880000
+        # STAR WARS APPENDS ITS DIGITAL SOUND BOARD (2026-10-28, swa-sound):
+        #   0x880000  DSB Z80 program  128 KB
+        #   0x8A0000  DSB MPEG data      4 MB
+        #   0xCA0000  end - m1_rom_loader's SND_PCM2_END
+        # Only the swa sets carry it; any other set that is this long is wrong.
+        setname = (root.findtext('setname') or '').strip()
+        has_dsb = setname.startswith('swa')
+        bounds = [(PROG_END, '68000 program'), (PCM1_END, 'MultiPCM 1')]
+        if has_dsb:
+            TOTAL = 0xCA0000
+            bounds += [(0x880000, 'MultiPCM 2'), (0x8A0000, 'DSB Z80 program')]
         with zipfile.ZipFile(args.zip) as zf:
             off = 0
             first_swapped = None
@@ -222,7 +233,7 @@ def main():
                     first_swapped = sw
                 # No part may straddle a region boundary: a stream that does is
                 # one whose regions land at the wrong SDRAM base.
-                for bound, nm in ((PROG_END, '68000 program'), (PCM1_END, 'MultiPCM 1')):
+                for bound, nm in bounds:
                     if off < bound < off + len(b):
                         print(f"FAIL index 5: a part straddles the {nm} boundary at "
                               f"0x{bound:06x} (part covers 0x{off:06x}-0x{off+len(b):06x}) "
@@ -237,10 +248,11 @@ def main():
             return 1
         if total != TOTAL:
             print(f"FAIL index 5 is {total:,} bytes, expected {TOTAL:,} "
-                  f"(256 KB program + 4 MB + 4 MB; pad short games with "
-                  f'<part repeat="N">00</part>)')
+                  f"(512 KB program + 4 MB + 4 MB" + (" + the DSB's 128 KB + 4 MB" if has_dsb else "") +
+                  f'; pad short games with <part repeat="N">00</part>)')
             return 1
-        print(f"index 5 sound      512 KB program + 2 x 4 MB sample sets, {total:,} bytes  OK")
+        print(f"index 5 sound      512 KB program + 2 x 4 MB sample sets" +
+              (" + DSB 128 KB + 4 MB" if has_dsb else "") + f", {total:,} bytes  OK")
     else:
         print("WARN  no <rom index=\"5\"> -- the sound board would be silent")
 
