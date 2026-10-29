@@ -192,17 +192,20 @@ the disassembler), so per hard rule 3 the numbering was corrected in
 
 ### Open questions
 
-**Virtua Fighter's fighting arena is the wrong size in play.** The fighters are
-correct and the arena is correct in attract; only a real match is wrong. Two
-display list commands are parsed and then discarded, and both are candidates:
-command `0x05`, the polygon RAM upload, has no consumer at all — there is no
-polygon RAM in the core — and `m1_geo_walk` masks away bit 23 of the object's
-polygon address, which is the bit MAME uses to read uploaded geometry instead of
-the ROM. Command `0x02`, direct (already-projected) polygons, is dropped the same
-way and is the likely reason knives do not appear. **Neither is yet proven to be
-the arena**: simulation reaches attract and character select without the game
-issuing either command, and a real match has not been instrumented.
-`docs/findings.md`, 2026-09-09.
+**Virtua Fighter's fighting arena — FIXED IN SIMULATION, owed a board test.**
+It was the V60, not the 3D: `mulu.w #A, 501276` at FCCA40 computes the ring
+size the game hands the coprocessor (70 x 10 = 700), and multiply, divide and
+remainder with a memory destination dropped their store, so the coprocessor
+was told 70 and built the ring a tenth of its size. The same bug froze Virtua
+Racing's attract (found independently on `vr-freeze`). Polygon RAM (`0x05`),
+bit 23 and direct polygons (`0x02`) were measured against MAME through a real
+match: the game issues none of them. `docs/findings.md`, 2026-10-28 (b).
+
+**Direct polygons (`0x02`) and polygon RAM (`0x05`) are still not drawn**, and
+no shipped picture is known to need them: Virtua Fighter issues neither;
+Star Wars uploads 1,421 words of polygon RAM at boot and never reads it in
+12,000 frames, and issues a one-quad direct polygon only in play. Knives in
+Virtua Fighter, and Star Wars' title logo, have not been traced to either.
 
 **Small slowdowns on some Virtua Racing corners.** The geometry pass has to fit
 the game's two-frame display list flip. Every deadline counter reads zero across
@@ -212,16 +215,15 @@ every two — so the worst pass in a busy stretch is very likely never sampled. 
 peak-hold is now on the wire, and the 3D clock has been raised a step, which was
 reverted once for a reason that no longer holds.
 
-**Star Wars Arcade does not load.** Its MRA verifies byte for byte against the
-independent packer and the packer knows its shape — one 512 KB boot ROM at
-`0xf80000` where Virtua Racing has two 128 KB parts, and no banked data at
-`0x1000000` — but it has never been simulated successfully, so the fault is not
-localised. Earlier, with an older image, both processors parked during init: the
-V60's PC at `0x000004` and the coprocessor at microcode `0x0048` after 69
-retires. One candidate is EEPROM persistence: `swa` has no factory EEPROM, in
-our set or in MAME's, so it depends on the I/O firmware's virgin-part path at
-every boot while ours is volatile. It also wants a DSBZ80 MPEG sound board that
-is not implemented at all, so expect more than one fault.
+**Star Wars Arcade's ships — FIXED IN SIMULATION, owed a board test.** It
+boots and plays (since 2026-09-16). The corvette missing from the attract
+intro and the Star Destroyer drawn with quads missing were one fault: the
+game uploads its colour table through display-list command 4 in blocks that
+run past word 0x4000 of the list, and the core stored only the lower half of
+each list. The upper half now lives in SDRAM in space the layout already left
+free. Wing War and NetMerc upload the same way in play. It still has no
+music: that is a second sound board (DSBZ80, MPEG) this core does not build.
+`docs/findings.md`, 2026-10-28 (c).
 
 **The 2D tile fetch misses scanline deadlines.** Not memory: the port is served
 in 18 cycles while the controller sits ~29% busy. It is the engine's own line

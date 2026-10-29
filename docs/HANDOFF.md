@@ -1,3 +1,95 @@
+# 2026-10-29: VIRTUA FIGHTER'S ARENA AND STAR WARS' SHIPS - BOTH FIXED IN SIMULATION. NOT YET ON HARDWARE.
+
+Branch **`vf-swa-geo`** (local, not pushed), on `tile-overrun`. Two faults,
+two causes, neither in the 3D renderer. `findings.md` 2026-10-28 (b) and (c)
+carry the measurements.
+
+## Virtua Fighter: a V60 multiply that never stored
+
+`mulu.w #A, 501276` (FCCA40) turns the ring-size setting 70 into 700 and the
+game hands it to the coprocessor. MUL/MULU/DIV/DIVU/REM/REMU with a MEMORY
+destination dropped the result (S_MULDIV overrode wb_op2's S_WB_MEM - the
+third instance of the pattern after S_IN_RD and S_ROTC), so the ring was a
+tenth of its size; at round start both fighters stood outside it and the
+round was a DRAW. One line in v60.sv, **the same line `vr-freeze` committed
+independently (89a636a)** for Virtua Racing's attract freeze - this branch
+carries its text byte for byte, so the two merge as one change.
+`make test_v60_mul_mem`: the game's own bytes plus all 18 opcode/width pairs
+to memory, 1,084 checks (874 fail before).
+
+Bench, same inputs (`sim/input/vf_match.txt`, board clocks): frame 780 tiny
+ring -> stone floor to the horizon; frames 980-1080 a real fight.
+
+**Build for the board:** `build/Model1_vfmul_seed5_35293.rbf`, md5
+`968cf0d66b7f07cc2a2924fa1932fbcb` - tile-overrun plus the V60 line ONLY
+(not the Star Wars change). 35,293 ALM, 525 M10K; clk_3d +0.039, clk_sys
++1.813, clk_cpu +5.715, pll_hdmi +0.280, hold +0.186. Reports in
+`build/vfmul_s5_reports/` of this worktree.
+
+## Star Wars: half of every display list was never stored
+
+The game uploads its colour table (121,575 words) through command 4 at boot,
+in blocks that run to list word 0x783e; m1_mainram keeps 16,384 words per
+list (a cap measured on Virtua Racing) and dropped the rest - 46% of the
+colour words, the corvette entirely and much of the Star Destroyer. The upper
+half of each list now lives in SDRAM at **0x19C0000**, in the free gap
+between tgp_ram and the I/O firmware - **no region moves, loader and MRAs
+untouched** - written by the V60 through m1_main and read by the walker
+through p6 beside tgp_ram (`rtl/video/m1_p6_arb.sv`, `make test_p6_arb`).
+quartus_map +78 ALM, 0 M10K. **Wing War and NetMerc lose colour words the same
+way in play** - check both on the board too.
+
+Bench: after the boot uploads our tgp_ram equals MAME's on all 121,575 words
+(56,287 of them were missing before). The full-system picture at the
+corvette/Star Destroyer frames: see the bottom of this section once the run
+in `build/run_swafix` reaches them.
+
+## Board test, in order
+
+1. **Virtua Fighter**, the vfmul build: a real match - the arena must be the
+   full stone floor and a round must not end in an instant DRAW.
+2. **Star Wars attract**, the dlhi build when it fits: the corvette after the
+   copyright screen, then the Star Destroyer, solid and shaded.
+3. **Virtua Racing attract to the end of a cycle**: `vr-freeze` says the same
+   V60 bug froze it; this build should not freeze either.
+4. Wing War and NetMerc in play: colours.
+
+## What turned out wrong (this session)
+
+- README's candidates for the arena - polygon RAM (0x05), bit 23, direct
+  polygons (0x02): measured against MAME through a real match, the game
+  issues none of them. Polygon RAM: Virtua Fighter uploads nothing; Star Wars
+  uploads 1,421 words at boot and never reads them in 12,000 frames. Not built.
+- "The coprocessor's matrix stack" (findings 2026-09-10): the coprocessor
+  replayed against MAME's own traffic answers 1,484,210 of 1,484,210 exactly.
+- My own copro-RAM ordering race: real in principle (with the TGP lagging
+  ~5,000 answers Virtua Fighter gets 154,614 wrong), unreachable with the
+  board's 16-word FIFO (0 wrong). Built, tested, reverted.
+- One MAME trace run here used a plain `-debug` and sat stopped in the
+  debugger window on Ben's desktop for an hour. Use `-debug -debugger none`
+  with the trace started and stopped from Lua.
+
+## Instruments added
+
+- `tools/mame_geo_census.lua` - per frame: direct polys, polygon RAM uploads
+  (with the address range), bit-23 objects; snapshots and scripted inputs.
+- `tools/mame_tgp_stream.lua` + `make tgp_replay` (`sim/tgp/tb_tgp_replay.cpp`)
+  - the coprocessor fed MAME's own command/RAM traffic, every answer checked;
+  RACE/SLACK/FIFO model a lagging coprocessor, CMDLOG frames the commands.
+- `tools/tgp_cmd_frames.py` - a pop log into one line per command.
+- `tb_m1_frame`: `+define+TGPSTREAM` (our traffic in the same format),
+  `+define+TGPRAMDUMP` (tgp_ram out of the SDRAM model), and both display
+  lists beside every PPM.
+- render3d accepts a polygon region shorter than VR's (Star Wars' is 12 MB).
+
+## make test
+
+Clean. New: `v60_mul_mem: checks=1084 fails=0`, `m1_p6_arb: checks=5641907
+fails=0`; everything else as tile-overrun. `make lint` reports the one
+SYNCASYNCNET warning in mb86233_regs that tile-overrun already has.
+
+---
+
 # 2026-10-28: TILE OVERRUNS - 0 LOST LINES IN THE FULL SYSTEM AT THE BOARD'S CLOCKS. NOT YET ON HARDWARE.
 
 Branch **`tile-overrun`** (local, not pushed), on `alm-save`. Build to test:
