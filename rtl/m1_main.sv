@@ -72,6 +72,9 @@ module m1_main #(
   // offset. 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in. See
   // m1_decode, which carries the per-game table and the MAME evidence.
   input  logic [1:0]  roma_mode,
+  // Which I/O board the game was built for: 0 model1io, 1 model1io2 (Wing
+  // War). m1_ioz80 carries the differences. A wire from the game id.
+  input  logic        io2,
 
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
@@ -551,7 +554,7 @@ module m1_main #(
       // CEN_DIV(6) - a 6:1 ratio, so the I/O board ran at two thirds speed
       // relative to the CPU it handshakes with, and always had.
       m1_ioz80 ioboard (
-        .clk(clk), .rst_n(~rst_cpu),
+        .clk(clk), .rst_n(~rst_cpu), .io2(io2),
         .fw_req(iofw_req), .fw_word(iofw_word),
         .fw_ack(iofw_ack), .fw_din(iofw_din),
         .in0 (in_bytes[8*8  +: 8]),

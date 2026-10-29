@@ -90,6 +90,8 @@ module m1_integrated (
   // 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in. m1_decode carries
   // the per-game table and why it exists; this is a wire.
   input  logic [1:0]  roma_mode,
+  // The I/O board variant, from the game id: 1 is model1io2 (Wing War).
+  input  logic        io2,
 
   // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
   output logic        iofw_req,
@@ -391,6 +393,7 @@ module m1_integrated (
     .clk_tgp(clk_3d), .rst_n_tgp(rst_n_tgp), .rst_n_tgp_if(rst_n_3d),
     .rom_loaded(rom_loaded_sync[1]),
     .roma_mode(roma_mode),
+    .io2(io2),
     .in_bytes(in_bytes),
     // The I/O board Z80's firmware, from the loader's own download index.
     // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.

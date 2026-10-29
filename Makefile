@@ -203,6 +203,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
                      $(RTL)/mb86233_xfer.sv $(RTL)/mb86233_core.sv
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
+.PHONY: test_ctc
 .PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
@@ -311,7 +312,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -649,6 +650,34 @@ test_tile_decode:
 
 # The interrupt mask was implemented as an enable once and nothing caught it:
 # the integration program never enables an interrupt.
+# The CTC inside the second I/O board's TMPZ84C015. It lives in m1_ioz80.sv,
+# so that file is the source; tv80 only so the file's other module resolves.
+test_ctc:
+	verilator --cc --exe --build -O2 $(VFLAGS) -Wno-DECLFILENAME --top-module m1_ctc \
+	  rtl/io/m1_ioz80.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v \
+	  rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v \
+	  sim/io/tb_m1_ctc.cpp -o tb_ctc --Mdir obj_ctc
+	./obj_ctc/tb_ctc
+
+# The I/O board on its own, running its real firmware against the V60's boot
+# exchange as MAME records it (sim/io/tb_m1_ioz80.sv). Outside `make test`:
+# it needs the firmware, which is a ROM (hard rule 2), and Wing War's board
+# takes about a minute because EPR-16891's settings write is 2.2 board-seconds.
+#   IOZ80_FW=<hex> IOZ80_IO2=0|1, one hex byte per line. Default is Wing War's
+#   EPR-16891 from model1io2.zip; IO2=0 with EPR-14869 is the negative control
+#   (the settings block does not survive, which is why Wing War crashed).
+IOZ80_FW  ?= build/rom/wingwar_iofw_16891.hex
+IOZ80_IO2 ?= 1
+.PHONY: ioz80
+ioz80:
+	verilator --binary --timing -j 4 -Wno-fatal -Wno-lint -Wno-style -Wno-MULTIDRIVEN \
+	  -Wno-DECLFILENAME --top-module tb_m1_ioz80 -GLIMIT="64'd60000000" \
+	  -GIO2=$(IOZ80_IO2) -GFWHEX='"$(IOZ80_FW)"' \
+	  rtl/io/m1_ioz80.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v \
+	  rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v \
+	  sim/io/tb_m1_ioz80.sv --Mdir obj_ioz80 -o tb_ioz80
+	./obj_ioz80/tb_ioz80
+
 test_glue:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_glue \
 	  $(SRCS_m1_glue) sim/io/tb_m1_glue.cpp -o tb_glue --Mdir obj_glue
@@ -1104,7 +1133,7 @@ m1_frame:
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
-	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
+	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GIO2=$(FRAME_IO2) -GDPTRACE=$(FRAME_DPTRACE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
@@ -1172,6 +1201,14 @@ FRAME_AUTO ?= 0
 # byte selects on hardware. swa/swaj/netmerc mirror the boot ROM from its base,
 # wingwar 256 KB in, everything else reads ROMA erased. m1_decode carries why.
 FRAME_ROMA_MODE ?= $(if $(filter swa swaj netmerc,$(GAME)),1,$(if $(filter wingwar wingwarj wingwar360,$(GAME)),2,0))
+# Wing War's I/O board is model1io2 (Model1.sv io_board2). The bench's
+# build/rom/<game>_iofw.hex must then hold EPR-16891, from model1io2.zip:
+#   python3 tools/build_rom_image.py wingwar ~/roms/wingwar.zip -b \
+#     --iofw <epr-16891.6> -o build/rom
+# FRAME_IO2=0 with EPR-14869 reproduces what every release before this did.
+# FRAME_DPTRACE=<n>: n lines of the V60's DPRAM accesses, loops collapsed.
+FRAME_DPTRACE ?= 0
+FRAME_IO2 ?= $(if $(filter wingwar wingwarj wingwaru wingwar360,$(GAME)),1,0)
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
 

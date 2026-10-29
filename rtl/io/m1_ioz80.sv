@@ -25,6 +25,11 @@
 //   0x8000-0x800f  Sega 315-5338A I/O custom
 //   0xc000-0xc003  OKI MSM6253 ADC, 4 channels, serial MSB-first readout
 //
+// That is model1io. With `io2` set this is Wing War's model1io2 instead
+// (model1io2.cpp): the same Z80 core and the same 315-5338A, 93C46 and
+// MSM6253, re-mapped, plus the TMPZ84C015's CTC (m1_ctc, at the end of this
+// file), whose timer interrupt drives that board's entire firmware.
+//
 // THE DPRAM IS BEHIND THE 315-5338A, not memory-mapped: the Z80 sets a 16-bit
 // address through commands 0x00/0x01 (low/high from the serial-output
 // register), writes dpram[addr] with command 0x07, writes dpram[0..7] directly
@@ -58,10 +63,31 @@ module m1_ioz80 #(
   // Z80 clock enables per `clk`. The DEFAULT is the board's own ratio; there
   // is deliberately no frequency here to go stale when the V60's clock moves.
   parameter int unsigned CEN_NUM = 1,
-  parameter int unsigned CEN_DEN = 4
+  parameter int unsigned CEN_DEN = 4,
+  // THE SECOND BOARD'S RATIO, AND WHY IT IS NOT THE BOARD'S. model1io2's
+  // TMPZ84C015 runs at 19.6608 MHz / 2 = 9.8304 MHz against the V60's 16 MHz,
+  // 0.6144 of a V60 clock -- and that cannot be run here. Above one half, two
+  // clock enables land on consecutive clocks, and tv80s registers rd_n/mreq_n
+  // one clock AFTER the core moves A: in that clock fw_miss cannot see the
+  // new read, the second enable carries the Z80 through T1 on a stale cache
+  // word, and it executes garbage. Measured: 1536/2500 took EPR-16891 from
+  // its LDIR at 0611h straight into RST 38h, with a firmware fetch issued
+  // for A = F001h (tb_m1_ioz80). So the board runs at 1/2: 81% of its real
+  // speed relative to the V60. Everything on it -- the CTC tick included --
+  // counts the same enable, so the board is uniformly slower rather than
+  // inconsistent; the V60's side of every exchange is a poll with retries.
+  parameter int unsigned CEN_NUM2 = 1,
+  parameter int unsigned CEN_DEN2 = 2
 ) (
   input  logic        clk,
   input  logic        rst_n,
+  // WHICH BOARD THIS IS. 0: model1io (Virtua Racing, Virtua Fighter, Star
+  // Wars), EPR-14869. 1: model1io2 (Wing War; NetMerc and Virtua Cop use it
+  // too), EPR-16891 -- a TMPZ84C015 with a different memory map, the
+  // 315-5338A's ports bound the other way round, the EEPROM on port F, and a
+  // CTC timer interrupt driving the whole firmware. Static while running: it
+  // comes from the MRA's game id, which lands before the ROM.
+  input  logic        io2,
 
   // THE FIRMWARE LIVES IN SDRAM, NOT IN BLOCK RAM.
   //
@@ -148,15 +174,23 @@ module m1_ioz80 #(
   // Bresenham, so a non-integer ratio is expressible if a future clock needs
   // one: accumulate CEN_NUM per clock and fire on reaching CEN_DEN. At 1/4 that
   // is exactly every fourth clock, with no accumulated phase error.
-  localparam int unsigned CEN_AW = $clog2(CEN_DEN + CEN_NUM + 1);
+  //
+  // The second board's ratio is a different numerator and denominator, chosen
+  // by `io2` at run time; both are compile-time constants, so this is a mux on
+  // two constants per term and nothing wider than the first board's version
+  // needs (CEN_DEN2 sets the width).
+  localparam int unsigned CEN_MAXD = (CEN_DEN2 > CEN_DEN) ? CEN_DEN2 : CEN_DEN;
+  localparam int unsigned CEN_AW = $clog2(CEN_MAXD + CEN_MAXD + 1);
   logic [CEN_AW-1:0] cen_acc;
   logic cen;
-  wire  [CEN_AW-1:0] cen_nxt = cen_acc + CEN_AW'(CEN_NUM);
+  wire  [CEN_AW-1:0] cen_num = io2 ? CEN_AW'(CEN_NUM2) : CEN_AW'(CEN_NUM);
+  wire  [CEN_AW-1:0] cen_den = io2 ? CEN_AW'(CEN_DEN2) : CEN_AW'(CEN_DEN);
+  wire  [CEN_AW-1:0] cen_nxt = cen_acc + cen_num;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin cen_acc <= '0; cen <= 1'b0; end
-    else if (cen_nxt >= CEN_AW'(CEN_DEN)) begin
+    else if (cen_nxt >= cen_den) begin
       cen     <= 1'b1;
-      cen_acc <= cen_nxt - CEN_AW'(CEN_DEN);
+      cen_acc <= cen_nxt - cen_den;
     end else begin
       cen     <= 1'b0;
       cen_acc <= cen_nxt;
@@ -166,7 +200,8 @@ module m1_ioz80 #(
   // ------------------------------------------------------------ the CPU
   logic [15:0] A;
   logic  [7:0] di, dout;
-  logic        mreq_n, rd_n, wr_n;
+  logic        mreq_n, rd_n, wr_n, iorq_n, m1_n;
+  logic        ctc_int;
 
   tv80s u_z80 (
     // STALLED BY ITS CLOCK ENABLE, NOT BY wait_n.
@@ -178,13 +213,16 @@ module m1_ioz80 #(
     // which is exactly what a CPU waiting on memory does, and it needs no
     // assumption about which T-state samples what.
     .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss && ee_ready),
-    .wait_n(1'b1), .int_n(1'b1), .nmi_n(1'b1), .busrq_n(1'b1),
-    .m1_n(dbg_m1_n), .mreq_n(mreq_n), .iorq_n(), .rd_n(rd_n), .wr_n(wr_n),
+    // /INT is the CTC's, and only on the second board: EPR-14869 runs with
+    // interrupts unused and its /INT has always been tied off here.
+    .wait_n(1'b1), .int_n(!(io2 && ctc_int)), .nmi_n(1'b1), .busrq_n(1'b1),
+    .m1_n(m1_n), .mreq_n(mreq_n), .iorq_n(iorq_n), .rd_n(rd_n), .wr_n(wr_n),
     .rfsh_n(), .halt_n(), .busak_n(),
     .A(A), .di(di), .dout(dout)
   );
 
   assign dbg_a = A;
+  assign dbg_m1_n = m1_n;
   wire mem_rd = !mreq_n && !rd_n;
   wire mem_wr = !mreq_n && !wr_n;
 
@@ -206,6 +244,110 @@ module m1_ioz80 #(
   always_ff @(posedge clk) if (mem_wr) begin aw_l <= A; dw_l <= dout; end
   wire wr_stb = !mem_wr && mem_wr_d;   // trailing edge; aw_l/dw_l hold truth
   wire rd_end = !mem_rd && mem_rd_d;   // read completed: safe to shift
+
+  // ------------------------------------------- the second board's I/O space
+  //
+  // EPR-14869 never executes IN or OUT, so this file ignored /IORQ. EPR-16891
+  // does: the TMPZ84C015's on-die CTC, SIO, PIO and watchdog are Z80 I/O
+  // ports (MAME tmpz84c015.cpp: CTC 10h-13h, SIO 18h-1Bh, PIO 1Ch-1Fh,
+  // watchdog F0h/F1h, daisy-chain priority F4h), decoded on A[7:0].
+  // Same edge discipline as the memory writes above.
+  //
+  // TV80S'S STROBES ARE A CLOCK LATE, AND THE READS HAVE TO ALLOW FOR IT.
+  // tv80s registers /RD, /IORQ and /MREQ from the core's T-state, so they are
+  // low from one clock into T1 to one clock into T2, while the core samples
+  // the data bus through the WHOLE of T2. A memory read does not care -- the
+  // read mux decodes A, which holds -- but an I/O read or an interrupt
+  // acknowledge decoded from /IORQ loses its data in T2's last clock and the
+  // Z80 takes whatever the memory map has at that address instead. Measured
+  // (tb_m1_ioz80): the IM 2 vector read as 08h, the 315-5338A's status byte,
+  // and the CTC's first tick sent the firmware to CA30h and into RST 38h.
+  // So each kind of cycle is HELD from its strobe until the next memory
+  // cycle begins. /IORQ low with neither /RD nor /WR is the acknowledge: the
+  // Z80's INTA has no read strobe (tv80s drives /RD from ~IntCycle).
+  wire io_wr  = !iorq_n && !wr_n;
+  wire in_raw = !iorq_n && !rd_n;
+  wire inta_raw = !iorq_n && rd_n && wr_n;
+  logic io_wr_d, inta_d, in_hold, inta_hold;
+  logic [7:0] iaw_l, idw_l;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      io_wr_d <= 1'b0; inta_d <= 1'b0; in_hold <= 1'b0; inta_hold <= 1'b0;
+    end else begin
+      io_wr_d <= io_wr; inta_d <= inta_raw;
+      if (!mreq_n)       begin in_hold <= 1'b0; inta_hold <= 1'b0; end
+      else if (in_raw)   in_hold   <= 1'b1;
+      else if (inta_raw) inta_hold <= 1'b1;
+    end
+  end
+  always_ff @(posedge clk) if (io_wr) begin iaw_l <= A[7:0]; idw_l <= dout; end
+  wire iow_stb    = !io_wr && io_wr_d;
+  wire inta_start = inta_raw && !inta_d;
+  wire inta = inta_raw || inta_hold;     // the vector is on the bus
+  wire io_in = in_raw || in_hold;        // an I/O port is on the bus
+
+  // RETI, as the CTC sees it: it watches the opcode fetches for ED 4D. A CB
+  // prefix is tracked so that `CB ED` (SET 5,L) followed by a 4D is not
+  // mistaken for one; DD/FD CB d op fetches its last two bytes without /M1,
+  // so they never reach this.
+  //
+  // /M1 is the core's own register and rises at T2 -- a clock BEFORE tv80s's
+  // /RD does -- so whether a read is an opcode fetch is taken from its FIRST
+  // clock, and the byte from its last.
+  logic       m1_rd_l;
+  logic [7:0] op_l;
+  logic [1:0] pfx;                         // 0 none, 1 after ED, 2 after CB
+  logic       reti;
+  always_ff @(posedge clk) begin
+    if (mem_rd && !mem_rd_d) m1_rd_l <= !m1_n;
+    if (mem_rd) op_l <= di;
+  end
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin pfx <= 2'd0; reti <= 1'b0; end
+    else begin
+      reti <= 1'b0;
+      if (rd_end && m1_rd_l) begin
+        case (pfx)
+          2'd1:    begin pfx <= 2'd0; reti <= (op_l == 8'h4D); end
+          2'd2:    pfx <= 2'd0;
+          default: pfx <= (op_l == 8'hED) ? 2'd1 : (op_l == 8'hCB) ? 2'd2 : 2'd0;
+        endcase
+      end
+    end
+  end
+
+  logic [7:0] ctc_q, ctc_vec, inta_vec;
+  m1_ctc ctc (
+    .clk(clk), .rst_n(rst_n),
+    // The UNSTALLED clock enable: the CTC counts time, and the Z80 waiting on
+    // a firmware fetch from SDRAM is this core's artefact, not the board's.
+    .cen(cen && io2),
+    .wr(io2 && iow_stb && iaw_l[7:2] == 6'b000100),
+    .ch(iow_stb ? iaw_l[1:0] : A[1:0]), .wdata(idw_l), .rdata(ctc_q),
+    .int_req(ctc_int), .vector(ctc_vec),
+    .inta(io2 && inta_start), .reti(io2 && reti)
+  );
+  // The vector is taken as the acknowledge begins and held for its length,
+  // so the CTC's own bookkeeping cannot change it under the Z80's sample.
+  always_ff @(posedge clk) if (inta_start) inta_vec <= ctc_vec;
+  wire [7:0] inta_q = inta_start ? ctc_vec : inta_vec;
+
+  // The I/O-space reads. SIO: status RR0 with the transmit buffer empty
+  // (bit 2) -- the firmware's only SIO poll waits on exactly that bit before
+  // sending a byte to a link that is not fitted. PIO A/B data are DSW2/DSW3
+  // (model1io2.cpp: in_pa/in_pb). Everything else reads open bus.
+  logic [7:0] iord_q;
+  always_comb begin
+    iord_q = 8'hff;
+    case (A[7:0])
+      8'h10, 8'h11, 8'h12, 8'h13: iord_q = ctc_q;
+      8'h18, 8'h1a:               iord_q = 8'h00;
+      8'h19, 8'h1b:               iord_q = 8'h04;
+      8'h1c:                      iord_q = dsw2;
+      8'h1e:                      iord_q = dsw3;
+      default: ;
+    endcase
+  end
 
   // ------------------------------------------------------------ ROM and RAM
   // Registered reads settle within one 48 MHz cycle; the Z80 samples many
@@ -280,7 +422,13 @@ module m1_ioz80 #(
           // does not object to and the fitter does.
           ee_ld_we <= 1'b1;
           ee_ld_a  <= ee_ld_i[5:0];
-          ee_ld_d  <= fw_din;
+          // THE SECOND BOARD'S PART STARTS BLANK. No Wing War set carries a
+          // 93c45.bin, so MAME's model1io2 powers up erased, and no Wing War
+          // MRA sends index 3 -- so the SDRAM block this reads holds whatever
+          // the LAST game loaded there (Virtua Racing's "SEGA" image, say).
+          // Loading that into a different board's settings part would make
+          // the boot depend on what was played before.
+          ee_ld_d  <= io2 ? 16'hffff : fw_din;
           ee_ld_i  <= ee_ld_i + 7'd1;
           if (ee_ld_i == 7'd63) ee_ready <= 1'b1;
         end else begin
@@ -315,7 +463,10 @@ module m1_ioz80 #(
   // a cycle of write delay is invisible to it. The read keeps the async-ROM
   // shape tv80 needs -- data half a cycle after the address.
   always_ff @(negedge clk) begin
-    if (wr_stb && aw_l[15:13] == 3'b010) ram[aw_l[12:0]] <= dw_l;   // 0x4000-0x5fff
+    // 0x4000-0x5fff on the first board; 0xe000-0xffff on the second, whose
+    // map is ROM 0000-7FFF, "backup RAM" E000-EFFF and RAM F000-FFFF -- the
+    // same 8 KB, so the same array.
+    if (wr_stb && aw_l[15:13] == (io2 ? 3'b111 : 3'b010)) ram[aw_l[12:0]] <= dw_l;
   end
   always_ff @(negedge clk) ram_q <= ram[A[12:0]];
 
@@ -344,10 +495,16 @@ module m1_ioz80 #(
   //
   // No new register: PA writes already land in port_out[0], which is exactly
   // where MAME takes the bit from.
-  wire secondary = port_out[0][0];
+  //
+  // The second board moves it to PG bit 6 (model1io2.cpp io_pg_w), and there
+  // it switches only the ADC: its DIP banks have their own addresses (DSW1 at
+  // 8080h, DSW2/3 on the PIO), so its digital inputs are never multiplexed.
+  wire secondary = io2 ? port_out[6][6] : port_out[0][0];
 
   wire io_sel  = (A[15:4] == 12'h800);   // 0x8000-0x800f
-  wire adc_sel = (A[15:2] == 14'h3000);  // 0xc000-0xc003
+  // The ADC is at C000h-C003h on the first board and at 8200h-8203h, mirrored
+  // at 8204h-8207h, on the second.
+  wire adc_sel = io2 ? (A[15:3] == 13'h1040) : (A[15:2] == 14'h3000);
   // ONE PULSE AT THE READ'S LEADING EDGE. See the ADC block below for why the
   // shift is bound to this rather than to the read's end.
   wire adc_rd_start = mem_rd && !mem_rd_d && adc_sel;
@@ -356,9 +513,25 @@ module m1_ioz80 #(
   // continuously, the DPRAM's registered read settles long before the paced
   // Z80 samples it, and io_address only changes via commands.
   logic [7:0] io_q;
+  // The second board's port reads honour the direction register, as MAME's
+  // 315_5338a read() does (bit set = input): its firmware read-modify-writes
+  // PG (SET 0,(8006h) on every tick) and must get its own latch back. Its
+  // inputs are bound PA/PB/PC = IN.0/IN.1/IN.2 (model1io2.cpp io_pa_r..pc_r),
+  // where the first board has them on PB/PC/PD.
+  logic [7:0] io2_in;
+  always_comb begin
+    case (A[2:0])
+      3'd0:    io2_in = in0;
+      3'd1:    io2_in = in1;
+      3'd2:    io2_in = in2;
+      default: io2_in = 8'hff;     // PD outputs, PE drive board absent, PF/PG
+    endcase
+  end
   always_comb begin
     io_q = 8'hff;
-    case (A[3:0])
+    if (io2 && A[3:0] <= 4'h6)
+      io_q = dir_r[A[2:0]] ? io2_in : port_out[A[2:0]];
+    else case (A[3:0])
       4'h0: io_q = port_out[0];
       4'h1: io_q = secondary ? dsw1 : in0;   // PB
       4'h2: io_q = secondary ? dsw2 : in1;   // PC
@@ -489,9 +662,11 @@ module m1_ioz80 #(
   logic  [5:0] ee_addr;
   typedef enum logic [2:0] {EE_CMD, EE_READ, EE_WRITE, EE_DONE} ee_st_t;
   ee_st_t ee_st;
-  wire ee_clk = port_out[0][7];
-  wire ee_cs  = port_out[0][6];
-  wire ee_di  = port_out[0][5];
+  // The second board drives the part from PF: bit 5 CLK, bit 4 CS, bit 6 DI
+  // (model1io2.cpp io_pf_w), and reads DO back at 8040h bit 6.
+  wire ee_clk = io2 ? port_out[5][5] : port_out[0][7];
+  wire ee_cs  = io2 ? port_out[5][4] : port_out[0][6];
+  wire ee_di  = io2 ? port_out[5][6] : port_out[0][5];
   logic ee_clk_d;
   // THE EEPROM HAS CONTENTS AND THEY MATTER. 93c45.bin is 128 bytes sitting in
   // vr.zip, and read as little-endian words its first two are 0x5345 0x4741 -
@@ -648,7 +823,7 @@ module m1_ioz80 #(
   logic       adc_bit;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin adc_shift <= 8'd0; adc_bit <= 1'b1; end
-    else if (wr_stb && aw_l[15:2] == 14'h3000) begin
+    else if (wr_stb && (io2 ? (aw_l[15:3] == 13'h1040) : (aw_l[15:2] == 14'h3000))) begin
       case (aw_l[1:0])
         // "analog port switching is handled by two 74hc4066 analog switches"
         // -- model1io.cpp, and analogN_r picks an_cb[N+4] when secondary is
@@ -666,14 +841,172 @@ module m1_ioz80 #(
   end
 
   // ------------------------------------------------------------ read mux
+  //
+  // The second board's own registers (model1io2.cpp mem_map):
+  //   8040h  board: bits 3:0 the four board buttons (released), 4 JP4 and
+  //          5 JP3 (both off: the firmware's own entry test at 0000h takes
+  //          the normal path at 0600h only then), 6 EEPROM DO, 7 unused high.
+  //   8080h  DSW1.
+  // Its 8100h-810Fh FPGA is Virtua Cop's light-gun interface and is not read
+  // by Wing War; it falls through to open bus with everything else unmapped.
   always_comb begin
     di = 8'hff;
-    if      (A[15:14] == 2'b00) di = fw_q;                    // 0x0000-0x3fff
-    else if (A[15:13] == 3'b010) di = ram_q;                  // 0x4000-0x5fff
+    if      (inta)               di = inta_q;                 // IM 2 vector
+    else if (io_in)              di = iord_q;                 // IN, second board
+    else if (A[15:14] == 2'b00)  di = fw_q;                   // 0x0000-0x3fff
+    else if (A[15:13] == (io2 ? 3'b111 : 3'b010)) di = ram_q; // work RAM
     else if (io_sel)             di = io_q;
     // d0_r returns the bit in position 0 with the unmapped bits reading as
     // ones: `shift_out() | (space.unmap() & 0xfe)`.
     else if (adc_sel)            di = {7'h7f, adc_bit};
+    else if (io2 && A == 16'h8040) di = {1'b1, ee_do, 6'h3f};
+    else if (io2 && A == 16'h8080) di = dsw1;
+  end
+
+endmodule
+
+// ============================================================================
+// THE CTC INSIDE THE TMPZ84C015, for the second I/O board (model1io2).
+//
+// Wing War's I/O board firmware, EPR-16891, is interrupt driven where the
+// first board's EPR-14869 is not: it sets IM 2 with I = 0, programs CTC
+// channel 1 as a timer (control A5h: interrupt on, prescaler 256, automatic
+// start; time constant 26h = 38) and does ALL of its work -- the DPRAM
+// exchange, the inputs, the ADC -- in that channel's handler at 08FDh, which
+// it reaches through the vector table at 00E8h. Measured on MAME's model1io2
+// (tools census, docs/findings.md 2026-10-29): with no tick the board never
+// answers the V60 at all.
+//
+// What is modelled, from the Z80 CTC's programming model (MAME z80ctc.cpp is
+// the reference):
+//   - four channels at port base+0..3, each a control word (bit 0 = 1), a
+//     time constant following a control word with bit 2 set, and on channel 0
+//     only a vector write (bit 0 = 0, bits 7:3 kept);
+//   - timer mode, prescaler 16 or 256, automatic start (bit 3 = 0);
+//   - the interrupt daisy chain inside the CTC: channel 0 highest; a channel
+//     in service (acknowledged, RETI not yet seen) blocks itself and every
+//     lower-priority channel until RETI. The firmware's handler re-enables
+//     interrupts as its FIRST instruction, so without the in-service block a
+//     slow handler would be re-entered by its own next tick.
+//   - reading a channel returns its down-counter.
+//
+// It lives in this file, beside the only module that uses it, so the
+// hardware project's source list does not change.
+//
+// What is not: counter mode and the CLK/TRG trigger inputs (nothing on this
+// board drives them -- MAME's model1io2 binds no CLK/TRG lines, only the
+// ZC/TO outputs into the SIO's baud clocks, which this core does not build),
+// and the ZC/TO outputs themselves.
+
+module m1_ctc (
+  input  logic        clk,
+  input  logic        rst_n,
+  input  logic        cen,          // one Z80 system clock: the prescaler input
+
+  input  logic        wr,           // one pulse per I/O write to this CTC
+  input  logic  [1:0] ch,           // channel = port address bits 1:0
+  input  logic  [7:0] wdata,
+  output logic  [7:0] rdata,        // down-counter of `ch`
+
+  output logic        int_req,      // to the Z80's /INT, active high here
+  output logic  [7:0] vector,       // what an acknowledge would put on the bus
+  input  logic        inta,         // one pulse at the start of an acknowledge
+  input  logic        reti          // one pulse when RETI is fetched
+);
+
+  logic [7:0] ctrl  [4];
+  logic [7:0] tc    [4];
+  logic [8:0] cnt   [4];            // 1..256; a time constant of 0 is 256
+  logic [7:0] presc [4];
+  logic [3:0] want_tc, running, pend, ius;
+  logic [4:0] vbase;
+
+  // The chain: a channel may interrupt when it is pending and neither it nor
+  // any higher-priority channel is in service.
+  logic [3:0] may;
+  always_comb begin
+    for (int i = 0; i < 4; i++) begin
+      may[i] = pend[i];
+      for (int j = 0; j <= i; j++) if (ius[j]) may[i] = 1'b0;
+    end
+  end
+
+  // Highest-priority requester, and highest-priority channel in service.
+  logic [1:0] req_ch, ius_ch;
+  always_comb begin
+    req_ch = 2'd0;
+    if      (may[0]) req_ch = 2'd0;
+    else if (may[1]) req_ch = 2'd1;
+    else if (may[2]) req_ch = 2'd2;
+    else if (may[3]) req_ch = 2'd3;
+    ius_ch = 2'd0;
+    if      (ius[0]) ius_ch = 2'd0;
+    else if (ius[1]) ius_ch = 2'd1;
+    else if (ius[2]) ius_ch = 2'd2;
+    else if (ius[3]) ius_ch = 2'd3;
+  end
+
+  assign int_req = |may;
+  assign vector  = {vbase, req_ch, 1'b0};
+  assign rdata   = cnt[ch][7:0];
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      for (int i = 0; i < 4; i++) begin
+        ctrl[i] <= 8'h00; tc[i] <= 8'h00; cnt[i] <= 9'd256; presc[i] <= 8'd0;
+      end
+      want_tc <= 4'd0; running <= 4'd0; pend <= 4'd0; ius <= 4'd0;
+      vbase <= 5'd0;
+    end else begin
+      // ------------------------------------------------------------ counting
+      if (cen) begin
+        for (int i = 0; i < 4; i++) begin
+          // Timer mode only (bit 6 = 0); counter mode has no input here.
+          if (running[i] && !ctrl[i][6]) begin
+            if (presc[i] == (ctrl[i][5] ? 8'd255 : 8'd15)) begin
+              presc[i] <= 8'd0;
+              if (cnt[i] == 9'd1) begin
+                cnt[i] <= (tc[i] == 8'd0) ? 9'd256 : {1'b0, tc[i]};
+                if (ctrl[i][7]) pend[i] <= 1'b1;
+              end else
+                cnt[i] <= cnt[i] - 9'd1;
+            end else
+              presc[i] <= presc[i] + 8'd1;
+          end
+        end
+      end
+
+      // ------------------------------------------------------------ writes
+      if (wr) begin
+        if (want_tc[ch]) begin
+          tc[ch]      <= wdata;
+          cnt[ch]     <= (wdata == 8'd0) ? 9'd256 : {1'b0, wdata};
+          presc[ch]   <= 8'd0;
+          want_tc[ch] <= 1'b0;
+          // Automatic start in timer mode; a trigger-started timer waits for
+          // an edge that nothing on this board supplies.
+          running[ch] <= !ctrl[ch][3];
+        end else if (wdata[0]) begin
+          ctrl[ch] <= wdata;
+          if (wdata[2]) want_tc[ch] <= 1'b1;
+          if (wdata[1]) running[ch] <= 1'b0;   // software reset
+          if (!wdata[7]) pend[ch]   <= 1'b0;   // interrupt disabled
+        end else if (ch == 2'd0) begin
+          vbase <= wdata[7:3];
+        end
+      end
+
+      // ------------------------------------------------------- the chain
+      // An acknowledge and a new tick of the same channel can coincide; the
+      // tick wins (it is a new request), which is what a pending latch does.
+      if (inta && int_req) begin
+        ius[req_ch] <= 1'b1;
+        if (!(cen && running[req_ch] && cnt[req_ch] == 9'd1 &&
+              presc[req_ch] == (ctrl[req_ch][5] ? 8'd255 : 8'd15)))
+          pend[req_ch] <= 1'b0;
+      end
+      if (reti && |ius) ius[ius_ch] <= 1'b0;
+    end
   end
 
 endmodule

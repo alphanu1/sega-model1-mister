@@ -79,6 +79,12 @@ module tb_m1_frame #(
     // hardware -- 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in.
     // The Makefile sets it from GAME; see m1_decode for the per-game table.
     parameter int     ROMA_MODE  = 0,
+    // The I/O board variant, as the MRA's game id selects it: 1 is model1io2,
+    // Wing War's. The Makefile sets it from GAME, and IOFWHEX must then be
+    // that board's firmware (EPR-16891), not EPR-14869.
+    parameter bit     IO2        = 1'b0,
+    // DPRAM access trace (V60 side), deduplicated; 0 = off. See DPT lines.
+    parameter integer DPTRACE    = 0,
     parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
     parameter string  PPMOUT     = "build/frame.ppm",
     parameter string  TRAMOUT    = "build/frame_tram.hex",
@@ -443,6 +449,7 @@ m1_integrated core (
     .DDRAM_ADDR(ddr_addr), .DDRAM_DOUT(ddr_dout), .DDRAM_DOUT_READY(ddr_dout_ready),
     .DDRAM_RD(ddr_rd), .DDRAM_DIN(ddr_din), .DDRAM_BE(ddr_be), .DDRAM_WE(ddr_we),
     .roma_mode(2'(ROMA_MODE)),
+    .io2(IO2),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
@@ -2125,6 +2132,34 @@ always @(posedge clk_cpu) begin
                  core.main.m_wdata, core.main.m_rdata,
                  core.main.rams.dpram_lo['h020]);
         dp_n = dp_n + 1;
+    end
+end
+
+// EVERY V60 ACCESS TO THE I/O BOARD'S DPRAM, polling loops collapsed: an access
+// equal to one of the last six is counted, not printed. The same shape as the
+// MAME tap used to read Wing War's boot handshake (findings 2026-10-29), so
+// the two traces can be read side by side. DPTRACE=<n> prints n lines.
+string dpt_ring [6];
+integer dpt_n = 0, dpt_sup = 0;
+always @(posedge clk_cpu) begin
+    if (DPTRACE != 0 && core.main.m_req && core.main.m_ack && core.main.sel_dpram
+        && dpt_n < DPTRACE) begin
+        string k;
+        bit seen;
+        k = $sformatf("%s %06h %03h %02h", core.main.m_we ? "W" : "R", core.dbg_pc,
+                      core.main.m_addr[11:1],
+                      core.main.m_we ? core.main.m_wdata[7:0] : core.main.m_rdata[7:0]);
+        seen = 0;
+        for (int r = 0; r < 6; r++) if (dpt_ring[r] == k) seen = 1;
+        if (seen) dpt_sup = dpt_sup + 1;
+        else begin
+            for (int r = 0; r < 5; r++) dpt_ring[r] = dpt_ring[r+1];
+            dpt_ring[5] = k;
+            if (dpt_sup != 0) $display("DPT     (%0d repeats suppressed)", dpt_sup);
+            dpt_sup = 0;
+            $display("DPT f=%0d %s", frames, k);
+            dpt_n = dpt_n + 1;
+        end
     end
 end
 
