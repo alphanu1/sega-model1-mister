@@ -1181,7 +1181,7 @@ m1_frame:
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
-	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GIO2=$(FRAME_IO2) -GDPTRACE=$(FRAME_DPTRACE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
+	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GIO2=$(FRAME_IO2) -GHMD_POSE=$(FRAME_HMD) -GNM_STICK=$(FRAME_NMSTICK) -GDPTRACE=$(FRAME_DPTRACE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
@@ -1257,6 +1257,12 @@ FRAME_ROMA_MODE ?= $(if $(filter swa swaj netmerc,$(GAME)),1,$(if $(filter wingw
 # FRAME_DPTRACE=<n>: n lines of the V60's DPRAM accesses, loops collapsed.
 FRAME_DPTRACE ?= 0
 FRAME_IO2 ?= $(if $(filter wingwar wingwarj wingwaru wingwar360,$(GAME)),1,0)
+# NetMerc's head-tracker pose in DPRAM 0x80 (m1_main's seeder). FRAME_HMD=0 with
+# GAME=netmerc reproduces the zero pose every build before it had.
+FRAME_HMD ?= $(if $(filter netmerc,$(GAME)),1,0)
+# NetMerc's stick bytes at rest (0x00 0x80, 0x01 0xff, 0x02 0x80), as Model1.sv
+# publishes them; 0 gives the pedal bytes every game had before (0x02 = 0x01).
+FRAME_NMSTICK ?= $(if $(filter netmerc,$(GAME)),1,0)
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
 

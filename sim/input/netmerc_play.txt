@@ -1,0 +1,72 @@
+# SEGA NETMERC into gameplay.
+#
+# <cycle> <IN.0> <IN.1> <IN.2> [accel]   ACTIVE LOW
+#
+# NetMerc IN.0: b0 coin1  b2 service  b3 service1
+# NetMerc IN.1: b0 trigger  b1 thumb  b2 MVD holder
+#
+# 80 MHz clk: one video frame is about 1.39M cycles. In MAME a coin at frame
+# 300 and the trigger pulsed every 60 frames reach play (three viewport
+# groups a list) about 1,200 frames later; the briefing is not skipped.
+ 700000000 fe ff ff 01   # coin
+ 730000000 ff ff ff 01
+ 900000000 ff fe ff 01   # trigger
+ 907000000 ff ff ff 01
+ 985000000 ff fe ff 01   # trigger
+ 992000000 ff ff ff 01
+1070000000 ff fe ff 01   # trigger
+1077000000 ff ff ff 01
+1155000000 ff fe ff 01   # trigger
+1162000000 ff ff ff 01
+1240000000 ff fe ff 01   # trigger
+1247000000 ff ff ff 01
+1325000000 ff fe ff 01   # trigger
+1332000000 ff ff ff 01
+1410000000 ff fe ff 01   # trigger
+1417000000 ff ff ff 01
+1495000000 ff fe ff 01   # trigger
+1502000000 ff ff ff 01
+1580000000 ff fe ff 01   # trigger
+1587000000 ff ff ff 01
+1665000000 ff fe ff 01   # trigger
+1672000000 ff ff ff 01
+1750000000 ff fe ff 01   # trigger
+1757000000 ff ff ff 01
+1835000000 ff fe ff 01   # trigger
+1842000000 ff ff ff 01
+1920000000 ff fe ff 01   # trigger
+1927000000 ff ff ff 01
+2005000000 ff fe ff 01   # trigger
+2012000000 ff ff ff 01
+2090000000 ff fe ff 01   # trigger
+2097000000 ff ff ff 01
+2175000000 ff fe ff 01   # trigger
+2182000000 ff ff ff 01
+2260000000 ff fe ff 01   # trigger
+2267000000 ff ff ff 01
+2345000000 ff fe ff 01   # trigger
+2352000000 ff ff ff 01
+2430000000 ff fe ff 01   # trigger
+2437000000 ff ff ff 01
+2515000000 ff fe ff 01   # trigger
+2522000000 ff ff ff 01
+2600000000 ff fe ff 01   # trigger
+2607000000 ff ff ff 01
+2685000000 ff fe ff 01   # trigger
+2692000000 ff ff ff 01
+2770000000 ff fe ff 01   # trigger
+2777000000 ff ff ff 01
+2855000000 ff fe ff 01   # trigger
+2862000000 ff ff ff 01
+2940000000 ff fe ff 01   # trigger
+2947000000 ff ff ff 01
+3025000000 ff fe ff 01   # trigger
+3032000000 ff ff ff 01
+3110000000 ff fe ff 01   # trigger
+3117000000 ff ff ff 01
+3195000000 ff fe ff 01   # trigger
+3202000000 ff ff ff 01
+3280000000 ff fe ff 01   # trigger
+3287000000 ff ff ff 01
+3365000000 ff fe ff 01   # trigger
+3372000000 ff ff ff 01
