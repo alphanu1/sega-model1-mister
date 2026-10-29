@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <vector>
+#include <string>
 #include <cmath>
 
 static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
@@ -41,6 +42,9 @@ static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static const int SW = 496, SH = 384;
 
 static std::vector<uint16_t> dlist, palette, xlat, tgpram;
+// SEQ mode: the two display-list buffers, as the game double-buffers them.
+static std::vector<uint16_t> dbuf[2];
+static bool seq_mode = false;
 static std::vector<uint32_t> prom;
 struct LPB { float d, a, s; uint8_t p; };
 static LPB lpbank[256];
@@ -138,7 +142,7 @@ int main(int argc, char** argv) {
     memset(got_row, 0, sizeof got_row);
 
     auto memories = [&]() {
-        d->dl_data   = dlist[d->dl_addr & 0x7fff];
+        d->dl_data   = seq_mode ? dbuf[d->dl_sel_q & 1][d->dl_addr & 0x7fff] : dlist[d->dl_addr & 0x7fff];
         d->rom_data  = model_word(d->rom_addr);
         d->tex_data  = tgpram[d->tex_addr & 0xfffff];
         d->pal_data  = palette[d->pal_addr & 0x1fff];
@@ -303,6 +307,18 @@ int main(int argc, char** argv) {
     // the light banks and colour words are never uploaded and 6.9% of the
     // picture paints.
     const int flip_every = getenv("FLIP") ? atoi(getenv("FLIP")) : 2;
+    std::vector<std::string> seq_dirs; size_t seq_i = 0;
+    const bool seq_race = getenv("SEQ_RACE") && atoi(getenv("SEQ_RACE"));
+    const int  seq_race_line = getenv("SEQ_RACE_LINE") ? atoi(getenv("SEQ_RACE_LINE")) : 346;
+    if (getenv("SEQ")) {
+        FILE* sf = fopen(getenv("SEQ"), "r");
+        char ln[512];
+        while (sf && fgets(ln, sizeof ln, sf)) { ln[strcspn(ln, "\r\n")] = 0; if (ln[0]) seq_dirs.push_back(ln); }
+        if (sf) fclose(sf);
+        seq_mode = !seq_dirs.empty();
+        dbuf[0] = dlist; dbuf[1] = dlist;     // the prologue list, until the real ones
+        printf("SEQ: %zu lists\n", seq_dirs.size());
+    }
     const int PROLOGUE_FRAMES = flip_every ? 3 : 7;
     const int TOTAL_FRAMES    = getenv("FRAMES") ? atoi(getenv("FRAMES")) : 14;
     // The producer's cadence, from its state: start (P_IDLE -> P_WALK), ready
@@ -324,6 +340,7 @@ int main(int argc, char** argv) {
     for (int f = 0; f < TOTAL_FRAMES; f++) {
         if (f == PROLOGUE_FRAMES) {
             dlist = real_list;
+            if (seq_mode) { dbuf[0] = real_list; dbuf[1] = real_list; }
             // The colour words must have landed by now, through command 4.
             int bad = 0;
             for (int i = 0; i < 16; i++)
@@ -345,7 +362,43 @@ int main(int argc, char** argv) {
             for (int x = 0; x < H_TOTAL; x++) {
                 // vblank starts at the first non-visible line: one pulse a frame.
                 d->frame_start = (y == SH && x == 0) ? 1 : 0;
-                if (flip_every && y == SH && x == 0 && (f % flip_every) == 0) d->dl_sel ^= 1;
+                if (flip_every && y == SH && x == 0 && (f % flip_every) == 0) {
+                    d->dl_sel ^= 1;
+                    // SEQ=<file of dump directories>: from the prologue on, every
+                    // flip shows the next list of a real run in the buffer it
+                    // selects, so state carried from list to list (light banks,
+                    // the geometry pipeline, the store, the frame buffer) is
+                    // exercised the way a running game exercises it.
+                    if (seq_mode && !seq_race && f >= PROLOGUE_FRAMES && seq_i < seq_dirs.size()) {
+                        char sp2[512];
+                        snprintf(sp2, sizeof sp2, "%s/dlist.bin", seq_dirs[seq_i].c_str());
+                        std::vector<uint16_t> nl;
+                        if (load(sp2, nl, 0x8000)) dbuf[d->dl_sel & 1] = nl;
+                        snprintf(sp2, sizeof sp2, "%s/palette.bin", seq_dirs[seq_i].c_str());
+                        load(sp2, palette, 0x2000);
+                        snprintf(sp2, sizeof sp2, "%s/xlat.bin", seq_dirs[seq_i].c_str());
+                        if (load(sp2, xlat, 0x6000)) xlat.resize(0x8000, 0);
+                        printf("SEQ frame %d: list %zu (%s) into buffer %d\n", f, seq_i, seq_dirs[seq_i].c_str(), d->dl_sel & 1);
+                        seq_i++;
+                    }
+                }
+                // SEQ_RACE=1: the list goes into the buffer NOT shown, at the
+                // point in the frame the game writes it - Star Wars (automatic
+                // double buffer, listctl bit 2) terminates and rebuilds the hidden
+                // buffer about 0.91 of a frame after a flip and finishes it at
+                // once (MAME, V60 cycles), 1.09 frames before the flip that shows
+                // it. A pass still walking that buffer when it is rewritten reads
+                // the new list from wherever it has got to.
+                if (seq_mode && seq_race && f >= PROLOGUE_FRAMES && seq_i < seq_dirs.size()
+                    && (f % 2) == 1 && y == seq_race_line && x == 0) {
+                    char sp2[512];
+                    snprintf(sp2, sizeof sp2, "%s/dlist.bin", seq_dirs[seq_i].c_str());
+                    std::vector<uint16_t> nl;
+                    if (load(sp2, nl, 0x8000)) dbuf[(d->dl_sel & 1) ^ 1] = nl;
+                    printf("SEQ frame %d line %d: list %zu written into hidden buffer %d (pass walking %d, pst %d)\n",
+                           f, y, seq_i, (d->dl_sel & 1) ^ 1, d->dl_sel_q & 1, d->rootp->m1_raster3d__DOT__pst & 7);
+                    seq_i++;
+                }
                 d->scan_x = x; d->scan_y = y;
                 // 2.94 3D cycles per pixel, carried as a fraction so the ratio
                 // is the real one rather than a rounded 3.
@@ -484,7 +537,7 @@ int main(int argc, char** argv) {
         // DUMPALL=1: every frame's picture, build/render/f<NN>.ppm, so a
         // fault that comes and goes can be told from one that stays.
         if (getenv("DUMPALL")) {
-            char nm[64]; snprintf(nm, sizeof nm, "build/render/f%02d.ppm", f);
+            char nm[64]; snprintf(nm, sizeof nm, "build/render/f%04d.ppm", f);
             system("mkdir -p build/render");
             FILE* o = fopen(nm, "wb");
             if (o) { fprintf(o, "P6\n%d %d\n255\n", SW, SH); fwrite(fb, 1, sizeof fb, o); fclose(o); }

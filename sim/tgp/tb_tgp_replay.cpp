@@ -122,6 +122,8 @@ int main(int argc, char** argv) {
   std::deque<uint32_t> lastcmd;          // the last words the TGP popped
   long answers = 0, fails = 0, popped_total = 0, ram_w = 0;
   long busy_cyc = 0, retires = 0; uint16_t last_ret = 0;
+  long pf_busy = 0, pf_ret = 0;
+  FILE* perframe = getenv("PERFRAME") ? fopen(getenv("PERFRAME"), "w") : nullptr;
   int frame = 0;
 
   // One outstanding access per port, answered after a latency.
@@ -205,7 +207,14 @@ int main(int argc, char** argv) {
   char line[128];
   while (fgets(line, sizeof line, sf)) {
     char sp, rw; unsigned a, v, m;
-    if (line[0] == 'F') { frame = atoi(line + 2); continue; }
+    if (line[0] == 'F') {
+      // PERFRAME=<file>: per frame, the cycles the core spent not parked on an
+      // empty command FIFO and the instructions it retired - its own time for
+      // that frame's coprocessor work, against MAME's one instruction a cycle.
+      if (perframe) fprintf(perframe, "%d %ld %ld\n", frame, busy_cyc - pf_busy, retires - pf_ret);
+      pf_busy = busy_cyc; pf_ret = retires;
+      frame = atoi(line + 2); continue;
+    }
     if (line[0] == 'T') {
       want.push_back((uint32_t)strtoul(line + 2, nullptr, 16));
       // let the core produce what MAME already has before moving on, so a
