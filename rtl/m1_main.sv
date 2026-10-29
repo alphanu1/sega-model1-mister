@@ -72,6 +72,9 @@ module m1_main #(
   // offset. 0 void, 1 boot ROM from its base, 2 boot ROM 256 KB in. See
   // m1_decode, which carries the per-game table and the MAME evidence.
   input  logic [1:0]  roma_mode,
+  // Which I/O board the game was built for: 0 model1io, 1 model1io2 (Wing
+  // War). m1_ioz80 carries the differences. A wire from the game id.
+  input  logic        io2,
 
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
@@ -166,6 +169,9 @@ module m1_main #(
   output logic        if_req,
   output logic [23:0] if_addr,
   output logic [25:1] if_sdram_addr,
+  // The fetch is from RAM, not ROM: the bridge must not keep the line. See
+  // the fetch mapping below.
+  output logic        if_nocache,
   input  logic [63:0] if_data,
   input  logic        if_ack,
 
@@ -320,9 +326,11 @@ module m1_main #(
   // than a shared one, because the fetch and the data port are asking about
   // different addresses at the same time.
   logic [25:1] if_rom_word;
+  logic        if_sel_rom, if_sel_nvram, if_sel_wram;
   m1_decode if_decode (
     .addr(if_addr), .rom_bank(rom_bank), .roma_mode(roma_mode),
-    .sel_rom(), .sel_rom_void(), .sel_nvram(), .sel_wram(),
+    .sel_rom(if_sel_rom), .sel_rom_void(), .sel_nvram(if_sel_nvram),
+    .sel_wram(if_sel_wram),
     .sel_dlist0(), .sel_dlist1(), .sel_listctl(), .sel_tileram(),
     .sel_charram(), .sel_vsync(), .sel_palette(), .sel_colxlat(),
     .sel_dpram(), .sel_uart(), .sel_copro_adr(), .sel_copro_ram(),
@@ -331,7 +339,29 @@ module m1_main #(
   );
   // Align to the 4-word burst. The ROM bases are 8-byte aligned, so aligning
   // in mapped space is the same line as aligning in CPU space.
-  assign if_sdram_addr = {if_rom_word[25:3], 2'b00};   // [25:3] since the address went 25-bit
+  //
+  // WING WAR EXECUTES CODE FROM RAM. It copies routines into RAMA and calls
+  // them there - MAME's trace runs 40D000h-40D014h and 40DC00h on, among
+  // others, from the first attract frame - and the fetch took only the ROM
+  // mapping, so a fetch from 40D000h read SDRAM word 0 (m1_decode's rom_addr
+  // is zero outside ROM): the program's first bytes. The V60 executed them as
+  // the routine and halted at 40D007h, 237 vblanks into the game, which is
+  // the "grey screen, no 3D" the board showed (findings 2026-10-29). Fetches
+  // from RAMA and RAMB now take the data port's mapping.
+  //
+  // And they are not cached. m1_fetch_bridge's lines have no invalidate,
+  // because until Wing War nothing executed what it had written; a RAM
+  // routine rewritten after it ran would be served stale. The routines are
+  // ~0.1% of Wing War's instructions in MAME's trace, so uncached costs
+  // nothing measurable, where an invalidate port would cost a second tag read.
+  logic [25:1] if_word;
+  always_comb begin
+    if      (if_sel_wram)  if_word = WRAM_BASE  + {7'd0, if_addr[17:1]};
+    else if (if_sel_nvram) if_word = NVRAM_BASE + {9'd0, if_addr[15:1]};
+    else                   if_word = if_rom_word;
+  end
+  assign if_sdram_addr = {if_word[25:3], 2'b00};   // [25:3] since the address went 25-bit
+  assign if_nocache    = !if_sel_rom;
 
   // Which targets live in SDRAM, and where.
   logic        to_sdram;
@@ -551,7 +581,7 @@ module m1_main #(
       // CEN_DIV(6) - a 6:1 ratio, so the I/O board ran at two thirds speed
       // relative to the CPU it handshakes with, and always had.
       m1_ioz80 ioboard (
-        .clk(clk), .rst_n(~rst_cpu),
+        .clk(clk), .rst_n(~rst_cpu), .io2(io2),
         .fw_req(iofw_req), .fw_word(iofw_word),
         .fw_ack(iofw_ack), .fw_din(iofw_din),
         .in0 (in_bytes[8*8  +: 8]),

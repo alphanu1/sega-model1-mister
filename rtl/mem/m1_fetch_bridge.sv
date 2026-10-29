@@ -46,6 +46,9 @@ module m1_fetch_bridge (
   input  logic        if_req,          // level, held until if_ack
   input  logic [2:0]  if_off,          // byte offset of the wanted byte in the line
   input  logic [25:1] if_sdram_addr,   // burst-aligned line address
+  // Fetch it, answer it, do not keep it: a fetch from RAM (Wing War runs code
+  // it copied into RAMA). The cache has no invalidate - see below.
+  input  logic        if_nocache,
   output logic [63:0] if_data,
   output logic        if_ack,          // held until if_req drops
 
@@ -99,6 +102,11 @@ module m1_fetch_bridge (
   // executes what it wrote, and a write to a different address cannot alias
   // because the tag is compared in full. If either of those ever stops being
   // true this needs a real invalidate.
+  //
+  // IT STOPPED BEING TRUE (2026-10-29): Wing War copies routines into RAMA
+  // and executes them. Rather than an invalidate, fetches from RAM are not
+  // cached at all (if_nocache, from m1_main's fetch decode); the cache still
+  // holds ROM only, which nothing writes.
   // THE TAG CARRIES BITS [2:1] TOO, though m1_main drives
   // {if_rom_word[24:3], 2'b00} and they are always zero there. Dropping them
   // would make the cache correct only for as long as that stays true, and the
@@ -133,6 +141,7 @@ module m1_fetch_bridge (
   // answered, and the fill must land in the line that was asked for.
   logic [2:0]  idx_q;
   logic [20:0] tag_q;
+  logic        nc_q;
 
   // The crossing is the same two-phase handshake the data port uses; only the
   // width and the absence of a write side differ.
@@ -168,6 +177,7 @@ module m1_fetch_bridge (
       if_data_r <= 64'd0;
       idx_q   <= 3'd0;
       tag_q   <= '0;
+      nc_q    <= 1'b0;
       for (ci = 0; ci < LINES; ci = ci + 1) cvalid[ci] <= 1'b0;
     end else begin
       c_req <= 1'b0;
@@ -183,7 +193,8 @@ module m1_fetch_bridge (
         off_q   <= if_off;
         idx_q   <= cidx;
         tag_q   <= cur_tag;
-        if (chit) begin
+        nc_q    <= if_nocache;
+        if (chit && !if_nocache) begin
           // A HIT IS ANSWERED COMBINATIONALLY - see if_ack/if_data below. Nothing
           // is registered here, because registering it is what cost the cycles:
           // request, registered ack, request drops, next request was three CPU
@@ -205,7 +216,9 @@ module m1_fetch_bridge (
         // is cached UNROTATED, so a later fetch at a different offset within it
         // still hits.
         if_data_r     <= c_dout >> {off_q, 3'b000};
-        cvalid[idx_q] <= 1'b1;            // the line itself: the block below
+        // An uncached fetch leaves the slot as it was: its line is not
+        // written either (below), so a valid entry there stays correct.
+        if (!nc_q) cvalid[idx_q] <= 1'b1; // the line itself: the block below
         served        <= 1'b1;
         pending       <= 1'b0;
       end
@@ -215,7 +228,7 @@ module m1_fetch_bridge (
   // The fill, outside the reset block (the arrays have no reset). The reset
   // branch above pre-empted it; cpu_rst_n gates it the same way.
   always_ff @(posedge cpu_clk) begin
-    if (cpu_rst_n && if_req && pending && c_ack) begin   // the branch above, exactly
+    if (cpu_rst_n && if_req && pending && c_ack && !nc_q) begin   // the branch above
       cline[idx_q] <= c_dout;
       ctag[idx_q]  <= tag_q;
     end
@@ -224,7 +237,7 @@ module m1_fetch_bridge (
   // A hit needs no state: the line is a register array, so the tag compare, the
   // 8:1 line mux and the byte rotate all resolve in the cycle the request is
   // made. Misses keep the registered path.
-  wire hit_now = if_req && !served && !pending && chit;
+  wire hit_now = if_req && !served && !pending && chit && !if_nocache;
 
   always_comb begin
     if_ack  = served || hit_now;

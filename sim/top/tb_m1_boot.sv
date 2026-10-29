@@ -175,6 +175,7 @@ wire        sdr_ack;
 wire        if_req, if_ack;
 wire [23:0] if_addr;
 wire [25:1] if_sdram_addr;
+wire        if_nocache;
 wire [63:0] if_data;
 wire [23:0] dbg_pc;
 wire        dbg_halted, dbg_fp_trap;
@@ -606,7 +607,7 @@ m1_main #(.TGP_MATH_ZERO(MATH_ZERO)) main (
     .dbg_tgp_fifo_rd(tfifo_rd), .dbg_tgp_fifo_wr(tfifo_wr),
     .sdr_req(sdr_req), .sdr_we(sdr_we), .sdr_addr(sdr_addr),
     .sdr_din(sdr_din), .sdr_be(sdr_be), .sdr_dout(sdr_dout), .sdr_ack(sdr_ack),
-    .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr),
+    .if_req(if_req), .if_addr(if_addr), .if_sdram_addr(if_sdram_addr), .if_nocache(if_nocache),
     .if_data(if_data), .if_ack(if_ack),
     .vid_clk(clk), .vid_tram_addr(15'd0), .vid_tram_data(),
     .vid_pal_addr(12'd0),  .vid_pal_data(),
@@ -710,7 +711,7 @@ integer if_lines = 0;
 
 m1_fetch_bridge fetch (
     .cpu_clk(clk_cpu), .cpu_rst_n(rst_n_cpu),
-    .if_req(if_req), .if_off(if_addr[2:0]), .if_sdram_addr(if_sdram_addr),
+    .if_req(if_req), .if_off(if_addr[2:0]), .if_sdram_addr(if_sdram_addr), .if_nocache(if_nocache),
     .if_data(if_data), .if_ack(if_ack),
     .mem_clk(clk), .mem_rst_n(rst_n_sys),
     .p_req(ifp_req), .p_addr(ifp_addr),

@@ -293,6 +293,18 @@ module emu
     endcase
   end
 
+  // WHICH I/O BOARD. Wing War does not use the board the other games do:
+  // model1.cpp's wingwar() replaces it with SEGA_MODEL1IO2 running EPR-16891,
+  // a TMPZ84C015 with a different map whose firmware is driven by a CTC timer
+  // interrupt. On EPR-14869 the game's V60 never gets its handshake answered
+  // and sits in boot -- the grey screen the board showed. The MRA loads
+  // EPR-16891 on index 2 for Wing War; this tells m1_ioz80 to be that board.
+  //
+  // NetMerc is a model1io2 game too (EPR-18021) but its MRA still sends
+  // EPR-14869 and it boots on it, so it stays on the first board until its own
+  // firmware has been run here.
+  wire io_board2 = (game == 7'd3);
+
   // THE INPUT MAP IS PER GAME, AND IT HAS TO BE.
   //
   // These three bytes are the board's IN.0/IN.1/IN.2 and the games do not agree
@@ -1304,6 +1316,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .rst_n(rst_n), .mem_rst_n(mem_rst_n), .mem_ready(mem_ready),
     .in_bytes(io_in_bytes),
     .roma_mode(roma_mode),
+    .io2(io_board2),
 
     // The 3D layer's SDRAM masters: p5 for the polygon models, p6 for tgp_ram.
     .r3d_rom_req(r3d_rom_req), .r3d_rom_addr(r3d_rom_addr),
