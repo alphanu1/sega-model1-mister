@@ -96,6 +96,7 @@ module m1_render_top (
     .in_col(f_in_col), .in_moire(f_in_moire),
     .view_x1(f_view_x1), .view_x2(f_view_x2),
     .view_y1(f_view_y1), .view_y2(f_view_y2),
+    .clip_y1(f_view_y1), .clip_y2(f_view_y2),
     .span_valid(f_span_valid), .span_ready(f_span_ready),
     .span_y(f_span_y), .span_x0(f_span_x0), .span_x1(f_span_x1),
     .span_col(f_span_col), .span_moire(f_span_moire),

@@ -37,6 +37,18 @@
 //    fill_line tail. Making the range inclusive double-draws every internal
 //    vertex row, which with MOIRE stipple is visible.
 //
+//  * THE VIEWPORT AND THE BAND ARE TWO DIFFERENT THINGS. `view_*` is the
+//    screen - what MAME's fill_quad clamps to - and `clip_y1`/`clip_y2` is the
+//    band being filled. The quad is walked exactly as MAME walks it against the
+//    screen, and only the spans inside the band are emitted. Handing the band
+//    in as the viewport (as this block did until 2026-10-29) is NOT the same
+//    thing: fill_quad clamps its last scanline to view->y2 and draws it with
+//    fill_line, which does not order its two x values, so a band's last row
+//    lost every span whose edges were in reverse chain order there, and a quad
+//    whose bottom vertex sat on a band's first row was rejected outright. One
+//    missing row at band boundaries, moving with the picture: the "lines
+//    through" ships and mountains on the board. See docs/findings.md.
+//
 //  * MAME guards the span with `xx1 <= view->x2 || xx2 >= view->x1`, where && was
 //    plainly meant. It is harmless — when the guard is the only thing that would
 //    reject, the clamped span is already empty — so only the clamp is
@@ -63,8 +75,13 @@ module m1_raster_fill (
   input  logic [23:0]        in_col,
   input  logic               in_moire,
 
-  // Viewport, inclusive on all four edges.
+  // Viewport, inclusive on all four edges: the SCREEN, which is what MAME
+  // clamps to.
   input  logic signed [31:0] view_x1, view_x2, view_y1, view_y2,
+  // The rows this pass may write, inclusive: the band. Spans outside it are
+  // computed (the walk must be MAME's) but not emitted. Must lie inside
+  // [view_y1, view_y2]; the full screen when there are no bands.
+  input  logic signed [31:0] clip_y1, clip_y2,
 
   // Span out, inclusive and already clamped. Empty spans are never emitted.
   // Backpressure is real here and not decoration: the band buffer writer runs a
@@ -140,7 +157,11 @@ module m1_raster_fill (
   logic signed [31:0] seg_y1;     // exclusive bottom of this segment
   logic signed [31:0] walk_y, walk_end;
   logic               swapf;
-  logic               skip_only;  // segment is entirely above the viewport
+  logic               skip_only;  // segment is entirely above the viewport or band
+  logic               skip_band;  // the skip is to the band's top, after the swap
+  logic signed [31:0] wy1, wy2;   // the band, latched with the quad
+  logic               skip_tail;  // the skip is the segment's rows below the band
+  logic               mono;       // both chains y-monotone: cury never goes back up
   logic [1:0]         emit_mode;
   logic signed [31:0] flat_lo, flat_hi;
 
@@ -229,6 +250,28 @@ module m1_raster_fill (
     pmax_c = (sy[pmax23] > sy[pmax01]) ? pmax23 : pmax01;
   end
 
+  // Y-MONOTONE CHAINS. fill_quad walks one chain down from the top vertex by
+  // decreasing index and the other by increasing index, and each segment ends
+  // at the next vertex's y - which, on a self-intersecting or folded quad, can
+  // be ABOVE the current row: cury then moves back up and rows are walked
+  // again. Only when neither chain can do that is it safe to stop a quad at
+  // the band's bottom. With the bottom vertex opposite the top one both chains
+  // have one vertex in between and are monotone by construction; adjacent,
+  // the long chain passes two vertices and is monotone iff they are in order.
+  logic [1:0] pd, pm1, pm2, pp1, pp2;
+  logic       mono_c;
+  always_comb begin
+    pd  = pmax_c - pmin_c;
+    pm1 = pmin_c - 2'd1;  pm2 = pmin_c - 2'd2;
+    pp1 = pmin_c + 2'd1;  pp2 = pmin_c + 2'd2;
+    case (pd)
+      2'd2:    mono_c = 1'b1;
+      2'd1:    mono_c = (sy[pm1] <= sy[pm2]);
+      2'd3:    mono_c = (sy[pp1] <= sy[pp2]);
+      default: mono_c = 1'b1;    // flat: never walked
+    endcase
+  end
+
   logic signed [31:0] xlo01, xlo23, xlo_c, xhi01, xhi23, xhi_c;
   always_comb begin
     xlo01 = (px[1] < px[0]) ? px[1] : px[0];
@@ -296,6 +339,11 @@ module m1_raster_fill (
       walk_end   <= 32'sd0;
       swapf      <= 1'b0;
       skip_only  <= 1'b0;
+      skip_band  <= 1'b0;
+      skip_tail  <= 1'b0;
+      mono       <= 1'b0;
+      wy1        <= 32'sd0;
+      wy2        <= 32'sd0;
       need_a     <= 1'b0;
       need_b     <= 1'b0;
       emit_mode  <= EM_WALK;
@@ -341,6 +389,8 @@ module m1_raster_fill (
             sx[3] <= in_x3; sy[3] <= in_y3;
             col   <= in_col;
             moire <= in_moire;
+            wy1   <= clip_y1;
+            wy2   <= clip_y2;
             state <= S_CLASSIFY;
           end
         end
@@ -359,12 +409,16 @@ module m1_raster_fill (
             cury      <= sy[pmin_c];
             emit_mode <= EM_FLAT;
             state     <= S_FLAT;
-          end else if ((sy[pmin_c] > view_y2) || (sy[pmax_c] <= view_y1)) begin
+          end else if ((sy[pmin_c] > view_y2) || (sy[pmax_c] <= view_y1) ||
+                       (sy[pmin_c] > wy2)     || (sy[pmax_c] <  wy1)) begin
+            // The screen rejects are MAME's; the band rejects are exact
+            // because every span fill_quad emits lies in [y_top, y_bottom].
             quad_done <= 1'b1;
             state     <= S_IDLE;
           end else begin
             cury   <= sy[pmin_c];
             limy   <= (sy[pmax_c] > view_y2) ? view_y2 : sy[pmax_c];
+            mono   <= mono_c;
             ps1    <= {1'b1, pmin_c};      // pmin + 4
             ps2    <= {1'b0, pmin_c};
             need_a <= 1'b1;
@@ -375,7 +429,8 @@ module m1_raster_fill (
 
         S_FLAT: begin
           if (!span_valid || span_ready) begin
-            if ((cury <= view_y2) && (cury >= view_y1) && emit_ok) begin
+            if ((cury <= view_y2) && (cury >= view_y1) &&
+                (cury <= wy2) && (cury >= wy1) && emit_ok) begin
               span_valid <= 1'b1;
               span_y     <= cury;
               span_x0    <= emit_cl;
@@ -457,14 +512,36 @@ module m1_raster_fill (
         // fill_slope, pre-clip. Note the first case returns without touching
         // the accumulators at all, which is why the caller's edges survive a
         // segment that starts below the viewport.
+        //
+        // Against the band: a segment that ends at or above the band's top
+        // only advances the edges, exactly as MAME's walk would have (int32
+        // wrap makes delta*sl equal to delta additions). Below the band's
+        // bottom a monotone quad can emit nothing more - every later span and
+        // the fill_line tail lie further down - so it is finished; a folded
+        // one carries on, since its walk may come back up into the band.
         S_FS_ENTER: begin
-          if (cury > view_y2) begin
+          if (mono && ((cury > view_y2) || (cury > wy2))) begin
+            state <= S_DONE;
+          end else if (cury > view_y2) begin
             state <= S_FS_END;
           end else if (seg_y1 <= view_y1) begin
+            // fill_slope's own skip, delta and all - negative on a folded
+            // quad, and reproduced.
             mul_delta <= seg_y1 - cury;
             mul_sl    <= sla;
             skip_only <= 1'b1;
             state     <= S_FS_MULA;
+          end else if (seg_y1 <= wy1) begin
+            // Above the band but on screen: MAME walks the rows [cury, seg_y1)
+            // - none at all when a folded chain has turned back up.
+            if (seg_y1 >= cury) begin
+              mul_delta <= seg_y1 - cury;
+              mul_sl    <= sla;
+              skip_only <= 1'b1;
+              state     <= S_FS_MULA;
+            end else begin
+              state     <= S_FS_END;
+            end
           end else begin
             walk_end <= (seg_y1 > view_y2) ? (view_y2 + 32'sd1) : seg_y1;
             if (cury < view_y1) begin
@@ -487,20 +564,47 @@ module m1_raster_fill (
         end
 
         S_FS_MULB: begin
-          xb    <= xb + mul_prod[31:0];
-          state <= skip_only ? S_FS_END : S_FS_SWAP;
+          xb        <= xb + mul_prod[31:0];
+          skip_band <= 1'b0;
+          skip_tail <= 1'b0;
+          state     <= (skip_only || skip_tail) ? S_FS_END
+                     : (skip_band ? S_FS_WALK : S_FS_SWAP);
         end
 
-        // Left/right is decided here, once, and held for the whole segment.
+        // Left/right is decided here, once, and held for the whole segment -
+        // at the segment's first row ON SCREEN, as fill_slope decides it, not
+        // at the band's top: edges that cross between the two would otherwise
+        // be ordered after the crossing. Then the edges skip to the band.
         S_FS_SWAP: begin
           swapf     <= (xa > xb) || ((xa == xb) && (sla > slb));
           emit_mode <= EM_WALK;
-          state     <= S_FS_WALK;
+          if (walk_y < wy1) begin
+            mul_delta <= wy1 - walk_y;
+            mul_sl    <= sla;
+            walk_y    <= wy1;
+            skip_band <= 1'b1;
+            state     <= S_FS_MULA;
+          end else begin
+            state     <= S_FS_WALK;
+          end
         end
 
+        // Past the band's bottom: a monotone quad is finished; a folded one
+        // has the rest of the segment skipped in one multiply, so its edges
+        // reach the segment's end exactly as MAME's row-by-row walk leaves them.
         S_FS_WALK: begin
           if (walk_y >= walk_end) begin
             state <= S_FS_END;
+          end else if (walk_y > wy2) begin
+            if (mono) begin
+              state <= S_DONE;
+            end else begin
+              mul_delta <= walk_end - walk_y;
+              mul_sl    <= sla;
+              walk_y    <= walk_end;
+              skip_tail <= 1'b1;
+              state     <= S_FS_MULA;
+            end
           end else if (!span_valid || span_ready) begin
             if (emit_ok) begin
               span_valid <= 1'b1;
@@ -522,6 +626,9 @@ module m1_raster_fill (
           if (seg_y1 >= limy) begin
             emit_mode <= EM_RAW;
             state     <= S_FINAL;
+          end else if (mono && (seg_y1 > wy2)) begin
+            // Everything left of a monotone quad is below the band.
+            state     <= S_DONE;
           end else begin
             if (need_a) ps1 <= ps1 - 3'd1;
             if (need_b) ps2 <= ps2 + 3'd1;
@@ -533,7 +640,8 @@ module m1_raster_fill (
         // sort its two x values, so a crossed pair emits nothing.
         S_FINAL: begin
           if (!span_valid || span_ready) begin
-            if ((cury == limy) && (cury <= view_y2) && (cury >= view_y1) && emit_ok) begin
+            if ((cury == limy) && (cury <= view_y2) && (cury >= view_y1) &&
+                (cury <= wy2) && (cury >= wy1) && emit_ok) begin
               span_valid <= 1'b1;
               span_y     <= cury;
               span_x0    <= emit_cl;
@@ -555,5 +663,15 @@ module m1_raster_fill (
   end
 
   always_comb in_ready = (state == S_IDLE);
+
+`ifdef FILL_TRACE
+  always_ff @(posedge clk) begin
+    if (in_valid && in_ready)
+      $display("FQ %0d  %0d %0d  %0d %0d  %0d %0d  %0d %0d  clip %0d %0d", $time,
+               in_x0, in_y0, in_x1, in_y1, in_x2, in_y2, in_x3, in_y3, clip_y1, clip_y2);
+    if (span_valid && span_ready)
+      $display("FS %0d %0d %0d", span_y, span_x0, span_x1);
+  end
+`endif
 
 endmodule

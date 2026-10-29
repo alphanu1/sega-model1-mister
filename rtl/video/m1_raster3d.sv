@@ -776,9 +776,12 @@ module m1_raster3d #(
   logic        fl_span_moire;
   logic [BW-1:0] fill_band;
 
-  // The viewport handed to the fill unit is the BAND, not the screen: clipping
-  // to the band is what keeps a quad that spans several bands from writing
-  // outside the one being filled.
+  // The fill walks every quad against the SCREEN, as MAME's fill_quad does,
+  // and emits only the band's rows: clipping to the band is what keeps a quad
+  // that spans several bands from writing outside the one being filled.
+  // Handing the band in AS the viewport lost a row at band boundaries (the
+  // fill_line tail and the bottom-row reject are viewport rules, not clips) -
+  // see m1_raster_fill and docs/findings.md 2026-10-29.
   wire signed [31:0] band_y1 = 32'(fill_band) * 32'(SB_H);
   wire signed [31:0] band_y2 = band_y1 + 32'(SB_H) - 32'd1;
 
@@ -791,7 +794,8 @@ module m1_raster3d #(
     .in_x3({{16{qo_x3[15]}}, qo_x3}), .in_y3({{16{qo_y3[15]}}, qo_y3}),
     .in_col(qo_col), .in_moire(qo_moire),
     .view_x1(32'sd0), .view_x2(32'(SCR_W) - 32'sd1),
-    .view_y1(band_y1), .view_y2(band_y2),
+    .view_y1(32'sd0), .view_y2(32'(SCR_H) - 32'sd1),
+    .clip_y1(band_y1), .clip_y2(band_y2),
     .span_valid(fl_span_valid), .span_ready(fl_span_ready),
     .span_y(fl_span_y), .span_x0(fl_span_x0), .span_x1(fl_span_x1),
     .span_col(fl_span_col), .span_moire(fl_span_moire),

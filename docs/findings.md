@@ -20,6 +20,180 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — THE LINES THROUGH THE SHIPS AND MOUNTAINS ARE ROWS LOST AT BAND BOUNDARIES: THE FILL TOOK THE BAND AS ITS VIEWPORT
+
+Branch `m1-seams`, on `main` (f17dcc0). Ben, on the board with the DDR3
+frame buffer: Star Wars' corvette has "lines through its boosters, like
+overruns or seams"; Wing War's mountains have "the same lines". Earlier,
+without the frame buffer, specks and ragged edges along the Star Destroyer's
+lower hull. The frame buffer draws every frame whole before it is shown, so
+these are drawn wrong, not drawn late.
+
+### The instrument: MAME's 3D alone, beside its own lists
+
+`tools/mame_dump_frame.lua` has a new switch, **`NO2D=1`**: from four frames
+before the dump a write tap forces every tile pen (palette 0x000-0xfff) to
+zero, so the snapshot taken beside the dump is MAME's 3D on black. The 3D
+reads pens 0x1000|n only, and the game's lists and logic are untouched. Two
+things remain in the snapshot and are not 3D: 2D layers drawn ABOVE the 3D
+(the HUD tilemaps, text) still paint - black - over it, which shows up as
+"extra" pixels of ours, never as holes. render3d (`tb_m1_raster3d`, the
+core's whole 3D block with the DDR3 frame buffer, CLK3D 58.947 MHz) renders
+the same dump, and the two are compared at 5 bits a channel.
+
+### What the lines are
+
+**With MAME's own lists, render3d loses single rows, and only on band
+boundaries** - rows y % 8 == 0 or 7 (the 8-row bands). Star Wars 1400: 21
+holes, all 21 on band rows; Wing War 1000: 21 holes, 19 on row 263 - three
+segments, 9, 7 and 3 pixels, in a line across the desert mesas (row 263 is
+band 32's last row). Where something else lies behind the lost row the
+pixel is the wrong polygon rather than a hole, so the "colour" count carries
+them too. Pixels the fix changes, per frame, are almost all on band rows
+(table below). On the board, with the picture moving, the lost rows move
+with it: short horizontal lines across faces, always on the 8-row grid,
+which is why they read as overruns.
+
+### The cause
+
+`m1_raster3d` handed the fill unit the BAND as its viewport
+(`view_y1/view_y2` = the band's rows), "clipping to the band" so a quad
+spanning several bands writes only the one being filled. But MAME's
+fill_quad does two things with the viewport that are not clips:
+
+1. **The quad's last scanline is clamped to view->y2 and drawn by the
+   fill_line tail**, which does not order its two x values. With the band as
+   the viewport every band's last row became a "last scanline": a segment
+   ending there, or crossing it, was finished with the raw edge pair, and a
+   pair in reverse chain order drew nothing. Full-screen MAME walks on and
+   draws that row with the ordered pair.
+2. **A quad whose bottom is at or above view->y1 is rejected.** With the
+   band as the viewport, a quad whose bottom vertex sits on a band's FIRST
+   row was rejected in that band, and MAME's tail row there was never drawn.
+   This is the commonest: rows % 8 == 0 carry most of the changed pixels.
+
+Neither is a precision or snapping question. The vertices, slopes and edge
+walk were already MAME's bit for bit (`tb_m1_raster_fill`, 152,025 checks):
+only the viewport the quads were checked against was wrong. That is also
+why the unit bench never saw it - it only ever filled against the screen.
+
+### The fix
+
+`m1_raster_fill` takes the screen as its viewport and the band as a separate
+clip, `clip_y1/clip_y2`. Every quad is walked exactly as MAME walks it
+against the screen; only spans inside the band are emitted. Rows above the
+band are skipped with the multiply the viewport skip already used (exact:
+int32 wrap makes delta*sl equal to delta additions), and the left/right
+decision is taken at the segment's first row on screen, as fill_slope takes
+it, before the edges skip to the band - so edges that cross between the two
+are ordered as MAME orders them.
+
+Below the band a quad is finished early only when both its chains are
+y-monotone. **A folded quad's walk can come back up**: when a chain's next
+vertex is above the current row, fill_quad sets cury back up and walks rows
+again (the first version of the fix stopped at the band's bottom and the new
+banded bench caught it on the first run: 4,102 fails). For those the rest of
+the segment is skipped with one multiply and the walk continues. With the
+top and bottom vertices opposite, both chains are monotone by construction;
+adjacent, the long chain is monotone iff its two middle vertices are in
+order - one compare. In the Star Wars 2300 list none of 19,003 quad-band
+fills was folded; the fuzz finds them and the garbage-list fuzz exercises
+the slow path.
+
+### Proof
+
+- **`tb_m1_raster_fill` gained a banded test**: every quad filled once per
+  band (heights 8, 1, 3 and 16, vertices pushed onto band rows a third of the
+  time), each band's spans compared in order against the full-screen
+  reference's spans on those rows: 18,600 quads, 1,430,400 band fills,
+  **0 fails**. `BAND_AS_VIEW=1` restores the old wiring: **10,023 fails**.
+  Forcing the monotone flag to 1 fails (the folded path is covered);
+  forcing it to 0 passes (it only buys time).
+- `make render3d_fuzz` (garbage lists, the frame buffer): 40 episodes, 0
+  wedged, PASS.
+- MAME frames through render3d, before -> after. "Off MAME" is pixels more
+  than one 5-bit step from MAME; "holes" are ours black where MAME's 3D is
+  painted, with the count on band rows in brackets:
+
+| MAME frame | off MAME before | after | holes before (band rows) | after (band rows) | px the fix changed | of those, now = MAME |
+|---|---:|---:|---:|---:|---:|---:|
+| Star Wars 1400 | 90 | 51 | 21 (21) | 0 (0) | 41 | 41 |
+| Star Wars 1440 | 240 | 220 | 3 (3) | 3 (3) | 20 | 20 |
+| Star Wars 1450 | 21 | 3 | 3 (3) | 0 (0) | 18 | 18 |
+| Star Wars 1460 | 21 | 0 | 3 (3) | 0 (0) | 21 | 21 |
+| Star Wars 1700 | 190 | 167 | 1 (1) | 0 (0) | 23 | 23 |
+| Star Wars 1900 | 685 | 630 | 130 (47) | 111 (28) | 55 | 55 |
+| Star Wars 2000 | 771 | 627 | 28 (28) | 0 (0) | 150 | 145 |
+| Star Wars 2300 | 1,594 | 1,487 | 11 (9) | 6 (4) | 231 | 163 |
+| Star Wars 2350 | 1,429 | 1,086 | 27 (14) | 21 (8) | 353 | 345 |
+| Wing War 600 | 30,439 | 29,410 | 3 (1) | 2 (0) | 1,130 | 1,029 |
+| Wing War 1000 | 20,009 | 19,605 | 21 (19) | 2 (0) | 530 | 408 |
+| Wing War 1100 | 32,076 | 32,055 | 47 (25) | 31 (9) | 67 | 24 |
+| Wing War 1200 | 3,150 | 2,616 | 2 (0) | 2 (0) | 539 | 537 |
+| Wing War 2600 | 53,884 | 53,742 | 0 (0) | 0 (0) | 262 | 143 |
+| Wing War 3000 | 75,601 | 75,534 | 0 (0) | 0 (0) | 165 | 75 |
+| Virtua Racing 1500 | 3,281 | 3,179 | 24 (4) | 23 (3) | 105 | 104 |
+| Virtua Racing 2270 | 76,454 | 76,376 | 15 (11) | 7 (3) | 96 | 80 |
+| Virtua Racing 5460 | 109,009 | 108,996 | 100,947 (25,371) | 100,875 (25,299) | 116 | 41 |
+| Virtua Fighter 1500 | 3,179 | 3,141 | 120 (56) | 116 (52) | 54 | 52 |
+| Virtua Fighter 3000 | 8,434 | 8,353 | 8 (6) | 3 (1) | 110 | 93 |
+
+Star Wars' corvette (1400-1460, including the booster close-up at 1450)
+goes to 0 holes and 0-3 off-MAME pixels apart from the attract text; the
+Star Destroyer (2000-2350) loses every band-row hole bar a handful (swa_2350
+8, which are vertex-precision slivers, below). Wing War 1000's line across
+the mesas is gone.
+
+**What is left is not this fault**, and was looked at:
+
+- Column 495 on a few rows (Star Wars 1900 rows 0-29, Wing War 1100 rows
+  145-150): MAME paints the screen's last column there and we do not. It is
+  the vertex, not the fill: a vertex clipped to the right plane lands a
+  hair either side of 495.0 in the two float pipelines.
+- Thin twisted slivers (Star Wars 2300, a quad (76,0) (146,28) (146,29)
+  (74,-1)): MAME's fill of OUR vertices draws nothing on rows 8-27, the
+  snapshot (its vertices) draws a 2-pixel line there. Before the fix we drew
+  half of it by the band accident; after, we draw what MAME's fill draws for
+  our vertices. A geometry-precision question on a degenerate quad.
+- **Wing War's colours differ from MAME's over whole polygons** (frame 600:
+  25,020 px; 1100: 27,655 - the plane's grey 181 vs our 74, the desert
+  brown 90,49,24 vs 115,65,33). Not geometry and not this fix: lighting or
+  colour words. **Open, not investigated.**
+- **VR attract 5458-5461 from a cold start**: MAME draws the track, render3d
+  draws only the car and distant scenery (15,942 px against 114,271), with
+  either list buffer dumped. Both lists hold 45 objects. Not investigated;
+  the board shows VR's track, so suspect the dump, but it is unexplained.
+- NetMerc 1500/3600 from a cold nvram are black in MAME's 3D and ours (no
+  3D in those frames); no NetMerc pixels were compared. Wing War 2600/3000
+  are the HUD dogfight screens, where the HUD tilemaps cover most of the
+  3D ("extra" 45-47k).
+
+### Wing War's 2D pictures (ZERO over Mt Fuji) - not this
+
+The plane-profile screens are a 2D photo: MAME frames ~7600-7800 in the
+second attract loop (the first loop shows the Fokker over a castle and the
+Harrier at Big Ben, 1700-2300). `tools/mame_tile_dump.lua` 7560-7800 and
+`make video2d` (the real m1_video, character port latency 16): 13 frames,
+0 overruns, 0 pixels failing the end-to-end reference. So m1_video draws the
+Fuji picture right from MAME's tile state; any line there is the open
+left-to-right fill bug (the picture's upload, our V60's timing), not the
+3D raster. If Ben's mountain lines were on those screens, they are that bug.
+
+### Cost
+
+Fill time is MAME's walk for every row of every band the quad touches, so
+quads whose bottom vertex sits on a band's first row are no longer rejected
+there, and a segment ending on a band's last row is followed into the next.
+render3d fill-busy cycles, before -> after: Star Wars -2% to +5%, Wing War
+-2% to +1%, VR +3%, VF +2% and +9% (3000: 498,684 -> 542,192). The whole
+draw, which must finish by line 416: VF 3000 90.6 -> 94.8 lines, Star Wars
+2350 154.4 -> 157.8, Wing War 1200 204.6 -> 201.3; no frame measured here
+went late or was held.
+
+Resources and clk_3d slack: see HANDOFF (the fit).
+
+---
+
 ## 2026-10-29 — WING WAR'S SKY IS IN POLYGON RAM: COMMAND 5 AND POLY_ADR BIT 23 WERE NEVER BUILT
 
 Branch `wingwar-sky`, on `main` (5cba113). Ben: Wing War's sky is flat grey

@@ -249,6 +249,14 @@ struct Dut {
   void set_viewport(int32_t x1, int32_t x2, int32_t y1, int32_t y2) {
     d->view_x1 = (uint32_t)x1; d->view_x2 = (uint32_t)x2;
     d->view_y1 = (uint32_t)y1; d->view_y2 = (uint32_t)y2;
+    d->clip_y1 = (uint32_t)y1; d->clip_y2 = (uint32_t)y2;
+  }
+  // The band: rows the DUT may emit, inside the viewport.
+  void set_clip(int32_t y1, int32_t y2) {
+    d->clip_y1 = (uint32_t)y1; d->clip_y2 = (uint32_t)y2;
+    // BAND_AS_VIEW=1 restores the old wiring - the band handed in as the
+    // viewport - so the banded test can be seen to catch it.
+    if (getenv("BAND_AS_VIEW")) { d->view_y1 = (uint32_t)y1; d->view_y2 = (uint32_t)y2; }
   }
 
   // stall_pct exercises the span backpressure the band buffer will apply.
@@ -356,6 +364,42 @@ static void one(Dut& dut, const int32_t* vx, const int32_t* vy, const char* what
   for (size_t i = 0; i < exp.size(); i++) {
     if (dut.spans[i] != exp[i]) { fails++; report(what, vx, vy, dut.spans, exp); return; }
   }
+}
+
+// THE BANDED RENDER MUST BE THE FULL-SCREEN RENDER, CUT UP. The quad is filled
+// once per band with the screen as the viewport and the band as the clip; each
+// band's spans must be exactly the full-screen reference's spans on those rows,
+// in the same order. Until 2026-10-29 the band was passed AS the viewport, and
+// fill_quad's viewport rules - the last scanline drawn by the unordered
+// fill_line tail, a quad whose bottom is on the top row rejected - then fired
+// at every band boundary: a row missing from the picture at band edges.
+static long band_checks = 0, band_fills = 0;
+static void banded(Dut& dut, const int32_t* vx, const int32_t* vy, int bh, const char* what,
+                   int stall_pct = 0) {
+  band_checks++;
+  bool ref_line = ref_fill_quad(vx, vy);
+  if (ref_line) return;                    // wireframes are not filled at all
+  std::vector<Span> full = ref_spans;
+  for (int32_t b0 = VY1; b0 <= VY2; b0 += bh) {
+    int32_t b1 = b0 + bh - 1; if (b1 > VY2) b1 = VY2;
+    std::vector<Span> exp;
+    for (const Span& sp : full) if (sp.y >= b0 && sp.y <= b1) exp.push_back(sp);
+    dut.set_clip(b0, b1);
+    band_fills++;
+    if (!dut.run_quad(vx, vy, 0x00abcdef, false, stall_pct)) { fails++; break; }
+    bool bad = dut.spans.size() != exp.size();
+    for (size_t i = 0; !bad && i < exp.size(); i++) bad = dut.spans[i] != exp[i];
+    if (bad) {
+      fails++;
+      if (printed < 20) printf("  band %d..%d of %d rows:\n", b0, b1, bh);
+      report(what, vx, vy, dut.spans, exp);
+      if (getenv("BAND_DEBUG") && printed < 3)
+        for (size_t i = 0; i < dut.spans.size(); i++)
+          printf("      dut[%zu] y=%d x=%d..%d\n", i, dut.spans[i].y, dut.spans[i].x0, dut.spans[i].x1);
+      break;
+    }
+  }
+  dut.set_viewport(VX1, VX2, VY1, VY2);
 }
 
 int main(int argc, char** argv) {
@@ -486,7 +530,32 @@ int main(int argc, char** argv) {
     printf("  %ld quads\n", N);
   }
 
-  printf("m1_raster_fill: checks=%ld fails=%ld spans=%ld lines=%ld empty=%ld\n",
-         checks, fails, total_spans, line_cases, empty_quads);
+  // ------------------------------------------------------------- banded
+  // Band heights: the core's 8, and 1, 3 and 16 so a boundary lands on every
+  // kind of row. Vertices on band rows are forced often, because that is
+  // exactly where the old clamp lost a row.
+  printf("test: banded fill against the full-screen reference\n");
+  {
+    const int bhs[] = {8, 1, 3, 16};
+    for (int bh : bhs) {
+      const long N = (bh == 1) ? 600 : 6000;
+      for (long n = 0; n < N; n++) {
+        int32_t vx[4], vy[4];
+        int regime = (int)(n % 4);
+        for (int k = 0; k < 4; k++) {
+          if (regime < 2) { vx[k] = (int32_t)(rng() % 496); vy[k] = (int32_t)(rng() % 384); }
+          else            { vx[k] = (int32_t)(rng() % 1000) - 250; vy[k] = (int32_t)(rng() % 800) - 200; }
+          if ((rng() % 3) == 0) vy[k] = vy[k] - (((vy[k] % bh) + bh) % bh) + ((rng() & 1) ? bh - 1 : 0);
+        }
+        if ((n % 5) == 0) { int a = (int)(rng() & 3), b = (int)(rng() & 3); vx[a] = vx[b]; vy[a] = vy[b]; }
+        if ((n % 13) == 0) { int y = (int)(rng() % 380); for (int k = 0; k < 4; k++) vy[k] = y + (int)(rng() % 3); }
+        banded(dut, vx, vy, bh, "banded", (n % 11) == 0 ? 25 : 0);
+      }
+    }
+    printf("  %ld quads, %ld band fills\n", band_checks, band_fills);
+  }
+
+  printf("m1_raster_fill: checks=%ld fails=%ld spans=%ld lines=%ld empty=%ld bands=%ld\n",
+         checks + band_checks, fails, total_spans, line_cases, empty_quads, band_fills);
   return fails ? 1 : 0;
 }

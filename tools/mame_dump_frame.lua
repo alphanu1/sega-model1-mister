@@ -80,8 +80,22 @@ end
 
 local function w16(f, v) f:write(string.char(v & 0xff, (v >> 8) & 0xff)) end
 
+-- NO2D=1: the snapshot carries the 3D alone. The tilemaps take their colours
+-- from palette 0x000-0xfff and the 3D from 0x1000-0x1fff (pens 0x1000|n), so
+-- from NO2D_LEAD frames before the dump every tile pen is forced to zero - a
+-- write tap rewrites the game's own palette writes - and the 2D draws black.
+-- The 3D, the lists and the game's logic are untouched, so the snapshot is
+-- MAME's 3D for exactly the state dumped beside it.
+local NO2D = os.getenv("NO2D") == "1"
+local NO2D_LEAD = tonumber(os.getenv("NO2D_LEAD") or "4")
+
 notif = emu.add_machine_frame_notifier(function()
     frames = frames + 1
+    if NO2D and frames == DUMP_AT - NO2D_LEAD then
+        no2d_tap = sp:install_write_tap(0x900000, 0x901fff, "no2d",
+            function(offset, data, mask) return 0 end)
+        for i = 0, 0xfff do sp:write_u16(0x900000 + 2*i, 0) end
+    end
     -- Apply both buffers every frame, as tgp_scan does for the one not rendered.
     walk_apply(0x600000)
     walk_apply(0x610000)
