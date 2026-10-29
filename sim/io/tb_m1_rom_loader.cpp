@@ -359,6 +359,15 @@ int main(int argc, char** argv) {
       { 0x47FFFEu, 0x127FFFFu, "PCM1, last word"          },
       { 0x480000u, 0x1280000u, "PCM2, first word"         },
       { 0x87FFFEu, 0x147FFFFu, "PCM2, last word"          },
+      // Star Wars appends its Digital Sound Board to the same stream, so the
+      // one linear map carries on past PCM2 into free space (2026-10-28):
+      //   0x880000  Z80 program 128 KB -> word 0x1480000
+      //   0x8A0000  MPEG data     4 MB -> word 0x1490000
+      //   0xCA0000  end
+      { 0x880000u, 0x1480000u, "DSB Z80, first word"      },
+      { 0x89FFFEu, 0x148FFFFu, "DSB Z80, last word"       },
+      { 0x8A0000u, 0x1490000u, "DSB MPEG, first word"     },
+      { 0xC9FFFEu, 0x168FFFFu, "DSB MPEG, last word"      },
     };
     Loader g;
     g.reset();
@@ -384,17 +393,18 @@ int main(int argc, char** argv) {
         h.fails++;
       }
     }
-    // And the stream must stop at the end of PCM2 rather than running on.
-    uint16_t before_oob = read_word(g, 0xE60000u);
+    // And the stream must stop at its end rather than running on into the
+    // Z80's RAM (word 0x1690000), which is where the next word would land.
+    uint16_t before_oob = read_word(g, 0x1690000u);
     g.d->ioctl_download = 1; g.d->ioctl_index = 5;
-    g.d->ioctl_addr = 0x880000u + 0x40000u;   // past SND_PCM2_END
+    g.d->ioctl_addr = 0xCA0000u;              // the first byte past SND_PCM2_END
     g.d->ioctl_dout = 0xDEAD;
     g.d->ioctl_wr = 1; g.tick(); g.d->ioctl_wr = 0;
     for (int k = 0; k < 64; k++) g.tick();
     g.d->ioctl_download = 0;
     for (int i = 0; i < 1000; i++) g.tick();
     h.checks++;
-    if (read_word(g, 0xE60000u) != before_oob) {
+    if (read_word(g, 0x1690000u) != before_oob) {
       printf("  FAIL a byte past SND_PCM2_END was written anyway\n");
       h.fails++;
     }

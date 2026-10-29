@@ -41,18 +41,23 @@ module m1_sdram_harness (
   // and the two MULTIPCM sample streams, and nothing drove them here while the
   // top level instantiated NP(10) -- which is how a three-bit read tag survived
   // in a ten-port controller and silenced the sound board.
-  input  logic        p7_req, p8_req, p9_req, p10_req,
+  input  logic        p7_req, p8_req, p9_req, p10_req, p11_req,
+  // PORT 11 IS STAR WARS' SOUND BOARD (2026-10-28) and it WRITES, with byte
+  // enables: the DSB's Z80 keeps its RAM in SDRAM.
+  input  logic        p11_we,
+  input  logic [15:0] p11_din,
+  input  logic [1:0]  p11_be,
   input  logic        p6_we,
   input  logic [15:0] p6_din,
   input  logic        p0_we,
   input  logic [25:1] p0_addr, p1_addr, p2_addr, p3_addr, p4_addr, p5_addr, p6_addr,
-  input  logic [25:1] p7_addr, p8_addr, p9_addr, p10_addr,
+  input  logic [25:1] p7_addr, p8_addr, p9_addr, p10_addr, p11_addr,
   input  logic [15:0] p0_din,
   input  logic [1:0]  p0_be,
   output logic [63:0] p0_dout, p1_dout, p2_dout, p3_dout, p4_dout, p5_dout, p6_dout,
-  output logic [63:0] p7_dout, p8_dout, p9_dout, p10_dout,
+  output logic [63:0] p7_dout, p8_dout, p9_dout, p10_dout, p11_dout,
   output logic        p0_ack, p1_ack, p2_ack, p3_ack, p4_ack, p5_ack, p6_ack,
-  output logic        p7_ack, p8_ack, p9_ack, p10_ack,
+  output logic        p7_ack, p8_ack, p9_ack, p10_ack, p11_ack,
 
   // Device model observability
   output int unsigned violations,
@@ -108,7 +113,7 @@ module m1_sdram_harness (
   // an ELABORATION error, not a runtime one, so a `NP > 10 ?` guard does not
   // help -- the index is checked whether or not the branch is taken. Ports the
   // build does not have read as zero.
-  localparam int unsigned NMAX = 11;
+  localparam int unsigned NMAX = 12;
   logic [NMAX-1:0][63:0] dout_w;
   always_comb begin
     dout_w = '0;
@@ -116,21 +121,23 @@ module m1_sdram_harness (
   end
 
   generate if (NP > 7) begin : g_wide
-    assign p_req  = {p10_req, p9_req, p8_req, p7_req, p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
-    assign p_addr = {p10_addr, p9_addr, p8_addr, p7_addr, p6_addr, p5_addr, p4_addr, p3_addr, p2_addr, p1_addr, p0_addr};
-    assign p_we   = {4'b0000, p6_we, 5'b00000, p0_we};
-    assign p_din  = {64'd0, p6_din, 80'd0, p0_din};
-    assign p_be   = {8'hff, 2'b11, 10'd0, p0_be};
-    assign {p10_ack, p9_ack, p8_ack, p7_ack, p6_ack, p5_ack, p4_ack, p3_ack, p2_ack, p1_ack, p0_ack} = p_ack;
+    // TWELVE, as Model1.sv instantiates.
+    assign p_req  = {p11_req, p10_req, p9_req, p8_req, p7_req, p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
+    assign p_addr = {p11_addr, p10_addr, p9_addr, p8_addr, p7_addr, p6_addr, p5_addr, p4_addr, p3_addr, p2_addr, p1_addr, p0_addr};
+    assign p_we   = {p11_we, 4'b0000, p6_we, 5'b00000, p0_we};
+    assign p_din  = {p11_din, 64'd0, p6_din, 80'd0, p0_din};
+    assign p_be   = {p11_be, 8'hff, 2'b11, 10'd0, p0_be};
+    assign {p11_ack, p10_ack, p9_ack, p8_ack, p7_ack, p6_ack, p5_ack, p4_ack, p3_ack, p2_ack, p1_ack, p0_ack} = p_ack;
+    assign p11_dout = dout_w[11];
     assign p7_dout = dout_w[7];
     assign p8_dout = dout_w[8];
     assign p9_dout = dout_w[9];
     assign p10_dout = dout_w[10];
   end else begin : g_narrow
     assign p7_dout = 64'd0; assign p8_dout = 64'd0; assign p9_dout = 64'd0;
-    assign p10_dout = 64'd0;
+    assign p10_dout = 64'd0; assign p11_dout = 64'd0;
     assign p7_ack  = 1'b0;  assign p8_ack  = 1'b0;  assign p9_ack  = 1'b0;
-    assign p10_ack = 1'b0;
+    assign p10_ack = 1'b0;  assign p11_ack = 1'b0;
   assign p_req  = {p6_req, p5_req, p4_req, p3_req, p2_req, p1_req, p0_req};
   // p6 WRITES TOO. It carries tgp_ram, which display-list command 4 uploads, and
   // it was the only write path in the design that no test ever exercised - the

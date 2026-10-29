@@ -90,8 +90,11 @@ module emu
   //
   // If the board ever measures genuinely quiet DURING a burst, size a gain
   // against THAT window and not against silence.
-  assign AUDIO_L = snd_l;
-  assign AUDIO_R = snd_r;
+  // Star Wars' Digital Sound Board is summed in, as MAME sums its "mpeg"
+  // speaker with the sound board's. Zero for every other game.
+  wire signed [15:0] mix_l, mix_r;
+  assign AUDIO_L = mix_l;
+  assign AUDIO_R = mix_r;
   assign AUDIO_MIX = 0;
 
   // (The DISK bit stays: snd_ready is cheap and worth seeing.)
@@ -145,6 +148,7 @@ module emu
     "h0O[16],Video,15kHz (CRT MRA),15kHz (CRT MRA);",
     "O[18:17],15kHz lines,273/274 (15.7kHz),268/269 (15.4kHz),262/263 (15.1kHz);",
     "O[19],15kHz pairing,Auto,Off;",
+    "O[20],Star Wars music volume,Firmware,MAME;",
     "O[12],Stick Y axis,Normal,Inverted;",
     "O[13],Stick X axis,Normal,Inverted;",
     "-;",
@@ -787,11 +791,18 @@ module emu
   // has one bus), and the two MultiPCM sample streams.
   // ELEVEN PORTS. Widened with NP: the sound 68000's work RAM moved off port 7
   // onto port 10 so its program ROM no longer shares a bus with it.
-  wire [10:0]       p_req, p_we, p_ack;
-  wire [10:0][25:1] p_addr;
-  wire [10:0][15:0] p_din;
-  wire [10:0][1:0]  p_be;
-  wire [10:0][63:0] p_dout;
+  // TWELVE PORTS (2026-10-28): port 11 is Star Wars' Digital Sound Board --
+  // its Z80's ROM and RAM and its MPEG data, one single-word port behind a
+  // clock crossing, see dsb_board.
+  wire [11:0]       p_req, p_we, p_ack;
+  wire [11:0][25:1] p_addr;
+  wire [11:0][15:0] p_din;
+  wire [11:0][1:0]  p_be;
+  wire [11:0][63:0] p_dout;
+  wire        dsb_sreq, dsb_swe;
+  wire [25:1] dsb_saddr;
+  wire [15:0] dsb_sdin;
+  wire  [1:0] dsb_sbe;
 
   // THE SOUND BOARD'S ROMS, above the I/O firmware in the existing 32 MB map.
   //
@@ -963,9 +974,9 @@ module emu
 
 
   // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
-  assign p_req  = {snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
+  assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
                    r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-  assign p_we   = {snd_ram_we,  1'b0,         1'b0,         1'b0,
+  assign p_we   = {dsb_swe,  snd_ram_we,  1'b0,         1'b0,         1'b0,
                    r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
@@ -989,7 +1000,8 @@ module emu
 //
 // Model 2 has the scaling and says why it matters (Model2.sv:770): a port width
 // mismatch there "was making everything unlistenable" (their R94).
-assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
+assign p_addr = {dsb_saddr,
+                 SND_RAM_BASE  + {9'd0, snd_ram_addr},
                  SND_PCM2_BASE + 25'({snd_pcm2_addr, 2'b00}),
                  SND_PCM1_BASE + 25'({snd_pcm1_addr, 2'b00}),
                  SND_ROM_BASE + {7'd0, snd_rom_addr},
@@ -1006,9 +1018,9 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
                  IOFW_BASE + {10'd0, iofw_word},
                  tgp_mem_addr, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
-  assign p_din  = {snd_ram_wdata, 16'd0, 16'd0, 16'd0,
+  assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
                    r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-  assign p_be   = {snd_ram_be, 2'b11, 2'b11, 2'b11,
+  assign p_be   = {dsb_sbe, snd_ram_be, 2'b11, 2'b11, 2'b11,
                    2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
   // One master per port: no arbitration, no ownership, nothing to get wrong.
@@ -1100,6 +1112,8 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   end
 
   wire signed [15:0] snd_l, snd_r;
+  wire  [7:0] snd_txd;                 // the 68000's transmit line, for the DSB
+  wire        snd_txv, snd_txa;
   wire        snd_rom_ack, snd_ram_ack;
 
   // PCM_CACHE(1) -- MODEL 2'S SETTING, AND IT STAYS.
@@ -1124,7 +1138,9 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
   m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
     .clk(clk_sys), .rst_n(rst_n && snd_ready),
     .rx_data(snd_rx_data), .rx_valid(snd_rx_valid), .rx_ack(snd_rx_ack),
-    .tx_data(), .tx_valid(), .tx_ack(1'b1),      // the game never reads back
+    // The main board never reads back, but Star Wars' DSB listens to this
+    // line: model1.cpp appends dsbz80's write_txd to m1audio's rxd_handler.
+    .tx_data(snd_txd), .tx_valid(snd_txv), .tx_ack(snd_txa),
     .rom_req(snd_rom_req), .rom_addr(snd_rom_addr),
     .rom_ack(snd_rom_ack), .rom_data(snd_rom_data),
     .ram_req(snd_ram_req), .ram_addr(snd_ram_addr), .ram_we(snd_ram_we),
@@ -1167,6 +1183,87 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     .dbg_pcm_under(), .dbg_pcm_level()
   );
 
+  // ------------------------------------------------- STAR WARS' SOUND BOARD
+  // Sega's Digital Sound Board: a Z80, an i8251 and an MPEG-1 Layer II
+  // player with 4 MB of music. Star Wars is the only Model 1 game that has
+  // one (model1.cpp swa()); it is held in reset for every other game, whose
+  // streams carry no DSB data. See rtl/sound/dsb_board.sv and
+  // docs/findings.md, 2026-10-28 (c).
+  //
+  // ITS INPUT IS THE SOUND 68000'S UART LINE, paced as the wire is: a
+  // holding register and a shift register, one character (10 bits at
+  // 31.25 kbaud, 320 us) per byte. The 68000 sees TXRDY drop only while both
+  // are full, as on the real part. Before this the line was acknowledged
+  // instantly and went nowhere.
+  reg         txh_full, txs_busy, dsb_rx_tog;
+  reg   [7:0] txh_d, txs_d, dsb_rx_byte;
+  reg  [14:0] txs_cnt;
+  assign snd_txa = !txh_full;
+  always @(posedge clk_sys) begin
+    if (!rst_n) begin
+      txh_full <= 1'b0; txs_busy <= 1'b0; dsb_rx_tog <= 1'b0; txs_cnt <= 15'd0;
+    end else begin
+      if (snd_txv && !txh_full) begin txh_d <= snd_txd; txh_full <= 1'b1; end
+      if (!txs_busy && txh_full) begin
+        txs_d <= txh_d; txh_full <= 1'b0; txs_busy <= 1'b1;
+        txs_cnt <= 15'd25599;                       // 320 us at 80 MHz
+      end else if (txs_busy) begin
+        if (txs_cnt == 15'd0) begin
+          txs_busy <= 1'b0; dsb_rx_byte <= txs_d; dsb_rx_tog <= ~dsb_rx_tog;
+        end else txs_cnt <= txs_cnt - 15'd1;
+      end
+    end
+  end
+
+  // Released only for Star Wars (game 2), only once its stream is in SDRAM.
+  reg  [2:0] dsb_rst_s;
+  always @(posedge clk_cpu or negedge rst_n) begin
+    if (!rst_n) dsb_rst_s <= 3'b000;
+    else        dsb_rst_s <= {dsb_rst_s[1:0], snd_ready && (game == 7'd2)};
+  end
+  reg  [1:0] dsb_volm_s;
+  always @(posedge clk_cpu) dsb_volm_s <= {dsb_volm_s[0], status[20]};
+
+  wire        dsb_areq, dsb_awe, dsb_aack;
+  wire [25:1] dsb_aaddr;
+  wire [15:0] dsb_adin, dsb_adout;
+  wire  [1:0] dsb_abe;
+  wire signed [15:0] dsb_l, dsb_r;
+  wire        dsb_stb, dsb_trap;
+  dsb_board u_dsb (
+    .clk(clk_cpu), .rst_n(dsb_rst_s[2]),
+    .rx_tog(dsb_rx_tog), .rx_byte(dsb_rx_byte),
+    .vol_mame(dsb_volm_s[1]),
+    .s_req(dsb_areq), .s_we(dsb_awe), .s_addr(dsb_aaddr), .s_din(dsb_adin),
+    .s_be(dsb_abe), .s_ack(dsb_aack), .s_dout(dsb_adout),
+    .out_l(dsb_l), .out_r(dsb_r), .out_stb(dsb_stb),
+    .dbg_trap(dsb_trap), .dbg_frames()
+  );
+
+  m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_dsb_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n),
+    .a_req(dsb_areq), .a_we(dsb_awe), .a_addr(dsb_aaddr), .a_din(dsb_adin),
+    .a_be(dsb_abe), .a_dout(dsb_adout), .a_ack(dsb_aack), .a_busy(),
+    .b_clk(clk_sys), .b_rst_n(rst_n),
+    .b_req(dsb_sreq), .b_we(dsb_swe), .b_addr(dsb_saddr), .b_din(dsb_sdin),
+    .b_be(dsb_sbe), .b_dout(p_dout[11][15:0]), .b_ack(p_ack[11])
+  );
+
+  // The DSB's 32 kHz samples into clk_sys: each is held for ~920 clk_cpu
+  // cycles, so a toggle and two flops are enough; then the sum, saturated.
+  reg        dsb_ot, dsb_os1, dsb_os2, dsb_os3;
+  reg signed [15:0] dsb_ls, dsb_rs;
+  always @(posedge clk_cpu) if (dsb_stb) dsb_ot <= ~dsb_ot;
+  always @(posedge clk_sys) begin
+    {dsb_os3, dsb_os2, dsb_os1} <= {dsb_os2, dsb_os1, dsb_ot};
+    if (dsb_os2 ^ dsb_os3) begin dsb_ls <= dsb_l; dsb_rs <= dsb_r; end
+    if (!dsb_rst_s[2])     begin dsb_ls <= 16'sd0; dsb_rs <= 16'sd0; end
+  end
+  wire signed [16:0] sum_l = snd_l + dsb_ls;
+  wire signed [16:0] sum_r = snd_r + dsb_rs;
+  assign mix_l = (sum_l[16] == sum_l[15]) ? sum_l[15:0] : (sum_l[16] ? 16'sh8000 : 16'sh7fff);
+  assign mix_r = (sum_r[16] == sum_r[15]) ? sum_r[15:0] : (sum_r[16] ? 16'sh8000 : 16'sh7fff);
+
   always @(posedge clk_sys) begin
     if (!rst_n)                            mix_seen <= 1'b0;
     else if (snd_l > 16'sd64 || snd_l < -16'sd64) mix_seen <= 1'b1;
@@ -1193,7 +1290,7 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
     else if (sb_pc[23:8] == 16'h0011)  snd_mainloop_seen <= 1'b1;
   end
 
-  m1_sdram #(.NP(11), .T_REFI(600)) sdram (
+  m1_sdram #(.NP(12), .T_REFI(600)) sdram (
     .clk(clk_sys), .rst_n(mem_rst_n), .ready(mem_ready),
     // OSD POSITION IS NOT CL+n. m1_sdram's own encoding is CL+n now, but the
     // OSD list cannot be, because position 0 is what an all-zero status gives

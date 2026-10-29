@@ -122,7 +122,12 @@ module m1_rom_loader #(
   // 68000 ROMs; vr and vformula carry one and are zero-padded to fill the slot,
   // so every game presents the same stream shape.
   parameter logic [26:0] SND_PROG_END  = 27'h0_80000,    // 512 KB, 68000 program
-  parameter logic [26:0] SND_PCM2_END  = 27'h8_80000,    // end of both sample sets
+  // THE STREAM'S END, NOT PCM2'S. Star Wars appends its Digital Sound Board
+  // (Z80 program 128 KB, MPEG data 4 MB) and the one linear map carries it
+  // into free SDRAM above PCM2: byte 0x880000 -> word 0x1480000, 0x8A0000 ->
+  // 0x1490000, ending at 0xCA0000 -> 0x1690000. No other game's stream is that
+  // long, and nothing below moves.
+  parameter logic [26:0] SND_PCM2_END  = 27'hC_A0000,
   parameter logic [25:1] SND_ROM_BASE  = 25'h1000000,
   parameter logic [25:1] SND_PCM1_BASE = 25'h1080000,
   // No SND_PCM2_BASE: PCM2 follows PCM1 contiguously in SDRAM (PCM1's last
