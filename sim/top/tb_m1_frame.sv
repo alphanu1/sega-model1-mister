@@ -64,6 +64,9 @@ module tb_m1_frame #(
     parameter string  UCODEHEX   = "build/rom/vr_tgp_prog.hex",
     parameter string  IOFWHEX    = "build/rom/vr_iofw.hex",
     parameter string  EEHEX      = "build/rom/vr_ee.hex",
+    // The set's default RAMA (MAME's ROM_REGION "nvram"), one hex byte a line,
+    // streamed on index 6 when present. Only NetMerc has one.
+    parameter string  NVHEX      = "",
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -1311,6 +1314,10 @@ wire [15:0] f_ctrl [2];
 wire [11:0] f_have_rtl [4];
 wire [11:0] f_tram_wr  [4];
 integer i;
+// The set's default RAMA, read below and streamed by run_nv_download.
+reg [7:0] nvrom [0:65535];
+integer   nvf;
+bit       nv_ok = 0;
 initial begin
     // Progress, flushed. stdout is block buffered when this is redirected to a
     // file, so a run that hangs prints nothing at all and is indistinguishable
@@ -1329,6 +1336,11 @@ initial begin
     iofw_ok = (iofw[0] !== 8'hff) || (iofw[1] !== 8'hff);
     for (i = 0; i < 128; i = i + 1) eerom[i] = 8'hff;
     $readmemh(EEHEX, eerom);
+    for (i = 0; i < 65536; i = i + 1) nvrom[i] = 8'hff;
+    if (NVHEX != "") begin
+        nvf = $fopen(NVHEX, "r");
+        if (nvf != 0) begin $fclose(nvf); $readmemh(NVHEX, nvrom); nv_ok = 1; end
+    end
     ee_ok = (eerom[0] !== 8'hff) || (eerom[1] !== 8'hff);
     if (!ee_ok)
         $display("tb_m1_frame: *** no I/O board EEPROM (build/rom/vr_ee.hex): the board reads a blank part, the V60's SEGA check at FE078E fails and the game takes its uninitialised-board branch ***");
@@ -1642,6 +1654,34 @@ task automatic check_snd_stream;
     end
 endtask
 
+// RAMA's default contents on index 6 (m1_rom_loader NV_INDEX): 64 KB.
+task automatic run_nv_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd6;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 32768; w = w + 1) begin
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {nvrom[w*2 + 1], nvrom[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            // Counted, or the STALL watchdog (which watches dl_words) fires
+            // on a 64 KB stream that is merely slower than the others.
+            dl_words    = dl_words + 1;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: default NVRAM streamed on index 6 (bytes 38/40 = %02h %02h)",
+                 nvrom[16'h38], nvrom[16'h40]);
+        $fflush;
+    end
+endtask
+
 task automatic run_ee_download;
     integer w;
     begin
@@ -1905,8 +1945,16 @@ task automatic dump_frame_dlists(input integer fr);
                 $fwrite(fh, " %02h%02h", core.main.rams.dpram_lo[12'h81 + 2*k],
                                          core.main.rams.dpram_lo[12'h80 + 2*k]);
             // and the analogue bytes 0x00-0x02 as the I/O board published them
-            $fwrite(fh, " an %02h %02h %02h\n", core.main.rams.dpram_lo[0],
+            $fwrite(fh, " an %02h %02h %02h", core.main.rams.dpram_lo[0],
                     core.main.rams.dpram_lo[1], core.main.rams.dpram_lo[2]);
+            // and RAMA bytes 0x38 and 0x40 (NetMerc's gun alignment), out of
+            // the SDRAM model at NVRAM_BASE
+            begin
+                logic [15:0] r38, r40;
+                r38 = device.read_at(64'hFA001C);
+                r40 = device.read_at(64'hFA0020);
+                $fwrite(fh, " rama38/40 %02h %02h\n", r38[7:0], r40[7:0]);
+            end
             $fclose(fh);
         end
     end
@@ -3687,6 +3735,7 @@ initial begin
         $display("SNDROM-AFTER-IOFW: %04h %04h",
                  device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
         if (ee_ok)   run_ee_download();
+        if (nv_ok)   run_nv_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
         // READ THE MICROCODE BACK OUT OF THE COPROCESSOR.

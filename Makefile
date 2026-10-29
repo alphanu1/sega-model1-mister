@@ -1178,6 +1178,7 @@ m1_frame:
 	  -GUCODEHEX='"build/rom/$(GAME)_tgp_prog.hex"' \
 	  -GIOFWHEX='"build/rom/$(GAME)_iofw.hex"' \
 	  -GEEHEX='"build/rom/$(GAME)_ee.hex"' \
+	  -GNVHEX='"$(FRAME_NVHEX)"' \
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
@@ -1263,6 +1264,9 @@ FRAME_HMD ?= $(if $(filter netmerc,$(GAME)),1,0)
 # NetMerc's stick bytes at rest (0x00 0x80, 0x01 0xff, 0x02 0x80), as Model1.sv
 # publishes them; 0 gives the pedal bytes every game had before (0x02 = 0x01).
 FRAME_NMSTICK ?= $(if $(filter netmerc,$(GAME)),1,0)
+# The set's default RAMA on index 6, when tools/build_rom_image.py wrote one
+# (netmerc). FRAME_NVHEX= (empty) leaves RAMA as unwritten SDRAM, FFFF.
+FRAME_NVHEX ?= $(wildcard build/rom/$(GAME)_nv.hex)
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
 
