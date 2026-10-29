@@ -85,8 +85,10 @@ int main(int argc, char** argv) {
       fclose(f); printf("  %-36s 256 banks\n", p); }
     { FILE* f = fopen(romp, "rb"); if (!f) { printf("cannot open %s\n", romp); return 1; }
       fseek(f, 0, SEEK_END); long sz = ftell(f);
-      if (sz < 0x840000 + 0x1000000) { printf("  %s has no polygon region\n", romp); return 1; }
-      prom.assign(0x400000, 0); fseek(f, 0x840000, SEEK_SET);
+      // swa's polygon region is 12 MB against vr's 16: take what is there,
+      // and leave the rest reading as unwritten SDRAM does.
+      if (sz <= 0x840000) { printf("  %s has no polygon region\n", romp); return 1; }
+      prom.assign(0x400000, 0xffffffffu); fseek(f, 0x840000, SEEK_SET);
       size_t n = fread(prom.data(), 4, prom.size(), f); fclose(f);
       printf("  %-36s %zu words of models\n", romp, n); }
 

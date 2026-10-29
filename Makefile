@@ -75,7 +75,7 @@ SRCS_3D = rtl/video/m1_geometry.sv rtl/video/m1_geo_walk.sv rtl/video/m1_geo_cli
   rtl/video/m1_lightbank.sv rtl/video/m1_listwalk.sv \
   rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
   rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv \
-  rtl/video/m1_raster3d.sv
+  rtl/video/m1_raster3d.sv rtl/video/m1_p6_arb.sv
 SRCS_m1_fetch_bridge := rtl/mem/m1_cdc_port.sv rtl/mem/m1_fetch_bridge.sv
 SRCS_m1_rom_loader := rtl/io/m1_rom_loader.sv
 SRCS_m1_decode := rtl/io/m1_decode.sv
@@ -114,7 +114,7 @@ SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_
   rtl/video/m1_geo_rsqrt.sv rtl/video/m1_geo_norm.sv rtl/video/m1_geo_color.sv \
   rtl/video/m1_geo_walk.sv rtl/video/m1_geo_clip.sv rtl/video/m1_geo_planes.sv rtl/video/m1_geometry.sv rtl/video/m1_lightbank.sv \
   rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv rtl/video/m1_quad_store.sv rtl/video/m1_recip_rom.sv rtl/video/m1_raster_div.sv \
-  rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv rtl/video/m1_raster3d.sv \
+  rtl/video/m1_raster_fill.sv rtl/video/m1_raster_band.sv rtl/video/m1_raster3d.sv rtl/video/m1_p6_arb.sv \
   $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
   rtl/m1_main.sv rtl/m1_integrated.sv
 SRCS_m1_tile_decode := rtl/video/m1_tile_decode.sv
@@ -312,7 +312,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank
+test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank test_p6_arb
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -509,6 +509,11 @@ test_geo_clip:
 	  $(RTL)/fp_mul.sv $(RTL)/fp_add.sv $(RTL)/fp_div.sv \
 	  sim/video/tb_m1_geo_clip.cpp -o tb_geoclip --Mdir obj_geoclip
 	./obj_geoclip/tb_geoclip
+
+test_p6_arb:
+	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_p6_arb \
+	  rtl/video/m1_p6_arb.sv sim/video/tb_m1_p6_arb.cpp -o tb_p6_arb --Mdir obj_p6_arb
+	./obj_p6_arb/tb_p6_arb
 
 test_geometry:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_geometry \
@@ -752,6 +757,20 @@ m1_tgp:
 	  -CFLAGS "-O2 -std=c++17" \
 	  $(SRCS_m1_tgp) sim/tgp/tb_m1_tgp.cpp -o tb_m1_tgp --Mdir obj_m1_tgp
 	./obj_m1_tgp/tb_m1_tgp
+
+# THE COPROCESSOR REPLAYED AGAINST MAME'S OWN TRAFFIC. tools/mame_tgp_stream.lua
+# records the V60's whole conversation with the TGP from reset; this feeds it
+# to m1_tgp alone and checks every word pushed back against MAME's. Not in
+# `make test`: it needs a ROM set and a capture.
+#   GAME=vf tools/mame_run.sh tools/mame_tgp_stream.lua -video none -sound none
+#   make tgp_replay GAME=vf TGP_STREAM=build/mamerun/tgp_stream.txt
+TGP_STREAM ?= build/mamerun/tgp_stream.txt
+tgp_replay:
+	verilator --cc --exe --build -O2 -Wno-fatal $(VFLAGS) --top-module m1_tgp \
+	  -CFLAGS "-O2 -std=c++17" \
+	  $(SRCS_m1_tgp) sim/tgp/tb_tgp_replay.cpp -o tb_tgp_replay --Mdir obj_tgp_replay
+	./obj_tgp_replay/tb_tgp_replay $(TGP_STREAM) build/rom/$(GAME)_tgp_prog.hex \
+	  build/rom/$(GAME)_tgp_tables.hex build/rom/$(GAME)_stream.bin
 
 test_copro_if:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_copro_if \
@@ -1016,7 +1035,7 @@ elab:
 	  head -10 $(TMPDIR)/elab_real.txt; exit 1; \
 	else echo "elab: Model1 elaborates, every port and module resolves"; fi
 
-.PHONY: test_v60_ifetch test_snd_report elab render render3d render3d_fuzz video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: tgp_replay test_v60_ifetch test_snd_report elab render render3d render3d_fuzz video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank test_p6_arb m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ
@@ -1307,6 +1326,16 @@ test_v60_in_mem:
 	  -GFAST=1 -GCEDIV=1 -GLAT=4 --top-module tb_v60_in_mem --Mdir obj_v60_in_mem -o run \
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv sim/cpu/tb_v60_in_mem.sv
 	./obj_v60_in_mem/run | grep -E '^v60_in_mem:|FAIL'
+
+# MUL/MULU/DIV/DIVU/REM/REMU with a MEMORY destination, at every width, plus
+# Virtua Fighter's own ring-size bytes from FCCA33. Before 2026-10-28 these
+# computed the result and dropped the store (findings 2026-10-28 (b)).
+test_v60_mul_mem:
+	verilator --binary --timing -j 8 -Wno-fatal $(VFLAGS) -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+	  -Wno-INITIALDLY -Wno-PINMISSING +define+SIMULATION \
+	  -GFAST=1 -GCEDIV=1 -GLAT=4 --top-module tb_v60_mul_mem --Mdir obj_v60_mul_mem -o run \
+	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv sim/cpu/tb_v60_mul_mem.sv
+	./obj_v60_mul_mem/run | grep -E '^v60_mul_mem:|FAIL'
 
 v60_cpi:
 	@bash tools/v60_cpi_sweep.sh

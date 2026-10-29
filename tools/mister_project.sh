@@ -272,6 +272,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster_band.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/fp_from_int.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_lightbank.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_raster3d.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_p6_arb.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/m1_tdp_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/m1_mainram.sv

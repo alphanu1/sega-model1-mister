@@ -310,6 +310,270 @@ that can fail; check the binary's time.**
 
 ---
 
+## 2026-10-28 (c) — STAR WARS' SHIPS ARE MISSING QUADS BECAUSE HALF OF EVERY DISPLAY LIST WAS NEVER STORED
+
+Branch `vf-swa-geo`. Ben: the first large ship in Star Wars' attract is
+missing quads (HANDOFF 0: "the Star Destroyer draws as thin pale slivers";
+0c: "a ship is missing from the attract intro"). Both are this.
+
+**The colour words never arrived.** Star Wars uploads its whole colour table
+(123,623 tgp_ram words) through display-list command 4 during boot, eight
+blocks of 0x3c00 words in list 0 at offset 0x38, MAME frames 21-133. Command
+4 reads its payload at a two-word pitch (`readi16(off + 6 + 2*i)`), so each
+block runs from word 0x3e to word **0x783e**. m1_mainram holds only the
+bottom 16,384 words of each list - a cap measured on Virtua Racing (max
+0x3fff over 40 s) and recorded as "a program constant". Everything above
+0x4000 was dropped: of each block, colour words 0x1fe1 onward. 56,287 of
+121,575 colour words never existed in our tgp_ram, and every polygon using
+one drew with colour word 0 (palette 0x1000).
+
+**Measured, three ways:**
+
+- **MAME's lists, our renderer, MAME's colour words** (`render3d` on
+  `tools/mame_dump_frame.lua` dumps): the corvette (frame 1400) and the Star
+  Destroyer (2000, 2300) draw correctly - the 3D path is not at fault.
+- **The same with the colour words removed the way the core removes them**
+  (every index whose block offset is >= 0x1fe1): the corvette paints **0**
+  pixels of 56,442 - the ship is gone - and the Star Destroyer **43,647 of
+  69,339** and **41,281 of 74,889**: quads missing all over the hull. That is
+  both board reports. `build/swa_cap_before_fix.png`.
+- **The full system** (`tb_m1_frame GAME=swa`, board clocks): the far ship's
+  two objects are walked (`OBJ:` 1,102 and 304 quads, on screen at x 231-287)
+  and the frame at 1,420 has **0** non-black pixels there. render3d with that
+  same frame's list and MAME's colour words paints 783.
+
+**Every set, measured** (MAME, 4,000 frames, the list rendered that frame):
+Virtua Racing, Virtua Fighter and Virtua Formula never pass word 0x2006; Star
+Wars passes 0x4000 only with command 4, at boot; **Wing War and NetMerc pass
+it with command 4 in play** (frames 283 and 182 on), so both have been
+losing colour words too.
+
+### The fix: the upper half in SDRAM, in space the layout already leaves free
+
+Doubling the two lists on chip is +64 M10K (16K x 16 true dual port is 32
+apiece) against ~28 free. Instead the upper half of each list lives in SDRAM
+at **0x19C0000** - the 256 KB gap between tgp_ram (0x1840000-0x19bffff) and
+the I/O firmware at 0x1A00000. **Nothing in the layout moves**; the loader
+and the MRAs are untouched.
+
+- **V60 side** (`m1_main`): a display-list access with word address >= 0x4000
+  (`m_addr[15]`) is an SDRAM access at `DLHI_BASE + {list, word[13:0]}`,
+  through the same path as work RAM.
+- **3D side** (`m1_integrated`, new `rtl/video/m1_p6_arb.sv`): the walker's
+  reads above 0x4000 go through p6, the port tgp_ram already uses, and the
+  two share it through a one-owner arbiter. The walker already holds its
+  request until valid, so it needed no change. **The arbiter latches the
+  access at the grant** and keeps the list word in a tagged buffer until the
+  walker asks again: the first version drove the port from the requests, and
+  `tb_m1_p6_arb` caught the walker's stall (which drops mem_req) making a
+  request fall and rise around its own acknowledge - which m1_cdc_port takes
+  as a new transaction, so the next owner was handed a stray word.
+- `make test_p6_arb`: both requesters at random, the walker stalling, against
+  a port at random latency 2..2, 2..20 and 2..200 cycles; 5,641,907 checks, 0
+  fails.
+
+### After
+
+- **tgp_ram after the boot uploads**, out of the full system's SDRAM model
+  (`+define+TGPRAMDUMP`, frame 300): **121,575 of 121,575 words equal to
+  MAME's**, including all 56,287 that were missing.
+- **Our own V60's lists** (the full-system run's dumps at frames 1500, 1900,
+  2000) through render3d: with the old colour state 0 / 40,491 / 31,016
+  pixels; with the fixed system's tgp_ram 2,050 / 49,577 / 62,859 - and the
+  1900 and 2000 frames are **byte-identical** to the same lists rendered with
+  MAME's colour words. `build/swa_before_after.png`, and the full system before
+  the fix in `build/swa_fullsys_before.png` (corvette absent, Destroyer holed).
+- The full-system run with the fix (`build/run_swafix`) was still short of
+  the ship frames when this was written.
+
+### Everywhere else
+
+Virtua Racing never reaches the upper half, but every tgp_ram access now
+takes the arbiter's latch cycle, and that moves SDRAM grant timing for the
+V60 (its cycle hash parts from tile-overrun's at frame 129). Board clocks,
+attract (the bench sits in VR's test menu), FRAME_PPM=1, every frame of 404
+compared against tile-overrun: **402 identical, 2 differ** - frame 395, the
+menu's header band being redrawn while it is scanned out, torn at a
+different line (3,557 px, rows 13-72), and frame 401, one scanline (row 363).
+Both are the "screen wiped while drawn" class recorded under tile-overrun:
+the same content reaching the screen a few lines earlier or later; the frames
+either side are identical and so is the last frame of a 462-frame run.
+`build/vr_frame395_base_vs_fix.png`.
+
+### Cost
+
+quartus_map 34,566 -> **34,644 ALM (+78)**, block memory bits unchanged
+(3,912,698) - no M10K. Fitted with the V60 fix (this branch, 3eba4a6):
+**seed 11 35,282 ALM, 525 M10K, 50 DSP**, clk_3d +0.837, clk_sys +1.185,
+clk_cpu +6.515, pll_hdmi +0.673, worst hold +0.245;
+`build/Model1_vfswa_seed11_35282.rbf`, md5 `0a9941d96296dcd2a021bf8fb2faedbd`.
+Seed 5 35,300, every clock positive (clk_cpu +4.522); seed 3 35,344 with
+clk_sys -0.200 and pll_hdmi -0.259.
+
+---
+
+## 2026-10-28 (b) — VIRTUA FIGHTER'S ARENA IS A DROPPED V60 STORE: `mulu.w #A, 501276` NEVER WROTE BACK
+
+Branch `vf-swa-geo`, on `tile-overrun`. Ben: the fighting arena is the wrong
+size in a real match; fighters right, arena right in attract and character
+select. README's open questions named polygon RAM (command 0x05), the masked
+bit 23 and direct polygons (0x02); findings 2026-09-10 had narrowed it to "the
+matrix arrives wrong, so the V60 or the coprocessor produces it".
+
+**It is the V60.** Three instructions at FCCA33 compute a value from the
+game settings and send it to the coprocessor as the second argument of its
+very first command:
+
+    FCCA33  movz.bw FCC9F6(R0), 501276    table 75,70,65,60 by setting
+    FCCA40  mulu.w  #A, 501276            x10
+    FCCA48  cvt.ws  501276, 501276        to float
+    FCCA64  mov.w   501276, [R24]         -> TGP, command 01000000
+
+MAME pushes `01000000 3c23d70a 442f0000` (0.01, **700.0**); our core pushed
+`01000000 3c23d70a 428c0000` (0.01, **70.0**). The multiply never happened -
+or rather it happened and was thrown away: `S_MULDIV` ended with
+`md_finish(); st <= S_NEXT;`, and md_finish's wb_op2 had just set
+`st <= S_WB_MEM` for the memory destination. The later non-blocking
+assignment won. **Every MUL/MULU/DIV/DIVU/REM/REMU with a memory destination,
+at every width, in every game, computed its result and dropped it.** The
+third instance of the pattern after S_IN_RD and S_ROTC, both fixed earlier
+with exactly the same one-line guard (`if (flag2) st <= S_NEXT`), and both
+recorded as "found by scanning for the pattern" - the scan missed this one.
+
+### How it was found, in order
+
+1. **The candidates in README, re-measured against a running MAME through a
+   real match** (`tools/mame_geo_census.lua`, attract + select + two rounds,
+   3,000 frames, the list rendered that frame): **0** direct polygons,
+   **0** polygon RAM uploads, **0** objects with poly_adr bit 23. That is
+   what 2026-09-09 (6) said; README had kept the older suspicion. Eliminated.
+2. **The coprocessor, replayed against MAME's own traffic.**
+   `tools/mame_tgp_stream.lua` records everything the V60 says to the TGP
+   from reset (FIFO pushes, copro RAM address/data writes, in BOTH address
+   spaces) and every word the TGP pushes back (tapped at the TGP's data 0x400,
+   not at the V60's reads, which carry phantom zeros from stalled pops).
+   `sim/tgp/tb_tgp_replay.cpp` (`make tgp_replay`) feeds that to `m1_tgp`
+   alone. Virtua Fighter boot -> attract -> select -> match, 2,000 frames:
+   **1,484,210 answers, 0 different**, also with random 0-7 cycle memory
+   jitter and at 20-cycle latency. Virtua Racing 805,532 and Star Wars 54,576,
+   0 different. **The coprocessor is exonerated** - the 2026-09-10 suspicion
+   (its matrix stack) is withdrawn.
+3. **Our V60's command stream against MAME's**, framed into commands by the
+   dispatcher's pop (`tools/tgp_cmd_frames.py`; pc 02a on this microcode).
+   The **first command** differs, in the one argument above.
+4. **The ROM read at that address** (MAME's debugger `dasm`), then a directed
+   test with the game's own bytes: `sim/cpu/tb_v60_mul_mem.sv`.
+
+### The fix and its test
+
+One line in `rtl/cpu/v60/v60.sv`: `st <= S_NEXT` moved BEFORE `md_finish()`,
+so wb_op2's `S_WB_MEM` is the later assignment and wins. **Found
+independently, the same evening, on branch `vr-freeze` (89a636a)**, from
+Virtua Racing's side: its attract wraps the course number with
+`rem.b #3, 501934[PC]` at FE207A, the 3 stayed 3, the bank register became 4
+and the scene loader copied memory over itself - the freeze at the end of
+every attract cycle. This branch first had the S_ROTC form
+(`if (flag2) st <= S_NEXT` after the call); it now carries vr-freeze's text
+byte for byte so the two branches merge as one change. Both forms pass the
+sweep below (1,084 of 1,084).
+`make test_v60_mul_mem` (in `make test`): the game's FCCA33 sequence, then
+every MUL/MULU/DIV/DIVU/REM/REMU at byte, half and word with a memory
+destination - 12 edge values (0, 1, -1, 10, 70, 700, 0x7f/0x80, 0x7fff/0x8000,
+0x7fffffff/0x80000000) and 48 LCG pairs each, 1,080 cases, checked against
+the C semantics MAME implements. Before (the tile-overrun V60):
+`checks=1084 fails=874` - the 210 that pass are the ones whose answer equals
+the untouched destination (x*1, 0*y, x/1 ...). After: `checks=1084 fails=0`.
+The V60 unit suite stays 29/29.
+
+**What else executes one.** MAME debugger traces from reset: Virtua Fighter
+through attract, select and a match (1,300 frames) executes exactly one
+memory-destination multiply/divide, FCCA40, three times (boot and the start
+of each match). Star Wars Arcade to the Star Destroyer (2,100 frames)
+executes none - 1,942 `div.h`, 1,002 `remu.h`, 302 `mulu.b`, all to
+registers. 2,000 frames of attract each: Virtua Formula, Wing War and NetMerc
+none; Virtua Racing one, `inc.b 50119C ; rem.b #4, 50119C` at FE24F5 (a
+counter wrapped mod 4 - unchanged until it would pass 3), besides vr-freeze's
+FE207A. Traces run headless (`-debug -debugger none`, trace started and
+stopped from Lua): a plain `-debug` opens the debugger window and can sit
+stopped in it, which one run here did, on Ben's desktop.
+
+### Before and after, the full system
+
+`tb_m1_frame GAME=vf`, board clocks, `sim/input/vf_match.txt`, the same
+inputs both runs (`build/vf_before_after.png`, `build/vf_fixed_fight.png`):
+
+- **tile-overrun**: frame 780, ROUND 1 - the ring a small block in the sand,
+  both fighters standing outside it; frame 900 "DRAW" with the clock at 30.
+- **with the store fixed**: frame 780 the stone floor to the horizon with
+  both fighters on it, as MAME; frames 980-1080 a fight, the clock running
+  (28" -> 26"), Akira's health dropping.
+- Our in-system coprocessor traffic through the match start (295,356
+  answers, 790 frames) replays with 0 differences - nothing else in that
+  path changed.
+
+Identity elsewhere, Virtua Racing attract at board clocks with FRAME_HASH=1,
+462 frames: the **video hash is identical on every frame**; the CPU and 3D
+hashes part at frame 402, where VR's own memory-destination remainder starts
+to store (the extra write cycle moves bus timing).
+
+### Cost, fitted (Quartus 17.0, tile-overrun + this line)
+
+quartus_map 34,615 -> 34,566 ALM (noise; the change is one assignment
+moved). Fitted, three seeds: **seed 5 35,293 ALM, 525 M10K**, every clock
+positive at the slow corner - clk_3d +0.039, clk_sys +1.813, clk_cpu +5.715,
+pll_hdmi +0.280, worst hold +0.186; seed 3 35,143 (clk_3d -0.016, pll_hdmi
+-0.709), seed 11 35,165 (clk_3d -0.700). `build/Model1_vfmul_seed5_35293.rbf`,
+md5 `968cf0d66b7f07cc2a2924fa1932fbcb`. clk_3d at +0.039 is thin; tile-overrun's
+own seed 5 had +0.891, so this is placement, not the change - reseed before
+reading anything into it.
+
+### Why the arena and only the arena
+
+The value is a size the game hands the coprocessor once and the arena's
+sixteen ring objects are built from (`2f000000`, then `27000000 + i` for
+each, FF0611). The fighters are posed through other commands and never
+touch it; attract uses its own fixed staging. Our bench showed it the other
+way too: at round start the ring is drawn a tenth of its size and both
+fighters are outside it - "DRAW" with the clock still at 30.
+
+### What turned out wrong
+
+- Polygon RAM, bit 23 and direct polygons (README): not issued by this game.
+- "The matrix stack in the coprocessor" (2026-09-10): the coprocessor answers
+  every one of 1.48 M commands exactly.
+- **A copro RAM ordering race, mine, this session.** The replay can let the
+  TGP lag the V60 (`RACE=1 SLACK=n`): at 5,000 answers of lag Virtua Fighter
+  gets 154,614 wrong answers, because it uploads each object's block to
+  0x1500 and pushes `33800000 00011500` without reading back before the next
+  upload. A gate in m1_copro_if that held the committing write until the TGP
+  was quiet was built and tested - and then measured unnecessary: with the
+  board's 16-word FIFO modelled (`FIFO=16`, V60 infinitely fast) it is
+  **0 wrong at 1 and 20 cycles of memory latency**, and our own in-system
+  stream replays clean. Reverted, unbuilt. The hazard is real if the FIFO
+  ever deepens; the replay modes stay in the bench to show it.
+- Also found and reverted with it: m1_copro_if shares ONE low-half latch
+  between the RAM window and the FIFO, where MAME has two
+  (`m_v60_copro_ram_latch[0]`, `m_v60_copro_fifo_w`). A command push between
+  a RAM low half and its commit would replace the low half. The census found
+  no game that interleaves them (Virtua Fighter's 69,109 commits are each
+  immediately after their low half), so it is recorded, not changed.
+
+### Polygon RAM, measured for the record (Ben asked)
+
+Command 0x05 and objects with bit 23, MAME, the list rendered each frame:
+
+| game | uploads | words | address range | objects that READ it |
+|---|---|---|---|---|
+| Virtua Fighter (boot, attract, select, 2 rounds) | 0 | 0 | - | 0 |
+| Star Wars, attract (4,000 frames) | 1 block, re-sent in the boot list frames 150-166 | 1,421 (0x58d) | 0x800000-0x80058c | 0 |
+| Star Wars, play (12,000 frames, firing) | the same, at boot only | 1,421 | the same | 0 |
+
+1,421 words is 5.6 KB - six M10K at 2048x5 or 512x40, well inside the ~49
+the 3D frame buffer port would free - but **nothing reads it** in anything
+measured, so there is nothing to build. Not built.
+
+---
+
 ## 2026-10-28 (b) — THE 3D OVERRUN IS BANDS FILLED PAST THE BEAM ON THE BEGINNER COURSE'S HILLS; THE 3D NOW DRAWS WHOLE INTO DDR3
 
 Branch `3d-overrun`, written on `alm-save` (0ac55df) and rebased onto
