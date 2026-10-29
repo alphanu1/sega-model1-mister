@@ -40,7 +40,7 @@
         <part>03 03</part>
     </rom>
 
-    <rom index="0" zip="wingwaru.zip" md5="none">
+    <rom index="0" zip="wingwaru.zip|wingwar.zip" md5="none">
         <!-- stream 0x000000, ROM_LOAD16_BYTE -->
         <interleave output="16">
             <part name="epr-16729.14" map="01"/>
@@ -71,7 +71,41 @@
         <part repeat="1048576">FF</part>
         <!-- stream 0x580000: 524288 bytes unpopulated -->
         <part repeat="524288">FF</part>
-        <!-- stream 0x600000: the polygon model ROMs, 16 MB.
+        <!-- THE COPROCESSOR DATA ROM AND SINCOS TABLES WERE MISSING from this
+             clone's MRA, and the polygon ROMs sat at 0x600000 where the
+             core reads the data ROM. MAME's wingwaru carries the same
+             copro_data as wingwar (mpr-16739..16742) and the same
+             MODEL1_CPU_BOARD tables, so these blocks are the parent's.
+             HAND-EDITED: tools/gen_mra.py lists copro data for parent
+             sets only, and regenerating reverts this. Untested - no
+             wingwaru.zip on the machine it was written on. -->
+        <!-- stream 0x600000: the coprocessor's DATA ROM, 2 MB.
+             MAME's copro_data. The TGP reads it through IO 0x8000-0xffff
+             and it is read BEFORE any math unit, so without it the
+             coprocessor stalls at microcode 0x49, never drains its command
+             FIFO, and a full FIFO halts the V60 — a screen that tears down
+             and rebuilds every 0.45 s. COPRO_DAT_BASE in m1_integrated.sv.
+             ROM_LOAD32_BYTE x4 is a four-way byte interleave. -->
+        <interleave output="32">
+            <part name="mpr-16741.39" map="0001"/>
+            <part name="mpr-16742.40" map="0010"/>
+            <part name="mpr-16739.41" map="0100"/>
+            <part name="mpr-16740.42" map="1000"/>
+        </interleave>
+        <!-- stream 0x800000: the sincos tables, 256 KB.
+             MAME's copro_tables, from MODEL1_CPU_BOARD. COPRO_TBL_BASE in
+             m1_integrated.sv. ROM_LOAD32_WORD x2 is a two-way 16-bit
+             interleave into the same 32-bit words.
+
+             MAME's other_data — opr-14744..14747, the 1/x and 1/sqrt
+             tables — is deliberately absent: this design computes those in
+             fp_div rather than reading them, so there is no port for them
+             and the files are not in the ROM set. -->
+        <interleave output="32">
+            <part name="opr14742.bin" map="0021"/>
+            <part name="opr14743.bin" map="2100"/>
+        </interleave>
+        <!-- stream 0x840000: the polygon model ROMs, 16 MB.
              MAME's `polygons` region. Pairs of ROM_LOAD32_WORD halves,
              each pair 4 MB apart, exactly as the sincos tables above but
              4 times over.
@@ -104,16 +138,22 @@
          loader's old byte offset would have meant padding 25 MB of filler
          through the HPS to deliver 8 KB. 2048 words of 32 bits, little-endian,
          which is exactly the file. -->
-    <rom index="1" zip="wingwaru.zip|wingwaru.7z" md5="none">
+    <rom index="1" zip="wingwaru.zip|wingwar.zip" md5="none">
         <part name="315-5711.bin"/>
     </rom>
 
-    <!-- The I/O board Z80 firmware, from MAME's model1io BIOS set.
-         REQUIRED: the core runs the real Z80 and there is no
-         behavioural fallback. MAME will not start this game without
-         the same file, so a complete romset already has it. -->
-    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">
-        <part name="epr-14869.25"/>
+    <!-- The I/O board Z80 firmware. WING WAR'S IS NOT THE OTHER GAMES':
+         model1.cpp's wingwar() fits SEGA_MODEL1IO2 with BIOS epr16891,
+         a TMPZ84C015 board, and the core becomes that board for game id 3
+         (Model1.sv io_board2). On EPR-14869 the game's V60 waits forever
+         for the I/O board to accept its settings block and never leaves
+         boot. EPR-16891 is in MAME's model1io2 device set, which MAME also
+         requires to run this game. Only its first 16 KB are sent.
+
+         HAND-EDITED, NOT GENERATED: tools/gen_mra.py still writes
+         EPR-14869 here, so regenerating reverts this block. -->
+    <rom index="2" zip="model1io2.zip" md5="none">
+        <part name="epr-16891.6"/>
     </rom>
 
     <rom index="5" zip="wingwaru.zip|wingwar.zip">
@@ -145,7 +185,9 @@
              swapped with map="12" on a 16-bit interleave; samples go in plain.
         -->
         <interleave output="16">
-            <part name="epr-17126.7" map="12"/>
+            <!-- epr-16751.7, not the World set's epr-17126.7: MAME's wingwaru and
+                 wingwarj both load 16751 here. Hand-edited, as above. -->
+            <part name="epr-16751.7" map="12"/>
         </interleave>
         <interleave output="16">
             <part name="epr-16752.8" map="12"/>

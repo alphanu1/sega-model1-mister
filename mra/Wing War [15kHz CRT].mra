@@ -138,12 +138,18 @@
         <part name="315-5711.bin"/>
     </rom>
 
-    <!-- The I/O board Z80 firmware, from MAME's model1io BIOS set.
-         REQUIRED: the core runs the real Z80 and there is no
-         behavioural fallback. MAME will not start this game without
-         the same file, so a complete romset already has it. -->
-    <rom index="2" zip="model1io.zip|daytona93.zip" md5="none">
-        <part name="epr-14869.25"/>
+    <!-- The I/O board Z80 firmware. WING WAR'S IS NOT THE OTHER GAMES':
+         model1.cpp's wingwar() fits SEGA_MODEL1IO2 with BIOS epr16891,
+         a TMPZ84C015 board, and the core becomes that board for game id 3
+         (Model1.sv io_board2). On EPR-14869 the game's V60 waits forever
+         for the I/O board to accept its settings block and never leaves
+         boot. EPR-16891 is in MAME's model1io2 device set, which MAME also
+         requires to run this game. Only its first 16 KB are sent.
+
+         HAND-EDITED, NOT GENERATED: tools/gen_mra.py still writes
+         EPR-14869 here, so regenerating reverts this block. -->
+    <rom index="2" zip="model1io2.zip" md5="none">
+        <part name="epr-16891.6"/>
     </rom>
 
     <rom index="5" zip="wingwar.zip|wingwar.7z">
