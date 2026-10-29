@@ -20,6 +20,156 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — THE STAR WARS CRAWL VANISHES BECAUSE ITS LIST IS WALKED BEFORE THE GAME HAS PUBLISHED IT; THE TGP WAS HALF THE REASON
+
+Branch `swa-crawl`, on `main` (115c719). Ben: in Star Wars' attract the
+yellow crawl flickers, vanishes, and comes back once it is far away; also on
+`vf-swa-geo`, so not the DSB; "it's when too much text is on the screen".
+
+### No capacity is hit
+
+MAME's own crawl lists (the Death Star agent's dumps, frames 3300-6000 every
+50, `build/wt-deathstar/build/ds/cr`) through render3d: peak **435 objects
+in the list, 391 walked, 3,244 quads, list end word 0x39fe** (MAME 4900-5550).
+Every capacity holds: the list's on-chip half is 0x4000 words, the store
+4,096 quads; nothing dropped. MAME's lists draw whole (render3d, 0 dropped).
+
+### How Star Wars builds a list, and when MAME walks it
+
+- **Automatic double buffer** (listctl bit 2, 2,400 of 2,400 frames): the
+  hardware flips bit 6 every second frame whether or not the game is done.
+- **The build is atomic** (MAME write tap, frames 4800-4803): the game writes
+  000f at word 0x38, copies the whole body, writes 000f at its end, and
+  publishes by writing word 0x38 last - one publish per list, no chunks. A
+  list walked before that is header + terminator: an EMPTY 3D frame.
+- **The build is TGP-paced**: the loop at V60 0xEDF08 pushes command 0x11
+  and reads 12 answers per object with `in.w` straight into the list, so
+  every answer stalls the V60 until the TGP has it.
+- **MAME timing** (V60 totalcycles, `pubcyc.txt`): the build starts 1.09
+  frames before the flip that shows it and takes up to **0.486 frame** at the
+  crawl's peak (4900-5300; 0.05 at 3800, 0.31 at 5800).
+- **MAME walks a list at the vblank AFTER its flip**: screen.cpp's
+  vblank_begin calls frame_update (screen_update_model1 -> tgp_render, with
+  the bit-6 selection) BEFORE m_screen_vblank (end_frame, the flip). So the
+  game has about two frames from build start to render, and the picture is
+  shown after that vblank: **1.094 frames from flip to screen**.
+
+### What our core does
+
+**The pass starts AT the flip.** m1_raster3d's rule "not before the vblank
+after the flip" (9e242f8) never took effect: `fs_since_flip` is cleared one
+cycle after the flip arrives, so on the arrival cycle it still holds the
+count since the previous flip and `list_flipped && fs_since_flip != 0`
+starts the pass at the flip itself whenever the producer is idle. render3d's
+own log says so: "pass 3: started frame 4 line 384" for a flip at frame 4
+line 384. The full system builds 0.98 frame before the flip (tb_m1_frame
+LISTPUB, the Death Star runs), so **the build has ~0.98 frame against
+MAME's ~2**.
+
+**And the TGP was slow** (`make tgp_replay` on MAME's own Star Wars traffic,
+answers bit-exact through the crawl): a crawl build frame is **403,625-409,020
+clk_3d cycles, 35.4k instructions, 3,161 words popped, 4,567 answers - 0.40
+of a frame at 58.947 MHz, CPI 11.4, with no memory access at all** (copro
+RAM, tables and data ROM: 0). This is the FSM's own cost (fetch, fetch-wait,
+decode, operand states, a 6-cycle ALU wait even for nop). MAME's model runs
+the same work at 40 MHz and one instruction a cycle - 0.05 frame - but that
+is MAME's cycle model, not a hardware fact.
+
+**Our build time is ESTIMATED, not measured** (no full-system run reaches the
+crawl: the Death Star runs stopped at our frame 3,912, MAME ~3,700 - ours
+trails MAME by ~215 frames). V60 part ~0.44 frame x our V60 speed relative
+to MAME's (0.8-1.5) + the TGP's 0.40, mostly serial because every answer
+stalls the V60: **~0.75-1.05 frames at the peak against the 0.98 available**.
+That matches the board: flicker as the text grows, gone at the peak, back as
+it recedes.
+
+### Two changes
+
+**1. The TGP, 2x faster, same answers** - the Model 2 core's R771-R774 and
+R778 ported (THIRD-PARTY.md). Result stream against the old RTL, word for
+word (tb_tgp_replay `OURLOG`):
+
+| traffic | words | identical | CPI before | after | cycles before | after |
+|---|---:|---|---:|---:|---:|---:|
+| Star Wars, frames 1-6100 | 4,089,476 | yes (12 NaN-encoding mismatches vs MAME at 6052, both) | 11.35 | 5.67 | 397.1 M | 198.4 M |
+| Virtua Racing, frames 1-3000 | 2,085,192 | yes (0 vs MAME) | 11.72 | 5.89 | 616.1 M | 309.8 M |
+
+Crawl peak build frame: 409,020 -> 203,066 cycles, **0.40 -> 0.20 frame**.
+TGP unit benches unchanged (core lockstep 8,000 / 0 diverged, alu 2,170,388
+/ 0 fails, seq, dec, xfer, mem, regs).
+
+**2. A walk of an unpublished list is discarded** (`m1_raster3d`, relist).
+The pass still starts at the flip. A walk that started before the vblank
+after its flip and found no content - no object, direct polygon or upload -
+does not become a frame: the producer goes back to idle, the screen keeps the
+last frame, and the same buffer is walked again at once, until it is
+published or the vblank after the flip (MAME's render point), after which an
+empty list is accepted as empty. Uploads count as content because re-walking
+Star Wars' boot list (uploads only) would rewrite SDRAM for a whole frame;
+the first version did not exclude them and re-walked the bench's prologue
+list 1,018 times.
+
+### Proof, at block level
+
+`tb_m1_raster3d` `PUB_BUILD=<lines>`: the game's terminate at line 392 of odd
+frames (0.98 before the flip) and publish PUB_BUILD lines later, against
+flips every second frame. MAME list 4900 (3,227 quads), board clocks,
+frames 8-23:
+
+| build | old: frames with the text | new | walks discarded |
+|---|---:|---:|---:|
+| 200-380 lines (0.47-0.90 fr) | 16/16 | 16/16 | 0 |
+| 420 (0.99) | **0/16** | 16/16 | 900 |
+| 500 (1.18) | **0/16** | 16/16 | 18,970 |
+| 700 (1.65) | **0/16** | 16/16 | 64,160 |
+| 830 (1.96) | **0/16** | 16/16 | 9,353 |
+| 860 (2.03, past MAME's own render point) | 0/16 | 0/16 | 30,264 |
+
+List 4300 at 420 and 600 lines: old 0/12, new 12/12.
+
+**Latency, flip to the first scanline showing the list** (MAME 1.094):
+
+| list | old | closing the hole instead | new |
+|---|---:|---:|---:|
+| crawl 3500 / 3900 / 4300, in time | 1.095 | 2.095 | 1.095 |
+| crawl 4300, 420-600 lines late | (empty) | - | 1.095 |
+| crawl 4900, in time or late | 2.095 | - | 2.095 |
+| VR 2500 / 2270 | 2.095 | - | 2.095, logs and pictures byte-identical, 0 discarded |
+
+So the guard adds nothing on a list that is complete at the flip, and on a
+late one shows it no later than MAME would. **Closing the hole was the first
+plan and was dropped**: with the frame buffer, a pass started at the flip
+reaches the screen exactly when MAME's would; one started a vblank later is a
+frame behind MAME on every game. (2.095 on the heavy lists is the October
+frame-buffer frame, accepted then; pass + draw longer than ~1.07 frames.)
+
+`make render3d_fuzz`: 40 episodes, 0 wedged, PASS.
+
+### Wrong turns and corrections
+
+- "Our TGP is 7.7x slower than the chip" (the first status) compared against
+  MAME's one-instruction-a-cycle model; 11.4 CPI is what is measured.
+- The Death Star bench's LISTFLIP "LATE" flags a list unpublished AT the flip.
+  MAME walks a vblank later, so it overstates lateness against MAME; it is
+  exact for what our core did (walk at the flip).
+- `pub.txt`-style publish times from `manager.machine.time` in a tap are
+  timeslice-quantised (builds of 0.017 where V60 totalcycles say 0.047); use
+  debugger watchpoints with `totalcycles` (`pubcyc.lua`).
+
+### Open
+
+- Measure our real build time in the crawl on the board (or a full-system run
+  that reaches MAME frame ~4,900, ~ours 5,100). With the TGP at 0.20 frame
+  the estimate is ~0.55-0.85 frame, inside the flip even without the guard.
+- The TGP is still ~5.7 CPI. Model 2's R888 (posted buffer-RAM writes, the
+  ALU under the transfer) took Sega Rally's TGP from 1.54x to 0.96x MAME's
+  time; the next steps there were the decode pipelined into the previous
+  instruction and operand reads issued from S_DECODE.
+- R775 (ldif loads a register; a no-op here as in Model 2 before it) is not
+  ported: it changes answers toward MAME and wants its own replay.
+
+---
+
 ## 2026-10-29 — NETMERC'S HISS IS A BAD-DUMP SAMPLE ROM PLAYED THROUGH A MULTIPCM WITH NO ENVELOPE
 
 Branch `netmerc-sound`, on `main` (1daae7a). Ben, on the board: NetMerc's

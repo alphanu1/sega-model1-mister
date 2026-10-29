@@ -10,7 +10,10 @@ Still open from this test:
 - **Star Wars crawl:** the yellow text still flickers, vanishes and comes back
   far away. Ben: it did not happen before the DSB sound board; on
   `vf-swa-geo` (no DSB) it was fine. With the Death Star agent
-  (`swa-deathstar`, run_dsb vs run_nodsb).
+  (`swa-deathstar`, run_dsb vs run_nodsb). **Later (Ben): it happens on
+  vf-swa-geo too. Cause found and fixed on `swa-crawl`, for the board: see
+  the section below** (the list walked before the game published it, with a
+  TGP at 11.4 CPI making the build late).
 - **Wing War, the VR-buttons screen:** a little tile or texel overrun.
   Later.
 - **NetMerc controls:** the head pose is fixed facing forward (seeded at
@@ -70,6 +73,85 @@ main on his word; no release yet. 15 kHz output not tested.
   is byte-identical. Untested on the board: no swaj.zip here (verify_mra
   against swa.zip stops only at the Japan program, epr-16468.14).
 - **15 kHz MRAs:** untested on this build.
+
+---
+
+# 2026-10-29: THE STAR WARS CRAWL - THE LIST WALKED BEFORE IT WAS PUBLISHED; THE TGP 2x FASTER (MODEL 2's R771-R774)
+
+Branch **`swa-crawl`** (local, not pushed), on `main` (115c719).
+`findings.md` 2026-10-29 "the Star Wars crawl" has every number.
+
+- **Cause**: Star Wars uses the automatic double buffer and publishes each
+  list last (000f at word 0x38, the body, then word 0x38). Our pass starts AT
+  the flip - `m1_raster3d`'s "vblank after the flip" rule (9e242f8) has a
+  one-cycle hole and never took effect - so the build had ~0.98 frame where
+  MAME, which walks at the vblank after the flip, gives ~2. The crawl's build
+  is TGP-paced (12 `in.w` answers per letter), our TGP ran at 11.4 CPI, and
+  at the peak the build (estimated 0.75-1.05 frame) missed the flip: the list
+  was walked as header + terminator, an empty 3D frame. No capacity is hit
+  (peak 435 objects, 3,244 quads, list end 0x39fe).
+- **Fix 1, the TGP** (`mb86233_core`, `_alu`, `_pkg`): the Model 2 core's
+  R771-R774 + R778 ported (THIRD-PARTY.md). Result stream word-for-word
+  identical to the old RTL on MAME's traffic: Star Wars 1-6100 (4,089,476
+  words), VR 1-3000 (2,085,192). CPI 11.35 -> 5.67 (Star Wars), 11.72 ->
+  5.89 (VR); the crawl's peak 0.40 -> 0.20 frame.
+- **Fix 2, the hold** (`m1_raster3d`, relist): a walk made before the vblank
+  after its flip that finds no content is discarded - the last frame stays
+  up - and repeated until the list is published or that vblank. Zero added
+  latency on a list complete at the flip (VR logs and pictures
+  byte-identical); a late list is shown no later than MAME would. Closing the
+  hole instead was measured and dropped: +1 frame on every game.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| **swa-crawl s5** | f3ed360 | **38,640** | **548** | **57** | +0.732 | +0.830 | +5.003 | +0.142 | +0.244 |
+
+**For the board: `build/Model1_swacrawl_seed5_38640.rbf`**, md5
+`072664af8aa23520f4aa9d4772d3491d`; reports in `build/swacrawl_s5_reports/`.
+One seed, per Ben (board-test build); every clock closes.
+
+## What to check on the board
+
+1. **Star Wars attract, the crawl**: the text stays up from "A long time
+   ago" to the end, no flicker, no gap.
+2. **Every game's pace**: the TGP takes half the cycles. VR, VF, Wing War,
+   NetMerc should be the same or quicker; anything slower or glitching is
+   news (the answers are proven identical, the timing is not).
+3. **Star Wars' Death Star** (the other open report): worth a look on this
+   build - a list walked before it was published would look like that too,
+   though MAME's Death Star builds are short (0.02 frame).
+
+## How to repeat it
+
+- `make tgp_replay GAME=swa TGP_STREAM=<stream>` with `OURLOG=<file>` (the
+  whole result stream) and `PERFRAME=<file>` (per frame: busy cycles,
+  retires, memory accesses, words popped, answers). Streams: Star Wars
+  `build/wt-deathstar/build/ds/ts_swa.txt`, truncated at "F 6101" into
+  `build/wt-crawl/build/crawl/ts_6100.txt`; VR captured with
+  `GAME=vr TS_FRAMES=3000 tools/mame_run.sh tools/mame_tgp_stream.lua -video
+  none -sound none` (`build/wt-crawl/build/crawl/ts_vr.txt`, 33 s).
+- `tb_m1_raster3d` with `PUB_BUILD=<lines>` (and `PUB_TERM_LINE`, default
+  392) on a MAME dump: the late-publish model; the summary line `LATENCY:`
+  gives flip-to-screen per list, empty frames and walks discarded.
+  `build/wt-crawl/build/crawl/sweep.sh <dump> <tag> <lines...>` runs old vs
+  new (the old RTL is `build/crawl/old/m1_raster3d.sv`, main's).
+
+## Not done, and why
+
+- **Our real build time in the crawl is not measured** - only estimated
+  (V60 ~0.44 x our relative speed + the TGP). No full-system run reaches it
+  (ours trails MAME by ~215 frames; the crawl peak is ~our 5,100, ~9 h of
+  tb_m1_frame). The board is the measurement.
+- **The TGP is still ~5.7 CPI.** Model 2's R888 (posted buffer-RAM writes,
+  the ALU under the transfer) and its proposed next steps (decode pipelined
+  into the previous instruction, operand reads from S_DECODE) are the next
+  levers; R775 (ldif loads a register) is unported.
+- **lint_top** fails on two width warnings that are not this change
+  (`m2_sound_board.sv:206`, `m1_integrated.sv:888`).
+- Baseline drift seen in `make test` (not this change): `m1_geometry`
+  checks=11776 (its real-model section skips without `build/real_objects.txt`
+  in a worktree), `m1_quad_store` checks=30135 against the instructions'
+  18,500.
 
 ---
 
