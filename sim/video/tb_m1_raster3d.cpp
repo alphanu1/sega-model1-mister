@@ -319,6 +319,26 @@ int main(int argc, char** argv) {
         dbuf[0] = dlist; dbuf[1] = dlist;     // the prologue list, until the real ones
         printf("SEQ: %zu lists\n", seq_dirs.size());
     }
+    // PUB_BUILD=<lines>: THE GAME'S OWN PUBLISH, as Star Wars does it in the
+    // automatic double buffer (listctl bit 2). At PUB_TERM_LINE of every odd
+    // frame (default 392: 0.98 of a frame before the flip, as the full system
+    // measures it) the hidden buffer is terminated - 000f at word 0x38 - and
+    // PUB_BUILD lines later the finished list is published into it. The flips
+    // stay on the hardware's schedule whether or not it has been, so a build
+    // longer than ~416 lines is still unpublished when it is shown. MAME walks
+    // it at the vblank after the flip, which gives the build ~2 frames.
+    const int pub_build = getenv("PUB_BUILD") ? atoi(getenv("PUB_BUILD")) : -1;
+    const int pub_term_line = getenv("PUB_TERM_LINE") ? atoi(getenv("PUB_TERM_LINE")) : 392;
+    long pub_at = -1; int pub_buf = 0;
+    if (pub_build >= 0) { seq_mode = true; dbuf[0] = dlist; dbuf[1] = dlist; }
+    // FLIP TO SCREEN, per list: from the flip that selects it to the first
+    // scanline of the frame that shows it (the publish at line 416 is seen
+    // from line 0, 8 lines later). MAME, for a flip at vblank: rendered at the
+    // next vblank and shown after it, 1 + 40/424 = 1.094 frames.
+    std::vector<long> flip_cyc_q;              // flip times of passes drawn, in order
+    long last_flip_cyc = -1, pass_flip_cyc = -1;
+    unsigned prev_show = 0; int empty_frames = 0, shown_lists = 0; bool seen_picture = false;
+    double lat_sum = 0, lat_max = 0, lat_min = 1e9;
     const int PROLOGUE_FRAMES = flip_every ? 3 : 7;
     const int TOTAL_FRAMES    = getenv("FRAMES") ? atoi(getenv("FRAMES")) : 14;
     // The producer's cadence, from its state: start (P_IDLE -> P_WALK), ready
@@ -364,6 +384,7 @@ int main(int argc, char** argv) {
                 d->frame_start = (y == SH && x == 0) ? 1 : 0;
                 if (flip_every && y == SH && x == 0 && (f % flip_every) == 0) {
                     d->dl_sel ^= 1;
+                    last_flip_cyc = cycles;
                     // SEQ=<file of dump directories>: from the prologue on, every
                     // flip shows the next list of a real run in the buffer it
                     // selects, so state carried from list to list (light banks,
@@ -398,6 +419,15 @@ int main(int argc, char** argv) {
                     printf("SEQ frame %d line %d: list %zu written into hidden buffer %d (pass walking %d, pst %d)\n",
                            f, y, seq_i, (d->dl_sel & 1) ^ 1, d->dl_sel_q & 1, d->rootp->m1_raster3d__DOT__pst & 7);
                     seq_i++;
+                }
+                if (pub_build >= 0 && f >= PROLOGUE_FRAMES && x == 0) {
+                    long ln = (long)f * V_TOTAL + y;
+                    if ((f % 2) == 1 && y == pub_term_line) {
+                        pub_buf = (d->dl_sel & 1) ^ 1;
+                        dbuf[pub_buf][0x38] = 0x000f; dbuf[pub_buf][0x39] = 0x0000;
+                        pub_at = ln + pub_build;
+                    }
+                    if (ln == pub_at) { dbuf[pub_buf] = real_list; pub_at = -1; }
                 }
                 d->scan_x = x; d->scan_y = y;
                 // 2.94 3D cycles per pixel, carried as a fraction so the ratio
@@ -480,11 +510,13 @@ int main(int argc, char** argv) {
                             }
                             last_start = cycles;
                             pass_start = cycles; pass_start_frame = f; pass_start_line = y;
+                            pass_flip_cyc = last_flip_cyc;
                         }
                         if (prev_pst != 6 && pp == 6) {
                             pass_ready = cycles; pass_ready_frame = f; pass_n++;
                         }
                         if (prev_pst == 6 && pp == 0) {
+                            flip_cyc_q.push_back(pass_flip_cyc);
                             printf("  pass %2d: started frame %2d line %3d, ready after %.2f frames (frame %2d), swapped frame %2d\n",
                                    pass_n, pass_start_frame, pass_start_line,
                                    (double)(pass_ready - pass_start) / FRAME_CYC,
@@ -564,9 +596,37 @@ int main(int argc, char** argv) {
             printf("  frame %2d: FB shown %u, held %u, last draw %u cycles (%.2f frames), late lines %u\n",
                    f, (unsigned)d->show_tag, (unsigned)d->dbg_late0, (unsigned)d->dbg_band_cycles,
                    (double)d->dbg_band_cycles / (CLK3D_HZ * 100.0 / 5752), (unsigned)d->dbg_late);
+        if (f >= PROLOGUE_FRAMES && (unsigned)d->show_tag != prev_show) {
+            // show_tag counts publishes (mod 16); the list shown is the oldest
+            // drawn one. The publish was at line 416 of this frame.
+            unsigned n = ((unsigned)d->show_tag - prev_show) & 15;
+            while (n-- && !flip_cyc_q.empty()) {
+                long fc = flip_cyc_q.front(); flip_cyc_q.erase(flip_cyc_q.begin());
+                if (n == 0 && fc >= 0) {
+                    double fr_cyc = CLK3D_HZ * 100.0 / 5752;
+                    // the frame's end in cycles is `cycles`; line 0 of the next
+                    // frame is where the publish at 416 is first scanned
+                    double lat = (double)(cycles - fc) / fr_cyc;
+                    if (f >= PROLOGUE_FRAMES + 2) {
+                        shown_lists++; lat_sum += lat;
+                        if (lat > lat_max) lat_max = lat; if (lat < lat_min) lat_min = lat;
+                    }
+                    printf("  frame %2d: LIST SHOWN flip->screen %.3f frames\n", f, lat);
+                }
+            }
+            prev_show = (unsigned)d->show_tag;
+        }
+        // Empty frames once the first picture has been seen: the frames before
+        // it are the pipeline filling, not the fault.
+        if (hits > 0) seen_picture = true;
+        else if (seen_picture) empty_frames++;
         fr_min_slack = 1e9;
         worst_fill_frame = 0;
     }
+    printf("LATENCY: %d lists shown, flip->screen mean %.3f min %.3f max %.3f frames; "
+           "empty frames %d; walks discarded (relist) %u\n",
+           shown_lists, shown_lists ? lat_sum / shown_lists : 0.0, shown_lists ? lat_min : 0.0, lat_max,
+           empty_frames, (unsigned)d->rootp->m1_raster3d__DOT__dbg_relist);
     int frames_swept = TOTAL_FRAMES;
 
     {

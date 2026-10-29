@@ -1563,9 +1563,69 @@ module m1_raster3d #(
   // frame pulses after it, so "at least one" is exactly MAME's timing. The
   // cadence is unchanged: the pulse that satisfies it comes before the swap
   // that frees the producer, and the level is still true after the swap.
+  //
+  // THAT WAIT NEVER HAPPENED, and it is kept that way on purpose. fs_since_flip
+  // is cleared the cycle AFTER the flip arrives, so on the arrival cycle it
+  // still holds the count since the PREVIOUS flip and the pass starts at the
+  // flip itself whenever the producer is idle. Closing the hole would add a
+  // frame of display latency to every game: with the frame buffer a pass
+  // started at the flip reaches the screen exactly when MAME's would (MAME
+  // renders the new list at the next vblank and shows it after that one), and
+  // one started a vblank later reaches it a frame after MAME's.
+  //
+  // WHAT THE EARLY START COSTS, AND THE GUARD. Star Wars uses the automatic
+  // double buffer (listctl bit 2): the hardware flips every second frame
+  // whether or not the game has finished, and the game builds the hidden list
+  // behind a terminator - 000f at word 0x38 first, the body, then word 0x38
+  // last (MAME: one publish per list). MAME walks it at the vblank AFTER the
+  // flip, about two frames after the build starts; a walk at the flip gives
+  // the build one. The crawl's builds take longer than that here (the TGP runs
+  // at ~11 cycles an instruction; see findings 2026-10-29, the crawl), and a
+  // list walked before it is published is header + terminator: an EMPTY 3D
+  // frame, which is the crawl flickering and then vanishing.
+  //
+  // So a walk that started before the vblank after its flip (`walk_early`) and
+  // found no object at all is DISCARDED: the producer goes back to idle
+  // without a frame, the screen keeps the last one, and `relist` walks the
+  // same buffer again at once, until the list is published or the vblank
+  // after the flip - MAME's render point - after which an empty list is taken
+  // as empty. A list that is complete at the flip is unaffected, cycle for
+  // cycle: the hold happens only on a frame the game itself slipped.
+  logic relist, walk_early, pass_any;
   wire  prod_trig    = (list_flipped && (fs_since_flip != '0))
-                    || (frame_start && no_flips);
+                    || (frame_start && no_flips)
+                    || relist;
   wire  prod_go      = (pst == P_IDLE) && prod_trig;
+  // CONTENT: an object, a direct polygon, or an upload (colour words, polygon
+  // RAM). A list with any of these is the game's and is taken as it is. The
+  // uploads count because re-walking one would rewrite SDRAM over and over for
+  // the rest of the frame - Star Wars' boot list is uploads and nothing else.
+  wire  lw_content   = lw_ev_valid && (lw_ev_kind == 8'h01 || lw_ev_kind == 8'h41 ||
+                                       lw_ev_kind == 8'h02 || lw_ev_kind == 8'h04 ||
+                                       lw_ev_kind == 8'h05);
+  // The discard decision, taken as the walk completes.
+  wire  relist_now   = (pst == P_WALK) && lw_done && !lw_content && walk_early && !pass_any;
+  // Walks discarded so far (bench and overlay use; free-running).
+  logic [15:0] dbg_relist /* verilator public_flat_rd */;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      relist <= 1'b0; walk_early <= 1'b0; pass_any <= 1'b0; dbg_relist <= '0;
+    end else begin
+      if (prod_go) begin
+        relist     <= 1'b0;
+        pass_any   <= 1'b0;
+        // Before the vblank after the flip: no frame pulse since it, or the
+        // flip arriving this very cycle (fs_since_flip still holds the old count).
+        walk_early <= (fs_since_flip == '0) || (dl_sel_s2 != dl_sel_s2_d);
+      end else begin
+        if (lw_content) pass_any <= 1'b1;
+        if (relist_now) begin
+          relist     <= 1'b1;
+          dbg_relist <= dbg_relist + 16'd1;
+        end
+      end
+    end
+  end
   logic [31:0] pass_timer;
   logic [15:0] prev_objs;
   assign lw_start        = prod_go;
@@ -2012,7 +2072,8 @@ module m1_raster3d #(
               end
             endcase
           end else if (lw_done) begin
-            pst <= P_SORT;
+            // An early walk of an unpublished list: no frame (see relist).
+            pst <= relist_now ? P_IDLE : P_SORT;
           end
         end
 
