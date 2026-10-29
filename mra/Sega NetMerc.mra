@@ -161,6 +161,15 @@
         <part repeat="2097152">00</part>
     </rom>
 
+    <!-- RAMA's default contents, the V60's battery-backed RAM, on index 6.
+         m1_rom_loader writes it to SDRAM at 0x1F40000. RAMA came up as
+         whatever SDRAM held, and NetMerc keeps its gun alignment there:
+         MAME's default image is all FF but bytes 0x38 and 0x40, and with
+         FF in them the gun is drawn rolled half over in play. -->
+    <rom index="6" zip="netmerc.zip|netmerc.7z" md5="none">
+        <part name="netmerc_nvram.bin"/>
+    </rom>
+
     <nvram index="255" size="256"/>
 
     <buttons names="Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2" default="R2,L2,R1,L1,A,B,X,Y,Start,Select"/>

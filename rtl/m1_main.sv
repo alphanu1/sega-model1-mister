@@ -84,6 +84,8 @@ module m1_main #(
   // Which I/O board the game was built for: 0 model1io, 1 model1io2 (Wing
   // War). m1_ioz80 carries the differences. A wire from the game id.
   input  logic        io2,
+  // NetMerc's head pose (game id 4). See the seeder by the I/O board below.
+  input  logic        hmd_pose,
 
   // Control state for the I/O board, idle-high. See docs/io-board.md.
   input  logic [119:0] in_bytes,
@@ -619,13 +621,52 @@ module m1_main #(
         .adc1(in_bytes[1*8 +: 8]),   // accelerator
         .adc2(in_bytes[2*8 +: 8]),   // brake
         .adc3(8'hff),
-        .z_we(io_we), .z_addr(io_addr), .z_wdata(io_din), .z_rdata(io_rdata),
+        .z_we(z_we), .z_addr(z_addr), .z_wdata(z_din), .z_rdata(io_rdata),
         .dbg_ee(), .dbg_wrcnt(dbg_io_replies), .dbg_wr_stb(),
         .dbg_dout(), .dbg_di(), .dbg_rd_end(), .dbg_ra(), .dbg_rdat(),
         .dbg_m1_n(), .dbg_a(), .dbg_last_wr(), .dbg_pf(),
         .dbg_pa(), .dbg_seccnt()
       );
       assign io_raddr = io_addr;
+
+      // NETMERC'S HEAD POSE, DPRAM 0x80-0x8b.
+      //
+      // The cabinet is a VR game: a Polhemus tracker on the player's head
+      // supplies six 16-bit words there (MAME declares the board, an i386SX,
+      // and does not run it), and the V60 reads them every frame as the
+      // camera's orientation. Nothing in this core writes them - EPR-14869
+      // fills 0x00-0x0e, 0x20 and 0x100-0x17f - so they stayed zero, and in
+      // play the camera looked down and sideways: the terrain over the gun,
+      // the hands seen edge-on. Attract does not read them.
+      //
+      // MAME's netmerc_state::machine_reset seeds a pose looking forward,
+      // {0, 0, 0, 12868, 25736, 12868} (12868 = 90 degrees), and nothing
+      // writes those bytes again. This does the same: while the V60 and the
+      // Z80 are held in reset it writes the twelve bytes, round and round,
+      // through the I/O side of the DPRAM, which nobody else is using then.
+      // So every reset seeds it again, as MAME's machine_reset does.
+      logic        z_we;
+      logic [10:0] z_addr;
+      logic [7:0]  z_din;
+      logic [3:0]  pose_i;          // no initialiser: 12-15 write nothing and wrap to 0
+      logic [7:0]  pose_b;
+      wire         pose_we = hmd_pose && rst_cpu && (pose_i <= 4'd11);
+      always_ff @(posedge clk)
+        if (rst_cpu) pose_i <= (pose_i >= 4'd11) ? 4'd0 : pose_i + 4'd1;
+      always_comb begin
+        case (pose_i)
+          4'd6:    pose_b = 8'h44;   // 0x3244, 12868
+          4'd7:    pose_b = 8'h32;
+          4'd8:    pose_b = 8'h88;   // 0x6488, 25736
+          4'd9:    pose_b = 8'h64;
+          4'd10:   pose_b = 8'h44;   // 0x3244, 12868
+          4'd11:   pose_b = 8'h32;
+          default: pose_b = 8'h00;   // position 0, 0, 0
+        endcase
+      end
+      assign io_we   = pose_we ? 1'b1 : z_we;
+      assign io_addr = pose_we ? {7'h08, pose_i} : z_addr;
+      assign io_din  = pose_we ? pose_b : z_din;
     end else begin : g_no_ioboard
       always_comb begin
         io_we          = 1'b0;

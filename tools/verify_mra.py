@@ -287,6 +287,27 @@ def main():
             print(f"index 3 EEPROM     {parts[0].get('name')}, {len(e)} bytes, "
                   f"word 0 = {w0:04x}  OK")
 
+    # INDEX 6, RAMA's default image (NetMerc's gun alignment). A set that ships
+    # one must send it, 64 KB, or the gun is drawn rolled over in play.
+    with zipfile.ZipFile(args.zip) as zf:
+        nv_name = f'{args.game}_nvram.bin'
+        has_nv = nv_name in zf.namelist()
+        nv_rom = [r for r in root.iter('rom') if r.get('index') == '6']
+        if has_nv and not nv_rom:
+            print(f"FAIL {args.zip} has {nv_name} but the MRA has no <rom index=\"6\">")
+            return 1
+        if nv_rom:
+            parts = [p for p in nv_rom[0] if p.tag == 'part']
+            if len(parts) != 1:
+                print(f"FAIL index 6 has {len(parts)} parts, expected exactly 1")
+                return 1
+            nv = load(zf, parts[0].get('name'))
+            if len(nv) != 0x10000:
+                print(f"FAIL default NVRAM is {len(nv)} bytes, expected 65,536")
+                return 1
+            print(f"index 6 NVRAM      {parts[0].get('name')}, {len(nv):,} bytes, "
+                  f"bytes 38/40 = {nv[0x38]:02x} {nv[0x40]:02x}  OK")
+
     got = expand(args.mra, args.zip)
     want = pack_stream(args.zip, args.game)
 

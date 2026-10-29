@@ -495,6 +495,56 @@ int main(int argc, char** argv) {
     else printf("  %u words across the program/PCM1 boundary, none dropped\n", N);
   }
 
+  printf("test: the default NVRAM (index 6) lands in RAMA and stops at 64 KB\n");
+  {
+    // RAMA is word 0xFA0000-0xFA7FFF (byte 0x1F40000), and character RAM
+    // begins at the very next word, 0xFA8000 - so a byte past the end of the
+    // 64 KB image must not be written. Written out, not derived from the RTL.
+    struct Probe { uint32_t byte_off; uint32_t want_word; const char* what; };
+    const Probe probes[] = {
+      { 0x0000u, 0xFA0000u, "RAMA, first word"   },
+      { 0x0038u, 0xFA001Cu, "RAMA, byte 0x38"    },
+      { 0x0040u, 0xFA0020u, "RAMA, byte 0x40"    },
+      { 0xFFFEu, 0xFA7FFFu, "RAMA, last word"    },
+    };
+    Loader g;
+    g.reset();
+    uint16_t char0 = read_word(g, 0xFA8000u);
+    g.d->ioctl_download = 1;
+    g.d->ioctl_index = 6;
+    for (auto& pr : probes) {
+      g.d->ioctl_addr = pr.byte_off;
+      g.d->ioctl_dout = (uint16_t)(0xB000u + (pr.byte_off & 0xfff));
+      g.d->ioctl_wr = 1; g.tick(); g.d->ioctl_wr = 0;
+      for (int k = 0; k < 8; k++) g.tick();
+    }
+    // The first byte past the image: would be character RAM's word 0.
+    g.d->ioctl_addr = 0x10000u; g.d->ioctl_dout = 0xdead;
+    g.d->ioctl_wr = 1; g.tick(); g.d->ioctl_wr = 0;
+    g.d->ioctl_download = 0;
+    for (int i = 0; i < 4000; i++) g.tick();
+    for (auto& pr : probes) {
+      uint16_t want = (uint16_t)(0xB000u + (pr.byte_off & 0xfff));
+      uint16_t got  = read_word(g, pr.want_word);
+      h.checks++;
+      if (got != want) {
+        printf("  FAIL %-18s byte 0x%05x -> word 0x%06x: got %04x want %04x\n",
+               pr.what, pr.byte_off, pr.want_word, got, want);
+        h.fails++;
+      }
+    }
+    uint16_t char1 = read_word(g, 0xFA8000u);
+    h.checks++;
+    if (char1 != char0) {
+      printf("  FAIL a byte past the 64 KB image reached character RAM: %04x -> %04x\n", char0, char1);
+      h.fails++;
+    } else {
+      printf("  4 probes in RAMA, nothing past it\n");
+    }
+    h.checks++;
+    if (!g.d->rom_loaded) { printf("  FAIL rom_loaded low after an index 6 stream\n"); h.fails++; }
+  }
+
   printf("test: a foreign ioctl index is ignored\n");
   {
     // Other indices carry NVRAM images and similar. Writing them into ROM

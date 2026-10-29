@@ -133,6 +133,20 @@ module m1_rom_loader #(
   // No SND_PCM2_BASE: PCM2 follows PCM1 contiguously in SDRAM (PCM1's last
   // word is 0xE3FFFF, PCM2 begins 0xE40000), so one linear map covers both.
   parameter logic [15:0] EE_INDEX      = 16'd3,
+  // THE GAME'S DEFAULT NVRAM, RAMA (V60 0x400000-0x40ffff), on index 6.
+  //
+  // RAMA is the board's battery-backed RAM and lives in SDRAM at 0x1F40000,
+  // which nothing loaded: it came up as whatever SDRAM held. NetMerc keeps
+  // its gun's alignment there - MAME's default image (ROM_REGION "nvram",
+  // netmerc_nvram.bin) is all FF but for bytes 0x38 and 0x40, which are 00,
+  // and with FF in them the gun is drawn rolled half over in play. The MRA
+  // sends the set's own file, so no ROM data is in the tree (hard rule 2).
+  //
+  // BOUNDED AT 64 KB, because character RAM begins at the very next word
+  // (CHAR_BASE 0x1F50000): a byte past the end must go nowhere.
+  parameter logic [15:0] NV_INDEX      = 16'd6,
+  parameter logic [26:0] NV_END        = 27'h0_10000,  // 64 KB
+  parameter logic [25:1] NV_BASE       = 25'hFA0000,   // 0x1F40000 >> 1, m1_main's NVRAM_BASE
   parameter logic [15:0] EE_END        = 16'd128,    // 64 words of 16 bits
   parameter logic [25:1] EE_WOFF       = 25'h002000, // word offset from IOFW_BASE
   // Word address. The polygon region ends at word 0xC20000 and the V60's work
@@ -331,9 +345,10 @@ module m1_rom_loader #(
   assign ioctl_wait = ioctl_download &
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
-  logic is_sdram, is_tgp, is_iofw, is_ee, is_snd;
+  logic is_sdram, is_tgp, is_iofw, is_ee, is_snd, is_nv;
   // Routed by index, not by address. Every stream starts at byte 0.
-  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee || is_snd;
+  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee || is_snd || is_nv;
+  assign is_nv    = (ioctl_index == NV_INDEX) && (27'(ioctl_addr) < NV_END);
   assign is_snd   = (ioctl_index == SND_INDEX) && (27'(ioctl_addr) < SND_PCM2_END);
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
   assign is_iofw  = (ioctl_index == IOFW_INDEX) && (ioctl_addr < 25'(IOFW_END));
@@ -344,7 +359,7 @@ module m1_rom_loader #(
   assign stream_ok = ioctl_download &&
                      ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX) ||
                       (ioctl_index == IOFW_INDEX) || (ioctl_index == EE_INDEX) ||
-                      (ioctl_index == SND_INDEX));
+                      (ioctl_index == SND_INDEX) || (ioctl_index == NV_INDEX));
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -394,7 +409,8 @@ module m1_rom_loader #(
             // the raw ioctl address. IOFW_BASE is above the polygon region
             // and below the V60's work RAM.
             fifo_addr[wptr[AW-1:0]] <=
-                is_ee   ? (IOFW_BASE + EE_WOFF + 25'(ioctl_addr[25:1]))
+                is_nv   ? (NV_BASE + 25'(ioctl_addr[15:1]))
+              : is_ee   ? (IOFW_BASE + EE_WOFF + 25'(ioctl_addr[25:1]))
               : is_iofw ? (IOFW_BASE + 25'(ioctl_addr[25:1]))
               // TWO WAYS, NOT THREE. The two sample sets are CONTIGUOUS in
               // SDRAM -- PCM1's last word is 0xE3FFFF and PCM2 begins at

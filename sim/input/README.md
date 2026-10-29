@@ -27,6 +27,7 @@ presses shorter than it and could not have detected a working button at all.
 |---|---|
 | `vr_race.txt` | Virtua Racing's pit start, crew animating, HUD live |
 | `vf_match.txt` | Virtua Fighter, AKIRA vs JACKY, ROUND 1 — and reproduces the tiny-arena bug |
+| `netmerc_play.txt` | NetMerc in play (bench frame ~1,650 on, 2.2 G cycles; 3.3 G to run) — the hangar, the gun and the hands |
 
 `VR1` (IN.0 bit 5) works Virtua Racing's settings menu. It was found by sweeping
 every candidate with frame capture running and seeing which press changed the

@@ -27,8 +27,10 @@ main on his word; no release yet. 15 kHz output not tested.
   until the fill reaches it. Possibly a tile/tilemap fault, or the picture's
   upload being drawn while it is still arriving. Open bug for the release
   notes; to be fixed later (Ben, 2026-10-29). Not investigated.
-- **NetMerc in play:** 3D layering still wrong and the camera feels misplaced
-  (`netmerc-layers` fixed attract only); under investigation (`netmerc-play`).
+- **NetMerc in play:** layering and camera were wrong. FIXED (`netmerc-play`,
+  merged into main): the head tracker's pose, the stick bytes and the default
+  NVRAM (gun alignment). **On the board (Ben, 2026-10-29, rbf 99d21894): "All
+  looks good now."**
 - **NetMerc sound:** nearly silent even when right, because MAME's
   `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed on `netmerc-sound`
   (MultiPCM envelope, +1,090 ALM), held out until Ben has tested it alone.
@@ -42,7 +44,105 @@ main on his word; no release yet. 15 kHz output not tested.
 
 ---
 
-# 2026-10-29: WING WAR'S SKY - POLYGON RAM (COMMAND 5, POLY_ADR BIT 23). FITTED; NOT ON THE BOARD.
+# 2026-10-29: NETMERC IN PLAY - THE CAMERA WAS THE HEAD TRACKER'S POSE, NEVER WRITTEN; THE GUN WAS THE STICK AND RAMA. FIXED; ON THE BOARD (BEN): ALL GOOD.
+
+Branch **`netmerc-play`** (local, not pushed), on `test-all` (6419a0e).
+`docs/findings.md` 2026-10-29 has the evidence.
+
+Ben, from the board (netmerc-layers, rbf 3210e3fe): "layering is still wrong,
+plus it feels like the camera is in the wrong place". **Three missing inputs,
+not a rendering, V60 or TGP fault, and not the display-list 0x4000 cap** (the
+"before" bench has that fix and still draws the board's picture).
+
+1. **Camera** - DPRAM 0x80-0x8b is NetMerc's head-tracker pose, read every
+   frame; MAME seeds it forward at reset, the core left it zero. MAME with
+   zero there draws the board's picture. `m1_main` now seeds MAME's pose
+   during reset (game id 4). e51410c.
+2. **Gun pitched over** - the stick took VR's pedal bytes; 0x02 rested at
+   0x01. Now STICKX/STICKY centred on 0x00/0x02, 0xff on 0x01. e51410c.
+   **Axis directions follow MAME's PORT_REVERSE and are unchecked on the
+   board.**
+3. **Gun rolled over** - RAMA (battery RAM, SDRAM 0x1F40000) was never
+   loaded; NetMerc's default image has bytes 0x38/0x40 = 00 (the gun's
+   alignment) where SDRAM gave FF. MAME from an all-FF RAMA gives our gun
+   matrix exactly. m1_rom_loader takes **ioctl index 6** -> RAMA (64 KB,
+   bounded); the NetMerc MRAs send `netmerc_nvram.bin` on it. 7ca7b89.
+
+**Bench** (`tb_m1_frame GAME=netmerc`, board clocks,
+`sim/input/netmerc_play.txt`, play from bench frame ~1,650):
+
+Frame 1675 of each run, the same script; MAME with the same three inputs
+for the gun's rotation (the 9 rotation words of the third group's second
+matrix, compared as raw words):
+
+| run | commit | pose (DPRAM 0x80) | stick 0x00-0x02 | RAMA 0x38/0x40 | gun rotation | picture |
+|---|---|---|---|---|---|---|
+| before | test-all 6419a0e | all zero | 80 01 01 | ff ff | - | camera sideways and down, grey block over the HUD: the board's picture, and MAME's with the pose zeroed |
+| pose | e51410c, stick off | seeded | 80 01 01 | ff ff | - | hangar ahead, gun seen from above |
+| pose + stick | e51410c | seeded | 80 ff 80 | ff ff | **= MAME from an all-FF RAMA, word for word** | gun rolled over |
+| **all three** | 7ca7b89 | seeded | 80 ff 80 | 00 00 | **= MAME's default, word for word** | hangar ahead, gun upright in both hands |
+
+The translation words differ in their low bits (the bench is ~150 frames
+behind MAME's run in the same scene). Pictures: `build/bench_four_1675.png`
+in the worktree (left to right as the table).
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold (worst) |
+|---|---|---|---|---|---|---|---|---|---|
+| test-all s3 (wt-testall fit_ta_s3) | 6419a0e | 37,346 | - | - | - | - | - | - | - |
+| pose + stick s17 | e51410c | 37,550 | 537 | 53 | +0.449 | +0.748 | +5.225 | +0.139 | +0.183 |
+| pose + stick s3 | e51410c | 37,396 | 537 | 53 | +0.265 | +0.555 | +5.161 | +0.205 | +0.187 |
+| **all three s17** | **7ca7b89** | **37,533** | **537** | **53** | **+0.307** | **+0.985** | **+6.108** | **+0.529** | **+0.227** |
+| all three s3 | 7ca7b89 | 37,452 | 537 | 53 | +0.476 | +0.801 | +4.365 | +0.237 | +0.181 |
+
+**For the board: `build/wt-nmplay/build/Model1_nmplay_nv_seed17_37533.rbf`**,
+md5 `99d21894180cac2dc9bb0e7c6dbcda2f`, with the regenerated NetMerc MRA;
+reports in `build/wt-nmplay/build/nmplay2_s17_reports/`. Every clock positive,
+setup and hold. Not loaded.
+
+## What to check on the board
+
+- **Copy the regenerated `Sega NetMerc.mra`** (and the CRT one): it adds
+  index 6. With the old MRA the camera and stick fixes still apply but the
+  gun stays rolled.
+- NetMerc in play: the camera looks forward down the hangar, the gun upright
+  in both hands, health bar clear. Then push the stick each way: if the gun
+  aims the wrong way on an axis, O[12]/O[13] flip it - report which, and the
+  default should change.
+- VR / VF / SWA / Wing War: their inputs and loads are untouched (no index 6
+  in their MRAs; `hmd_pose` and the stick map are game id 4 only).
+
+## Not done / seen
+
+- Every other game's RAMA is still never loaded (MAME starts them all-FF).
+- NetMerc still runs EPR-14869 rather than model1io2/EPR-18021; the one DPRAM
+  byte read in play that differs (0x0e) is measured harmless.
+- No head tracker on MiSTer: the pose is fixed forward.
+- Terrain shading ("darker than MAME") not looked at.
+- `m1_rom_loader` count moves 10,477 -> 10,487 (the index 6 test): update
+  the rules file's expected block. `make test` otherwise unchanged, all fails=0.
+- The MRA's button names are VR's.
+
+## How to repeat it
+
+    python3 tools/build_rom_image.py netmerc ~/roms/netmerc.zip -b \
+        --iofw <epr-14869.25 from model1io.zip> -o build/rom   # writes netmerc_nv.hex
+    python3 tools/build_tgp_rom.py netmerc ~/roms/netmerc.zip -o build/rom
+    cp sim/input/netmerc_play.txt build/input_script.txt
+    make m1_frame GAME=netmerc FRAME_DEFS=+define+BOARD_CLOCKS \
+        FRAME_CYCLES=2400000000 FRAME_PPM=25
+
+About three hours here (12-14 M cycles a minute with the machine loaded).
+`build/frames/dlsel.txt` prints the pose, the stick bytes and RAMA 0x38/0x40
+beside every PPM; `d<frame>_<k>.bin` now carry both halves of each list (the
+upper from SDRAM). FRAME_HMD=0, FRAME_NMSTICK=0 and FRAME_NVHEX= reproduce
+each fault alone. MAME side: the scripts in `build/nmmame/` of the worktree
+(pose.lua, stick2.lua with AN/E0E/ZEROPOSE/DUMPS, instream.lua for the TGP
+stream, dpcensus.lua); `-nvram_directory` on a directory holding an all-FF
+`netmerc/nvram` reproduces fault 3.
+
+---
+
+# 2026-10-29: WING WAR'S SKY - POLYGON RAM (COMMAND 5, POLY_ADR BIT 23). FITTED; ON THE BOARD (BEN): WORKING.
 
 Branch **`wingwar-sky`** (local, not pushed), on `main` 5cba113.
 `docs/findings.md` 2026-10-29 "WING WAR'S SKY IS IN POLYGON RAM" has the

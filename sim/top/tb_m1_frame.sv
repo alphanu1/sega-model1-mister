@@ -64,6 +64,9 @@ module tb_m1_frame #(
     parameter string  UCODEHEX   = "build/rom/vr_tgp_prog.hex",
     parameter string  IOFWHEX    = "build/rom/vr_iofw.hex",
     parameter string  EEHEX      = "build/rom/vr_ee.hex",
+    // The set's default RAMA (MAME's ROM_REGION "nvram"), one hex byte a line,
+    // streamed on index 6 when present. Only NetMerc has one.
+    parameter string  NVHEX      = "",
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -90,6 +93,11 @@ module tb_m1_frame #(
     // reset, which is every other game. The 68000's transmit line is paced
     // at 31.25 kbaud in both cases, as in Model1.sv.
     parameter bit     DSB        = 1'b0,
+    // NetMerc's head pose seeded at reset, as Model1.sv does for game id 4.
+    // The Makefile sets it from GAME.
+    parameter bit     HMD_POSE   = 1'b0,
+    // NetMerc's stick bytes at rest (Model1.sv nm_stick_*), not the pedals'.
+    parameter bit     NM_STICK   = 1'b0,
     // DPRAM access trace (V60 side), deduplicated; 0 = off. See DPT lines.
     parameter integer DPTRACE    = 0,
     parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
@@ -463,6 +471,7 @@ m1_integrated core (
     .DDRAM_RD(ddr_rd), .DDRAM_DIN(ddr_din), .DDRAM_BE(ddr_be), .DDRAM_WE(ddr_we),
     .roma_mode(2'(ROMA_MODE)),
     .io2(IO2),
+    .hmd_pose(HMD_POSE),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
@@ -490,7 +499,10 @@ m1_integrated core (
                in1_now,            // 0x09  IN.1  (VR shifters / VF player 1)
                in0_now,            // 0x08  IN.0
                40'hffffffffff,     // 0x07..0x03
-               8'h01, (auto_on ? auto_acc : acc_now),   // 0x02 brake released, 0x01 accelerator
+               // NetMerc's stick at rest instead, as Model1.sv publishes it:
+               // STICKY 0x80 on 0x02, nothing (0xff) on 0x01, STICKX 0x80.
+               (NM_STICK ? 8'h80 : 8'h01),
+               (NM_STICK ? 8'hff : (auto_on ? auto_acc : acc_now)),   // 0x02 brake released, 0x01 accelerator
                steer_now}),        // 0x00        steering, 0x80 centred
     // m1_integrated's own ports: the microcode arrives through the loader on
     // index 1, and the coprocessor's read-only regions come off SDRAM port 3.
@@ -1377,6 +1389,10 @@ wire [15:0] f_ctrl [2];
 wire [11:0] f_have_rtl [4];
 wire [11:0] f_tram_wr  [4];
 integer i;
+// The set's default RAMA, read below and streamed by run_nv_download.
+reg [7:0] nvrom [0:65535];
+integer   nvf;
+bit       nv_ok = 0;
 initial begin
     // Progress, flushed. stdout is block buffered when this is redirected to a
     // file, so a run that hangs prints nothing at all and is indistinguishable
@@ -1395,6 +1411,11 @@ initial begin
     iofw_ok = (iofw[0] !== 8'hff) || (iofw[1] !== 8'hff);
     for (i = 0; i < 128; i = i + 1) eerom[i] = 8'hff;
     $readmemh(EEHEX, eerom);
+    for (i = 0; i < 65536; i = i + 1) nvrom[i] = 8'hff;
+    if (NVHEX != "") begin
+        nvf = $fopen(NVHEX, "r");
+        if (nvf != 0) begin $fclose(nvf); $readmemh(NVHEX, nvrom); nv_ok = 1; end
+    end
     ee_ok = (eerom[0] !== 8'hff) || (eerom[1] !== 8'hff);
     if (!ee_ok)
         $display("tb_m1_frame: *** no I/O board EEPROM (build/rom/vr_ee.hex): the board reads a blank part, the V60's SEGA check at FE078E fails and the game takes its uninitialised-board branch ***");
@@ -1710,6 +1731,34 @@ task automatic check_snd_stream;
     end
 endtask
 
+// RAMA's default contents on index 6 (m1_rom_loader NV_INDEX): 64 KB.
+task automatic run_nv_download;
+    integer w;
+    begin
+        @(posedge clk);
+        ioctl_index    <= 16'd6;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 32768; w = w + 1) begin
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {nvrom[w*2 + 1], nvrom[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            // Counted, or the STALL watchdog (which watches dl_words) fires
+            // on a 64 KB stream that is merely slower than the others.
+            dl_words    = dl_words + 1;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: default NVRAM streamed on index 6 (bytes 38/40 = %02h %02h)",
+                 nvrom[16'h38], nvrom[16'h40]);
+        $fflush;
+    end
+endtask
+
 task automatic run_ee_download;
     integer w;
     begin
@@ -1954,12 +2003,35 @@ task automatic dump_frame_dlists(input integer fr);
                     else
                         $fwrite(fh, "%c%c", core.main.rams.u_dl1.mem_lo[w], core.main.rams.u_dl1.mem_hi[w]);
                 end
+                // The upper half, out of the SDRAM model at DLHI_BASE
+                // (m1_main): list 0 then list 1, 0x4000 words each.
+                for (longint w = 0; w < 16384; w = w + 1) begin
+                    logic [15:0] hw;
+                    hw = device.read_at(64'hCE0000 + 64'(k) * 64'h4000 + w);
+                    $fwrite(fh, "%c%c", hw[7:0], hw[15:8]);
+                end
                 $fclose(fh);
             end
         end
         fh = $fopen("build/frames/dlsel.txt", "a");
         if (fh != 0) begin
-            $fwrite(fh, "%0d listctl_sel=%0d\n", fr, core.listctl_sel);
+            // NetMerc's head pose, DPRAM 0x80-0x8b as six little-endian
+            // words: what the V60 reads as the HMD's orientation every frame.
+            $fwrite(fh, "%0d listctl_sel=%0d pose", fr, core.listctl_sel);
+            for (k = 0; k < 6; k = k + 1)
+                $fwrite(fh, " %02h%02h", core.main.rams.dpram_lo[12'h81 + 2*k],
+                                         core.main.rams.dpram_lo[12'h80 + 2*k]);
+            // and the analogue bytes 0x00-0x02 as the I/O board published them
+            $fwrite(fh, " an %02h %02h %02h", core.main.rams.dpram_lo[0],
+                    core.main.rams.dpram_lo[1], core.main.rams.dpram_lo[2]);
+            // and RAMA bytes 0x38 and 0x40 (NetMerc's gun alignment), out of
+            // the SDRAM model at NVRAM_BASE
+            begin
+                logic [15:0] r38, r40;
+                r38 = device.read_at(64'hFA001C);
+                r40 = device.read_at(64'hFA0020);
+                $fwrite(fh, " rama38/40 %02h %02h\n", r38[7:0], r40[7:0]);
+            end
             $fclose(fh);
         end
     end
@@ -3740,6 +3812,7 @@ initial begin
         $display("SNDROM-AFTER-IOFW: %04h %04h",
                  device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
         if (ee_ok)   run_ee_download();
+        if (nv_ok)   run_nv_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
         // READ THE MICROCODE BACK OUT OF THE COPROCESSOR.

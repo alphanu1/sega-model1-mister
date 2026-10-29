@@ -586,6 +586,7 @@ def emit(setname, chunks, cross_checked, regions):
 
     out += emit_eeprom(setname, regions)
     out += emit_sound(setname, regions)
+    out += emit_nvram(setname, regions)
 
     out += [
         '',
@@ -720,6 +721,26 @@ def emit_eeprom(setname, regions):
     if not loads:
         return []
     out = [''] + EEPROM_NOTE + [f'    <rom index="3" zip="{zip_for(setname, 3)}" md5="none">']
+    out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
+    return out + ['    </rom>']
+
+
+NVRAM_NOTE = [
+    '    <!-- RAMA\'s default contents, the V60\'s battery-backed RAM, on index 6.',
+    '         m1_rom_loader writes it to SDRAM at 0x1F40000. RAMA came up as',
+    '         whatever SDRAM held, and NetMerc keeps its gun alignment there:',
+    '         MAME\'s default image is all FF but bytes 0x38 and 0x40, and with',
+    '         FF in them the gun is drawn rolled half over in play. -->',
+]
+
+
+def emit_nvram(setname, regions):
+    """Index 6: the default NVRAM image, for a set whose MAME definition has an
+    "nvram" region (only netmerc)."""
+    loads = regions.get('"nvram"')
+    if not loads:
+        return []
+    out = [''] + NVRAM_NOTE + [f'    <rom index="6" zip="{zip_for(setname, 6)}" md5="none">']
     out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
     return out + ['    </rom>']
 
