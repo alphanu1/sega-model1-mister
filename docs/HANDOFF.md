@@ -1,3 +1,27 @@
+# TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
+
+- **Star Wars attract, the Death Star run:** after flying over the Death Star
+  for a while it disappears, and some quads go black first (lighting?). Seen
+  on the `swa-sound` build, which lacks the display-list >0x4000 fix
+  (`vf-swa-geo` 3eba4a6); recheck on the combined build first. README "Open
+  questions" has the entry.
+- **Star Wars attract, the crawl:** the yellow scrolling text is missing on
+  the `swa-sound` build; on the board it IS drawn on `vf-swa-geo` (0a9941d9,
+  original MRAs), so the music addition breaks it. Not fixed: the combined
+  build (`test-all`) carries the music and is expected to lose the crawl too.
+  Paused by Ben 2026-10-29 until the combined build is tested; what was
+  measured is in findings 2026-10-29 (test-all).
+- **Star Destroyer hull edges:** specks / ragged edges along the lower hull on
+  the `vf-swa-geo` build (no frame buffer); recheck on the combined build to
+  tell late bands from a seam fault.
+- **NetMerc in play:** layering still wrong and the camera feels misplaced
+  (`netmerc-layers` fixed attract only); under investigation (`netmerc-play`).
+- **NetMerc sound:** nearly silent even when right, because MAME's
+  `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed on `netmerc-sound`
+  (MultiPCM envelope), held out of the combined build until its size is known.
+
+---
+
 # 2026-10-29: WING WAR RUNS ON THE BENCH - THE V60 COULD NOT EXECUTE FROM RAM, AND THE I/O BOARD WAS THE WRONG ONE. NOT ON THE BOARD YET.
 
 Branch **`wingwar-boot`** (local, not pushed), on `main` (1daae7a).
