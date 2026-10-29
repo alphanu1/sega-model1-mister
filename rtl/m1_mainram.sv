@@ -56,8 +56,8 @@ module m1_mainram (
   output logic [15:0] tram_q, pram_q, dl0_q, dl1_q, cxlat_q,
   // Driven combinationally from the single registered read below.
   output wire  [15:0] dpram_q,
-  // Writes above the 16,384-word cap the two display lists are sized to.
-  // Measured zero over 40 s; nonzero means the cap is wrong. See below.
+  // Writes above the 16,384 words held here; those go to SDRAM (m1_main
+  // DLHI_BASE). Zero in Virtua Racing; Star Wars makes ~16,000 at boot.
   output logic [15:0] dbg_dl_oob,
 
   // Video side. Its own clock: the video path runs in the fast domain and the
@@ -180,6 +180,15 @@ module m1_mainram (
   // `dbg_dl_oob` counts anything that goes up there. A measurement over one
   // 40-second window is not a proof about every code path, so the assumption
   // reports itself rather than corrupting quietly.
+  //
+  // AND IT WAS ONE GAME'S CONSTANT, NOT THE PROGRAM'S. That measurement was
+  // Virtua Racing. Star Wars uploads its whole colour table through command
+  // 4 at boot in blocks that run to word 0x783e; Wing War and NetMerc do the
+  // same in play (MAME, 4,000 frames of each). The upper half now lives in
+  // SDRAM - m1_main routes the V60's accesses there and the 3D layer reads it
+  // through p6 (m1_p6_arb) - so this array still only holds the lower half,
+  // the writes above it still do not land HERE, and dbg_dl_oob now counts
+  // traffic to the SDRAM half rather than loss. findings 2026-10-28 (c).
   localparam int unsigned DL_WORDS = 16384;
 
   // addr[15:1] is the word address, so its bit 14 - which is addr[15] - is

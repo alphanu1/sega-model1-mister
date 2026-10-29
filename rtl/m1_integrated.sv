@@ -783,9 +783,20 @@ module m1_integrated (
   // The display list and the translation table answer in one cycle from their
   // second port, so `valid` is the request delayed by one. The palette mirror is
   // the same and needs no handshake at all.
+  //
+  // EXCEPT THE UPPER HALF, words 0x4000-0x7fff, which lives in SDRAM at
+  // DLHI_BASE (see m1_main) and is read through p6 beside tgp_ram. Only
+  // command 4's colour uploads ever reach it - measured against MAME over
+  // 4,000 frames of all six sets: Star Wars at boot, Wing War and NetMerc in
+  // play; Virtua Racing, Virtua Fighter and Virtua Formula never pass word
+  // 0x2006 - so the walker waits there and nowhere else. The walker holds
+  // mem_req until mem_valid, so the slower answer needs no other change.
+  localparam logic [25:1] DLHI_BASE = 25'hCE0000;
+  wire r3_dl_hi = r3_dl_addr[14];
+  logic r3_dl_lo_valid;
   always_ff @(posedge clk_3d or negedge rst_n_3d) begin
-    if (!rst_n_3d) r3_dl_valid <= 1'b0;
-    else           r3_dl_valid <= r3_dl_req;
+    if (!rst_n_3d) r3_dl_lo_valid <= 1'b0;
+    else           r3_dl_lo_valid <= r3_dl_req && !r3_dl_hi;
   end
 
   m1_raster3d u_raster3d (
@@ -830,8 +841,12 @@ module m1_integrated (
     .dbg_plane_l(r3_dbg_plane_l), .dbg_hud_obj(r3_dbg_hudobj)
   );
 
-  // The display list's data comes back from m1_main's second port.
-  assign r3_dl_data    = r3d_dl_data;
+  // The display list's data comes back from m1_main's second port, or from
+  // p6 for the upper half (below).
+  wire [15:0] r3_dlhi_data;
+  wire        r3_dlhi_valid;
+  assign r3_dl_valid   = r3_dl_lo_valid || r3_dlhi_valid;
+  assign r3_dl_data    = r3_dl_lo_valid ? r3d_dl_data : r3_dlhi_data;
   assign r3d_pal_addr  = r3_pal_addr[9:0];
   assign r3d_xlat_addr = r3_xlat_addr;
   assign r3d_dl_addr   = r3_dl_addr;
@@ -915,12 +930,28 @@ module m1_integrated (
 
   // ---- tgp_ram, through p6. Single word, and writable: display-list command 4
   // uploads colour words into it.
+  //
+  // AND THE UPPER HALF OF THE DISPLAY LIST, through the same port: see
+  // m1_p6_arb.
+  wire        p6_req, p6_we, p6_ack;
+  wire [25:1] p6_addr;
+  wire [15:0] p6_din, p6_dout;
+  m1_p6_arb #(.TEX_BASE(TGP_RAM_BASE), .DLHI_BASE(DLHI_BASE)) u_p6_arb (
+    .clk(clk_3d), .rst_n(rst_n_3d),
+    .tex_req(r3_tex_req), .tex_we(r3_tex_we), .tex_addr(r3_tex_addr),
+    .tex_wdata(r3_tex_wdata), .tex_valid(r3_tex_valid), .tex_data(r3_tex_data),
+    .dl_req(r3_dl_req && r3_dl_hi), .dl_sel(r3d_dl_sel),
+    .dl_addr(r3_dl_addr[13:0]),
+    .dl_valid(r3_dlhi_valid), .dl_data(r3_dlhi_data),
+    .p_req(p6_req), .p_we(p6_we), .p_addr(p6_addr), .p_din(p6_din),
+    .p_dout(p6_dout), .p_ack(p6_ack)
+  );
+
   m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_r3d_tex_cdc (
     .a_clk(clk_3d), .a_rst_n(rst_n_3d),
-    .a_req(r3_tex_req), .a_we(r3_tex_we),
-    .a_addr(TGP_RAM_BASE + {4'd0, r3_tex_addr}),
-    .a_din(r3_tex_wdata), .a_be(2'b11),
-    .a_dout(r3_tex_data), .a_ack(r3_tex_valid), .a_busy(),
+    .a_req(p6_req), .a_we(p6_we), .a_addr(p6_addr),
+    .a_din(p6_din), .a_be(2'b11),
+    .a_dout(p6_dout), .a_ack(p6_ack), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
     .b_req(r3d_tex_req), .b_we(r3d_tex_we), .b_addr(r3d_tex_addr),
     .b_din(r3d_tex_din), .b_be(),

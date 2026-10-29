@@ -61,7 +61,16 @@ module m1_main #(
   // SDRAM word addresses, from the byte layout above.
   parameter logic [25:1] WRAM_BASE = 25'hF80000,   // 0x1F00000 >> 1
   parameter logic [25:1] NVRAM_BASE = 25'hFA0000,  // 0x1F40000 >> 1
-  parameter logic [25:1] CHAR_BASE = 25'hFA8000    // 0x1F50000 >> 1
+  parameter logic [25:1] CHAR_BASE = 25'hFA8000,   // 0x1F50000 >> 1
+  // THE UPPER HALF OF EACH DISPLAY LIST, words 0x4000-0x7fff, in SDRAM.
+  // m1_mainram holds the lower 16 K words on chip; Star Wars, Wing War and
+  // NetMerc upload their colour tables through display-list command 4 in
+  // blocks that run to word 0x783e, and the half that was dropped held the
+  // colour words of whole ships (findings 2026-10-28 (c)). 0x19C0000 is the
+  // free gap between tgp_ram (0x1840000-0x19bffff) and the I/O firmware at
+  // 0x1A00000; nothing in the layout moves. List 0 then list 1, 32 KB each.
+  // m1_integrated's 3D read path uses the same base.
+  parameter logic [25:1] DLHI_BASE = 25'hCE0000    // 0x19C0000 >> 1
 ) (
   input  logic        clk,
   input  logic        ce,          // V60 clock enable
@@ -211,8 +220,8 @@ module m1_main #(
   // Sticky. Set if a build without the FP group ever meets an FP opcode; see
   // the note on the port in v60.sv.
   output logic        dbg_fp_trap,
-  // Display-list writes above the 16,384-word cap m1_mainram sizes the two
-  // buffers to. Measured zero over 40 s in MAME; nonzero means that is wrong.
+  // Display-list writes to the upper half of a list (words 0x4000-0x7fff),
+  // which go to SDRAM at DLHI_BASE. Zero in Virtua Racing, not in Star Wars.
   output logic [15:0] dbg_dl_oob,
   output logic [15:0] dbg_io_replies,
   // CPU writes into tile RAM, counted by region. The video-side census in
@@ -328,12 +337,15 @@ module m1_main #(
   // Which targets live in SDRAM, and where.
   logic        to_sdram;
   logic [25:1] sdram_word;
-  assign to_sdram = sel_rom | sel_wram | sel_nvram | sel_charram;
+  // m_addr[15] is word 0x4000 of a list: the half that lives in SDRAM.
+  wire sel_dlhi = (sel_dlist0 | sel_dlist1) & m_addr[15];
+  assign to_sdram = sel_rom | sel_wram | sel_nvram | sel_charram | sel_dlhi;
 
   always_comb begin
     if      (sel_rom)     sdram_word = dec_rom_addr;
     else if (sel_wram)    sdram_word = WRAM_BASE  + {7'd0, m_addr[17:1]};
     else if (sel_nvram)   sdram_word = NVRAM_BASE + {9'd0, m_addr[15:1]};
+    else if (sel_dlhi)    sdram_word = DLHI_BASE  + {10'd0, sel_dlist1, m_addr[14:1]};
     else                  sdram_word = CHAR_BASE  + {6'd0, m_addr[18:1]};
   end
 

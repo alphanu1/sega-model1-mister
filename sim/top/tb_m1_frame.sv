@@ -1790,6 +1790,27 @@ endtask
 // beside MAME's list for the frame that looks the same. The word count is the
 // list RAM's own; render3d pads the rest. The selected buffer is in the name's
 // companion line of build/frames/dlsel.txt.
+// TGP_RAM AS THE CORE HOLDS IT, out of the SDRAM model: 0xC0000 words at
+// TGP_RAM_BASE (word 0xC20000), raw little-endian, beside every PPM frame
+// that is 100 mod 200 - to set against MAME's own (tools/mame_dump_frame.lua
+// rebuilds it from the lists) and see which colour words never arrived.
+`ifdef TGPRAMDUMP
+task automatic dump_tgpram(input integer fr);
+    integer fh;
+    logic [15:0] w;
+    begin
+        fh = $fopen($sformatf("build/frames/tgpram%05d.bin", fr), "wb");
+        if (fh != 0) begin
+            for (longint k = 0; k < 64'hC0000; k = k + 1) begin
+                w = device.read_at(64'hC20000 + k);
+                $fwrite(fh, "%c%c", w[7:0], w[15:8]);
+            end
+            $fclose(fh);
+        end
+    end
+endtask
+`endif
+
 task automatic dump_frame_dlists(input integer fr);
     integer fh, k;
     begin
@@ -2536,6 +2557,9 @@ always @(posedge clk) begin
         if (PPMEVERY != 0 && vid_vb && !prev_vb && (frames % PPMEVERY == 0)) begin
             dump_frame_ppm(frames);
             dump_frame_dlists(frames);
+`ifdef TGPRAMDUMP
+            if (frames % 200 == 100) dump_tgpram(frames);
+`endif
         end
 
         if (!vid_hb && !vid_vb) begin
@@ -3580,7 +3604,7 @@ initial begin
         // 40 s. OUR V60 is not MAME's - the trace shows it spinning a different
         // number of times in the same wait loops - so "the reference never does"
         // is not a proof that we never do. Nonzero here means the cap is wrong.
-        $display("FRAME: display-list writes above the 16,384-word cap: %0d",
+        $display("FRAME: display-list writes to the upper halves (SDRAM, DLHI_BASE): %0d",
                  core.main.rams.dbg_dl_oob);
         $display("FRAME: %0d data accesses, mean %0d.%02d clk_sys cycles req->ack",
                  blat_n, blat_sum/blat_n, ((blat_sum*100)/blat_n) % 100);
