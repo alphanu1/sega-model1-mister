@@ -70,6 +70,16 @@ main on his word; no release yet. 15 kHz output not tested.
   is byte-identical. Untested on the board: no swaj.zip here (verify_mra
   against swa.zip stops only at the Japan program, epr-16468.14).
 - **15 kHz MRAs:** untested on this build.
+- **TODO after the release - the sound board's replies to the V60.** MAME wires
+  the sound 68000's UART transmit line to the V60's uPD71051C receiver as well
+  as to the DSB (`model1.cpp` ~1850: `m1audio->rxd_handler()` ->
+  `m1uart->write_rxd`, with `rxrdy`/`txrdy` -> `sound_ready_w`, the sound
+  IRQ). The core sends it only to the DSB, so the game never receives the
+  sound board's replies. Done but not tested or merged: branch `swa-reply`
+  `cd94e5b` (68000 TX into the receiver, level 3 on rxrdy). Not the cause of
+  the Star Wars crawl flicker (Ben, 2026-10-29: the flicker is on the no-DSB
+  build too). Needs `make test`, a fit and a board check of every game's
+  sound before it goes in.
 
 ---
 
