@@ -1,5 +1,17 @@
 # TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
 
+**Board test of `swa-crawl` (rbf 072664af: main 115c719 + the TGP port +
+the hold on an unfinished list), Ben 2026-10-29:** Star Wars' crawl is good
+and the Death Star no longer disappears; VF, VR, Wing War and NetMerc
+unchanged and good; **every game runs at the correct frame rate.**
+- **NetMerc: head look on the left stick - NEEDED FOR THIS RELEASE.** The
+  head pose is fixed facing forward; Ben wants the left stick to look around
+  (the cabinet's headset), the gun on the right stick.
+- **AFTER THIS RELEASE - seams:** Star Wars, Virtua Fighter and Virtua Racing
+  still show small seams (VR: a small piece of road missing with the grass
+  behind, which looks like a seam, not an overrun). Not for this release.
+
+
 **Board test of `m1-seams` (rbf fb3ae845; main c9c02ca + the band-row fill
 fix), Ben 2026-10-29:** Star Wars looking good (boosters and hull clean);
 Wing War good; VR and VF good, and their sound "much better" -- the cause is
