@@ -141,6 +141,13 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_pcm_fetch.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_pcm_rate.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_sound_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/m2_sound_link.sv
+# ---- Star Wars' Digital Sound Board: Z80, UART, MPEG-1 Layer II player ----
+# dsb_mpeg and dsb_z80 `include their generated tables (dsb_tables.svh,
+# dsb_z80_ucode.svh), so rtl/sound is on the search path.
+set_global_assignment -name SEARCH_PATH rtl/sound
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/dsb_mpeg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/dsb_z80.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/dsb_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/fx68k.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/fx68kAlu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/fx68k/uaddrPla.sv

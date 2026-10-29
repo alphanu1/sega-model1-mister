@@ -204,7 +204,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
 .PHONY: test_ctc
-.PHONY: all lint lint_v60 lint_top test m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test test_dsb_mpeg test_dsb_z80 test_dsb_board m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -286,7 +286,7 @@ lint_top:
 	@test -f third_party/template/sys/emu_ports.vh || { \
 	  echo "third_party/template missing — run ./tools/bootstrap.sh"; exit 1; }
 	@verilator --lint-only -Wno-fatal +incdir+third_party/template \
-	  +incdir+build/lintinc --top-module emu \
+	  +incdir+build/lintinc +incdir+rtl/sound --top-module emu \
 	  Model1.sv $(SRCS_TOP_CORE) $(SND_RTL) rtl/video/m1_scan15.sv rtl/io/m1_drive_inputs.sv \
 	  third_party/template/sys/hps_io.sv > build/lintinc/top.log 2>&1; \
 	 grep "%Error" build/lintinc/top.log | grep -vE "altera_pll|'pll'" \
@@ -312,7 +312,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank test_p6_arb
+test: test_dsb_mpeg test_dsb_z80 test_dsb_board test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank test_p6_arb
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -347,9 +347,9 @@ test_m1_sdram:
 	  -o tb_m1sdram --Mdir obj_m1sdram
 	./obj_m1sdram/tb_m1sdram
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sdram_harness \
-	  -GNP=11 -CFLAGS -DTB_NP=11 $(SRCS_m1_sdram_harness) sim/mem/tb_m1_sdram.cpp \
-	  -o tb_m1sdram11 --Mdir obj_m1sdram11
-	./obj_m1sdram11/tb_m1sdram11
+	  -GNP=12 -CFLAGS -DTB_NP=12 $(SRCS_m1_sdram_harness) sim/mem/tb_m1_sdram.cpp \
+	  -o tb_m1sdram12 --Mdir obj_m1sdram12
+	./obj_m1sdram12/tb_m1sdram12
 
 # Loaded against the real SDRAM controller, not a stub write port: the
 # download contract is one transaction per request rising edge, and a loader
@@ -733,6 +733,35 @@ test_m1_sndboard: obj_sndboard/Vm1_sndboard_harness
 	@# dead 68000 that is really a missing file.
 	@cp -f rtl/sound/fx68k/microrom.mem rtl/sound/fx68k/nanorom.mem obj_sndboard/
 	cd obj_sndboard && ./Vm1_sndboard_harness
+
+# STAR WARS' DIGITAL SOUND BOARD. Each SKIPS with a message when its inputs are
+# absent (tools/dsb/prepare.sh <swa.zip> [MAME=1] makes build/rom/dsb/), as
+# m1_geometry does without the polygon ROM, so a fresh clone's baseline holds.
+#   test_dsb_mpeg   the decoder, bit-exact against tools/dsb/dsb_fixmodel.h on
+#                   every song, ends, loops, stops; output 40x real rate
+#   test_dsb_z80    the cut-down Z80 against tv80s on the real program, 4 s:
+#                   every port access identical, value and T-state
+#   test_dsb_board  the whole board against MAME's 300 s capture, first 4 s
+# The long runs (DSB_FULL=1, DSB_SECS=300) are outside `make test`.
+DSB_RTL := rtl/sound/dsb_board.sv rtl/sound/dsb_z80.sv rtl/sound/dsb_mpeg.sv rtl/sound/m2_i8251.sv
+test_dsb_mpeg:
+	verilator --cc --exe --build -O2 $(VFLAGS) -Irtl/sound -GTICK_NUM=1 -GTICK_DEN=40 \
+	  --top-module dsb_mpeg rtl/sound/dsb_mpeg.sv sim/sound/tb_dsb_mpeg.cpp \
+	  -CFLAGS "-I$(CURDIR)/tools/dsb -O2" -o tb_dsb_mpeg --Mdir obj_dsb_mpeg
+	./obj_dsb_mpeg/tb_dsb_mpeg
+
+test_dsb_z80:
+	verilator --cc --exe --build -O2 $(VFLAGS) -Wno-fatal -Irtl/sound --top-module dsb_z80_harness \
+	  sim/sound/dsb_z80_harness.sv rtl/sound/dsb_z80.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v \
+	  rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v sim/sound/tb_dsb_z80.cpp \
+	  -o tb_dsb_z80 --Mdir obj_dsb_z80
+	./obj_dsb_z80/tb_dsb_z80
+
+test_dsb_board:
+	verilator --cc --exe --build -O2 $(VFLAGS) -Wno-fatal -Irtl/sound --top-module dsb_board_harness \
+	  sim/sound/dsb_board_harness.sv $(DSB_RTL) sim/sound/tb_dsb_board.cpp \
+	  -CFLAGS "-I$(CURDIR)/tools/dsb -O2" -o tb_dsb_board --Mdir obj_dsb_board
+	DSB_SECS=4 ./obj_dsb_board/tb_dsb_board
 
 test_sound_usart:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_sound_usart \

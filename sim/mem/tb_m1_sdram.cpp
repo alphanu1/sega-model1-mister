@@ -134,7 +134,8 @@ struct Harness {
       case 5: d->p5_req = v; break; case 6: d->p6_req = v; break;
       case 7: d->p7_req = v; break; case 8: d->p8_req = v; break;
       case 9: d->p9_req = v; break;
-      default: d->p10_req = v; break;
+      case 10: d->p10_req = v; break;
+      default: d->p11_req = v; break;
     }
   }
   void setAddr(int p, uint32_t a) {
@@ -145,7 +146,8 @@ struct Harness {
       case 5: d->p5_addr = a; break; case 6: d->p6_addr = a; break;
       case 7: d->p7_addr = a; break; case 8: d->p8_addr = a; break;
       case 9: d->p9_addr = a; break;
-      default: d->p10_addr = a; break;
+      case 10: d->p10_addr = a; break;
+      default: d->p11_addr = a; break;
     }
   }
   bool getAck(int p) {
@@ -156,7 +158,8 @@ struct Harness {
       case 5: return d->p5_ack;
       case 6: return d->p6_ack; case 7: return d->p7_ack;
       case 8: return d->p8_ack; case 9: return d->p9_ack;
-      default: return d->p10_ack;
+      case 10: return d->p10_ack;
+      default: return d->p11_ack;
     }
   }
   uint64_t getDout(int p) {
@@ -167,7 +170,8 @@ struct Harness {
       case 5: return d->p5_dout;
       case 6: return d->p6_dout; case 7: return d->p7_dout;
       case 8: return d->p8_dout; case 9: return d->p9_dout;
-      default: return d->p10_dout;
+      case 10: return d->p10_dout;
+      default: return d->p11_dout;
     }
   }
 
@@ -238,6 +242,9 @@ struct Harness {
     // there gives every polygon a colour from whatever SDRAM powered up with.
     if (p == 0) { d->p0_we = write; d->p0_din = data; d->p0_be = be; }
     if (p == 6) { d->p6_we = write; d->p6_din = data; }
+#if TB_NP > 11
+    if (p == 11) { d->p11_we = write; d->p11_din = data; d->p11_be = be; }
+#endif
     setReq(p, 1);
     port[p].req_held = true;
     if (write) {
@@ -342,7 +349,8 @@ int main(int argc, char** argv) {
         // which is what the real board presents.
         unsigned thresh = (p == 0) ? 40 : (p == 2) ? 30 : 12;
         if ((rng() % 100) >= thresh) continue;
-        bool write = (p == 0) && ((rng() & 7) == 0);
+        // p11 is the Star Wars sound board's Z80 RAM: byte writes, like p0's
+        bool write = (p == 0 || p == 11) && ((rng() & 7) == 0);
         uint8_t be = 3;
         if (write && (rng() & 7) == 0) be = (rng() & 1) ? 1 : 2;  // byte writes
         h.issue(p, pick_addr(rng), write, (uint16_t)rng(), be);

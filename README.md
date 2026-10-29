@@ -30,11 +30,15 @@ in attract and in play across Virtua Racing, Virtua Formula, Virtua Fighter and
 Star Wars Arcade. **Sega NetMerc is the exception** — its audio comes out tiny,
 high-pitched and at the wrong rate, which is a sample-clock fault and is open.
 
-**Star Wars Arcade has a SECOND sound board that is not built.** It is the only
-Model 1 game with a **DSB** — a Z80 driving an MPEG decoder with 4 MB of music
-data, which the main sound board forwards commands to. Its effects come from
-the normal board and work; its *music*, including the theme over attract, is
-MPEG off the DSB and is absent.
+**Star Wars Arcade has a SECOND sound board, and it is built (branch
+`swa-sound`, 2026-10-29) but NOT YET TESTED ON A BOARD.** It is the only Model 1
+game with a **DSB** — a Z80 driving an MPEG-1 Layer II player with 4 MB of
+music, listening to what the sound 68000 transmits. Its effects come from the
+normal board; its *music*, including the theme 55 s into attract, comes from
+the DSB. The board is benched against MAME (docs/findings.md, 2026-10-29) and
+its MRAs carry three more ROMs from `swa.zip` (`epr-16471.2`, `mpr-16514.57`,
+`mpr-16515.58`). The OSD's *Star Wars music volume* chooses how the board's
+volume writes are read; *Firmware* is the default, *MAME* matches MAME.
 
 Virtua Racing's attract mode is silent on the real cabinet too, so a quiet
 attract screen there is correct rather than a fault.
@@ -75,7 +79,7 @@ goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail
 | Virtua Formula | boots, plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
 | Virtua Fighter | boots, has sound and reads its controls, but is **not playable** — the fighting arena is the wrong size during a match; attract and character select are correct | yes |
 | Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
-| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented) the Star Destroyer draws only partly as white slivers, a ship is missing from the intro, and there is **no music** — its MPEG music lives on a DSB board that is not implemented | yes |
+| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented); the Star Destroyer drew only partly as white slivers and a ship was missing from the intro (both fixed in simulation on `vf-swa-geo`, the display lists' upper halves), and its music board (the DSB) is built on `swa-sound`; neither is yet tried on hardware | yes |
 | Wing War | **did not run** before 2026-10-29: the V60 could not execute the routines the game copies into RAM, and it had the wrong I/O board. Both fixed on branch `wingwar-boot`: reaches its 3D attract on the bench (the sky is grey, not MAME's cyan); **not yet tried on hardware** | yes |
 
 **15 kHz and wheels.** The OSD's `Video` puts the picture out at 15 kHz
@@ -224,8 +228,9 @@ intro and the Star Destroyer drawn with quads missing were one fault: the
 game uploads its colour table through display-list command 4 in blocks that
 run past word 0x4000 of the list, and the core stored only the lower half of
 each list. The upper half now lives in SDRAM in space the layout already left
-free. Wing War and NetMerc upload the same way in play. It still has no
-music: that is a second sound board (DSBZ80, MPEG) this core does not build.
+free. Wing War and NetMerc upload the same way in play. Its music
+board (DSBZ80, MPEG) is built on `swa-sound` and benched bit-exact against
+MAME; not yet on hardware.
 `docs/findings.md`, 2026-10-28 (c).
 
 **The 2D tile fetch misses scanline deadlines.** Not memory: the port is served

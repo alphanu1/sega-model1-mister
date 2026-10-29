@@ -310,6 +310,255 @@ that can fail; check the binary's time.**
 
 ---
 
+## 2026-10-29 — STAR WARS' SOUND BOARD IS BUILT: 1,083 ALM BY quartus_map, ITS Z80 CUT DOWN TO 392
+
+Branch `swa-sound`. Ben chose the faithful board (a real program on a Z80,
+plus the decoder) and then a Z80 cut down to that program. Everything below is
+benched; **nothing has been on the board yet**.
+
+### What was built (rtl/sound/dsb_*.sv, all on clk_cpu)
+
+- `dsb_z80` -- a microcoded Z80 that runs exactly the 76 opcodes
+  `epr-16471.2` can reach (`tools/dsb/z80_census.py`: 391 instructions from the
+  reset and IM 1 vectors, every opcode checked against the dispatch table) and
+  traps anything else. 130 micro-ops of 40 bits in one M10K, dispatch through a
+  1024 x 8 table in another. Documented Z80 T-states per instruction, I/O at
+  the T-state tv80s commits it, only Z and C.
+- `dsb_mpeg` -- ports e0-e9 with dsbz80.cpp's latch/loop/stop semantics, and a
+  serial fixed-point Layer II decoder: one bit per cycle, one multiplier for
+  everything, the 48-bit accumulator inside the DSP, 24-bit samples and history.
+- `dsb_board` -- the two, `m2_i8251` for the UART, a 32 kHz output. The Z80's
+  program (2 KB copy, loaded from SDRAM before it starts), variables
+  (8000-83ff) and stack (fc00-ffff) are on chip; the rest of its 128 KB ROM and
+  32 KB RAM and all 4 MB of MPEG data are in SDRAM through **port 11** (the
+  controller is twelve ports now) and one `m1_cdc_port`.
+- `Model1.sv` -- the sound 68000's transmit line is paced as the wire is (a
+  holding and a shift register, 320 us a byte) and handed to the board; the
+  board is held in reset unless the game is Star Wars (id 2) and its stream is
+  in; its output is summed with the sound board's, saturated. O[20] picks the
+  e8 reading (below).
+- Data: the MRA appends `epr-16471.2`, `mpr-16514.57`, `mpr-16515.58` to
+  index 5 and the loader's existing linear map carries them past PCM2: Z80 ROM
+  at SDRAM word `0x1480000`, MPEG at `0x1490000`, Z80 RAM at `0x1690000`, all
+  in space nothing used. **Nothing moved**; the only loader change is the end
+  constant.
+
+### What it costs (full quartus_map, base `3d-overrun` 786fcfb = 35,280)
+
+    quartus_map  +1,083 ALM (36,363)    +3 DSP (53)
+    fitted       37,199 ALM (88.8 %, seed 5; 37,163-37,259 over seeds 11/17/5)
+                 537 M10K (+14, 16 free)   53 DSP   every clock positive
+                 the board itself 999 ALM: dsb_mpeg 570, dsb_z80 339,
+                 memories/cache/arbiter 86, UART 4; CDC 8; twelfth port 31
+
+| block | LUTs | regs | memory bits | DSP |
+|---|---|---|---|---|
+| `dsb_mpeg` | 988 | 572 | 48,640 (7 M10K) | 3 |
+| `dsb_z80` | 480 | 215 | 18,432 (2 M10K) | 0 |
+| `dsb_board` itself (memories, cache, arbiter, T clock) | 120 | 116 | 32,768 (4 M10K) | 0 |
+| `m2_i8251` | 7 | 13 | | |
+| `m1_cdc_port` | 7 | 113 | | |
+| `m1_sdram` going 11 -> 12 ports | +19 | +57 | | |
+
+### The Z80, three ways, by standalone quartus_map
+
+    tv80s, full Z80                                956 ALM
+    per-opcode state machine, cut down            1,543 ALM   <- worse than the full Z80
+    microcoded, cut down (shipped)                  392 ALM   (+2 M10K)
+
+**A cut-down CPU written as a case per opcode is bigger than a whole Z80.**
+Every opcode grew its own path into every register and the address bus, and
+the muxes cost more than the opcodes saved. Driving a regular datapath (seven
+registers, PC/SP/TMP, one 16-bit adder, one 8-bit ALU) from a ROM got it to
+490, and moving the opcode dispatch from logic into an M10K to 392.
+
+### The decoder, standalone: 844 -> 718 ALM, and the accumulator that would not go into the DSP
+
+The 48-bit accumulator lands in the DSP block only in one shape: operand muxes,
+the negation applied to an operand, `acc <= (load ? const : acc) + a * b`.
+Written as `acc +/- a*b` (dynamic subtract) Quartus keeps all 48 bits and the
+adder in ALMs -- tested in isolation, eleven variants. The other savings: the
+FIFO written straight from the window result with byte enables, Nal and p1
+taken from x and from the accumulator instead of registers, a tagless one-word
+bit buffer, and a remaining-bits down-counter so every end-of-data test is a
+sign check instead of a 27-bit comparator.
+
+### Evidence
+
+- **Decoder, bit-exact against `dsb_fixmodel.h`:** every song in the table,
+  and every loop restart, played to its end -- 25,944,992 stereo samples, 22,522
+  frames, 0 differences, SDRAM latency [1, 40] cycles. The short form in
+  `make test` covers ends, loops, the loop abort, stops and plays mid-frame:
+  105,764 samples, at latency 1, 20 and 400, and again at the real 32 kHz rate
+  with the FIFO full.
+- **Z80 against tv80s on the real program, MAME's 300 s of input:** 6,843,318
+  port accesses (26,693 writes, the rest status polls), identical in value and
+  in T-state; no trap.
+- **The whole board against MAME's capture** (`tb_dsb_board`): 70 s -- 6,167
+  port accesses identical to MAME's in order and value, mean +0.7 us late,
+  worst +0.8 us; 460,288 decoded samples bit-exact; every 32 kHz output sample
+  equal to the decoded one with volume and pan applied. 300 s: see HANDOFF.
+- MAME's capture against the C model: within 1 LSB on every sample (2026-10-28 (c)).
+
+### Things MAME does that the bench found, and the RTL now does
+
+1. **A frame that fails at the end address still moves the synthesis history.**
+   MAME decodes granule by granule and throws only when a read crosses the end,
+   so every complete granule has already gone through the filterbank. A
+   precheck that skipped the frame left a different history behind and the next
+   song's first 512 samples differed.
+2. **A stop does not undo synthesis.** MAME has the whole playing frame
+   decoded when a stop lands, so the history is at its end. The RTL finishes
+   that frame muted (matrixing only). The one case it cannot match: a stop in
+   the last 64 samples of a frame, when it has already started the next.
+3. **The end address is latched per frame.** The firmware stops, writes the
+   next song's start and end, and plays -- while the stopped frame is still
+   finishing. Reading the end live failed that frame.
+4. **A reference that decodes lazily is wrong.** MAME decodes the next frame
+   the moment the last one runs out; a bench reference that waited for the next
+   sample skipped a failing frame when a stop came first and reported 285
+   "failures" that were its own.
+
+### The e8 volume writes: firmware reading by default, MAME's on O[20]
+
+The firmware writes `e8 80`, `e8 c5` after every level it sets and `e8 c4`
+every 256 passes of its main loop; MAME takes them all as volume. Every level
+the firmware computes is masked with `0x7e` -- bit 7 is never set in one -- and
+its fades write `e8` once per step and nothing else, which MAME's reading
+would cancel within 256 passes. So the default treats a write with bit 7 set as
+something other than volume: music plays at the song's own level (song 1:
+`0x50` -> 47/127) and fades work. O[20] = MAME gives MAME's 0x3b/0x7f.
+**Neither is confirmed against a real board.**
+
+### Wrong along the way
+
+- The class map for subbands 0-2 sent allocation index 2 to class 4 (it is 3).
+- The volume multiply was 16 bits wide, a SystemVerilog sizing trap.
+- `io_rdata` was gated on the strobe, which the Z80 samples the cycle before:
+  every UART read returned 0 and no command was ever seen.
+- The Z80's every access went to SDRAM: **755,000 words a second**, a tenth
+  of the controller's time. Its program, variables and stack are on chip now:
+  11,800 a second over the first four seconds (the boot-time clear), then none.
+- At latency the Z80 cannot hide (uniform [1, 80] and up) it falls behind
+  real time; at [1, 400] its boot finishes 0.18 s late, after the 68000's first
+  byte (a stop) has arrived, and the UART reset in its init drops it. Harmless
+  (the byte is a stop to nothing), and at [1, 40] the boot is ~0.8 ms late,
+  against 56 ms of margin before that byte.
+
+---
+
+## 2026-10-28 (c) — STAR WARS' SECOND SOUND BOARD, MEASURED: WHAT IT IS AND WHAT IT WOULD COST
+
+Branch `swa-sound` (on `3d-overrun`, `786fcfb`). Research only -- **nothing is
+built**, because the faithful design does not fit the budget it was given
+(<= ~1,500 ALM, >= 10 M10K left) and that is Ben's decision. Instruments:
+`tools/mame_dsb_cap.lua` (MAME 0.289, headless, 300 emulated seconds: attract,
+coin at 150 s, start at 152 s), MAME's debugger `dasm` of `epr-16471.2`, a
+bit-level scan of `mpr-16514/16515`, and `tools/dsb/` (a bit-accurate C model
+of the planned decoder against MAME's own `mpeg_audio.cpp`).
+
+### The board (MAME `dsbz80.cpp`, `model1.cpp` swa())
+
+- **Z80 at 4 MHz** (MAME: "unknown clock"). `0000-7fff` ROM = the first 32 KB
+  of the 128 KB `epr-16471.2`; `8000-ffff` 32 KB RAM.
+- Ports: `e0` trigger (0 stop, 1 play, 2 play+loop), `e2-e4` start (reading
+  them returns the play position), `e5-e7` end, `e8` volume (`~d & 0x7f`),
+  `e9` pan (0 stereo, 1 left on both, 2 right on both), `f0/f1` an i8251.
+  Writes to `ea`/`eb` are unmapped in MAME (the firmware writes them).
+- **Its only input is the sound 68000's UART TRANSMIT line**, not the V60's:
+  `m_m1audio->rxd_handler().append(dsbz80 write_txd)`. In this core
+  `m2_sound_board`'s `tx_*` is tied off (`tx_ack(1'b1)`), so the wire exists
+  and is unconnected.
+- **Interrupts play no part.** The IM1 vector at `0x38` is `di; ei; reti`, and
+  the main loop runs with `di` (at `0x01a3`), polling the UART status.
+- Output: MPEG-1 Layer II, 32 kHz stereo, scaled `sample * vol / 128` and
+  summed with the main sound board's speaker.
+
+### The firmware is 725 bytes
+
+`0x0100-0x03d4` is the whole program; `0x03d5` is a 15-entry song table. Command
+bytes: `00` stop, `01-0f` play song n, `10-7f` ignored, `80-ef` fade out
+(rate from the low 7 bits), `f0-fe` volume step, `ff` restore volume. Fade and
+delayed-stop timing is **counted in main-loop passes**, so it depends on the
+Z80's speed -- a Z80 slowed by memory stalls fades slower.
+
+**A volume quirk the reference carries:** the main loop writes `e8 c4` every
+256 passes (26,628 times in 300 s). MAME treats every `e8` write as volume, so
+in MAME the music sits at `0x3b/0x7f` (46 %) most of the time, not at the
+song's table volume. MAME's own TODO says bit 7's purpose is unknown; on the
+real board those writes are probably something else. Unresolved.
+
+### What the game actually sends
+
+In 300 s, **six bytes**: `00` at 0.23 s, 3.74 s, 14.35 s, 150.31 s; `01` (song 1,
+`0x334000-0x3f4000`, no loop, volume `0x50`) at **55.62 s** in attract and at
+**191.58 s** after the start. So the attract theme is song 1 and appears 55 s in.
+
+### The MPEG data
+
+All 4 MB is **7,281 frames, every one MPEG-1 Layer II, 32 kHz, 128 kbit/s,
+stereo, no CRC** -- 576 bytes each, ~262 s of audio. **They are not byte
+aligned**: the first sync word is at bit 3,651. One header, one allocation
+table (table 0, 27 subbands), so the decoder only ever needs that one format.
+MAME scans for sync bit by bit, continues from where a frame's data ended,
+**drops a frame that would cross the end address**, never clears the synthesis
+history between songs, and rounds with `int(x*32768 + 0.5)` (truncation toward
+zero).
+
+### Precision, priced in M10K (`tools/dsb/`, all 15 songs + loop restarts, 22,481 frames, 51.8 M samples)
+
+    S / V width   error vs MAME (16-bit samples)      V RAM (2 ch x 512)
+    40 bits       0: 99.88 %   1: 0.12 %   max 1      -   (first 6 entries only)
+    24 bits       0: 81.5 %    1: 18.5 %   max 1      3 M10K
+    20 bits       0: 73.3 %    1: 26.5 %   2: 0.16 %  2 M10K
+
+No position ever diverged from MAME's. MAME decodes in doubles, so bit-exact
+against MAME is not available to fixed point at any width; the RTL is meant to
+be bit-exact against `dsb_fixmodel.h`, and that against MAME as above. The
+synthesis window is exactly k/65536 (max 75,038, 18 bits signed) and 504 of
+its 511 pairs are antisymmetric.
+
+### Reusable HDL
+
+No open-source Layer II decoder found; the nearest is an OpenCores MP3
+(Layer III) VHDL project, and Maintech's Layer II core is commercial. The Model
+2 core has none either (its STCC uses the same DSB, unbuilt). tv80s is already
+here (I/O board).
+
+### Cost
+
+**Superseded 2026-10-29 by measurement** (entry above): the board as built is
+1,083 ALM by quartus_map, because the Z80 was cut down to 392 instead of
+tv80s's 834. The estimate as it stood:
+
+    piece                                      ALM            M10K   DSP   basis
+    tv80s                                       834            0      0     MEASURED, I/O board instance, 3dfb fit
+    Z80 glue (pacing, cache, RAM/ROM/MPEG mux,
+      port decode, i8251 from m2_i8251)         150-250        0      0     estimate
+    SDRAM port 12 (+CDC if on clk_cpu)          60-120         0      0     estimate; m1_cdc_port 7-27 measured
+    MPEG register file, trigger/loop logic      ~100           0      0     estimate
+    Layer II decoder (one MAC, bit-serial)      600-900        3-5    1-2   estimate
+    32 kHz pacing, vol/pan, mix                 ~50            0      1     estimate
+    ---------------------------------------------------------------------
+    faithful total                             1,800-2,250     3-5    2-3
+
+Against 35,849 that is 37,650-38,100 ALM -- **at or over the 90 % line**, with
+nothing left for the V60 fix or a polygon RAM. Replacing the Z80 with a state
+machine that runs the same 15 commands off the real song table (in SDRAM)
+would be ~150-250 ALM instead of ~1,000-1,100, for **~950-1,400 total** --
+inside the budget, but an imitation of a program, which is what R60 moved the
+I/O board away from. That choice is Ben's; see `docs/HANDOFF.md`.
+
+### Where its data would live (nothing moves)
+
+SDRAM word `0x1048000-0x107ffff` (448 KB, free between `SND_RAM` and
+`SND_PCM1`) for the Z80 ROM (128 KB) and RAM (32 KB); the 4 MB of MPEG at word
+`0x1480000` (41 MB), above `SND_PCM2`, which is where the map currently ends.
+The Z80 does write all 32 KB (a boot-time clear) but lives in `0x8100-0x8126`,
+`0x8200`, `0x8300` and the stack, so off-chip RAM costs only stalls.
+
+---
+
 ## 2026-10-28 (c) — STAR WARS' SHIPS ARE MISSING QUADS BECAUSE HALF OF EVERY DISPLAY LIST WAS NEVER STORED
 
 Branch `vf-swa-geo`. Ben: the first large ship in Star Wars' attract is
