@@ -40,9 +40,19 @@ quartus_map +78 ALM, 0 M10K. **Wing War and NetMerc lose colour words the same
 way in play** - check both on the board too.
 
 Bench: after the boot uploads our tgp_ram equals MAME's on all 121,575 words
-(56,287 of them were missing before). The full-system picture at the
-corvette/Star Destroyer frames: see the bottom of this section once the run
-in `build/run_swafix` reaches them.
+(56,287 of them were missing before), and our own V60's Star Destroyer lists
+render byte-identical to MAME's colour state. The full-system run with the
+fix (`build/run_swafix`) was left running toward the ship frames (~1,450+).
+
+**Build for the board, both fixes:** `build/Model1_vfswa_seed11_35282.rbf`,
+md5 `0a9941d96296dcd2a021bf8fb2faedbd` - **based on tile-overrun (4253a86)**,
+NOT on main 1daae7a (vr-freeze + 3D frame buffer merged since). 35,282 ALM,
+525 M10K, 50 DSP; clk_3d +0.837, clk_sys +1.185, clk_cpu +6.515, pll_hdmi
++0.673, hold +0.245. Reports in this worktree's `build/vfswa_s11_reports/`.
+Merging into main: the V60 line is already there (identical text); the
+display-list change touches m1_main, m1_mainram, m1_integrated (the p6
+port) and adds m1_p6_arb - check against the frame-buffer port's edits to
+m1_integrated.
 
 ## Board test, in order
 

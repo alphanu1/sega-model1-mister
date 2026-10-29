@@ -82,8 +82,29 @@ and the MRAs are untouched.
   a port at random latency 2..2, 2..20 and 2..200 cycles; 5,641,907 checks, 0
   fails.
 
-Cost: quartus_map 34,566 -> **34,644 ALM (+78)**, block memory bits
-unchanged (3,912,698) - no M10K.
+### After
+
+- **tgp_ram after the boot uploads**, out of the full system's SDRAM model
+  (`+define+TGPRAMDUMP`, frame 300): **121,575 of 121,575 words equal to
+  MAME's**, including all 56,287 that were missing.
+- **Our own V60's lists** (the full-system run's dumps at frames 1500, 1900,
+  2000) through render3d: with the old colour state 0 / 40,491 / 31,016
+  pixels; with the fixed system's tgp_ram 2,050 / 49,577 / 62,859 - and the
+  1900 and 2000 frames are **byte-identical** to the same lists rendered with
+  MAME's colour words. `build/swa_before_after.png`, and the full system before
+  the fix in `build/swa_fullsys_before.png` (corvette absent, Destroyer holed).
+- The full-system run with the fix (`build/run_swafix`) was still short of
+  the ship frames when this was written.
+
+### Cost
+
+quartus_map 34,566 -> **34,644 ALM (+78)**, block memory bits unchanged
+(3,912,698) - no M10K. Fitted with the V60 fix (this branch, 3eba4a6):
+**seed 11 35,282 ALM, 525 M10K, 50 DSP**, clk_3d +0.837, clk_sys +1.185,
+clk_cpu +6.515, pll_hdmi +0.673, worst hold +0.245;
+`build/Model1_vfswa_seed11_35282.rbf`, md5 `0a9941d96296dcd2a021bf8fb2faedbd`.
+Seed 5 35,300, every clock positive (clk_cpu +4.522); seed 3 35,344 with
+clk_sys -0.200 and pll_hdmi -0.259.
 
 ---
 
