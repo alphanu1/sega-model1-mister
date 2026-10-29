@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
   // ---- 2. the end of every song: the frame that crosses the end is dropped
   for (auto &s : songs) {
     long g0 = got;
-    wr(0, 0); set24(2, s.e - 1500); set24(5, s.e); wr(0, 1);
+    wr(0, 0); set24(2, s.e - (getenv("DSB_ENDBACK") ? atoi(getenv("DSB_ENDBACK")) : 1500)); set24(5, s.e); wr(0, 1);
     drain_quiet(); check_ref_empty("end of song");
     if (getenv("DSB_VERBOSE")) printf("end-of-song %06x: samples %ld..%ld\n", s.e, g0, got);
   }

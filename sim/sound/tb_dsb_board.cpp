@@ -87,6 +87,10 @@ int main(int argc, char **argv) {
   double secs = getenv("DSB_SECS") ? atof(getenv("DSB_SECS")) : 70.0;
   int LAT = getenv("DSB_LAT") ? atoi(getenv("DSB_LAT")) : 40;
   int volmame = getenv("DSB_VOLMAME") ? 1 : 0;
+  // DSB_LOOSE: leave out the main loop's idle `e8 c4` (one per 256 passes),
+  // whose count before each command depends on how long the boot took -- for
+  // runs at latencies the Z80 cannot hide, where the boot finishes late.
+  bool loose = getenv("DSB_LOOSE") != nullptr;
   const char *cap = getenv("DSB_CAP") ? getenv("DSB_CAP") : "build/rom/dsb/cap300.txt";
   const double CLK = 560e6 / 19;
 
@@ -100,7 +104,7 @@ int main(int argc, char **argv) {
       double t; char k[8]; unsigned a, b;
       int n = sscanf(line, "%lf %7s %x %x", &t, k, &a, &b);
       if (n == 3 && std::string(k) == "TX") rx.push_back({(uint64_t)((t + 320e-6) * CLK), (int)a});
-      if (n == 4 && std::string(k) == "ZW" && t < secs) mame.push_back({t, (int)a, (int)b, 'W'});
+      if (n == 4 && std::string(k) == "ZW" && t < secs && !(loose && a == 0xe8 && b == 0xc4)) mame.push_back({t, (int)a, (int)b, 'W'});
       if (n == 4 && std::string(k) == "ZR" && a == 0xf0 && t < secs) mame.push_back({t, (int)a, (int)b, 'R'});
     }
     fclose(f);
@@ -123,7 +127,7 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 20; i++) { h->clk = 0; h->eval(); h->clk = 1; h->eval(); }
   h->rst_n = 1;
 
-  long fails = 0, wchk = 0, schk = 0, ochk = 0, rxn = 0, bad_mem = 0;
+  long fails = 0, wchk = 0, schk = 0, ochk = 0, rxn = 0, bad_mem = 0, nreq = 0;
   std::deque<uint32_t> popq;
   int vol = 0x7f, pan = 0;
   int pend = -1; uint32_t pa = 0; bool pw = false; uint16_t pd = 0; uint8_t pbe = 0;
@@ -142,12 +146,13 @@ int main(int argc, char **argv) {
     } else if (pend > 0) pend--;
     h->clk = 0; h->eval(); h->clk = 1; h->eval();
     if (h->s_req) {
+      nreq++;
       if (pend >= 0) { printf("FAIL: second request while one is outstanding\n"); fails++; }
       pa = h->s_addr; pw = h->s_we; pd = h->s_din; pbe = h->s_be; pend = 1 + (int)(rng() % LAT);
     }
     if (h->tick) T++;
     // 1. port accesses against MAME
-    if (h->io_wr || (h->io_rd && h->io_addr == 0xf0)) {
+    if ((h->io_wr || (h->io_rd && h->io_addr == 0xf0)) && !(loose && h->io_wr && h->io_addr == 0xe8 && h->io_data == 0xc4)) {
       char k = h->io_wr ? 'W' : 'R';
       double t = T / 4e6;
       if (mame.empty()) { if (fails < 20) printf("FAIL: %c %02x=%02x at %.6f s, MAME has nothing more\n", k, h->io_addr, h->io_data, t); fails++; }
@@ -158,6 +163,8 @@ int main(int argc, char **argv) {
                                  (size_t)wchk, k, h->io_addr, h->io_data, t, e.k, e.port, e.v, e.t);
           fails++;
         }
+        if (getenv("DSB_SHOWT") && wchk <= atoi(getenv("DSB_SHOWT")))
+          printf("  %ld: ours %c %02x=%02x %.6f  MAME %.6f\n", wchk, k, h->io_addr, h->io_data, t, e.t);
         double dt = t - e.t; dt_sum += dt; dt_n++; if (fabs(dt) > fabs(dt_max)) dt_max = dt;
       }
       if (h->io_wr && (h->io_addr & 0xf0) == 0xe0) {
@@ -175,6 +182,11 @@ int main(int argc, char **argv) {
       if (ref.q.empty()) { if (fails < 20) printf("FAIL: a sample the reference does not have\n"); fails++; }
       else { uint32_t e = ref.q.front(); ref.q.pop_front(); schk++;
              if (e != h->smp_lr) { if (fails < 20) printf("FAIL: sample %ld %08x vs %08x\n", schk, h->smp_lr, e); fails++; } }
+      // EAGERLY, as MAME does: the moment a frame's samples run out it decodes
+      // the next, and a frame that fails at the end address still advances
+      // the synthesis history. A lazy reference would skip that frame when a
+      // stop arrives first, and disagree with both MAME and the RTL.
+      if (ref.q.empty()) ref.next();
     }
     // 3. the 32 kHz output
     if (h->out_stb) {
@@ -192,9 +204,9 @@ int main(int argc, char **argv) {
   if (bad_mem) { printf("FAIL: %ld writes outside the Z80's RAM\n", bad_mem); fails++; }
   size_t left = mame.size();
   if (left > 2) { printf("FAIL: MAME made %zu more port accesses than we did\n", left); fails++; }
-  printf("dsb_board[lat=%d%s,%.0fs]: ports=%ld fails=%ld samples=%ld out=%ld rx=%ld dt_mean=%.1fus dt_max=%.1fus\n",
-         LAT, volmame ? ",volmame" : "", secs, wchk, fails, schk, ochk, rxn,
-         dt_n ? 1e6 * dt_sum / dt_n : 0.0, 1e6 * dt_max);
+  printf("dsb_board[lat=%d%s%s,%.0fs]: ports=%ld fails=%ld samples=%ld out=%ld rx=%ld dt_mean=%.1fus dt_max=%.1fus sdram=%.0f/s\n",
+         LAT, volmame ? ",volmame" : "", loose ? ",loose" : "", secs, wchk, fails, schk, ochk, rxn,
+         dt_n ? 1e6 * dt_sum / dt_n : 0.0, 1e6 * dt_max, nreq / secs);
   delete h;
   return fails ? 1 : 0;
 }

@@ -81,8 +81,9 @@ module dsb_board #(
   logic        io_rd, io_wr;
   logic  [7:0] io_addr, io_wdata, io_rdata;
 
+  logic pre_done;
   dsb_z80 u_z80 (
-    .clk(clk), .rst_n(rst_n), .tick(tick),
+    .clk(clk), .rst_n(rst_n && pre_done), .tick(tick),
     .m_req(z_req), .m_we(z_we), .m_addr(z_addr), .m_wdata(z_wdata),
     .m_ack(z_ack), .m_rdata(z_rdata),
     .io_rd(io_rd), .io_wr(io_wr), .io_addr(io_addr), .io_wdata(io_wdata),
@@ -133,29 +134,83 @@ module dsb_board #(
   assign io_rdata = u_adr ? u_dout : mp_sel ? mp_q : 8'h00;
 
   // ---------------------------------------------------------------- memory
-  // The Z80's one-word cache: the last word read or written. Writes go
+  // THE Z80 ALMOST NEVER TOUCHES SDRAM. Measured on the bench, a Z80 whose
+  // every access went to SDRAM through a one-word cache asked for 755,000
+  // words a second -- about a tenth of the controller's time, on a memory
+  // the V60 already waits for. So the parts it lives in are on chip:
+  //
+  //   0000-07ff  a copy of the program (code ends at 03d4, the song table
+  //              at 04d6), loaded from SDRAM before the Z80 is released
+  //   8000-83ff  its variables (8100-8126, 8200, 8300)
+  //   fc00-ffff  its stack (SP starts at fffe)
+  //
+  // and everything else -- the rest of the 128 KB ROM, the rest of the 32 KB
+  // RAM -- stays in SDRAM behind the one-word cache, reached in practice only
+  // by the boot-time clear. It is the same memory map, split by address, so
+  // nothing the program can observe changes.
+  wire z_prog = !z_addr[15] && (z_addr[14:11] == 4'd0);
+  wire z_fast =  z_addr[15] && (z_addr[14:10] == 5'b00000 || z_addr[14:10] == 5'b11111);
+  wire z_chip = z_prog || z_fast;
+
+  (* ramstyle = "M10K" *) logic [15:0] prog [1024];
+  (* ramstyle = "M10K" *) logic  [7:0] fast [2048];
+  logic [15:0] prog_q;
+  logic  [7:0] fast_q;
+  logic  [9:0] pre_i;
+  logic        pre_we;
+  logic [15:0] pre_d;
+  always_ff @(posedge clk) begin
+    if (pre_we) prog[pre_i] <= pre_d;
+    prog_q <= prog[z_addr[10:1]];
+  end
+  wire        fast_we = z_req && z_we && z_fast && !z_ack_r && pre_done;
+  always_ff @(posedge clk) begin
+    if (fast_we) fast[{z_addr[14], z_addr[9:0]}] <= z_wdata;
+    fast_q <= fast[{z_addr[14], z_addr[9:0]}];
+  end
+
+  // The one-word cache for the rest: the last word read or written. Writes go
   // straight through and update it.
   logic        c_valid;
   logic [15:1] c_tag;
   logic [15:0] c_word;
   wire         c_hit = c_valid && (c_tag == z_addr[15:1]);
 
-  typedef enum logic [1:0] {M_IDLE, M_Z, M_MP} mown_t;
+  typedef enum logic [1:0] {M_IDLE, M_Z, M_MP, M_PRE} mown_t;
   mown_t own;
   logic  z_ack_r;
+  logic  [1:0] z_src;                // 0 cache, 1 program copy, 2 fast RAM
   assign z_ack   = z_ack_r;
-  assign z_rdata = z_addr[0] ? c_word[15:8] : c_word[7:0];
+  assign z_rdata = (z_src == 2'd1) ? (z_addr[0] ? prog_q[15:8] : prog_q[7:0]) :
+                   (z_src == 2'd2) ? fast_q :
+                   (z_addr[0] ? c_word[15:8] : c_word[7:0]);
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      own <= M_IDLE; s_req <= 1'b0; s_we <= 1'b0; s_addr <= '0; s_din <= '0; s_be <= '0;
+      own <= M_PRE; s_req <= 1'b0; s_we <= 1'b0; s_addr <= '0; s_din <= '0; s_be <= '0;
       c_valid <= 1'b0; c_tag <= '0; c_word <= '0; z_ack_r <= 1'b0; mp_ack <= 1'b0;
+      z_src <= 2'd0; pre_done <= 1'b0; pre_i <= '0; pre_we <= 1'b0; pre_d <= '0;
     end else begin
-      s_req <= 1'b0; z_ack_r <= 1'b0; mp_ack <= 1'b0;
+      s_req <= 1'b0; z_ack_r <= 1'b0; mp_ack <= 1'b0; pre_we <= 1'b0;
+
+      // on-chip: answered the next cycle, whatever SDRAM is doing (a write
+      // to the program copy is dropped, as MAME's ROM drops it)
+      if (pre_done && z_req && z_chip && !z_ack_r) begin
+        z_ack_r <= 1'b1; z_src <= z_prog ? 2'd1 : 2'd2;
+      end
+
       case (own)
+        // the program copy: 1,024 words from the ROM's base, once
+        M_PRE: begin
+          if (!s_req && !pre_we && !pre_done) begin
+            s_req <= 1'b1; s_we <= 1'b0; s_be <= 2'b11;
+            s_addr <= ROM_BASE + 25'(pre_i);
+            own <= M_Z;              // shares M_Z's wait; told apart by !pre_done
+          end
+        end
         M_IDLE: begin
-          if (z_req && !z_ack_r) begin
-            if (!z_we && c_hit) z_ack_r <= 1'b1;               // cached
+          if (z_req && !z_ack_r && !z_chip) begin
+            if (!z_we && c_hit) begin z_ack_r <= 1'b1; z_src <= 2'd0; end   // cached
             else begin
               own <= M_Z; s_req <= 1'b1; s_we <= z_we;
               s_addr <= (z_addr[15] ? RAM_BASE : ROM_BASE) + 25'(z_addr[14:1]);
@@ -168,14 +223,25 @@ module dsb_board #(
           end
         end
         M_Z: if (s_ack) begin
-          own <= M_IDLE; z_ack_r <= 1'b1;
-          if (!s_we) begin c_valid <= 1'b1; c_tag <= z_addr[15:1]; c_word <= s_dout; end
-          else if (c_hit) begin
-            if (z_addr[0]) c_word[15:8] <= z_wdata; else c_word[7:0] <= z_wdata;
+          if (!pre_done) begin
+            pre_we <= 1'b1; pre_d <= s_dout;
+            own <= M_PRE;
+          end else begin
+            own <= M_IDLE; z_ack_r <= 1'b1; z_src <= 2'd0;
+            if (!s_we) begin c_valid <= 1'b1; c_tag <= z_addr[15:1]; c_word <= s_dout; end
+            else if (c_hit) begin
+              if (z_addr[0]) c_word[15:8] <= z_wdata; else c_word[7:0] <= z_wdata;
+            end
           end
         end
         default: if (s_ack) begin own <= M_IDLE; mp_ack <= 1'b1; end   // M_MP
       endcase
+
+      // the preload's write lands the cycle after its data; then the next word
+      if (pre_we) begin
+        if (pre_i == 10'd1023) begin pre_done <= 1'b1; own <= M_IDLE; end
+        pre_i <= pre_i + 10'd1;
+      end
     end
   end
 
