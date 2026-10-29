@@ -113,6 +113,80 @@ empty directory - a warm nvram skips the settings write and hides command 2.
 
 ---
 
+# 2026-10-29: NETMERC'S 3D LAYERS - THE SORT IS PER VIEWPORT. FIXED IN THE BENCH AND FITTED; NOT ON THE BOARD.
+
+Branch **`netmerc-layers`** (local, not pushed), on `main` (1daae7a).
+`docs/findings.md` 2026-10-29 has the whole of it.
+
+**Cause.** MAME's `tgp_render` sorts and draws the quads collected so far at
+every viewport command (`case 3` calls `draw_objects`), so the painter's order
+is per viewport and a later viewport paints over an earlier one. Every NetMerc
+gameplay list carries three viewport groups with the same rectangle - terrain,
+enemies, then the player's gun, hands and health bar. The core sorted the
+whole frame on z, so near terrain painted over the gun, the hands, the health
+bar and the enemies. **The "2D UI" Ben saw covered is 3D**: render3d, which has
+no tile layers, draws the health bar. The tile/3D mixer is not involved.
+VR, VF and SWA carry one group a list (unaffected, bit-identical); Wing War two.
+
+**Fix** (`7f9cfec`): the store's key is `{viewport group, z}`; m1_raster3d
+numbers the groups (3 bits, advancing only past a group with an object,
+saturating at 7). The 35-bit key fills the M10K the 32-bit one already used;
+nine radix passes, so the sort starts in idx_b to finish in the array the
+replay reads. Sort +12% (2,000 quads 34,330 -> 38,371 cycles).
+
+**Bench proof** (render3d on MAME frames, pixels on a different surface than
+MAME's): frame 3000 9.49% -> 0.38%, 3600 12.74% -> 0.36%, 3900 0.63% -> 0.25%.
+VR 2270/2500/5460 and Wing War 2000/2600 bit-identical before and after.
+`make test` all `fails=0`.
+
+| build | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|
+| main 1daae7a s17 | 36,102 | 523 | 50 | +0.771 | +1.065 | +6.230 | -0.189 | +0.206 |
+| **netmerc-layers s17** | **35,882** | **523** | 50 | **+0.996** | **+1.114** | **+5.751** | **+0.545** | **+0.250** |
+
+**For the board: `build/Model1_netmerc_layers_seed17_35882.rbf`**, md5
+`3210e3fe4274dee0b893defe4d7d10d4`; reports in
+`build/netmerc_layers_s17_reports/` (main's, same seed:
+`build/netmerc_layers_base_s17_reports/`). Not loaded.
+
+## What to check on the board
+
+- NetMerc in play: the gun, hands and health bar always in front; enemies
+  over the terrain as MAME draws them (MAME draws them over hills that are
+  nearer - that is the hardware's per-viewport order, not a bug).
+- Wing War's radar (its second group) - should be unchanged or better.
+- VR, VF, SWA: nothing should change; they have one group.
+
+## Seen, not fixed
+
+- **NetMerc's terrain is lit darker than MAME's** in every dumped frame
+  (surfaces match, shades do not). Not investigated.
+- **`make render3d_fuzz` is broken on main**: the target is missing the
+  frame-buffer sources, and the bench paints nothing with FB_DDR3=1. Built by
+  hand with `-GFB_DDR3=0` it passes, base and fix alike.
+- Command 0x41 still draws in the ordinary pass; direct polygons (command 2)
+  still do not draw. NetMerc uses neither.
+
+## Wrong turn
+
+The first "after" render was byte-identical to "before": make had been piped
+into a grep with a bad pattern, died of the broken pipe before linking, and
+the old binary ran. Moving a declaration looked like the cure and was not
+(verified by building the old form). Never pipe a build into a filter that can
+fail; check the binary's time.
+
+## How to repeat it
+
+- MAME headless, NetMerc gameplay: a Lua that inserts a coin at frame 600 and
+  pulses IN.1 bit 0 every 60 frames, then `dofile`s
+  `tools/mame_dump_frame.lua` (`DUMP_FRAME=3600`), run with `-video none
+  -sound none -nothrottle -snapsize 496x384 -snapview native`.
+- `python3 tools/build_rom_image.py netmerc ~/roms/netmerc.zip -b -o build/rom`,
+  then pad `netmerc_stream.bin` to 25,427,968 bytes (render3d's check).
+- `CLK3D=58947368 ./obj_render3d/tb_render3d <framedump> <padded stream>`
+  (default 14 frames; with FRAMES=6 the frame buffer has not published yet and
+  the bench reports 0 pixels).
+
 # 2026-10-28 (b): 3D-OVERRUN - THE 3D DRAWN WHOLE INTO DDR3. ON THE BOARD: "RUNS GREAT". ONE DECISION OWED.
 
 Branch **`3d-overrun`** (local, not pushed), on **`tile-overrun`** (4253a86), so
@@ -738,6 +812,11 @@ reference to diff against. Do not tune by ear on the board.
 
 ## 2. NetMerc: the 3D layer is drawn over the 2D HUD
 
+**2026-10-29: found and fixed on branch `netmerc-layers`** - not a priority
+fault. The HUD in question (health bar, gun, hands) is 3D, the last of three
+viewport groups in every NetMerc list, and the core sorted all groups as one.
+See the top of this file.
+
 The 3D is composited above tilemap output that should be in front of it. This is
 a **priority** fault, not a rendering one -- both layers are being produced.
 
@@ -1217,7 +1296,9 @@ may be fatter. Even 3x still fits.
    findings). The mixer is the last unexamined stage and `K=`/`G=` were built
    for it but have NOT been read on a healthy build. **Do that first.** VF and
    NetMerc both draw balanced left/right, so it is VR-specific.
-2. **NetMerc's 3D over the attract glyphs.** `h=0000` on both VF and NetMerc,
+2. **NetMerc's 3D over the attract glyphs.** (2026-10-29: the attract lists
+   paint nothing - 0 pixels in render3d; the board report is gameplay, and it
+   is the per-viewport sort - see the top of this file.) `h=0000` on both VF and NetMerc,
    so the unimplemented above-HUD pass (command 0x41) is NOT the cause. `K=2`
    says the mixer is not discarding the 3D either.
 

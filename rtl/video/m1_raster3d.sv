@@ -493,6 +493,17 @@ module m1_raster3d #(
   logic signed [31:0] q_x0 /* verilator public_flat_rd */, q_y0 /* verilator public_flat_rd */, q_x1 /* verilator public_flat_rd */, q_y1 /* verilator public_flat_rd */, q_x2 /* verilator public_flat_rd */, q_y2 /* verilator public_flat_rd */, q_x3 /* verilator public_flat_rd */, q_y3 /* verilator public_flat_rd */;
   logic [23:0] q_col;
   logic [31:0] q_z;
+  // THE VIEWPORT GROUP. MAME sorts and draws what it has collected at every
+  // viewport command (model1_v.cpp tgp_render, case 3 -> draw_objects), so a
+  // later viewport paints over an earlier one regardless of depth. NetMerc
+  // draws its terrain, its enemies and the player's gun and health bar as three
+  // viewports with the same rectangle, and relies on exactly that. The group
+  // goes above z in the store's key. It advances only past a group that held
+  // an object, so a run of viewport commands with nothing between them - NetMerc
+  // opens some lists with an empty one - does not use up the numbering, and it
+  // saturates: groups past the last share it (see m1_quad_store's GW).
+  logic [2:0] vp_grp;
+  logic       grp_used;                // an object since the group began
   logic        q_moire;
   logic [15:0] g_rec, g_qds, g_cull, g_nolink, g_cull_run;
 
@@ -652,7 +663,7 @@ module m1_raster3d #(
         .in_x1(q_x1[15:0]), .in_y1(q_y1[15:0]),
         .in_x2(q_x2[15:0]), .in_y2(q_y2[15:0]),
         .in_x3(q_x3[15:0]), .in_y3(q_y3[15:0]),
-        .in_col(q_col), .in_z(q_z), .in_moire(q_moire),
+        .in_col(q_col), .in_z(q_z), .in_grp(vp_grp), .in_moire(q_moire),
         .sort_start(qs_sort_start && mine_p), .sort_busy(qs_sort_busy_v[k]),
         .replay_band(qs_band),
         .replay_start(qs_replay_start && !mine_p),
@@ -1594,6 +1605,7 @@ module m1_raster3d #(
     if (!rst_n) begin
       pst <= P_IDLE; cst <= C_IDLE; bank <= 1'b0; show_tag <= '0;
       cur_band <= '0; obj_got <= '0; obj_hud <= 1'b0; dbg_hud_obj <= '0;
+      vp_grp <= '0; grp_used <= 1'b0;
       ready_band <= '0; clr_seen <= 1'b0;
       frame_armed <= 1'b0; beam_blank_d <= 1'b0; swapped <= 1'b0;
       swept <= 1'b0; early_sweep <= 1'b0;
@@ -1887,14 +1899,26 @@ module m1_raster3d #(
         // left the state machine walking with a walker that was never started -
         // f=0 passes, and the layer showing nothing at all.
         P_IDLE: if (prod_trig) begin
-          old_z <= '0;
-          pst   <= P_WALK;
+          old_z    <= '0;
+          vp_grp   <= '0;
+          grp_used <= 1'b0;
+          pst      <= P_WALK;
         end
 
         // The walk runs until it emits an object, then stops to draw it. The
         // walker holds its own position, so this is a pause and not a restart.
         P_WALK: begin
+          // A viewport command closes the group, once per command (its first
+          // parameter). The walk is paused for every object until geo_done,
+          // and geo_done waits for the clipper to drain, so every quad of the
+          // group is already in the store when the number moves on.
+          if (lw_ev_valid && lw_ev_kind == 8'h03 && lw_ev_idx == 16'd0
+              && grp_used && vp_grp != 3'd7) begin
+            vp_grp   <= vp_grp + 3'd1;
+            grp_used <= 1'b0;
+          end
           if (lw_ev_valid && (lw_ev_kind == 8'h01 || lw_ev_kind == 8'h41)) begin
+            grp_used <= 1'b1;
             obj_hud <= (lw_ev_kind == 8'h41);
             // COUNT THE ABOVE-HUD OBJECTS, because obj_hud has never been read.
             //
