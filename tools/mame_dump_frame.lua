@@ -19,6 +19,7 @@ local OUT = "framedump"
 
 local tgp   = {}      -- sparse: index (adr - 0x40000) -> word
 local lparm = {}      -- index -> packed 32-bit
+local pram  = {}      -- polygon RAM, index (adr - 0x800000) -> 32-bit word
 frames = 0
 DUMP_AT = tonumber(os.getenv("DUMP_FRAME") or "900")
 
@@ -46,7 +47,12 @@ local function walk_apply(base)
             local len = (ri(off+4) + 1) & 0xffff
             for i = 0, len-1 do tgp[(adr - 0x40000 + i) & 0xfffff] = rd(off + 6 + 2*i) end
             off = off + 6 + len * 2
-        elseif t == 5 then off = off + 6 + (ri(off+4) & 0xffff) * 2
+        elseif t == 5 then
+            -- polygon RAM upload: m_poly_ram[adr - 0x800000 + i] = readi(...)
+            local adr = ri(off+2)
+            local len = ri(off+4) & 0xffff
+            for i = 0, len-1 do pram[(adr - 0x800000 + i) & 0x7fffff] = ri(off + 6 + 2*i) end
+            off = off + 6 + len * 2
         elseif t == 6 then
             local adr = ri(off+2)
             local len = ri(off+4) & 0xffff
@@ -106,6 +112,18 @@ notif = emu.add_machine_frame_notifier(function()
         w16(f, v)
     end
     f:close()
+
+    -- Polygon RAM, the first 32 K words, raw little-endian 32-bit. Command 5
+    -- runs at boot only in Wing War, so a replayed frame needs it supplied.
+    local pn = 0
+    f = io.open(OUT .. "/polyram.bin", "wb")
+    for i = 0, 0x7fff do
+        local v = pram[i] or 0
+        if pram[i] then pn = pn + 1 end
+        f:write(string.char(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff))
+    end
+    f:close()
+    print(string.format("  polygon RAM words written %d", pn))
 
     f = io.open(OUT .. "/lightparams.txt", "w")
     for i = 0, 255 do

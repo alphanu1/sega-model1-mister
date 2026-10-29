@@ -92,6 +92,46 @@ int main(int argc, char** argv) {
       size_t n = fread(prom.data(), 4, prom.size(), f); fclose(f);
       printf("  %-36s %zu words of models\n", romp, n); }
 
+    // POLYGON RAM lives in SDRAM beside tgp_ram (m1_integrated PRAM_BASE), so
+    // the tex port writes it and the model port reads it. Modelled as that one
+    // memory: a model read in its window returns the two tex words. A dump that
+    // carries polyram.bin preloads it - Wing War uploads it only at boot.
+    static const uint32_t PRAM_TEX = 0xD0000, PRAM_MODEL = 0x468000, PRAM_WORDS = 0x8000;
+    snprintf(p, sizeof p, "%s/polyram.bin", dir);
+    { FILE* f = fopen(p, "rb");
+      if (f) { uint32_t w, n = 0;
+        while (n < PRAM_WORDS && fread(&w, 4, 1, f) == 1) {
+          tgpram[PRAM_TEX + 2*n] = w & 0xffff; tgpram[PRAM_TEX + 2*n + 1] = w >> 16; n++; }
+        fclose(f); printf("  %-36s %u words\n", p, n); }
+      else printf("  %-36s absent, polygon RAM starts empty\n", p); }
+    // PRAM_VIA_LIST=1: do not preload the polygon RAM; instead put the dump's
+    // polygon RAM in front of the list as one command 5, so the module writes
+    // it itself through the tex port - two 16-bit writes a word - before the
+    // objects that read it. The picture must equal the preloaded one.
+    if (getenv("PRAM_VIA_LIST")) {
+        std::vector<uint32_t> pw;
+        for (uint32_t i = 0; i < PRAM_WORDS; i++)
+            pw.push_back(tgpram[PRAM_TEX + 2*i] | ((uint32_t)tgpram[PRAM_TEX + 2*i + 1] << 16));
+        while (!pw.empty() && pw.back() == 0) pw.pop_back();
+        for (uint32_t i = 0; i < 2*PRAM_WORDS; i++) tgpram[PRAM_TEX + i] = 0;
+        std::vector<uint16_t> l = {5, 0, 0x0000, 0x0080, (uint16_t)pw.size(), 0};
+        for (uint32_t w : pw) { l.push_back(w & 0xffff); l.push_back(w >> 16); }
+        size_t tail = 0;      // the original list's unused tail must absorb the shift
+        for (size_t i = dlist.size(); i > 0 && dlist[i-1] == 0; i--) tail++;
+        printf("  PRAM_VIA_LIST: command 5 of %zu words in front of the list (%zu words; tail %zu free)\n",
+               pw.size(), l.size(), tail);
+        if (tail < l.size()) { printf("  the list would overflow its buffer\n"); return 1; }
+        l.insert(l.end(), dlist.begin(), dlist.end() - l.size());
+        dlist = l;
+    }
+    auto model_word = [&](uint32_t a) -> uint32_t {
+        if (a >= PRAM_MODEL && a < PRAM_MODEL + PRAM_WORDS) {
+            uint32_t k = PRAM_TEX + 2*(a - PRAM_MODEL);
+            return tgpram[k] | ((uint32_t)tgpram[k+1] << 16);
+        }
+        return (a < prom.size()) ? prom[a] : 0;
+    };
+
     Vm1_raster3d* d = new Vm1_raster3d;
     long cycles = 0;
     memset(fb, 0, sizeof fb);
@@ -99,7 +139,7 @@ int main(int argc, char** argv) {
 
     auto memories = [&]() {
         d->dl_data   = dlist[d->dl_addr & 0x7fff];
-        d->rom_data  = (d->rom_addr < prom.size()) ? prom[d->rom_addr] : 0;
+        d->rom_data  = model_word(d->rom_addr);
         d->tex_data  = tgpram[d->tex_addr & 0xfffff];
         d->pal_data  = palette[d->pal_addr & 0x1fff];
         d->xlat_data = xlat[d->xlat_addr & 0x7fff];

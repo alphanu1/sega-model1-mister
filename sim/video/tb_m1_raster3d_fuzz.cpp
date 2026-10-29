@@ -90,7 +90,17 @@ static bool load(const char* path, std::vector<uint16_t>& v, size_t words) {
     return true;
 }
 
+// Polygon RAM (command 5) sits in SDRAM beside tgp_ram: written through the
+// tex port at PRAM_TEX, read through the model port at PRAM_MODEL (m1_raster3d's
+// defaults). Writes inside its window are legitimate and are not escapes.
+static const uint32_t PRAM_TEX = 0xD0000, PRAM_MODEL = 0x468000, PRAM_WORDS = 0x8000;
+static long pram_writes = 0;
+
 static uint32_t rom_word(uint32_t a) {
+    if (a >= PRAM_MODEL && a < PRAM_MODEL + PRAM_WORDS) {
+        uint32_t k = PRAM_TEX + 2*(a - PRAM_MODEL);
+        return tgpram[k] | ((uint32_t)tgpram[k+1] << 16);
+    }
     if (a < prom.size()) return prom[a];
     // Past the polygon region the board reads whatever SDRAM holds there:
     // tgp_ram, the I/O firmware, the sound samples. Not zero, not constant.
@@ -145,7 +155,9 @@ static void tick(bool pixel_edge) {
     d->dl_valid = d->dl_req; d->rom_valid = rvalid;
     if (treq && d->tex_we) {
         tex_writes++;
-        if (taddr >= TGPRAM_WORDS) {
+        if (taddr >= PRAM_TEX && taddr < PRAM_TEX + 2*PRAM_WORDS) {
+            pram_writes++;
+        } else if (taddr >= TGPRAM_WORDS) {
             if (tex_escapes++ == 0) tex_escape_first = taddr;
             if (taddr >= 0xE0000 && taddr < 0xE2000) tex_iofw++;
             if (taddr >= 0xE2000 && taddr < 0xE2040) tex_eeprom++;
@@ -483,9 +495,10 @@ int main(int argc, char** argv) {
 
     printf("render3d_fuzz: episodes=%d wedged=%d stuck_without_reset=%d "
            "unrecovered_after_reset=%d tex_escapes=%ld (first at word %05x; onto the I/O firmware %ld, its EEPROM image %ld) "
-           "tex_dropped=%u ddr3_protocol_errors=%ld\n",
+           "tex_dropped=%u polyram_writes=%ld ddr3_protocol_errors=%ld\n",
            EPISODES, wedges, unrecovered_noreset, unrecovered_reset, esc_total,
-           tex_escape_first, tex_iofw, tex_eeprom, (unsigned)tex_dropped_total, ddr.protocol_errs);
+           tex_escape_first, tex_iofw, tex_eeprom, (unsigned)tex_dropped_total,
+           pram_writes, ddr.protocol_errs);
     bool pass = (unrecovered_reset == 0) && (unrecovered_noreset == 0) &&
                 (esc_total == 0) && (ddr.protocol_errs == 0);
     printf("%s\n", pass ? "PASS" : "FAIL");

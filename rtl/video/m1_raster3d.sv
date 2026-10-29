@@ -166,7 +166,19 @@ module m1_raster3d #(
   // The scan line a finished frame is shown from (frame buffer only). Late in
   // the vertical blank, so a draw has as long as possible; early enough that
   // the frame's first lines are fetched before line 0 is drawn.
-  parameter int unsigned PUB_LINE = 416
+  parameter int unsigned PUB_LINE = 416,
+  // POLYGON RAM. Display-list command 5 uploads 32-bit model words into it and
+  // an object whose poly_adr has bit 23 set is read from it instead of the
+  // polygon ROM (model1_v.cpp push_object, `if (poly_adr & 0x800000)`). It
+  // lives in SDRAM beside tgp_ram, so it is written through the tex port and
+  // read through the ROM port, and these two give its place in each one's
+  // address space: PRAM_TEX is its first 16-bit word as a tgp_ram index, and
+  // PRAM_MODEL its first 32-bit word as a polygon-ROM word address. Both must
+  // name the same SDRAM words; m1_integrated derives them from one base.
+  // 32 K model words (0x8000). The defaults are aligned so both sums below
+  // are concatenations once folded, but nothing depends on it.
+  parameter logic [19:0] PRAM_TEX   = 20'hD0000,
+  parameter logic [22:0] PRAM_MODEL = 23'h468000
 ) (
   input  logic        clk,            // the 3D clock, 58.95 MHz
   input  logic        rst_n,
@@ -414,6 +426,9 @@ module m1_raster3d #(
   logic        vspec;
   logic [31:0] obj_tex, obj_size;
   logic [31:0] obj_poly /* verilator public_flat_rd */;
+  // The model address the geometry reads: obj_poly's ROM address, or the
+  // polygon RAM's window in the ROM port's space when bit 23 is set.
+  logic [22:0] obj_padr;
   logic [31:0] old_z;
 
   // ---------------------------------------------------------------- list walk
@@ -528,6 +543,16 @@ module m1_raster3d #(
   // tgp_ram's size in words: MAME's make_unique_clear<uint16_t[]>(0x100000-0x40000).
   localparam int unsigned TGP_RAM_WORDS = 32'hC0000;
 
+  // Command 5's state: the upload's base as a polygon RAM index, and the high
+  // half of the word being written - a 32-bit model word is two writes on the
+  // 16-bit tex port, low half first (the ROM port reads the even SDRAM word
+  // as bits 15:0).
+  logic [14:0] pr_base;
+  logic        pr_base_ok;
+  logic        pr_hi;
+  logic [15:0] pr_hi_data;
+  wire  [16:0] pr_idx = {2'b00, pr_base} + {1'b0, lw_ev_idx};
+
   assign tex_addr      = w_tex_req ? w_tex_addr : geo_tex_addr;
   assign tex_req       = w_tex_req || geo_tex_req;
   assign tex_we        = w_tex_req;
@@ -566,7 +591,7 @@ module m1_raster3d #(
     .viewx(vviewx), .viewy(vviewy),
     .light_x(vlx), .light_y(vly), .light_z(vlz),
     .spec_enable(vspec), .frame_odd(frame_odd),
-    .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr(obj_poly),
+    .start(geo_start), .in_tex_adr(obj_tex), .in_poly_adr({9'd0, obj_padr}),
     .in_size(obj_size), .busy(geo_busy), .done(geo_done),
     .planes_wait(geo_planes_wait), .plane_left(geo_plane_left),
     .dbg_clip_in(dbg_clip_in), .dbg_clip_out(dbg_clip_out),
@@ -1625,7 +1650,8 @@ module m1_raster3d #(
       lb_we <= 1'b0; lb_waddr <= '0; lb_wdata <= '0; lp_base <= '0;
       w_tex_req <= 1'b0; w_tex_addr <= '0; w_tex_data <= '0; tex_base <= '0;
       tex_base_ok <= 1'b0; dbg_tex_drop <= '0;
-      obj_tex <= '0; obj_poly <= '0; obj_size <= '0;
+      obj_tex <= '0; obj_poly <= '0; obj_size <= '0; obj_padr <= '0;
+      pr_base <= '0; pr_base_ok <= 1'b0; pr_hi <= 1'b0; pr_hi_data <= '0;
       mat_we <= 1'b0; mat_idx <= '0; mat_data <= '0;
       dbg_mat_race <= '0; dbg_plane_race <= '0; pw_d <= 1'b0;
       dbg_lw_stall <= '0; lws_pre <= '0;
@@ -1708,7 +1734,16 @@ module m1_raster3d #(
       // 109,875 such writes in its first eight episodes). The sum is taken one
       // bit wider so an offset that wraps the 20-bit field is out of range
       // too, not folded back in. Dropped writes are counted.
-      if (w_tex_req && tex_valid) w_tex_req <= 1'b0;
+      if (w_tex_req && tex_valid) begin
+        if (pr_hi) begin
+          // the polygon RAM word's high half, at the next (odd) SDRAM word
+          w_tex_addr[0] <= 1'b1;
+          w_tex_data    <= pr_hi_data;
+          pr_hi         <= 1'b0;
+        end else begin
+          w_tex_req <= 1'b0;
+        end
+      end
       if (lw_ev_valid && lw_ev_kind == 8'h04) begin
         if (!lw_ev_body) begin
           if (lw_ev_idx == 16'd0) begin
@@ -1720,6 +1755,31 @@ module m1_raster3d #(
           w_tex_req  <= 1'b1;
           w_tex_addr <= tex_base + {4'd0, lw_ev_idx};
           w_tex_data <= lw_ev_data[15:0];
+        end else if (dbg_tex_drop != 16'hffff) begin
+          dbg_tex_drop <= dbg_tex_drop + 16'd1;
+        end
+      end
+
+      // ---- polygon RAM uploads, command 5
+      //
+      // m_poly_ram[adr - 0x800000 + i] = readi(...), 32-bit words. Bounded the
+      // way command 4 is: the window is 32 K words, and an upload that does not
+      // start inside it, or runs past its end, is dropped and counted in the
+      // same counter - the tex port is SDRAM, and just above this window is the
+      // I/O board's firmware. Wing War uploads 0x112 words at boot and Star
+      // Wars 0x58d (MAME, 9,000 frames each); nothing else uses command 5.
+      if (lw_ev_valid && lw_ev_kind == 8'h05) begin
+        if (!lw_ev_body) begin
+          if (lw_ev_idx == 16'd0) begin
+            pr_base    <= lw_ev_data[14:0];
+            pr_base_ok <= (lw_ev_data[31:15] == 17'h00100);   // 0x800000-0x807fff
+          end
+        end else if (pr_base_ok && pr_idx[16:15] == 2'b00) begin
+          w_tex_req  <= 1'b1;
+          w_tex_addr <= PRAM_TEX + {4'd0, pr_idx[14:0], 1'b0};
+          w_tex_data <= lw_ev_data[15:0];
+          pr_hi      <= 1'b1;
+          pr_hi_data <= lw_ev_data[31:16];
         end else if (dbg_tex_drop != 16'hffff) begin
           dbg_tex_drop <= dbg_tex_drop + 16'd1;
         end
@@ -1934,7 +1994,14 @@ module m1_raster3d #(
             if (lw_ev_kind == 8'h41) dbg_hud_obj <= dbg_hud_obj + 16'd1;
             case (lw_ev_idx)
               16'd0: obj_tex  <= lw_ev_data;
-              16'd1: obj_poly <= lw_ev_data;
+              16'd1: begin
+                obj_poly <= lw_ev_data;
+                // MAME indexes m_poly_ram with poly_adr & 0x7fffff; the RAM
+                // here is 32 K words, so bits 22:15 of a RAM address are
+                // dropped (no game sets them: Wing War's sky is at 0xa7).
+                obj_padr <= lw_ev_data[23] ? (PRAM_MODEL + {8'd0, lw_ev_data[14:0]})
+                                           : lw_ev_data[22:0];
+              end
               default: begin
                 obj_size <= lw_ev_data;
                 pst      <= P_OBJ;

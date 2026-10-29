@@ -715,6 +715,15 @@ module m1_integrated (
   // flip-flops without saying so.
   localparam logic [25:1] POLY_BASE    = 25'h420000;
   localparam logic [25:1] TGP_RAM_BASE = 25'hC20000;
+  // POLYGON RAM, written by display-list command 5 and read by any object
+  // whose poly_adr has bit 23 set - Wing War's sky. 32 K model words = 64 K
+  // SDRAM words, 0xCF0000-0xCFFFFF: above the display lists' upper halves
+  // (DLHI_BASE, to 0xCE7FFF) and below the I/O firmware (IOFW_BASE 0xD00000).
+  // Written through the tex port (p6), read through the model port (p5), so
+  // m1_raster3d is given its place in both address spaces.
+  localparam logic [25:1] PRAM_BASE    = 25'hCF0000;
+  localparam logic [19:0] PRAM_TEX     = 20'(PRAM_BASE - TGP_RAM_BASE);
+  localparam logic [22:0] PRAM_MODEL   = 23'((PRAM_BASE - POLY_BASE) >> 1);
 
   // The coprocessor's reset, on its new clock. It MUST keep the rom_loaded
   // gate: wiring the TGP to the raw reset once let it execute program RAM while
@@ -830,7 +839,7 @@ module m1_integrated (
     else           r3_dl_lo_valid <= r3_dl_req && !r3_dl_hi;
   end
 
-  m1_raster3d u_raster3d (
+  m1_raster3d #(.PRAM_TEX(PRAM_TEX), .PRAM_MODEL(PRAM_MODEL)) u_raster3d (
     .clk(clk_3d), .rst_n(rst_n_3d), .mem_rst_n(rst_sync_m3d[1]),
     // the ROM loaded, on clk_3d: the TGP's own release (rst_n_tgp)
     .fb_go(rst_n_tgp),
@@ -944,7 +953,12 @@ module m1_integrated (
   logic        rom_cache_ok;
   logic        rom_hit_ack;
 
-  wire rom_hit = rom_cache_ok && (rom_tag == rom_cache_tag);
+  // NEVER FROM THE CACHE FOR POLYGON RAM: it is written through p6, which
+  // this line cannot see, so a line cached from it could be stale after the
+  // next command-5 upload. Its reads go to SDRAM every time (one object a
+  // frame in Wing War, ~110 words).
+  wire rom_pram = (r3_rom_addr[22:15] == PRAM_MODEL[22:15]);
+  wire rom_hit = rom_cache_ok && (rom_tag == rom_cache_tag) && !rom_pram;
   // A held request must not be acknowledged twice for the same word: the
   // walker advances its own address on the ack, so one cycle is one word.
   wire rom_hit_now = r3_rom_req && rom_hit && !rom_hit_ack;
