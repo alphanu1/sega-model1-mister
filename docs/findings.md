@@ -20,6 +20,150 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — WING WAR'S SKY IS IN POLYGON RAM: COMMAND 5 AND POLY_ADR BIT 23 WERE NEVER BUILT
+
+Branch `wingwar-sky`, on `main` (5cba113). Ben: Wing War's sky is flat grey
+on the board where MAME draws a blue gradient (cyan at the horizon, deeper
+blue above), and flat on a desert stage. The bench frame
+(`build/wt-wingwar/build/wingwar_bench_f625.png`) is grey too, with a pale
+wash over the bottom fifth that MAME does not have.
+
+### How the sky is made (MAME, headless)
+
+**Not a tilemap, not a backdrop register, not lighting: a 3D object whose
+model lives in polygon RAM.**
+
+- `tools/mame_geo_census.lua`, Wing War cold, 6,000 frames of attract and
+  9,000 with a coin, Start and the throttle held: every list draws **one
+  object with poly_adr bit 23 set** - `tex=0005b471 poly=008000a7 size=a`.
+  `push_object` reads such an object from `m_poly_ram` instead of the
+  polygon ROM (`if (poly_adr & 0x800000)`).
+- Polygon RAM is filled by display-list **command 5**
+  (`m_poly_ram[adr - 0x800000 + i] = readi(...)`, 32-bit words). Wing War
+  uploads **0x112 words at 0x800000, at boot only** (MAME frames 264-277 of
+  a cold start, in lists with no objects) and never again in 9,000 frames.
+- What is uploaded at 0xa7 is a strip: a two-point header, then ten records
+  of flags `01081a01` (flag 0x1000 advances the colour word each record) at
+  y = 0, 35, 56, 73, 89, 106, 122, 138, 153 ... on a plane at z = 1000 -
+  ten horizontal bands, each the next colour word. That is the gradient: the
+  bands land on MAME's frame at rows 108, 115, 122, 137, 145, 152, 162, 178.
+- **Decisive: `tools/mame_polyram_probe.lua` NOPs the bit-23 object in both
+  lists every frame, and MAME's sky turns into exactly our flat grey** (frame
+  600; and at frame 1000 the desert, whose MAME sky is the same blue
+  gradient, goes grey too). The grey is the tile backdrop showing through
+  where no 3D is drawn.
+
+### The cause
+
+The core had neither half. `m1_listwalk` walked command 5 for its stride and
+nothing consumed the body; `m1_geo_walk` takes `in_poly_adr[22:0]`, so bit 23
+was dropped and the sky object was read from **polygon ROM word 0xa7** - some
+other model - with the sky's colour words.
+
+**The pale wash at the bottom is the same fault.** render3d on MAME's frame
+600 state, before the fix: no sky (nothing painted above the horizon), and
+rows ~355-384 painted (231,255,255) - exactly the gradient's lightest band
+colour, on whatever ROM model sits at 0xa7. After the fix the wash is gone.
+On the board the unpainted sky shows the grey backdrop; Ben's "flat orange"
+desert sky is presumably the same gap over a different backdrop or ROM
+model - inferred, not measured (no desert stage was captured with its own
+colours on our side).
+
+### Other games (MAME census)
+
+| game | command 5 | bit-23 objects | frames |
+|---|---|---|---|
+| Wing War | 0x112 words at boot | 1 per list (the sky) | 6,000 attract + 9,000 play |
+| Star Wars | 0x58d words at boot (f150-166) | **none** | 6,000 attract + 9,000 play |
+| Virtua Racing, Virtua Formula | none | none | 6,000 attract |
+| Virtua Fighter | none | none | 3,000 (2026-10-28 census) |
+| NetMerc | none | none | 9,000 with coin and trigger |
+
+VR's and VF's skies are tilemap content (the sky-and-sea layers, findings
+2026-08-19 onward) and never touch this path. Wing War is the only game that
+draws from polygon RAM. Also seen: Wing War issues **command 2 (direct
+polygons)** - two one-quad commands per list - and Star Wars 1,287 of them in
+play; the core still does not draw command 2. At frame 600 they are not
+visible (MAME with only the sky removed equals our picture), so they are not
+this fault. Open.
+
+### The fix
+
+Polygon RAM is **in SDRAM, not M10K**: 32 K model words at SDRAM words
+0xCF0000-0xCFFFFF, between the display lists' upper halves (to 0xCE7FFF) and
+the I/O firmware (0xD00000). Written by command 5 through the tex port (p6),
+two 16-bit writes a word, low half at the even word; read through the model
+port (p5) at model word 0x468000 + index, which is the same SDRAM. No M10K
+(the brief: 537/553), and Star Wars' 1,421-word upload, which a 512-word M10K
+would not have held, fits.
+
+- `m1_raster3d`: parameters `PRAM_TEX`/`PRAM_MODEL`; a command-5 handler
+  beside command 4's, bounded the same way (an upload outside
+  0x800000-0x807fff is dropped and counted in `dbg_tex_drop`); the second
+  half rides the same held `w_tex_req`, so the walk stays stalled; the object
+  latch maps a bit-23 poly_adr to `PRAM_MODEL + adr[14:0]`.
+- `m1_integrated`: `PRAM_BASE` 0xCF0000, the two derived parameters, and
+  **the model port's one-line cache never answers for polygon RAM** - it is
+  written through p6, which that cache cannot see.
+- `tools/mame_dump_frame.lua` dumps `polyram.bin`; `tb_m1_raster3d` models
+  the shared SDRAM (a model read in the window returns the two tex words),
+  preloads `polyram.bin`, and with `PRAM_VIA_LIST=1` puts it in front of the
+  list as one command 5 instead, so the module writes it itself.
+  `tb_m1_raster3d_fuzz` counts window writes as polygon RAM, not escapes.
+
+### Proof
+
+render3d (clk_3d 58.947 MHz) on MAME's own state:
+
+| frame | before: pixels >16/channel off MAME | after | sky |
+|---|---|---|---|
+| Wing War 600 (airbase) | 115,792 | 29,133 (2D text, the horizon backdrop) | MAME's ten bands, colour for colour (RGB565); two band edges one row higher (136/137, 144/145) |
+| Wing War 1000 (desert) | no sky | | MAME's gradient |
+
+- `PRAM_VIA_LIST=1` (the 273-word upload written by the module through the
+  tex port, polygon RAM otherwise empty): **byte-identical** to the preloaded
+  render.
+- Byte-identical before/after: Virtua Racing 2270 and 5460, Star Wars 2000
+  and 16050 (the Death Star run), NetMerc 3600.
+- Images: `build/wt-wwsky/build/cmp/ww600_mame_before_after.png` and
+  `ww1000_mame_before_after.png` (MAME | before | after).
+- **Whole core, from cold** (`make m1_frame GAME=wingwar FRAME_CYCLES=820000000
+  FRAME_PPM=25`, EPR-16891): the boot upload goes through the real p6 / SDRAM
+  model / p5 path, and frame 625 - the bench's airbase scene, MAME's
+  "2 credits to 1PLAY" frame - has the gradient sky and the ground at the
+  bottom: `build/wt-wwsky/build/wingwar_bench_after_f625.png`, and
+  `cmp/bench_f625_mame_before_after.png` beside MAME and the wingwar-boot
+  frame. Pixels of the wash colour (231,255,255) in rows 300-383: 16,974
+  before, 0 after. Not halted, 650 frames in 760 M cycles.
+- `make render3d_fuzz`: 40 episodes PASS, 0 wedged, 0 tex escapes, cold-start
+  hash `60b228b6a6b0fbe3` as before. `make test`: 70 result lines, all
+  fails=0. `make elab` clean; `lint_top` only its two pre-existing warnings.
+
+### Fit (Quartus 17.0, three seeds, bb4b7bf's RTL)
+
+| seed | ALM | M10K | clk_3d | clk_sys | clk_cpu | pll_hdmi | worst hold (ours) |
+|---|---|---|---|---|---|---|---|
+| 3 | 37,299 (-47) | 537 | **+0.193** (was -0.289) | +1.026 | +5.532 | -0.292 | +0.239 |
+| **5** | **37,504 (+58)** | **537** | **+0.676** (was +0.197) | **+1.201** | **+5.809** | **+0.172** | **+0.246** |
+| 11 | 37,284 (+72) | 537 | **+0.103** (was -0.018) | +1.043 | +5.667 | -0.030 | +0.181 |
+
+(Bracketed: against test-all 049c8a3 on the same seed.) **Cost: about +30 ALM
+on average, no M10K, no DSP.** clk_3d is positive on all three seeds where it
+missed on two before - placement noise, not something this change did on
+purpose; do not read it as margin gained. Seed 5 closes every clock, setup,
+hold, recovery (+4.037) and removal (+0.626):
+`build/wt-wwsky/build/Model1_wwsky_seed5_37504.rbf`, md5
+`12c503176618f4e40d9133d0cb859346`, reports in
+`build/wt-wwsky/build/wwsky_s5_reports/`.
+
+### Wrong turn
+
+findings' test-all entry called the grey sky "bench-only" because Ben had
+seen it correct on the wingwar-boot rbf. It was never measured: that RTL had
+no polygon RAM either, so it could not have drawn the sky. Corrected in place.
+
+---
+
 ## 2026-10-29 — TEST-ALL: FOUR BRANCHES IN ONE BUILD; WHAT THE MERGE CHANGED, AND WHAT IT DID NOT
 
 Branch `test-all` (local, not pushed), on `main` 1daae7a, merging in order
@@ -101,6 +245,11 @@ names only `swaj.zip`, with no parent fallback.
   bench**; Ben has since seen it correct on the board (wingwar-boot rbf), so
   it is a bench-only difference, not a core fault - and the display-list fix
   did not change it.
+  **CORRECTED 2026-10-29 (`wingwar-sky`): this was wrong. The grey sky is a
+  core fault, not a bench one** - Ben sees it grey on the board too (main
+  5cba113), and flat on a desert stage. The sky is an object read from
+  POLYGON RAM (command 5, poly_adr bit 23), which the core did not have; see
+  the entry "WING WAR'S SKY IS IN POLYGON RAM" above.
 - **NetMerc**: render3d on the three gameplay frames (3000, 3600, 3900) is
   byte-identical to netmerc-layers' "after" pictures (0.38/0.36/0.25% off
   MAME's surfaces).

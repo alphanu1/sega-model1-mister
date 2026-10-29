@@ -17,9 +17,9 @@ main on his word; no release yet. 15 kHz output not tested.
   same family as the Death Star. (On `swa-sound` alone it was missing.)
 - **Star Wars, the first big ship:** lines in the boosters, like overruns or
   seams. Still there with the 3D frame buffer, so not late bands.
-- **Wing War's sky is grey** on this build. Ben is not sure it is wrong; MAME
-  draws a cyan gradient and the bench shows grey. Needs checking against real
-  footage.
+- **Wing War's sky is grey** on this build. **It is wrong, and it is fixed on
+  branch `wingwar-sky`** (polygon RAM - see the top entry below). Ben also
+  saw it grey on the board; the "bench-only" note that stood here was wrong.
 - **NetMerc in play:** 3D layering still wrong and the camera feels misplaced
   (`netmerc-layers` fixed attract only); under investigation (`netmerc-play`).
 - **NetMerc sound:** nearly silent even when right, because MAME's
@@ -29,6 +29,79 @@ main on his word; no release yet. 15 kHz output not tested.
   polygon ROMs load at 0x600000 (the Wing War clones' fault); one line in
   gen_mra.py's COPRO_DATA.
 - **15 kHz MRAs:** untested on this build.
+
+---
+
+# 2026-10-29: WING WAR'S SKY - POLYGON RAM (COMMAND 5, POLY_ADR BIT 23). FITTED; NOT ON THE BOARD.
+
+Branch **`wingwar-sky`** (local, not pushed), on `main` 5cba113.
+`docs/findings.md` 2026-10-29 "WING WAR'S SKY IS IN POLYGON RAM" has the
+evidence.
+
+**How the sky is made.** One 3D object per list, `poly=008000a7 size=a`: bit
+23 set, so MAME reads its model from POLYGON RAM, which display-list command 5
+fills (0x112 words at 0x800000, uploaded only at boot, MAME frames 264-277).
+The model is ten horizontal bands on a plane at z=1000, each the next colour
+word - the gradient. NOP that object in MAME and its sky turns into our flat
+grey (the tile backdrop).
+
+**Cause.** The core had no polygon RAM: command 5's body was walked and
+dropped, and `m1_geo_walk` used `poly_adr[22:0]`, so the sky object was drawn
+from polygon ROM word 0xa7 with the sky's colours. That is also **the pale
+wash over the bottom of the bench frame** - the same fault, not a bench
+artefact (16,974 wash pixels in rows 300-383 before, 0 after).
+
+**Fix (bb4b7bf).** Polygon RAM in SDRAM at 0xCF0000-0xCFFFFF (32 K model
+words), between DLHI and the I/O firmware: written by command 5 through the
+tex port (two 16-bit writes a word), read through the model port at model
+word 0x468000+index; the model port's one-line cache never answers for it.
+Bounded like command 4 (out-of-window uploads dropped, counted in
+`dbg_tex_drop`). No M10K.
+
+**Other games.** Only Wing War draws from polygon RAM (MAME census, attract
+and play): Star Wars uploads 0x58d words at boot and never draws a bit-23
+object; VR, VFormula, VF and NetMerc use neither. render3d before/after is
+byte-identical on VR 2270/5460, Star Wars 2000/16050, NetMerc 3600.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold (worst) |
+|---|---|---|---|---|---|---|---|---|---|
+| **wingwar-sky s5** | **bb4b7bf** | **37,504** | **537** | **53** | **+0.676** | **+1.201** | **+5.809** | **+0.172** | **+0.246** |
+| wingwar-sky s3 | bb4b7bf | 37,299 | 537 | | +0.193 | +1.026 | +5.532 | -0.292 | +0.239 |
+| wingwar-sky s11 | bb4b7bf | 37,284 | 537 | | +0.103 | +1.043 | +5.667 | -0.030 | +0.181 |
+| test-all s5 (base) | 049c8a3 | 37,446 | 537 | 53 | +0.197 | +1.320 | +6.995 | +0.327 | +0.242 |
+
+**For the board: `build/wt-wwsky/build/Model1_wwsky_seed5_37504.rbf`**, md5
+`12c503176618f4e40d9133d0cb859346`; reports in
+`build/wt-wwsky/build/wwsky_s5_reports/`. Same MRAs as main.
+
+## What to check on the board
+
+- Wing War attract: the airbase and desert scenes with a blue gradient sky
+  (cyan at the horizon), and no pale band across the bottom of the screen.
+- The desert stage Ben saw "flat orange": expect a gradient. Its colour on
+  our side was not measured (no gameplay desert frame was captured).
+- Everything else should be unchanged (the path is only reached by command 5
+  and bit-23 objects).
+
+## How to repeat it
+
+- MAME: `tools/mame_geo_census.lua` (GAME=wingwar, `-nvram_directory` on an
+  empty dir), `tools/mame_polyram_probe.lua` (KILL=1 removes the sky),
+  `tools/mame_dump_frame.lua` (DUMP_FRAME=600 / 1000; now writes polyram.bin).
+- render3d: `CLK3D=58947368 ./obj_render3d/tb_render3d <dump> build/rom/wingwar_stream.bin`;
+  `PRAM_VIA_LIST=1` makes the module write the polygon RAM itself from a
+  command 5 put in front of the list (byte-identical to the preload).
+- Whole core: `make m1_frame GAME=wingwar FRAME_CYCLES=820000000 FRAME_PPM=25`
+  (~85 min to frame 650).
+
+## Not done / open
+
+- **Command 2 (direct polygons) is still not drawn.** Wing War issues two
+  one-quad commands a list, Star Wars 1,287 in 9,000 frames of play. Not
+  visible in Wing War's frame 600 (MAME minus the sky equals our old picture),
+  so not this fault; worth a look for Star Wars' cockpit/targeting.
+- `make test`'s `m1_geometry` reads 11,776 here because `build/real_objects.txt`
+  is absent in this worktree (as before).
 
 ---
 
@@ -84,7 +157,8 @@ War's index 2 is model1io2's EPR-16891; Star Wars' index 5 carries the DSB).
   0x600000) - pre-existing, reproduced by the generator, fix is one line in
   `COPRO_DATA`.
 - `m1_sound_usart` has no receive path; MAME feeds the 68000's TX to it.
-- Wing War's sky is grey on the bench only (correct on the board).
+- Wing War's sky: NOT bench-only, as this said - it is a core fault, fixed on
+  `wingwar-sky` (polygon RAM).
 
 ## make test (expected block for the instructions file)
 
