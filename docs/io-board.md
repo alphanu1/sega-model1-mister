@@ -817,6 +817,18 @@ its behaviour is unobservable to the game.
 
 # THE SECOND I/O BOARD: model1io2 (2026-09-16)
 
+**BUILT FOR WING WAR, 2026-10-29** (branch `wingwar-boot`): `m1_ioz80` with
+`io2` set is this board, and the CTC is `m1_ctc`. What the firmware actually
+touches, from a MAME census of EPR-16891's memory and I/O space over 700
+frames: the 315-5338A (8000h-800Eh), the board port 8040h, DSW1 8080h, the
+ADC 8200h-8207h, RAM F000h up; CTC channels 0-2 (channel 1 is the only
+interrupt: A5h / 26h, IM 2, vector EAh -> 08FDh), SIO setup writes and one
+TX-empty poll, PIO data reads (DSW2/3), the watchdog's disable sequence. Not
+the FPGA at 8100h, not the LCD beyond its port writes. EPR-16891 is 8 KB of
+code. The rest of this section is the 2026-09-16 plan, kept as written;
+findings.md 2026-10-29 has the result, including why the board runs at half
+of clk_cpu rather than at its own 0.6144 ratio.
+
 **Wing War and Sega NetMerc do not use the I/O board this core implements.**
 Measured from `model1.cpp`: both call `SEGA_MODEL1IO2(config.replace(), ...)`,
 which swaps the whole device out rather than changing its firmware.

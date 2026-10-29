@@ -20,6 +20,162 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — WING WAR NEVER RAN: THE V60 COULD NOT EXECUTE FROM RAM, AND IT HAD THE WRONG I/O BOARD
+
+Branch `wingwar-boot`, on `main` (1daae7a). Ben: Wing War does not boot, and
+he thinks it never has. The board showed a grey backdrop, "credit 0", the SEGA
+logo, no 3D and no response to Start (HANDOFF 2026-09-16, 3b).
+
+**Two faults, found in the wrong order.** The I/O board was found first, from
+`io-board.md`'s 2026-09-16 note, and fixed - and the bench then crashed at
+**exactly the same instruction** (PC 40D007, 237 vblanks into the game) with
+the right board as with the wrong one. That identity is what said the crash
+was something else. The second fault is the one that stopped the game.
+
+### Fault 1, the crash: instruction fetches from RAM went to ROM
+
+Wing War copies routines into RAMA and calls them: MAME's trace runs
+40D000h-40D014h and 40DC00h-40DCCEh from the first attract frame, and a
+write tap shows them written once, at frame 477 of a cold boot, and never
+rewritten in 1,500 frames. **Our fetch path only knew the ROM mapping**:
+`m1_main` drove `if_sdram_addr` from `m1_decode`'s `rom_addr`, which is zero
+outside ROM, so a fetch from 40D000h read SDRAM word 0 - the first bytes of
+the program. The frame bench's new PC ring (printed on a halt) shows the
+last instructions as `... 0220EE 0220F2 40D000` and the halt at 40D007. No
+other title here executes from RAM, which is how it survived.
+
+Fix: fetches from RAMA/RAMB take the data port's mapping (NVRAM_BASE /
+WRAM_BASE), and are **not cached** by `m1_fetch_bridge`, whose comment had
+recorded the assumption this broke - "the V60 ... never executes what it
+wrote ... If either of those ever stops being true this needs a real
+invalidate". Uncached rather than an invalidate port: the RAM routines are
+about 0.1% of the instructions in MAME's trace (1,959 of ~1.4 M over 60
+frames), and an invalidate would need a second tag read. `tb_m1_fetch_bridge`
+gained a section for it (175,156 -> 175,228 checks).
+
+### Fault 2: the wrong I/O board
+
+### Reproduced on the bench first
+
+`tb_m1_frame GAME=wingwar` with the I/O board firmware every MRA has always
+sent (EPR-14869) ends on **exactly the board's picture** - grey, `credit 0`,
+SEGA logo, no 3D - and at 367 M cycles the **V60 halts at PC 40D007**, in its
+own backup RAM. So "boots" in the 2026-09-16 entry meant the 2D came up; the
+game itself never ran. (That halt is fault 1. With EPR-16891 the run halts
+at the same PC after the same 237 vblanks, 2.2 board-seconds later.)
+
+### The cause, measured
+
+**`model1.cpp`'s `wingwar()` replaces the I/O board** with
+`SEGA_MODEL1IO2` and BIOS `epr16891` (io-board.md had recorded this on
+2026-09-16 and left it unbuilt). EPR-14869 answers the V60's boot exchange,
+but **it does not keep Wing War's settings block**. The exchange, from a new
+V60-side DPRAM tap in MAME (cold nvram) and the matching `DPTRACE` in the
+frame bench:
+
+    V60 writes "SEGA" at 0x1a, flag 0x20 = 1, waits for the board's 0x21 = 40h
+    command 3   board copies its 128-byte settings block to 0x100
+    (blank)     V60 writes its defaults ("S32AF0", 42 5E 01 ...) to 0x100
+    command 2   board stores them   (MAME: 2.2 s, an EEPROM write per word)
+    command 3   V60 reads them back, then command 1 every frame (inputs)
+
+On EPR-14869 the block read back after command 2 is right for 34 bytes and
+**FF from DPRAM 0x122 on**, where the game wrote 00 - the first board's
+EEPROM layout is not this game's - and the game runs on that block as its
+settings. Reading 0x0e also differs: MAME 0x0F, EPR-14869 0xFF.
+
+**WRONG AT FIRST: this was written down as the cause of the crash.** It is
+not - the right board crashes identically (fault 1). It is a real fault in
+its own right: the settings are the game's, the board answers in MAME's
+time, and Wing War's stick, throttle and buttons reach it through this
+board's firmware, not EPR-14869's.
+
+### The fix: m1_ioz80 is model1io2 for game id 3
+
+Ruled by `model1io2.cpp`, and by EPR-16891 itself (disassembled with
+`tools/z80dasm.py`; a MAME census of the I/O Z80's memory and I/O space
+named every device it touches):
+
+- **memory map**: ROM 0000-7FFF (EPR-16891 has only 8 KB of code), RAM
+  E000-FFFF, the 315-5338A at 8000h, board/jumpers/EEPROM DO at 8040h, DSW1
+  at 8080h, the MSM6253 at 8200h-8207h;
+- **315-5338A ports the other way round**: IN.0/1/2 on PA/PB/PC, reads that
+  honour the direction register (the tick handler read-modify-writes PG);
+  EEPROM on PF (bit 5 CLK, 4 CS, 6 DI); the ADC's secondary switch on PG6;
+- **the TMPZ84C015's I/O space**: SIO status (the firmware's one poll waits
+  on TX-empty), PIO A/B = DSW2/DSW3, and **a CTC**. EPR-16891 sets IM 2 with
+  I = 0 and does ALL of its work in channel 1's interrupt (control A5h, time
+  constant 26h: every 9,728 Z80 clocks, vector EAh -> 08FDh). The CTC is a new
+  module, `m1_ctc`, in m1_ioz80.sv with its own bench (`make test_ctc`);
+- **the EEPROM starts blank** for this board: no Wing War set has a
+  93c45.bin, so MAME's part is erased, and the SDRAM block the preload reads
+  would otherwise hold whatever game was loaded before.
+
+The MRAs send EPR-16891 from `model1io2.zip` on index 2.
+
+### Three things that were wrong on the way
+
+1. **The board's own clock ratio broke the fetch stall.** model1io2's Z80 is
+   9.8304 MHz against the V60's 16: 0.6144 of a V60 clock. At that rate two
+   clock enables land on consecutive clocks, and **tv80s registers /RD and
+   /MREQ a clock after the core moves A**, so in that clock `fw_miss` cannot
+   see the new read and the second enable carries the Z80 through T1 on a
+   stale cache word. Measured in the new `tb_m1_ioz80`: a firmware fetch for
+   A = F001h, then RST 38h forever, straight after the LDIR at 0611h. The
+   board runs at 1/2 of clk_cpu instead (81% of its real speed against the
+   V60; the CTC counts the same enable, so it is uniformly slower).
+2. **I/O reads and the interrupt vector were lost in T2.** The same one-clock
+   lag: /IORQ is low from T1+1 to T2+1, the core samples the bus through all
+   of T2, so a read decoded from /IORQ handed the Z80 the memory map's byte in
+   T2's last clock. The vector came back as 08h (the 315-5338A status) and the
+   first tick sent the firmware to CA30h. Each kind of cycle is now held from
+   its strobe until the next memory cycle; INTA is /IORQ with neither /RD nor
+   /WR. RETI is detected from opcode fetches whose /M1 is taken on the read's
+   FIRST clock, because tv80's /M1 rises a clock before its /RD.
+3. **The Wing War clone MRAs never had the coprocessor data ROM.**
+   `tools/gen_mra.py` lists copro data for parent sets only, so the US, Japan
+   and R360 MRAs sent the polygon ROMs to stream 0x600000, where the core reads
+   the TGP's data ROM, and no data ROM or sincos tables at all. MAME's clones
+   carry the parent's mpr-16739..16742. Hand-fixed; checked with stand-in zips
+   (the parent's files under the clones' names) by `tools/verify_mra.py`:
+   every byte of all three now matches the packer, and the US one did not
+   before (358,000+ differing runs). US and Japan also take MAME's
+   epr-16751.7 sound program, not the World set's epr-17126.7.
+
+### Proof
+
+- `make ioz80` (new, `sim/io/tb_m1_ioz80.sv`): the board alone on EPR-16891
+  against MAME's boot exchange. 14/14: ready after 21,834,262 board clocks
+  (MAME 2.15 s = 21.1 M), command 2 in 22.1 M (MAME 2.2 s), the block reads
+  back as written, inputs 80 80 01 / FF FF FF / 0E = 0F exactly as MAME.
+  Negative control `IOZ80_IO2=0` with EPR-14869: the block does not survive
+  (128 of 128 bytes), 0x0e = FF.
+- The first board is unchanged: the same bench on EPR-14869 against main's
+  m1_ioz80.sv and this one gives identical clock counts at every step
+  (366,411 / 3,432 / 312,268 / 721,767).
+- `tb_m1_frame GAME=wingwar` (FRAME_IO2=1, EPR-16891, 600 M cycles): the
+  exchange is MAME's cold boot step for step - ready f=210, command 3, the
+  defaults written, command 2 accepted at f=321, the re-read block identical
+  to MAME's in all 128 bytes, the per-frame command 1 from f=339 with
+  0x0e = 0F. **And then the same halt at 40D007, f=585** - which is what
+  sent the search to fault 1.
+- With both fixes (2e99f55), the same run passes f=585 and shows the attract
+  airbase scene with its 3D at frame 625, as MAME does (MAME cold: black
+  at f=455, the scene by f=500; ours starts 79 frames later because the
+  download and settle precede the V60's release). The run reaches 1,000 M
+  cycles without halting: 484 vblanks, 81 objects / 1,134 quads, the city
+  scene with the helicopter at the end. **The sky is grey where MAME's is a
+  cyan gradient** - open.
+- `make test` all fails=0 (one new line, `m1_ctc: checks=50 fails=0`;
+  `m1_fetch_bridge` 175,156 -> 175,228 checks). `tools/run_m1_main.sh`:
+  data_fetch, rom_readonly and muldiv_memory pass; the three FAST_IFETCH
+  configurations fail as they did before this branch (findings 2026-10-28).
+- Fit, Quartus 17.0 seed 3: 36,223 ALM, 523 M10K, 50 DSP; setup clk_3d
+  +0.548, clk_sys +1.112, clk_cpu +5.398, pll_hdmi +0.181; hold all
+  positive (worst clk_sys +0.185).
+
+---
+
 ## 2026-10-28 (b) — THE 3D OVERRUN IS BANDS FILLED PAST THE BEAM ON THE BEGINNER COURSE'S HILLS; THE 3D NOW DRAWS WHOLE INTO DDR3
 
 Branch `3d-overrun`, written on `alm-save` (0ac55df) and rebased onto

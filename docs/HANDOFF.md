@@ -1,3 +1,118 @@
+# 2026-10-29: WING WAR RUNS ON THE BENCH - THE V60 COULD NOT EXECUTE FROM RAM, AND THE I/O BOARD WAS THE WRONG ONE. NOT ON THE BOARD YET.
+
+Branch **`wingwar-boot`** (local, not pushed), on `main` (1daae7a).
+`docs/findings.md` 2026-10-29 has the evidence.
+
+**Cause 1, the crash.** Wing War copies routines into RAMA (40D000h,
+40DC00h) at the start of attract and calls them. The instruction fetch only
+knew the ROM mapping, so those fetches read SDRAM word 0 and the V60 halted
+at 40D007h, 237 vblanks into the game. That is the board's "grey backdrop,
+credit 0, SEGA logo, no 3D": the 2D was drawn, then the CPU stopped. Fixed in
+`m1_main` (RAM fetches take the data port's mapping) and `m1_fetch_bridge`
+(RAM fetches are not cached; the cache has no invalidate). 2e99f55.
+
+**Cause 2, the I/O board.** Wing War's cabinet has `model1io2` (EPR-16891),
+not EPR-14869. EPR-14869 does not keep the game's settings block (FF from
+DPRAM 0x122 on, where the game wrote 00). `m1_ioz80` is now model1io2 for
+game id 3: its map, the 315-5338A's ports bound the other way, the EEPROM on
+port F and blank, and a CTC (`m1_ctc`) whose timer interrupt runs the whole
+firmware. The Wing War MRAs send EPR-16891 from `model1io2.zip`. 6699c6d,
+da84a7a. **This was found first and taken for the cause of the crash; it was
+not** - the right board crashed at the same instruction.
+
+**Bench proof**: `tb_m1_frame GAME=wingwar` (EPR-16891, FRAME_IO2=1) runs
+past the old halt into the attract with its 3D - the airbase scene with the
+jet, as MAME shows it (`build/wt-wingwar/build/wingwar_bench_f625.png`,
+frame 625). Its boot exchange with the I/O board is MAME's cold boot step for
+step, and the settings block it reads back is MAME's in all 128 bytes. The
+1,000 M-cycle run ends at frame ~870, not halted, 484 vblanks taken (the old
+build halted at 237), 81 objects / 1,134 quads in the 3D layer, on the city
+scene with the helicopter (`wingwar_bench_final.png`) - MAME's attract order.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold (worst) |
+|---|---|---|---|---|---|---|---|---|---|
+| **wingwar-boot s3** | **2e99f55** | **36,223** | **523** | **50** | **+0.548** | **+1.112** | **+5.398** | **+0.181** | **+0.185** |
+| (I/O board only) s3 | 6699c6d | 36,086 | 523 | 50 | +1.077 | +1.096 | +5.120 | +0.497 | +0.208 |
+
+**For the board: `build/wt-wingwar/build/Model1_wingwar_ramfetch_seed3_36223.rbf`**,
+md5 `89482db404d325e2da2106d6beafa12b`; reports in
+`build/wt-wingwar/build/wingwar_ramfetch_s3_reports/`. Hold: clk_sys +0.185,
+pll_hdmi +0.186, clk_cpu +0.214, clk_3d +0.260 - every clock positive, setup
+and hold. The first row's rbf (`Model1_wingwar_io2_seed3_36086.rbf`) does
+NOT have the fetch fix and will still halt. The I/O board is 1,252 ALM (was
+~1,040), the CTC 131 of it; the fetch bridge 258 (was 243).
+
+## How to repeat it
+
+    unzip ~/roms/model1io2.zip epr-16891.6 -d build/iofw
+    python3 tools/build_rom_image.py wingwar ~/roms/wingwar.zip -b \
+        --iofw build/iofw/epr-16891.6 -o build/rom
+    python3 tools/build_tgp_rom.py wingwar ~/roms/wingwar.zip -o build/rom
+    make m1_frame GAME=wingwar FRAME_CYCLES=1000000000 FRAME_PPM=25 FRAME_DPTRACE=3000
+    make ioz80 IOZ80_FW=build/rom/wingwar_iofw.hex      # the board alone, ~1 min
+
+`FRAME_IO2` follows GAME (1 for the Wing War sets). The frame run takes over
+an hour: the 25 MB download and the one-second settle come first, then four
+board-seconds of I/O handshake before the game's main loop. MAME's side:
+`build/wt-wingwar/build/ww_dpram_seq.lua` (V60 DPRAM tap) and
+`ww_iocpu_census.lua` (the I/O Z80's map), run with `-nvram_directory` on an
+empty directory - a warm nvram skips the settings write and hides command 2.
+
+## What to check on the board
+
+- Wing War (World), cold: about two seconds of black while the I/O board
+  boots, then about two more while it writes its settings EEPROM (MAME does
+  the same - the game shows nothing for ~8 s from a cold start), then the
+  attract with 3D. Then coin, Start, the stick and the throttle.
+- Virtua Racing / Virtua Fighter / Star Wars: their I/O board is meant to be
+  untouched (the first board's bench exchange is clock-identical to main's).
+- NetMerc still gets EPR-14869: it is a model1io2 game too (EPR-18021) but is
+  left on the old board until its own firmware is run on this bench.
+
+## What is not done
+
+- **The sky is grey on the bench where MAME's is a cyan gradient** (same
+  airbase scene; compare `wingwar_bench_f625.png` with a MAME snapshot at
+  cold frame 600). Not investigated - the next thing to look at in Wing War.
+- Only the attract was run on the bench (no coin, no gameplay).
+- **The clone MRAs (US, Japan, R360) are untested**: no clone zip on this
+  machine. Checked only with stand-in zips by `tools/verify_mra.py`.
+- **`tools/gen_mra.py` was not changed** (the brief said not to edit tools/).
+  Regenerating the MRAs puts EPR-14869 back on index 2 and removes the
+  clones' copro data again. It needs: index 2 = `model1io2.zip`
+  `epr-16891.6` for every Wing War set, COPRO_DATA/TABLES for the clones,
+  and epr-16751.7 as the US/Japan sound program.
+- R360's own inputs (`r360_r`, the motion board) are not built; its MRA has
+  the same board fix as the others.
+- `make lint` stops at `lint` on a SYNCASYNCNET warning in
+  `mb86233_regs.sv` (pre-existing, Verilator 5.052); m1_ioz80's own -Wall
+  warnings are tv80's, the same ten before and after.
+- New line for the untracked instructions file's expected block:
+  `m1_ctc: checks=50 fails=0`. `make test` otherwise all fails=0.
+
+## Failure modes found on the way - read before touching m1_ioz80
+
+- **tv80s registers its bus strobes a clock after the core moves A.** Two
+  consequences, both measured: (1) the Z80 cannot be paced faster than one
+  enable in two, or a fetch miss goes unseen for a clock and the Z80 runs on
+  a stale cache word; (2) anything decoded from /IORQ (an IN, the IM 2
+  vector) is gone in T2's last clock, when the core samples. The first board
+  never hit either: it runs at 1/4 and never does I/O or interrupts.
+- **INTA is /IORQ with neither /RD nor /WR**; tv80's /M1 rises a clock
+  before /RD, so an "is this an opcode fetch" test must look at a read's
+  first clock.
+- The settings write (command 2) takes 2.2 board-seconds in MAME and here:
+  a run that stops just after the boot handshake has not reached the game.
+- **A crash that does not move when its suspected cause is fixed is a
+  different fault.** The I/O board was a real defect and was fixed; the halt
+  stayed at the same PC after the same 237 vblanks. The PC ring
+  (tb_m1_frame, printed on a halt) named the jump into RAM at once.
+- **Nothing before Wing War executed from RAM**, and the fetch bridge's own
+  comment said so. Any new title that halts in RAM should be checked against
+  that first.
+
+---
+
 # 2026-10-28 (b): 3D-OVERRUN - THE 3D DRAWN WHOLE INTO DDR3. ON THE BOARD: "RUNS GREAT". ONE DECISION OWED.
 
 Branch **`3d-overrun`** (local, not pushed), on **`tile-overrun`** (4253a86), so
