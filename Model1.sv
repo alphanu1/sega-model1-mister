@@ -1064,7 +1064,7 @@ assign p_addr = {dsb_saddr,
   // the phase is an OSD option. It defaults to CL+2, one cycle earlier than the
   // model needs, which is what the measured shift implies.
   wire [7:0] sdram_occ, sdram_wait1;
-  wire [10:0] sd_pend;     // ports with a request outstanding (FREEZE_DIAG)
+  wire [11:0] sd_pend;     // ports with a request outstanding (FREEZE_DIAG); twelve with the DSB on p11
 
   // ------------------------------------------------------------ SOUND BOARD
   // Model 2's m2_sound_board IS the Model 1 board - see rtl/sound/README.md.
@@ -1987,15 +1987,15 @@ assign p_addr = {dsb_saddr,
   wire [31:0] dwf [NDW];
 
   // SDRAM: how long each port's request has been outstanding, and the worst.
-  logic [23:0] sd_age [11];
+  logic [23:0] sd_age [12];
   logic [23:0] sd_worst;
   logic [3:0]  sd_worst_port;
   always_ff @(posedge clk_sys or negedge mem_rst_n) begin
     if (!mem_rst_n) begin
-      for (int k = 0; k < 11; k++) sd_age[k] <= '0;
+      for (int k = 0; k < 12; k++) sd_age[k] <= '0;
       sd_worst <= '0; sd_worst_port <= '0;
     end else if (FREEZE_DIAG) begin
-      for (int k = 0; k < 11; k++) begin
+      for (int k = 0; k < 12; k++) begin
         if (!sd_pend[k])          sd_age[k] <= '0;
         else if (~&sd_age[k])     sd_age[k] <= sd_age[k] + 24'd1;
         if (sd_pend[k] && sd_age[k] > sd_worst) begin
@@ -2055,7 +2055,7 @@ assign p_addr = {dsb_saddr,
       assign dwf[fzi + 16] = {8'(fzi + 16), fz_snap[fzi]};
     end
   endgenerate
-  assign dwf[8]  = {8'h08, fz_events, 2'd0, fz_cause, 1'b0, sd_pend};
+  assign dwf[8]  = {8'h08, fz_events, 2'd0, fz_cause, sd_pend};   // bit 11: the DSB's port
   assign dwf[9]  = {8'h09, fz_pay_refused[7:0], fz_pay_wait};
   assign dwf[10] = {8'h0A, fz_pay_ovf[7:0], fz_lw_bad[7:0], fz_lw_over[7:0]};
   assign dwf[11] = {8'h0B, 3'd0, dbg_halted, 3'd0, dbg_fp_trap, dbg_io_replies};

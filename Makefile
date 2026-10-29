@@ -426,7 +426,7 @@ render3d_fuzz:
 	  -Irtl/tgp -Irtl/video $(GEO_SRCS) rtl/video/m1_raster3d.sv \
 	  rtl/video/fp_from_int.sv rtl/video/m1_lightbank.sv \
 	  rtl/video/m1_listwalk.sv rtl/video/m1_quad_payload.sv rtl/video/m1_quad_store.sv \
-	  rtl/video/m1_ddram_payload.sv \
+	  rtl/video/m1_ddram_payload.sv rtl/video/m1_fb_flush.sv rtl/video/m1_fb_read.sv rtl/mem/m2_ddr3.sv rtl/mem/m2_ddr3_arb.sv rtl/mem/m1_ddram_mux.sv \
 	  $(SRCS_m1_raster_fill) rtl/video/m1_raster_band.sv \
 	  sim/video/tb_m1_raster3d_fuzz.cpp -o tb_render3d_fuzz --Mdir $(FUZZ_MDIR)
 	FUZZ_EPISODES=$(FUZZ_EPISODES) FUZZ_SEED=$(FUZZ_SEED) ./$(FUZZ_MDIR)/tb_render3d_fuzz
@@ -1054,7 +1054,7 @@ elab:
 	  -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
 	  -Wno-INITIALDLY -Wno-TIMESCALEMOD -Wno-SYNCASYNCNET -Wno-UNSIGNED \
 	  -Wno-REALCVT -Wno-LATCH -Wno-IMPLICITSTATIC \
-	  -I. -Isys --top-module emu $$SRCS > $(TMPDIR)/elab.txt 2>&1; \
+	  -I. -Isys -Irtl/sound --top-module emu $$SRCS > $(TMPDIR)/elab.txt 2>&1; \
 	grep -E "^%Error|^%Warning-SELRANGE" $(TMPDIR)/elab.txt \
 	  | grep -vE "Cannot find file containing module: '(pll|pll_hdmi|altera_[a-z_0-9]*|cyclonev_[a-z_0-9]*|alt[a-z_0-9]*)'" \
 	  | grep -vE '^%Error: Exiting due to' \

@@ -365,6 +365,11 @@ int main(int argc, char** argv) {
     ddr.latency  = getenv("DDR_LAT")  ? atol(getenv("DDR_LAT"))  : 40;
     ddr.busy_pct = getenv("DDR_BUSY") ? atoi(getenv("DDR_BUSY")) : 0;
 
+    // fb_go is "the ROM is loaded" (render3d sets it the same way). Left at 0
+    // the frame buffer never starts, nothing is scanned out, and every hash is
+    // the empty picture's - which is how this bench passed vacuously once the
+    // 3D moved into DDR3 (findings 2026-10-29, test-all).
+    d->fb_go = 1;
     d->mem_rst_n = 0; d->DDRAM_BUSY = 0; d->DDRAM_DOUT_READY = 0; d->DDRAM_DOUT = 0;
     d->rst_n = 0; d->frame_start = 0; d->frame_odd = 0; d->dl_sel = 0;
     d->scan_clk = 0; d->scan_x = 0; d->scan_y = 0; d->dl_valid = 0; d->rom_valid = 0;
