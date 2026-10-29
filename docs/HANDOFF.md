@@ -1,3 +1,22 @@
+# TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
+
+- **Star Wars attract, the Death Star run:** after flying over the Death Star
+  for a while it disappears, and some quads go black first (lighting?). Seen
+  on the `swa-sound` build, which lacks the display-list >0x4000 fix
+  (`vf-swa-geo` 3eba4a6); recheck on the combined build first. README "Open
+  questions" has the entry.
+- **Star Wars attract, the crawl:** the yellow scrolling text is missing on
+  the `swa-sound` build (it was there before); being fixed in the combined
+  build (`test-all`).
+- **Star Destroyer hull edges:** specks / ragged edges along the lower hull on
+  the `vf-swa-geo` build (no frame buffer); recheck on the combined build to
+  tell late bands from a seam fault.
+- **NetMerc in play:** layering still wrong and the camera feels misplaced
+  (`netmerc-layers` fixed attract only); under investigation (`netmerc-play`).
+- **NetMerc sound:** nearly silent even when right, because MAME's
+  `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed on `netmerc-sound`
+  (MultiPCM envelope), held out of the combined build until its size is known.
+
 # 2026-10-28 (b): 3D-OVERRUN - THE 3D DRAWN WHOLE INTO DDR3. ON THE BOARD: "RUNS GREAT". ONE DECISION OWED.
 
 Branch **`3d-overrun`** (local, not pushed), on **`tile-overrun`** (4253a86), so

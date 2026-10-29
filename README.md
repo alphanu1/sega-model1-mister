@@ -192,6 +192,16 @@ the disassembler), so per hard rule 3 the numbering was corrected in
 
 ### Open questions
 
+**Star Wars Arcade: the Death Star vanishes, and some quads turn black, late in
+attract.** Seen on the board, 2026-10-29, on the DSB music build (`swa-sound`).
+After a while in attract the camera flies over the Death Star; some way into
+that flight the Death Star disappears entirely, and some of its quads go black
+before that, which looks like lighting. Not yet investigated. That build did
+not carry the display-list fix (words above 0x4000, `vf-swa-geo` 3eba4a6),
+which restored the corvette and the Star Destroyer's hull, so the first step is
+to check it again on a build that has it. To go in the next release's
+known-issues list if it is still there.
+
 **Virtua Fighter's fighting arena is the wrong size in play.** The fighters are
 correct and the arena is correct in attract; only a real match is wrong. Two
 display list commands are parsed and then discarded, and both are candidates:
