@@ -1,5 +1,24 @@
 # TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
 
+**Board test of `m1-seams` (rbf fb3ae845; main c9c02ca + the band-row fill
+fix), Ben 2026-10-29:** Star Wars looking good (boosters and hull clean);
+Wing War good; VR and VF good, and their sound "much better" -- the cause is
+not identified: the MultiPCM envelope fix (`netmerc-sound`) is NOT in this
+build; what is new for sound since the last release is swa-sound's 68000
+transmit pacing at 31.25 kbaud for every game and the saturating mix.
+Still open from this test:
+- **Star Wars crawl:** the yellow text still flickers, vanishes and comes back
+  far away. Ben: it did not happen before the DSB sound board; on
+  `vf-swa-geo` (no DSB) it was fine. With the Death Star agent
+  (`swa-deathstar`, run_dsb vs run_nodsb).
+- **Wing War, the VR-buttons screen:** a little tile or texel overrun.
+  Later.
+- **NetMerc controls:** the head pose is fixed facing forward (seeded at
+  reset), the stick aims the gun. Ben asks whether the camera should be on
+  the left stick and the gun on the right. Open: needs the pose format
+  (DPRAM 0x80-0x8b, six 16-bit values) and a design decision.
+
+
 Board test of the combined build (`test-all` 3c378dc, rbf
 `Model1_testall_seed5_37446.rbf`, md5 a98ca51b), Ben 2026-10-29. Merged into
 main on his word; no release yet. 15 kHz output not tested.
