@@ -14,6 +14,7 @@
 #include <vector>
 struct FixCfg { int FS=20, WS=24, FC=17, FV=17, WV=24, FC1=16, FSC=22; };
 struct FixDec {
+  bool trace=false;
   const uint8_t *base; FixCfg c;
   int64_t V[2][512]; int vpos=0; // ring
   int cur, lim;
@@ -60,11 +61,12 @@ struct FixDec {
           case 1: a=gb(6); scf[ch][0][sb]=scf[ch][1][sb]=a; scf[ch][2][sb]=gb(6); break;
           case 2: a=gb(6); scf[ch][0][sb]=scf[ch][1][sb]=scf[ch][2][sb]=a; break;
           case 3: scf[ch][0][sb]=gb(6); b2=gb(6); scf[ch][1][sb]=scf[ch][2][sb]=b2; break; } (void)s; }
+      if(trace) for(int sb=0;sb<27;sb++) for(int ch=0;ch<2;ch++) printf("P %d %d %d %d %d %d %d\n",ch,sb,alloc[ch][sb],scfsi[ch][sb],scf[ch][0][sb],scf[ch][1][sb],scf[ch][2][sb]);
       int o=0;
       for(int part=0;part<3;part++) for(int g=0;g<4;g++){
         int64_t Sb[2][3][32]={};
         for(int sb=0;sb<27;sb++) for(int ch=0;ch<2;ch++){
-          int k=alloc[ch][sb]; if(!k) continue;
+          int k=alloc[ch][sb]; if(!k){ if(trace) for(int t=0;t<3;t++) printf("S %d %d %d 0\n",ch,t,sb); continue; }
           int bits,cube,mod,d; double C; info(k,bits,cube,mod,d,C);
           int v[3];
           if(cube){ int val=gb(cube); v[0]=val%mod; val/=mod; v[1]=val%mod; val/=mod; v[2]=val%mod; }
@@ -78,6 +80,7 @@ struct FixDec {
             int64_t p1=(Nal*Cq)>>(15+c.FC1-22);   // x*C*2^22
             int64_t p2=(p1*sq)>>(22+c.FSC-c.FS); // S*2^FS (floor)
             Sb[ch][t][sb]=sat(p2,c.WS);
+            if(trace) printf("S %d %d %d %lld\n",ch,t,sb,(long long)Sb[ch][t][sb]);
           }
         }
         for(int t=0;t<3;t++){
@@ -85,7 +88,8 @@ struct FixDec {
           for(int ch=0;ch<2;ch++){
             for(int i=0;i<32;i++){ int64_t acc=0;
               for(int j=0;j<32;j++) acc+=Sb[ch][t][j]*cosq((i*(2*j+1))&127);
-              V[ch][(vpos+i)&511]=sat(acc>>(c.FS+c.FC-c.FV),c.WV); }
+              V[ch][(vpos+i)&511]=sat(acc>>(c.FS+c.FC-c.FV),c.WV);
+              if(trace) printf("V %d %d %lld\n",ch,(vpos+i)&511,(long long)V[ch][(vpos+i)&511]); }
             // resynthesis: win in units 2^-16; acc in 2^-(FV+16)
             int b=vpos+16;
             for(int i=0;i<32;i++){ int64_t acc=0;
