@@ -16,7 +16,9 @@ main on his word; no release yet. 15 kHz output not tested.
   once it is far in the distance. The crawl is quads, so this is likely the
   same family as the Death Star. (On `swa-sound` alone it was missing.)
 - **Star Wars, the first big ship:** lines in the boosters, like overruns or
-  seams. Still there with the 3D frame buffer, so not late bands.
+  seams. Still there with the 3D frame buffer, so not late bands. **Found
+  and fixed on `m1-seams`** (with Wing War's mountain lines): rows lost on
+  the 8-row 3D band boundaries - see the entry below. Not on the board yet.
 - **Wing War's sky** was grey: wrong, and fixed on branch `wingwar-sky`
   (polygon RAM - see the top entry below). **On the board (Ben, 2026-10-29,
   rbf 12c50317): "it's working".** The "bench-only" note that stood here was
@@ -43,6 +45,101 @@ main on his word; no release yet. 15 kHz output not tested.
 - **15 kHz MRAs:** untested on this build.
 
 ---
+
+# 2026-10-29: THE LINES THROUGH SHIPS AND MOUNTAINS - ROWS LOST AT 3D BAND BOUNDARIES. FIXED AND FITTED; NOT ON THE BOARD.
+
+Branch **`m1-seams`** (local, not pushed), on `main` f17dcc0, with main c9c02ca merged in.
+`docs/findings.md` 2026-10-29 "THE LINES THROUGH THE SHIPS AND MOUNTAINS"
+has the evidence.
+
+**What they are.** Single rows missing from 3D polygons, only ever on the
+8-row band boundaries (y % 8 == 0 or 7) - which is why they look like
+overruns. Reproduced in render3d on MAME's own lists, against MAME's 3D
+alone (`mame_dump_frame.lua NO2D=1`): Star Wars 1400 21 holes, all on band
+rows; Wing War 1000 a broken line across the mesas on row 263 (band 32's
+last row). Present with and without the frame buffer: it is the fill, not
+the presentation, so it is also the Star Destroyer's lower-edge specks.
+
+**Cause.** `m1_raster3d` passed the band to `m1_raster_fill` as its
+VIEWPORT. MAME's fill_quad clamps a quad's last row to the viewport bottom
+and draws it unordered (fill_line), and rejects a quad whose bottom is on
+the viewport top - so every band edge became a "screen edge" and lost a row.
+
+**Fix (2dc10b9).** The fill walks against the screen and clips to the band
+(new `clip_y1/clip_y2`); rows above the band skipped by multiply, swap
+decided at MAME's row, early exit below the band only for y-monotone quads
+(a folded quad's walk can come back up). `tb_m1_raster_fill` has a banded
+test: 1,430,400 band fills = the full-screen reference, 0 fails
+(`BAND_AS_VIEW=1`, the old wiring: 10,023 fails).
+
+**Per game, against MAME's 3D** (render3d, CLK3D 58.947 MHz; full table in
+findings): every band-row hole is gone in Star Wars 1400-2000 and Wing War
+1000; the pixels the fix changes are 18-1,130 a frame and 41-100% of them
+land on MAME's value (the rest are under HUD or Wing War's colour mismatch).
+Virtua Racing and Virtua Fighter move 54-116 px a frame, onto MAME.
+NetMerc: no 3D in the cold-start frames dumped, not compared.
+
+**Cost.** Fill time +0-9% (VF 3000 the most), whole draw +0-5% (VF 3000
+90.6 -> 94.8 lines, deadline 416); no frame measured went late.
+
+**Fitted** (Quartus 17.0, branch with main c9c02ca merged in, ac05f16; RTL of
+the fix 2dc10b9). Setup / hold, worst per clock:
+
+| build | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | h2f_user0 | hold (worst) |
+|---|---|---|---|---|---|---|---|---|---|
+| **m1-seams s5** | **37,829** | **537** | **53** | **+0.703** | **+1.187** | **+6.347** | **+0.232** | +1.504 | **+0.244** |
+| m1-seams s11 | 37,667 | 537 | 53 | +0.456 | +1.295 | +6.005 | +0.422 | +3.551 | +0.178 |
+| m1-seams s3 | 37,578 | 537 | 53 | +0.157 | +0.711 | +5.807 | -0.094 | +2.878 | +0.174 |
+| fix on f17dcc0 (pre-merge) s5 | 37,579 | 537 | 53 | +0.427 | +1.013 | +5.078 | +0.139 | +1.950 | +0.231 |
+| wingwar-sky s5 (base) | 37,504 | 537 | 53 | +0.676 | +1.201 | +5.809 | +0.172 | | +0.246 |
+
+Recovery and removal positive on every clock of all three. Same-seed cost of
+the fix before the merge: +75 ALM, no M10K, no DSP. **The raster's slack:**
+on s5 the worst clk_3d path in the design is now in the fill, +0.703
+(`sy[1]` -> `flat_lo`, the CLASSIFY vertex tournaments - an existing path,
+not the new compares); before the merge the clk_3d worst was the TGP
+(`mb86233_core d_lab -> state`, +0.427) and the fill's worst was +0.682
+(`sy` -> `limy`). Paths: `build/s5_reports/paths_clk3d.txt`.
+
+**For the board: `build/wt-seams/build/Model1_seams_seed5.rbf`**, md5
+`fb3ae845e40ed65c85abbd184ab5c7c1` (reports in `build/wt-seams/build/s5_reports/`).
+Same MRAs as main.
+
+## What to check on the board
+
+- Star Wars attract: the corvette (boosters close-up, MAME ~1450) and the
+  Star Destroyer's underside - no short horizontal lines on the 8-row grid.
+- Wing War attract: the desert mesas and green hills - no lines.
+- Everything else unchanged: VR, VF, NetMerc 3D should look the same or
+  marginally cleaner at polygon bottoms.
+
+## Not done / open (found on the way)
+
+- **Wing War's 2D photo screens** (ZERO over Mt Fuji, MAME ~7600-7800):
+  `make video2d` on MAME's tile state draws them right (0 px failing, 0
+  overruns). If Ben's mountain lines were on those, they are the open
+  left-to-right picture fill (our V60's upload), not the raster.
+- **Wing War colours differ from MAME over whole polygons** (frames 600,
+  1000, 1100: 15-28 k px; the plane's grey 181 vs our 74). Lighting or colour
+  words. Not investigated.
+- **VR attract 5458-5461 from a cold MAME**: render3d draws 15 k px against
+  MAME's 114 k (no track), either list buffer. Not investigated; suspect the
+  dump since the board's VR shows its track.
+- Remaining few-pixel differences are vertex precision: column 495 at the
+  right clip plane, degenerate slivers, VF 1500's bottom edge.
+- `make lint` stops at `mb86233_regs` (SYNCASYNCNET, Verilator 5.052) - on
+  main too, not this branch. The fill unit lints clean.
+
+## make test
+
+69 result lines, all `fails=0` (after the merge; `m1_rom_loader: checks=10487`
+is main's netmerc-play). Moved: `m1_raster_fill: checks=170625
+fails=0 spans=31652452 lines=2 empty=20285 bands=1430400` (was 152025, no
+bands field). `m1_geometry` 11,776 (no real_objects.txt in the worktree, as
+before). `make render3d_fuzz` 40 episodes PASS; `make elab` clean.
+
+---
+
 
 # 2026-10-29: NETMERC IN PLAY - THE CAMERA WAS THE HEAD TRACKER'S POSE, NEVER WRITTEN; THE GUN WAS THE STICK AND RAMA. FIXED; ON THE BOARD (BEN): ALL GOOD.
 

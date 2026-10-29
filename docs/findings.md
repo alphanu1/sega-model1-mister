@@ -190,7 +190,14 @@ draw, which must finish by line 416: VF 3000 90.6 -> 94.8 lines, Star Wars
 2350 154.4 -> 157.8, Wing War 1200 204.6 -> 201.3; no frame measured here
 went late or was held.
 
-Resources and clk_3d slack: see HANDOFF (the fit).
+Fitted with main c9c02ca merged in, seed 5: **37,829 ALM, 537 M10K, 53 DSP;
+clk_3d +0.703, clk_sys +1.187, clk_cpu +6.347, pll_hdmi +0.232, hold +0.244**,
+recovery/removal positive. Seeds 11 and 3: 37,667 / 37,578 ALM, clk_3d
++0.456 / +0.157 (s3's pll_hdmi -0.094). Before the merge, the same seed 5 was
+37,579 ALM against wingwar-sky's 37,504: **+75 ALM, no M10K**. The fill's
+worst path is +0.682 to +0.703 (`sy` into the CLASSIFY tournaments: `limy`,
+`flat_lo`), an existing path; on the merged s5 it is also the design's worst
+clk_3d path. Detail in HANDOFF.
 
 ---
 
