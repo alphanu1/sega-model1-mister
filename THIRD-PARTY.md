@@ -138,9 +138,17 @@ headers — many are BSD-3-Clause, and the ones this project depends on are.
 Check the header of every file you read. Do not rely on the repository-level
 licence in either direction.
 
-Two files are flagged for use but not yet verified: `mb8421.*` (the dual-port
-RAM the I/O board reaches through) and `multipcm.*` (M4 sound). Check their
-headers before either is used as a reference.
+One file is flagged for use but not yet verified: `mb8421.*` (the dual-port
+RAM the I/O board reaches through). Check its header before using it as a
+reference.
+
+**`multipcm.cpp` and `gew.cpp` are BSD-3-Clause** (copyright-holders Miguel
+Angel Horna), checked 2026-10-29 in MAME 0.289. `sim/sound/multipcm_ref.h` is
+a transcription of both, for the MultiPCM replay bench, and keeps that notice;
+`rtl/sound/m2_multipcm.sv`'s envelope ROMs are generated from it by
+`sim/sound/gen_mpcm_tables.cpp`. The sparse checkout pinned in `deps.lock` has
+`multipcm.cpp` but not `gew.cpp`, which holds the arithmetic since MAME split
+the chip family out; it was read from a full MAME 0.289 tree.
 
 ## Evaluated for the I/O board, 2026-08-15
 

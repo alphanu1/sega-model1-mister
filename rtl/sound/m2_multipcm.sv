@@ -2,8 +2,14 @@
 // Sega 315-5560 MultiPCM (Yamaha YMW-258-F GEW8)
 //
 // Register, descriptor, pitch and PCM semantics follow MAME multipcm.cpp and
-// gew.cpp.  Envelope curves, interpolation and LFO modulation remain bounded
-// approximations; the sample-selection/playback path is cycle deterministic.
+// gew.cpp. Since 2026-10-29 so do the envelope generator, 12-bit samples, the
+// linear interpolation, the position arithmetic and the 2 MB address map:
+// sim/sound/tb_multipcm_replay.cpp plays MAME's own register traffic through
+// this and through a transcription of gew.cpp and matches it sample for
+// sample. Still NOT modelled, and measured in docs/findings.md 2026-10-29:
+// the LFO (vibrato, tremolo), the level slew, and level and pan as MAME's
+// tables (here 6 dB level steps and shift pan); MAME's float pitch step can
+// be one 1/4096 below the exact one used here.
 //============================================================================
 
 module m2_multipcm (
