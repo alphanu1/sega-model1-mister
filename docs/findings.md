@@ -20,6 +20,140 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — NETMERC'S "TWO 3D LAYERS": MAME SORTS PER VIEWPORT, THE CORE SORTED THE WHOLE FRAME AS ONE
+
+Branch `netmerc-layers`, on `main` (1daae7a). Ben, from the board: "there
+seem to be two 3D layers; one is drawn over the top of the 2D UI and on top of
+3D characters that it should be behind."
+
+### What the list carries (MAME, headless)
+
+A census script (in `build/`, not committed: it walks the active display list
+every frame and prints each viewport command with the objects that follow it)
+on NetMerc with a coin at frame 600 and the trigger pulsed:
+
+| frames | viewport groups, objects in each |
+|---|---|
+| attract (title), 0-600 and 7,200 frames without a coin | 0, 1, 1, 1 or 0, 0-1 - nothing that paints (render3d: 3 quads, 0 pixels) |
+| gameplay, 2,600-4,000 | **three groups every list**, e.g. 29 / 6 / 11, 5 / 23 / 11, 12 / 23 / 11 |
+
+Every viewport command in NetMerc has the SAME rectangle (centre 248,299,
+edges 2..495, 41..420). The game is not opening windows; it is using the
+viewport command as a layer separator: the terrain, then the enemies, then
+the player's gun, hands and health bar.
+
+The same census, 3,000 frames of attract each: **vr, vf, swa - one group in
+every list. wingwar - two** (the second is the radar, 4 objects). So NetMerc
+and Wing War are the only games the order below can affect.
+
+### What MAME does with that, and what we did
+
+`model1_v.cpp` `tgp_render`, `case 3`: `draw_objects()` BEFORE
+`set_viewport` - which sorts the quads collected so far, draws them, and
+empties the list. So the painter's order is per viewport, and a later
+viewport paints over an earlier one whatever the depths. The z sort was only
+ever right "per list" because VR, VF and SWA have one viewport a list.
+
+`m1_quad_store` sorted every quad of the frame on z alone. NetMerc's terrain
+is in the same camera space as the gun, and its near polygons are nearer than
+the gun and hands, so they sorted after them and painted over them; terrain
+in front of an enemy covered it.
+
+### The "2D UI" is 3D
+
+render3d has no tile layers at all and draws the health bar, the gun and the
+hands (build/nm/after_3600.png in the worktree). They are the third viewport
+group. NetMerc's gameplay screen has no tilemap content in MAME's frames but
+the backdrop. The 3D-vs-tile priority (`m1_tile_mixer`, checked against
+`screen_update_model1` on 2026-09-04) is not involved and was not changed.
+
+### Reproduced, then fixed, in render3d
+
+MAME frames 3000, 3600 and 3900 dumped with `tools/mame_dump_frame.lua`
+(native-size snapshots, `-snapsize 496x384`), rendered by render3d at
+58.947 MHz. NetMerc's stream is 21 MB and render3d wants 25 MB, so it is
+padded with zeros. Compared per pixel against MAME's frame by SURFACE, not by
+colour (hue/saturation class; the terrain is lit differently - see below):
+
+| MAME frame | pixels on a different surface, before | after |
+|---|---|---|
+| 3000 | 18,075 (9.49%) - terrain over the floor, the hands, the gun's left side | 716 (0.38%) |
+| 3600 | 24,264 (12.74%) - terrain over the hands, the gun and the floor | 677 (0.36%) |
+| 3900 | 1,194 (0.63%) - terrain over the enemy on the right | 470 (0.25%) |
+
+Virtua Racing's frames 2270, 2500 and 5460 render **bit-identical** before
+and after, and so do Wing War's 2000 and 2600 (its radar group happens to sort
+last on z as well).
+
+### The fix
+
+The key is `{viewport group, z}`: ascending group, then the old descending z
+with submission order on ties. `m1_raster3d` numbers the groups: reset at the
+pass start, advanced at a viewport command only if an object came since the
+last advance (NetMerc opens some lists with an empty viewport), saturating at
+7. The walk is paused for every object until `geo_done`, which waits for the
+clipper to drain, so every quad of a group is in the store before the number
+moves.
+
+- **Three bits, for no block RAM.** A 2,048-deep key array is M10K in its x5
+  mode: 32 bits took seven blocks and used 35. A 35-bit key fills them. The
+  most groups seen in a list is four (NetMerc, some lists open with an empty
+  one); past eight, later groups merge into the eighth.
+- **Nine radix passes instead of eight, so the sort starts in `idx_b`.** Each
+  pass moves the order to the other index array and the replay reads `idx_a`.
+  Starting in `idx_a` with nine passes replays the order after eight - sorted by
+  z and not by group, the fault itself. `tb_m1_quad_store` now models the group
+  and fuzzes it, and has a NetMerc-shaped case where the last group is nearer
+  AND farther than the terrain.
+- The sort: 2,000 quads 34,330 -> 38,371 cycles (4.2% -> 4.7% of a frame).
+
+### Not fixed, seen on the way
+
+- **NetMerc's terrain is darker than MAME's** in every dumped frame (41-75% of
+  pixels differ by more than 16 per channel; the surfaces match). Not
+  investigated. `m1_geo_walk` already takes flags bit 22 for the second light
+  bank.
+- **Command 0x41 (above the HUD) is still drawn in the ordinary pass**, and
+  direct polygons (command 2) are still not drawn. NetMerc uses neither (0 of
+  either in every list of the census).
+
+### A wrong turn
+
+The first "after" render was byte-identical to "before" and looked like the
+group counter never advancing. It was a stale binary: `make render3d` had been
+piped into a grep whose pattern did not compile, the grep exited, make died of
+the broken pipe before linking, and the old `tb_render3d` ran. Moving
+`vp_grp`'s declaration above its first use (it was used in the store's port
+list above where it was declared) looked like the cure and was not: a build of
+the late-declared version renders identically to the fixed one. The
+declaration stays above its use anyway. **Never pipe a build into a filter
+that can fail; check the binary's time.**
+
+### Benches and the fit
+
+- `make test`: every suite `fails=0`. Only `m1_quad_store` moves:
+  31,165 -> 30,135 checks (its fuzz now draws groups from the same generator,
+  so the quad counts change; the old harness on the new RTL still reads 31,165,
+  fails 0). The rules file's expected block says 18,500 for it, which was
+  already stale on main.
+- **`make render3d_fuzz` is broken on main**, independently: the target lacks
+  the frame-buffer sources (`m2_ddr3`, `m1_ddram_mux`, ...), and with them added
+  the bench paints 0 pixels and FAILs at cold start, because it was written for
+  the band display. Built by hand with the full source list and
+  `-GFB_DDR3=0`: 40 episodes PASS, base and fix, the same cold-start hash
+  (`60b228b6a6b0fbe3`, 189,518 pixels).
+- Seed 17, Quartus 17.0, against main at the same seed:
+
+| build | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold (worst ours) |
+|---|---|---|---|---|---|---|---|---|
+| main 1daae7a s17 | 36,102 | 523 | 50 | +0.771 | +1.065 | +6.230 | -0.189 | +0.206 |
+| netmerc-layers s17 | **35,882** | **523** | 50 | **+0.996** | **+1.114** | **+5.751** | **+0.545** | **+0.250** |
+
+  Block memory bits +24,576 (2 stores x 2 key arrays x 2,048 x 3), M10K
+  blocks unchanged as predicted. ALM within seed noise of main.
+
+---
+
 ## 2026-10-28 (b) — THE 3D OVERRUN IS BANDS FILLED PAST THE BEAM ON THE BEGINNER COURSE'S HILLS; THE 3D NOW DRAWS WHOLE INTO DDR3
 
 Branch `3d-overrun`, written on `alm-save` (0ac55df) and rebased onto
@@ -5864,6 +5998,11 @@ and the polygon layer above cat0, and `m1_tile_decode` takes the category from
 So a glyph buried under the 3D is a glyph whose category bit is clear, and MAME
 buries it too. Whether NetMerc's attract frame is correct is a question for a
 reference snapshot, not for the mixer.
+
+**2026-10-29: the NetMerc symptom was not the blend order.** NetMerc's
+gameplay lists carry three viewport groups and MAME sorts each separately;
+the core sorted the whole frame as one, and the "HUD" it covered is itself 3D.
+See the 2026-10-29 entry. The blend order above still stands.
 
 ### The ABOVE-HUD pass is a real gap
 
