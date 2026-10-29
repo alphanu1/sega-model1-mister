@@ -32,9 +32,12 @@ main on his word; no release yet. 15 kHz output not tested.
 - **NetMerc sound:** nearly silent even when right, because MAME's
   `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed on `netmerc-sound`
   (MultiPCM envelope, +1,090 ALM), held out until Ben has tested it alone.
-- **Star Wars (Japan) MRA:** no copro data ROM or sincos tables, so its
-  polygon ROMs load at 0x600000 (the Wing War clones' fault); one line in
-  gen_mra.py's COPRO_DATA.
+- **Star Wars (Japan) MRA:** had no copro data ROM or sincos tables, so its
+  polygon ROMs loaded at 0x600000 (the Wing War clones' fault). FIXED
+  2026-10-29: gen_mra.py gives swaj the parent's copro_data and tables; its
+  stream map now equals swa's block for block, and every other regenerated MRA
+  is byte-identical. Untested on the board: no swaj.zip here (verify_mra
+  against swa.zip stops only at the Japan program, epr-16468.14).
 - **15 kHz MRAs:** untested on this build.
 
 ---

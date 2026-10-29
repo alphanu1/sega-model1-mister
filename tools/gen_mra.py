@@ -77,15 +77,15 @@ COPRO_DATA = {                       # ROM_LOAD32_BYTE x4, 2 MB
     'wingwaru':   ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
     'wingwarj':   ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
     'wingwar360': ['mpr-16741.39', 'mpr-16742.40', 'mpr-16739.41', 'mpr-16740.42'],
-    # NOT swaj, although MAME gives it the same copro_data as swa: its MRA has
-    # never carried the region and this table reproduces the MRA as shipped.
-    # That is the Wing War clones' fault again (polygons at 0x600000) and is
-    # recorded in docs/findings.md 2026-10-29 as owed.
+    # swaj carries the parent's copro_data too (MAME lists the same four files).
+    # Missing until 2026-10-29: the Wing War clones' fault again, polygons at
+    # 0x600000. CLONE_COPRO_NOTE marks the MRA.
+    'swaj':     ['mpr-16472.39', 'mpr-16473.40', 'mpr-16474.41', 'mpr-16475.42'],
 }
 # Clones whose copro blocks were added after their MRA first shipped, and the
 # parent they share them with: the MRA says so above the blocks.
 CLONE_COPRO_NOTE = {'wingwaru': 'wingwar', 'wingwarj': 'wingwar',
-                    'wingwar360': 'wingwar'}
+                    'wingwar360': 'wingwar', 'swaj': 'swa'}
 # The polygon model ROMs: the 3D geometry, and by a long way the largest region.
 # ROM_LOAD32_WORD in PAIRS - each pair is the low and high 16 bits of a 32-bit
 # word - with successive pairs 4 MB apart. Eight files for vr/vf/wingwar (16 MB),
@@ -128,6 +128,7 @@ COPRO_TABLES = {                     # ROM_LOAD32_WORD x2, 256 KB
     # why no game's ROM_START lists them - and they are present in every game's
     # zip. Every set gets them.
     'swa':      ['opr14742.bin', 'opr14743.bin'],
+    'swaj':     ['opr14742.bin', 'opr14743.bin'],
     'vf':       ['opr14742.bin', 'opr14743.bin'],
     'wingwar':  ['opr14742.bin', 'opr14743.bin'],
     'wingwaru':   ['opr14742.bin', 'opr14743.bin'],
@@ -459,7 +460,8 @@ def emit(setname, chunks, cross_checked, regions):
                 out.append('        <!-- THE COPROCESSOR DATA ROM AND SINCOS TABLES WERE MISSING from this')
                 out.append("             clone's MRA, and the polygon ROMs sat at 0x600000 where the")
                 out.append(f"             core reads the data ROM. MAME's {setname} carries the same")
-                out.append(f'             copro_data as {parent} (mpr-16739..16742) and the same')
+                nums = sorted(int(re.search(r'-(\d+)\.', n).group(1)) for n in COPRO_DATA[setname])
+                out.append(f'             copro_data as {parent} (mpr-{nums[0]}..{nums[-1]}) and the same')
                 out.append("             MODEL1_CPU_BOARD tables, so these blocks are the parent's.")
                 out.append(f'             Untested - no {setname}.zip on the machine it was written on. -->')
             out.append(f'        <!-- stream 0x{off:06x}: the coprocessor\'s DATA ROM, 2 MB.')
