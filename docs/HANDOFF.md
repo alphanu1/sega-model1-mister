@@ -53,8 +53,16 @@ main on his word; no release yet. 15 kHz output not tested.
   NVRAM (gun alignment). **On the board (Ben, 2026-10-29, rbf 99d21894): "All
   looks good now."**
 - **NetMerc sound:** nearly silent even when right, because MAME's
-  `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed on `netmerc-sound`
-  (MultiPCM envelope, +1,090 ALM), held out until Ben has tested it alone.
+  `mpr-18134` is a BAD_DUMP (all 0xFF). The hiss is fixed by the MultiPCM
+  envelope (`netmerc-sound`, +1,090 ALM). **Board-tested alone (rbf 89b771c8,
+  Ben 2026-10-29): "All sound great"; merged into main.** The release build
+  needs a fresh fit of main with it in.
+- **NEXT RELEASE, NOT THIS ONE - Virtua Racing:** on one or two occasions a
+  very small line of the road is missing and the green shows through. Seen
+  since the DDR3 frame buffer, much rarer since. Ben saw it on the envelope
+  build (89b771c8), which predates the band-row fill fix (`m1-seams`
+  2dc10b9) - recheck on a build with it before chasing; that fix's missing
+  rows on band edges are a likely match.
 - **Star Wars (Japan) MRA:** had no copro data ROM or sincos tables, so its
   polygon ROMs loaded at 0x600000 (the Wing War clones' fault). FIXED
   2026-10-29: gen_mra.py gives swaj the parent's copro_data and tables; its
@@ -62,6 +70,82 @@ main on his word; no release yet. 15 kHz output not tested.
   is byte-identical. Untested on the board: no swaj.zip here (verify_mra
   against swa.zip stops only at the Japan program, epr-16468.14).
 - **15 kHz MRAs:** untested on this build.
+
+---
+
+# 2026-10-29: NETMERC'S HISS - A BAD-DUMP SAMPLE ROM THROUGH A MULTIPCM WITH NO ENVELOPE. FIXED IN THE CHIP; THE GAME WILL BE QUIET, AS IN MAME.
+
+Branch **`netmerc-sound`** (local, not pushed), on `main` (1daae7a).
+`findings.md` 2026-10-29 has every number.
+
+- **Cause, measured**: NetMerc's chip-1 sample ROM `mpr-18134` is MAME's
+  `BAD_DUMP` - 2 MB of 0xFF - so every chip-1 descriptor is garbage
+  (attack/decay F, loop past the end, vibrato 7), and 94% of the game's PCM
+  key-ons (3,182 of 3,393 in 90 s) go to it. Chip 2's ROM has no descriptor
+  table either. MAME plays these as 6 ms clicks - its NetMerc is nearly
+  silent. **Our MultiPCM had no envelope generator**, so the same voices
+  sustained at full level, reading the ROM at random: -27.6 dBFS rms, peaks
+  -3 dBFS, 72% of the energy above 6 kHz. Removing the envelope from the MAME
+  reference alone reproduces it (+37 dB).
+- **Fix** (`rtl/sound/m2_multipcm.sv`, shared by every game): MAME gew.cpp's
+  envelope generator, 12-bit samples, linear interpolation, its 32-bit
+  position arithmetic and its 2 MB address map. Bit-exact against a
+  transcription of MAME's arithmetic on 60 s of each game's own register
+  traffic, both chips, all five games (with the LFO and level/pan, which are
+  not modelled, switched to the RTL's in the reference).
+- **NetMerc after**: chip 1 -66 dBFS rms (MAME -81), chip 2 -108 (MAME -116).
+  **The hiss is gone and so is most of the sound**: what chip 1 should play is
+  in a ROM nobody has dumped. A good `mpr-18134` would play with no core
+  change. The rest of the gap to MAME is its LFO.
+- **Other games move toward MAME, none away** (level and third-octave error
+  per game in findings): they gain release fades and decays where notes were
+  cut or sustained, and lose the imaging above 6 kHz that the missing
+  interpolation left. VF and Wing War chip 1 use release rates on most
+  samples - the most audible change. Star Wars chip 2's release tails were
+  being cut outright.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| **netmerc-sound s17** | ed9a1a0 | **37,143** | **533** | **54** | +1.356 | +1.212 | +5.917 | +0.439 | +0.242 |
+| netmerc-sound s5 | ed9a1a0 | 37,136 | 533 | 54 | +1.051 | +0.674 | +5.958 | +0.371 | +0.245 |
+| netmerc-sound s3 | ed9a1a0 | 37,067 | 533 | 54 | +0.749 | +0.480 | +6.088 | +0.115 | +0.222 |
+
+**For the board: `build/Model1_nmsound_seed17_37143.rbf`**, md5
+`89b771c81605e43f9afded4600b17f6c`; reports in `build/nmsound_s17_reports/`.
+The MultiPCM pair costs ~+1,090 ALM, +10 M10K, +4 DSP.
+
+## What to check on the board
+
+1. **NetMerc**: no hiss. Expect near silence with faint clicks - that is the
+   ROM set, not the core (MAME sounds the same).
+2. **Every other game, by ear against what you know**: Virtua Fighter and Wing
+   War most (release fades now), then VR and Star Wars. Notes that used to
+   stop dead should tail off; nothing should be louder, harsher or missing.
+   If anything is worse, the last board build from `main` is the
+   comparison without this change (the sound path is otherwise untouched).
+
+## How to repeat it
+
+- `make test_multipcm` (in `make test`, no ROM): add
+  `m2_multipcm: checks=178570 fails=0 nonzero=166290 writes=3994` to the
+  untracked instructions file's expected block.
+- A game: `OUTF=x_regs.txt mame <game> ... -video none -sound none
+  -autoboot_script tools/mame_mpcm_regs.lua`, `tools/mpcm_region.py <game>
+  <chip> <zip> -o region.bin`, then `make multipcm_replay REGS=... REGION=...
+  CHIP=...` (`REF_RTL=1` counts differences; `REF_NOEG`, `REF_8BIT`,
+  `REF_NOINTERP`, `REF_ALIAS`, `REF_NOLFO` are the ablations).
+
+## Not done, and why
+
+- **The LFO** (vibrato/tremolo): only NetMerc's garbage and three VR samples
+  ask for it; it is the last 14 dB on NetMerc's chip 1 and would cost a few
+  M10K for MAME's scale tables.
+- **Level and pan as MAME's tables** (here 6 dB level steps and shift pan,
+  pre-existing): the 1-4 dB residual on the other games. A separate change,
+  with its own level calibration question.
+- **Model 2's copy**: `m2_multipcm.sv` came from the Model 2 core, whose
+  Daytona (`model2o`) uses the same board. The fix would carry over; nothing
+  was done there.
 
 ---
 

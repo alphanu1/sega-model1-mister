@@ -20,6 +20,205 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — NETMERC'S HISS IS A BAD-DUMP SAMPLE ROM PLAYED THROUGH A MULTIPCM WITH NO ENVELOPE
+
+Branch `netmerc-sound`, on `main` (1daae7a). Ben, on the board: NetMerc's
+sound is "tinny and hissy, definitely not right"; long-standing; the other
+five games have been played a lot and not flagged. (HANDOFF's open-defects
+list had it as "tiny, high-pitched and at the wrong speed", a suspected rate
+fault. **It is not a rate fault** - see the wrong turns below.)
+
+### Scope: NetMerc only, because of its ROM set
+
+Descriptor census of every game's sample ROMs (the 12-byte entries at the
+start of each chip's space, `tools/mpcm_region.py` + a few lines of Python):
+
+| game | chip 1 | chip 2 |
+|---|---|---|
+| vr | 128 valid, 8-bit | 128 valid, 8-bit |
+| vf | 256 valid, 8-bit | 256 valid, 8-bit |
+| swa | 94 valid, 8-bit | 122 valid, 8-bit |
+| wingwar | 171 valid, 8-bit | 273 valid, 8-bit |
+| **netmerc** | **mpr-18134 is 2 MB of 0xFF** | **mpr-18136 has no table: offset 0 is waveform data** |
+
+`mpr-18134.ic32` is MAME's `BAD_DUMP` (CRC 9a4109e5): every byte 0xFF, so
+every chip-1 descriptor reads start 0x3FFFFF, 12-bit, loop 0xFFFF, end 1,
+attack/decay/release F, decay level F, vibrato 7. No other ROM in the set
+holds a plausible table anywhere (a scan for 12+ monotonic entries at every
+4-byte offset finds VR's at 0 and nothing in NetMerc's). MAME taps over 90 s
+of play (coin, trigger every second): **chip 1 keys on 3,182 times across 33
+samples, chip 2 211 times** - 94% of NetMerc's PCM is keyed on garbage. Its
+54,000 YM3438 writes a minute make no sound (MAME with the PCM keyed off is
+silent: they are timer traffic).
+
+**MAME's NetMerc is nearly silent**: per-source captures (key-ons or FM
+levels rewritten in flight by a write tap) give chip 1 a peak of 1,870 and
+then ~55 of 32,768 in play, chip 2 one burst at 10 s, the FM nothing. The
+real cabinet had a good ROM; no emulation can recover what chip 1 played.
+
+### The instrument: one MultiPCM on MAME's own register traffic
+
+`tools/mame_mpcm_regs.lua` logs every write the sound 68000 makes, with
+emulated time. `sim/sound/tb_multipcm_replay.cpp` replays one chip's writes
+in sample time into `m2_multipcm` (its 4 MB region served as SDRAM holds it)
+and into `sim/sound/multipcm_ref.h`, a transcription of MAME 0.289's
+`gew.cpp`/`multipcm.cpp`. **The transcription was checked against MAME
+itself**: its chip-1 and chip-2 levels at x0.5 (segam1audio's route gain)
+are MAME's per-source captures (rms 4.5/23.7/1.4 -> 2.2/11.3/0.6 by 10 s
+window; chip 2's burst peak 3,920 -> 1,941).
+
+### Before: chip 1 is loud broadband noise where MAME is silent
+
+NetMerc, 20-60 s of play, chip output in dBFS (MAME scaled to the RTL's
+level calibration, ref / 4; at the board mix the RTL sits 6 dB under MAME,
+pre-existing):
+
+| | chip 1 rms | chip 1 peak | energy > 6 kHz | chip 2 rms | chip 2 peak |
+|---|---|---|---|---|---|
+| RTL before | **-27.6** | **-3.0** | **72%** | -33.4 | -11.3 |
+| RTL after | -66.1 | -24.8 | 48% | -107.5 | -80.8 |
+| MAME | -80.7 | -30.7 | 52% | -115.7 | -86.8 |
+
+72% of the energy above 6 kHz at -28 dBFS, peaks near full scale: the hiss.
+
+### Cause, by ablation of the reference
+
+Switching one MAME feature off at a time in the reference (60 s, rms of the
+chip in MAME's own scale):
+
+| reference | chip 1 | chip 2 |
+|---|---|---|
+| MAME | 9.9 | 9.2 |
+| **no envelope** (full level key-on to key-off, as the RTL was) | **673.7** | **726.3** |
+| 8-bit samples only | 2.9 | 9.7 |
+| no interpolation | 11.8 | 10.0 |
+| 2-4 MB aliased into the bank window (as the RTL was) | 9.8 | 31.1 |
+
+**The envelope is the cause - 37 dB on its own.** `m2_multipcm` had no
+envelope generator at all ("Release curves are not yet modeled"): a voice
+played at full level from key-on until key-off. All-FF descriptors decay to
+nothing in ~6 ms in MAME (attack F, decay F, decay level 0 - a click); here
+they sustained, and with end 1 / loop 0xFFFF the position wraps by a huge
+stride every sample, so each voice reads the ROM at random: white noise at
+full level, for as long as the game holds the key.
+
+After the envelope alone the RTL was still 26 dB over MAME on chip 1. That
+was the position arithmetic (38 bits, 16 fractional, where MAME wraps a
+32-bit offset with 12) and the 2-4 MB alias, which together walked the
+garbage voices into mpr-18135's real sample data where MAME's walk reads
+0xFF or unmapped zeros, plus 8-bit reads of 12-bit data (FF as -256, not
+-16). The last 14 dB is MAME's **LFO**: the FF descriptors ask for vibrato 7,
+which moves MAME's walk; with the LFO off in the reference its chip 1 is
+-69.8/-65.5 dBFS by window against the RTL's -66.4/-61.9. Level/pan
+approximations account for ~3 dB of it.
+
+### The fix: m2_multipcm computes what gew.cpp computes
+
+- **Envelope generator**: attack, decay 1, decay 2, release, decay level and
+  key-rate scaling, MAME's 10.16 volume, its step tables and its 1024-entry
+  linear-to-exponential gain, the tables generated from the transcription
+  (`sim/sound/gen_mpcm_tables.cpp`) so they are MAME's float arithmetic, not
+  a second derivation. Key-off enters RELEASE (release F still stops at
+  once) and the voice stops at zero.
+- **12-bit samples** (descriptor bit 22): two byte fetches a sample, even
+  `{b0, b1[3:0]}`, odd `{b2, b1[7:4]}`.
+- **Linear interpolation** against the previous sample by the 12-bit
+  position fraction, `prev + ((cs - prev) * f >> 12)`, which is MAME's
+  `(cs*f + prev*(4096-f)) >> 12` exactly.
+- **Position**: 32 bits, 12 fractional, MAME's loop arithmetic modulo 2^32,
+  MAME's octave arithmetic (`(octave - 1) & 0xF`).
+- **Address map**: 0x200000-0x3FFFFF reads zero, as MAME's 22-bit space with a
+  2 MB map does. It aliased into the bank window.
+- The key-rate octave is latched at the key-on or sample write that
+  retriggers the voice, as MAME fixes it there.
+
+Not modelled, and why the RTL is still a few dB from MAME: the LFO, the level
+slew, level and pan as MAME's tables (6 dB level steps and shift pan here,
+pre-existing), MAME's float pitch step (up to 1/4096 lower than the exact one
+here). A key-on also re-reads the descriptor from reg 1 as it stands, where
+MAME uses what the last reg 1 write loaded; they differ only when a slot is
+keyed with no sample ever written, or reg 2's bit 0 (sample bit 8) changes
+after reg 1 - games do neither (NetMerc writes reg 3, 2, 1, 5, 0, 4).
+
+### Proved, and how to repeat it
+
+- **Bit-exact against MAME's arithmetic** with the four simplifications
+  above switched into the reference (`REF_RTL=1`): 0 of 5,357,142 values
+  differ, 60 s each, both chips of all five games' MAME traffic - VR, VF,
+  Star Wars, Wing War, NetMerc.
+- **`make test_multipcm`** (in `make test`, no ROM): a random region with
+  8/12-bit, looped, past-the-end and all-FF descriptors and a random register
+  stream, writes landing mid-slot (`MIDPASS`), random fetch latency:
+  `m2_multipcm: checks=178570 fails=0`. Swept 10 s at LAT 0/8/20/1 and CE
+  1/1/3/7 (an enable every clock is the hard case for the registered ROMs):
+  892,856 checks, 0 fails each. **Mutation**: latching the key-rate octave at
+  descriptor completion instead of key-on fails it (18,861); the eg_ram write
+  guard I first wrote was shown redundant (eg_zero already overrides) and is
+  gone.
+- `make test`: every suite passes (68 lines with fails=0), the new line above
+  added. `make elab` and `make lint_top` clean.
+- The whole sound board (`make test_m1_sndboard CYCLES=160000000`, VR, 68000,
+  cache and rate stage): 44,650 Hz, 0 underruns, checks=5 fails=0, same as
+  main.
+
+### Every other game moves toward MAME, none away
+
+60 s of each game's own traffic (coin, start, buttons), 1 s windows where
+MAME is not silent: mean |level error| and mean third-octave band error
+against MAME, dB, before -> after:
+
+| game | chip | level | bands | energy > 6 kHz (MAME) |
+|---|---|---|---|---|
+| vr | 1 | 3.3 -> 3.1 | 3.4 -> 3.1 | 5.4% -> 2.9% (3.6%) |
+| vr | 2 | 1.9 -> 1.3 | 1.9 -> 1.4 | 2.4% -> 1.5% (1.5%) |
+| vf | 1 | 4.0 -> 4.0 | 3.7 -> 3.6 | 2.9% -> 1.9% (2.5%) |
+| vf | 2 | 3.1 -> 2.7 | 3.3 -> 2.8 | 1.5% -> 0.5% (0.5%) |
+| swa | 1 | 2.6 -> 2.4 | 2.6 -> 2.5 | 2.2% -> 0.9% (0.9%) |
+| swa | 2 | 109 -> 0.7 | 72 -> 0.7 | release tails were cut |
+| wingwar | 1 | 4.4 -> 3.9 | 4.2 -> 3.8 | 6.9% -> 6.5% (6.6%) |
+| wingwar | 2 | 3.4 -> 3.1 | 3.3 -> 3.1 | 3.3% -> 0.9% (0.9%) |
+| netmerc | 1 | 52.3 -> 14.4 | 51.8 -> 15.1 | 72.3% -> 48.9% (53.3%) |
+| netmerc | 2 | 31.1 -> 4.1 | 22.4 -> 4.1 | |
+
+The other games gain release fades and decays where they had hard cuts and
+sustains (VF and Wing War chip 1 use release rates on most samples), and
+lose the imaging the missing interpolation left above 6 kHz. The remaining
+1-4 dB is level and pan, which this change does not touch.
+
+### What it costs (Quartus 17.0, three seeds, all clocks positive)
+
+| seed | ALM | M10K | DSP | clk_sys | clk_3d | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|
+| 3 | 37,067 | 533 | 54 | +0.480 | +0.749 | +6.088 | +0.115 | +0.222 |
+| 5 | 37,136 | 533 | 54 | +0.674 | +1.051 | +5.958 | +0.371 | +0.245 |
+| **17** | **37,143** | 533 | 54 | **+1.212** | **+1.356** | +5.917 | +0.439 | +0.242 |
+
+Per chip, from the fitter's entity table (seed 17 against 3d-overrun's s17
+report): 638 -> 1,151 and 625 -> 1,204 ALM, 7 -> 12 M10K, 0 -> 2 DSP. So
+about **+1,090 ALM, +10 M10K, +4 DSP** for the pair. The gain ROM is 2 M10K a
+chip; the step ROM is logic (44 ALM). Every array inferred as intended.
+
+### What it means on the board
+
+**NetMerc will be quiet, as MAME's is - not right.** The hiss goes, and so
+does almost everything else, because what chip 1 should play is in a ROM
+nobody has dumped. A good `mpr-18134` would make it play with no core change.
+The 6 ms clicks per key-on remain (as in MAME), about 6 dB louder than MAME's
+for want of the LFO.
+
+### Wrong turns
+
+- **"High-pitched, wrong speed" read as a rate fault** (HANDOFF's open item
+  1). The chip runs at 44,650 Hz with no underruns; the high-pitched
+  character was noise. Nothing in the rate path was touched.
+- I took the remaining 26 dB after the envelope for level/pan. Ablation said
+  otherwise: position arithmetic, the alias and 12-bit reads, then the LFO.
+- The fuzz's first failures were the fuzz: it keyed slots that had never been
+  given a sample, and changed sample bit 8 after the sample write. Both are
+  the re-read-at-key-on difference above, which games never exercise; the
+  fuzz now orders its writes as games do, and the difference is recorded
+  rather than hidden.
+
 ## 2026-10-29 — THE LINES THROUGH THE SHIPS AND MOUNTAINS ARE ROWS LOST AT BAND BOUNDARIES: THE FILL TOOK THE BAND AS ITS VIEWPORT
 
 Branch `m1-seams`, on `main` (f17dcc0). Ben, on the board with the DDR3
