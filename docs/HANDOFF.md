@@ -17,9 +17,16 @@ main on his word; no release yet. 15 kHz output not tested.
   same family as the Death Star. (On `swa-sound` alone it was missing.)
 - **Star Wars, the first big ship:** lines in the boosters, like overruns or
   seams. Still there with the 3D frame buffer, so not late bands.
-- **Wing War's sky is grey** on this build. **It is wrong, and it is fixed on
-  branch `wingwar-sky`** (polygon RAM - see the top entry below). Ben also
-  saw it grey on the board; the "bench-only" note that stood here was wrong.
+- **Wing War's sky** was grey: wrong, and fixed on branch `wingwar-sky`
+  (polygon RAM - see the top entry below). **On the board (Ben, 2026-10-29,
+  rbf 12c50317): "it's working".** The "bench-only" note that stood here was
+  wrong.
+- **Wing War, 2D screens with a picture (e.g. the plane profiles: ZERO in
+  front of Mt Fuji):** the picture glitches as it appears - it fills in from
+  left to right, with a strip on the left showing a lighter, different image
+  until the fill reaches it. Possibly a tile/tilemap fault, or the picture's
+  upload being drawn while it is still arriving. Open bug for the release
+  notes; to be fixed later (Ben, 2026-10-29). Not investigated.
 - **NetMerc in play:** 3D layering still wrong and the camera feels misplaced
   (`netmerc-layers` fixed attract only); under investigation (`netmerc-play`).
 - **NetMerc sound:** nearly silent even when right, because MAME's

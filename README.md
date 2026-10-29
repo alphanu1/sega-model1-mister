@@ -199,6 +199,13 @@ the disassembler), so per hard rule 3 the numbering was corrected in
 
 ### Open questions
 
+**Wing War: pictures on the 2D screens fill in from left to right.** Seen on
+the board, 2026-10-29: on screens with a photo background (the plane profiles,
+e.g. the ZERO over Mt Fuji), the picture appears with a glitch, filling from
+left to right, with a lighter, different image in a strip on the left until
+the fill reaches it. Possibly a tile/tilemap fault. Open for the release notes;
+not investigated.
+
 **Star Wars Arcade: the Death Star vanishes, and some quads turn black, late in
 attract.** Seen on the board, 2026-10-29, on the DSB music build (`swa-sound`).
 After a while in attract the camera flies over the Death Star; some way into
