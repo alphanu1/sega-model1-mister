@@ -83,6 +83,13 @@ module tb_m1_frame #(
     // Wing War's. The Makefile sets it from GAME, and IOFWHEX must then be
     // that board's firmware (EPR-16891), not EPR-14869.
     parameter bit     IO2        = 1'b0,
+    // STAR WARS' DIGITAL SOUND BOARD on port 11, as Model1.sv has it
+    // (2026-10-29, test-all). 1 releases it from reset once the sound stream
+    // is in, exactly as Model1.sv does for game id 2; the stream must then
+    // carry the DSB ROMs (FRAME_SNDBIN with them appended). 0 holds it in
+    // reset, which is every other game. The 68000's transmit line is paced
+    // at 31.25 kbaud in both cases, as in Model1.sv.
+    parameter bit     DSB        = 1'b0,
     // DPRAM access trace (V60 side), deduplicated; 0 = off. See DPT lines.
     parameter integer DPTRACE    = 0,
     parameter longint STREAM_WORDS = 64'd12713984,   // build/rom/vr_stream.bin / 2
@@ -318,17 +325,22 @@ wire [13:0] iofw_word;
 //
 // Ports 7-10 are the sound board's, wired exactly as Model1.sv wires them:
 // 7 = 68000 ROM, 8/9 = the MultiPCM sample streams, 10 = 68000 work RAM.
-wire [10:0]       p_req, p_we, p_ack;
-wire [10:0][25:1] p_addr;
-wire [10:0][15:0] p_din;
-wire [10:0][1:0]  p_be;
-wire [10:0][63:0] p_dout;
+// TWELVE since 2026-10-29: port 11 is Star Wars' DSB, as in Model1.sv.
+wire [11:0]       p_req, p_we, p_ack;
+wire [11:0][25:1] p_addr;
+wire [11:0][15:0] p_din;
+wire [11:0][1:0]  p_be;
+wire [11:0][63:0] p_dout;
+wire        dsb_sreq, dsb_swe;
+wire [25:1] dsb_saddr;
+wire [15:0] dsb_sdin;
+wire  [1:0] dsb_sbe;
 
 // Port 4 carries the I/O board's firmware fetch, not the read-back sweep -
 // that fed the debug overlay's row 4, which is off. See Model1.sv.
-assign p_req  = {snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
+assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
                  r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
-assign p_we   = {snd_ram_we,  1'b0,        1'b0,         1'b0,
+assign p_we   = {dsb_swe, snd_ram_we,  1'b0,        1'b0,         1'b0,
                  r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
@@ -347,7 +359,8 @@ localparam logic [25:1] SND_RAM_BASE  = 25'h1040000;  // 32.5 MB, 64 KB
 localparam logic [25:1] SND_PCM1_BASE = 25'h1080000;  // 33.0 MB, 4 MB
 localparam logic [25:1] SND_PCM2_BASE = 25'h1280000;  // 37.0 MB, 4 MB
 
-assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
+assign p_addr = {dsb_saddr,
+                 SND_RAM_BASE  + {9'd0, snd_ram_addr},
                  SND_PCM2_BASE + 25'({snd_pcm2_addr, 2'b00}),
                  SND_PCM1_BASE + 25'({snd_pcm1_addr, 2'b00}),
                  SND_ROM_BASE  + {7'd0, snd_rom_addr},
@@ -358,9 +371,9 @@ assign p_addr = {SND_RAM_BASE  + {9'd0, snd_ram_addr},
                  IOFW_BASE + {10'd0, iofw_word},
                  {tgp_mem_addr[25:2], 1'b0}, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
-assign p_din  = {snd_ram_wdata, 16'd0, 16'd0, 16'd0,
+assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
                  r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
-assign p_be   = {snd_ram_be,  2'b11, 2'b11, 2'b11,
+assign p_be   = {dsb_sbe, snd_ram_be,  2'b11, 2'b11, 2'b11,
                  2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
@@ -382,7 +395,7 @@ wire        dq_oe_c, dq_oe_m;
 wire [15:0] v_flags;
 wire        mem_ready;
 
-m1_sdram #(.NP(11), .INIT_NOP(600)) sdram (
+m1_sdram #(.NP(12), .INIT_NOP(600)) sdram (
     .clk(clk), .rst_n(rst_n_sys), .ready(mem_ready),
     .rd_lat_sel(3'd3),   // CL+3: sdram_model presents data on the same edge
     .sd_cke(cke), .sd_cs_n(cs_n), .sd_ras_n(ras_n), .sd_cas_n(cas_n),
@@ -597,7 +610,7 @@ end
 m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
     .clk(clk), .rst_n(g_rst_n && snd_ready),
     .rx_data(snd_rx_data), .rx_valid(snd_rx_valid), .rx_ack(snd_rx_ack),
-    .tx_data(), .tx_valid(), .tx_ack(1'b1),
+    .tx_data(snd_txd), .tx_valid(snd_txv), .tx_ack(snd_txa),
     .rom_req(snd_rom_req), .rom_addr(snd_rom_addr),
     .rom_ack(snd_rom_ack), .rom_data(snd_rom_data),
     .ram_req(snd_ram_req), .ram_addr(snd_ram_addr), .ram_we(snd_ram_we),
@@ -612,6 +625,68 @@ m2_sound_board #(.TICK_NUM(20), .TICK_DEN(80), .PCM_CACHE(1'b1)) u_snd (
     .dbg_pcm_samples(), .dbg_pcm_lat(), .dbg_pcm_miss(),
     .dbg_pcm_under(), .dbg_pcm_level()
 );
+
+// ------------------------------------------------- STAR WARS' SOUND BOARD
+// Model1.sv's wiring, copied: the 68000's TX paced at 31.25 kbaud (holding +
+// shift register, 320 us a byte at 80 MHz) into dsb_board on clk_cpu, its
+// SDRAM traffic through m1_cdc_port onto port 11. MUST MATCH Model1.sv.
+wire  [7:0] snd_txd;
+wire        snd_txv, snd_txa;
+reg         txh_full, txs_busy, dsb_rx_tog;
+reg   [7:0] txh_d, txs_d, dsb_rx_byte;
+reg  [14:0] txs_cnt;
+assign snd_txa = !txh_full;
+longint unsigned snd_tx_bytes = 0;
+always @(posedge clk) begin
+    if (!rst_n) begin
+        txh_full <= 1'b0; txs_busy <= 1'b0; dsb_rx_tog <= 1'b0; txs_cnt <= 15'd0;
+    end else begin
+        if (snd_txv && !txh_full) begin txh_d <= snd_txd; txh_full <= 1'b1; snd_tx_bytes <= snd_tx_bytes + 1; end
+        if (!txs_busy && txh_full) begin
+            txs_d <= txh_d; txh_full <= 1'b0; txs_busy <= 1'b1;
+            txs_cnt <= 15'd25599;
+        end else if (txs_busy) begin
+            if (txs_cnt == 15'd0) begin
+                txs_busy <= 1'b0; dsb_rx_byte <= txs_d; dsb_rx_tog <= ~dsb_rx_tog;
+            end else txs_cnt <= txs_cnt - 15'd1;
+        end
+    end
+end
+reg  [2:0] dsb_rst_s;
+always @(posedge clk_cpu or negedge rst_n) begin
+    if (!rst_n) dsb_rst_s <= 3'b000;
+    else        dsb_rst_s <= {dsb_rst_s[1:0], snd_ready && DSB};
+end
+wire        dsb_areq, dsb_awe, dsb_aack;
+wire [25:1] dsb_aaddr;
+wire [15:0] dsb_adin, dsb_adout;
+wire  [1:0] dsb_abe;
+wire signed [15:0] dsb_l, dsb_r;
+wire        dsb_stb, dsb_trap;
+wire [15:0] dsb_frames;
+dsb_board u_dsb (
+    .clk(clk_cpu), .rst_n(dsb_rst_s[2]),
+    .rx_tog(dsb_rx_tog), .rx_byte(dsb_rx_byte),
+    .vol_mame(1'b0),
+    .s_req(dsb_areq), .s_we(dsb_awe), .s_addr(dsb_aaddr), .s_din(dsb_adin),
+    .s_be(dsb_abe), .s_ack(dsb_aack), .s_dout(dsb_adout),
+    .out_l(dsb_l), .out_r(dsb_r), .out_stb(dsb_stb),
+    .dbg_trap(dsb_trap), .dbg_frames(dsb_frames)
+);
+m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_dsb_cdc (
+    .a_clk(clk_cpu), .a_rst_n(rst_n),
+    .a_req(dsb_areq), .a_we(dsb_awe), .a_addr(dsb_aaddr), .a_din(dsb_adin),
+    .a_be(dsb_abe), .a_dout(dsb_adout), .a_ack(dsb_aack), .a_busy(),
+    .b_clk(clk), .b_rst_n(rst_n),
+    .b_req(dsb_sreq), .b_we(dsb_swe), .b_addr(dsb_saddr), .b_din(dsb_sdin),
+    .b_be(dsb_sbe), .b_dout(p_dout[11][15:0]), .b_ack(p_ack[11])
+);
+longint unsigned dsb_p11_reqs = 0;
+integer dsb_peak = 0;
+always @(posedge clk) if (p_ack[11]) dsb_p11_reqs <= dsb_p11_reqs + 1;
+always @(posedge clk_cpu) if (dsb_stb) begin
+    if ((dsb_l > 0 ? dsb_l : -dsb_l) > dsb_peak) dsb_peak = (dsb_l > 0 ? dsb_l : -dsb_l);
+end
 
 // ------------------------------------------------- the audio capture
 // A WAV OF WHAT THE CORE ACTUALLY OUTPUTS, so sound is debugged here and not
@@ -1561,9 +1636,11 @@ task automatic run_snd_download;
             ioctl_download <= 1'b1;
             @(posedge clk);
             sndn = 0;
-            for (w = 0; w < 4325376; w = w + 1) begin
+            // TO THE FILE'S END, up to 0xCA0000 bytes: Star Wars' stream
+            // carries the DSB's ROMs after PCM2 (m1_rom_loader SND_PCM2_END).
+            for (w = 0; w < 6619136; w = w + 1) begin
                 sndrc = $fread(sndbyte, sndf);
-                if (sndrc < 2) w = 4325376;
+                if (sndrc < 2) w = 6619136;
                 else begin
                     while (ioctl_wait) @(posedge clk);
                     ioctl_wr   <= 1'b1;
@@ -3813,6 +3890,8 @@ initial begin
                 // pushing COMMANDS into a full inbound FIFO, neither can drain
                 // the other and the machine is DEADLOCKED rather than slow.
                 // v60_stall is m1_copro_if's own `fin_full`.
+                $display("  DSB: on=%0b tx=%0d p11=%0d mpeg_frames=%0d trap=%0b peak=%0d",
+                         dsb_rst_s[2], snd_tx_bytes, dsb_p11_reqs, dsb_frames, dsb_trap, dsb_peak);
                 $display("  %0d M cycles: pc=%06h frames=%0d misses=%0d  3d obj=%0d q=%0d f=%0d st=%0d b=%0d rb=%0d bands=%0d rv=%0b armed=%0b beam=%0d | lw st=%0d off=%0h cur=%0h cmd=%02h  fin=%0d/16 fout=%0d/16 v60_stall=%0b tgp_wr=%0b",
                          cycles/1000000, dbg_pc, frames, dbg_overruns,
                          core.r3_dbg_objects, core.r3_dbg_quads,

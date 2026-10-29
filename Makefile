@@ -1187,7 +1187,9 @@ m1_frame:
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
 	  -GHASHEVERY=$(FRAME_HASH) -GAUTO_AT="64'd$(FRAME_AUTO)" \
 	  --Mdir build/m1frame -o m1frame \
-	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) sim/mem/sdram_model.sv sim/mem/ddr3_model.sv sim/top/tb_m1_frame.sv
+	  -Irtl/sound -GDSB=$(FRAME_DSB) \
+	  $(SRCS_TOP_CORE) $(SRCS_m2_sound_board) rtl/sound/dsb_board.sv rtl/sound/dsb_z80.sv rtl/sound/dsb_mpeg.sv \
+	  sim/mem/sdram_model.sv sim/mem/ddr3_model.sv sim/top/tb_m1_frame.sv
 	@# THE 68000'S MICROCODE IS LOADED BY BARE FILENAME AT RUNTIME.
 	@# fx68k.sv does `$$readmemb("microrom.mem", uRam)` with no path, so it
 	@# resolves against the CWD of the SIMULATOR, not the source tree. The
@@ -1256,6 +1258,9 @@ FRAME_ROMA_MODE ?= $(if $(filter swa swaj netmerc,$(GAME)),1,$(if $(filter wingw
 # FRAME_IO2=0 with EPR-14869 reproduces what every release before this did.
 # FRAME_DPTRACE=<n>: n lines of the V60's DPRAM accesses, loops collapsed.
 FRAME_DPTRACE ?= 0
+# Star Wars' DSB released (1) or held in reset (0). FRAME_DSB=1 needs a sound
+# stream with the DSB ROMs appended: FRAME_SNDBIN=build/rom/swa_snd_dsb.bin.
+FRAME_DSB ?= 0
 FRAME_IO2 ?= $(if $(filter wingwar wingwarj wingwaru wingwar360,$(GAME)),1,0)
 FRAME_DOWNLOAD ?= 1
 FRAME_HOLD_CPU ?= 0
