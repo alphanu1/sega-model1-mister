@@ -2049,13 +2049,26 @@ end
 // taken the other way.
 integer pctr = 0;
 reg [23:0] pc_prev = 24'hffffff;
+reg [23:0] pc_ring [1024];
+integer    pc_ring_f [1024];
+reg [9:0]  pc_ring_i = 0;
 always @(posedge clk_cpu) begin
     if (core.main.ce && core.dbg_pc !== pc_prev) begin
         pc_prev <= core.dbg_pc;
         if (PCTRACE && pctr < PCTRACE_MAX) $display("PCT %06h", core.dbg_pc);
         pctr = pctr + 1;
+        pc_ring[pc_ring_i] <= core.dbg_pc;
+        pc_ring_f[pc_ring_i] <= frames;
+        pc_ring_i <= pc_ring_i + 1;
     end
 end
+// THE LAST 1,024 PCs, printed when the run ends. A halt or a wild jump is
+// otherwise only its final address; this is how the instructions that led
+// there are found (Wing War's halt at 40D007, findings 2026-10-29).
+task automatic dump_pc_ring;
+    for (int k = 0; k < 1024; k++)
+        $display("PCRING %0d f=%0d %06h", k, pc_ring_f[10'(pc_ring_i + k)], pc_ring[10'(pc_ring_i + k)]);
+endtask
 
 // CYCLE-IDENTITY HASHES - see HASHEVERY. FNV-1a style, 64-bit, folded over a
 // wide vector each cycle; the vectors are what the domain shows the rest of the
@@ -3734,6 +3747,7 @@ initial begin
 
     $display("");
     $display("FRAME: cycles=%0d halted=%0d fp_trap=%0d", cycles, dbg_halted, dbg_fp_trap);
+    if (dbg_halted) dump_pc_ring();
     $display("FRAME: pc=%06h io_replies=%0d sdram_violations=%04h",
              dbg_pc, dbg_io_replies, v_flags);
     $display("FRAME: %0d frames, %0d pixels painted, %0d non-black",

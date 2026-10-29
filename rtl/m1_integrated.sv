@@ -369,6 +369,7 @@ module m1_integrated (
   logic        cpu_if_req, cpu_if_ack;
   logic [23:0] cpu_if_addr;
   logic [25:1] cpu_if_sdram_addr;
+  logic        cpu_if_nocache;
   logic [63:0] cpu_if_data;
 
   m1_main main (
@@ -420,7 +421,7 @@ module m1_integrated (
     .sdr_din(cpu_sdr_din), .sdr_be(cpu_sdr_be),
     .sdr_dout(cpu_sdr_dout), .sdr_ack(cpu_sdr_ack),
     .if_req(cpu_if_req), .if_addr(cpu_if_addr),
-    .if_sdram_addr(cpu_if_sdram_addr),
+    .if_sdram_addr(cpu_if_sdram_addr), .if_nocache(cpu_if_nocache),
     .if_data(cpu_if_data), .if_ack(cpu_if_ack),
     .vid_clk(clk_sys),
     .vid_tram_addr(vid_tram_addr), .vid_tram_data(vid_tram_data),
@@ -687,7 +688,7 @@ module m1_integrated (
   m1_fetch_bridge u_fetch (
     .cpu_clk(clk_cpu), .cpu_rst_n(rst_n_cpu),
     .if_req(cpu_if_req), .if_off(cpu_if_addr[2:0]),
-    .if_sdram_addr(cpu_if_sdram_addr),
+    .if_sdram_addr(cpu_if_sdram_addr), .if_nocache(cpu_if_nocache),
     .if_data(cpu_if_data), .if_ack(cpu_if_ack),
     .mem_clk(clk_sys), .mem_rst_n(rst_n_sys),
     .p_req(if_req), .p_addr(if_sdram_addr),

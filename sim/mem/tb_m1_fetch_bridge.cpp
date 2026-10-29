@@ -52,7 +52,7 @@ struct Fetch {
     d = new Vm1_fetch_bridge;
     d->cpu_clk = 0; d->mem_clk = 0;
     d->cpu_rst_n = 0; d->mem_rst_n = 0;
-    d->if_req = 0; d->if_off = 0; d->if_sdram_addr = 0;
+    d->if_req = 0; d->if_off = 0; d->if_sdram_addr = 0; d->if_nocache = 0;
     d->p_dout = 0; d->p_ack = 0;
     d->eval();
   }
@@ -259,6 +259,42 @@ int main(int argc, char** argv) {
       printf("  FAIL same line at a new offset cost %ld transactions\n",
              t2.transactions - before3);
     }
+  }
+
+  // A FETCH FROM RAM IS NEVER KEPT. Wing War executes routines it copied into
+  // RAMA, and the cache has no invalidate, so m1_main marks those fetches
+  // if_nocache. Each must cost a transaction, must see memory as it is NOW
+  // (the routine may have been rewritten), and must not evict the ROM line
+  // that shares its slot.
+  {
+    Fetch t3;
+    std::mt19937 rng3(20261029u);
+    t3.lat = 4;
+    t3.reset();
+    for (auto& l : t3.lines) l = ((uint64_t)rng3() << 32) | rng3();
+    const uint32_t rom = 0x2000, ram = 0x2100;   // same slot, different tag
+    do_fetch(t3, rom, 0, 4, rng3, false);          // ROM line cached
+    t3.d->if_nocache = 1;
+    long b = t3.transactions;
+    do_fetch(t3, ram, 3, 4, rng3, false);
+    do_fetch(t3, ram, 3, 4, rng3, false);
+    checks++;
+    if (t3.transactions != b + 2) {
+      fails++;
+      printf("  FAIL two uncached fetches cost %ld transactions, want 2\n",
+             t3.transactions - b);
+    }
+    t3.lines[ram & 0xffff] ^= 0x0123456789abcdefull;   // the routine rewritten
+    do_fetch(t3, ram, 0, 4, rng3, false);              // checks the NEW bytes
+    t3.d->if_nocache = 0;
+    b = t3.transactions;
+    do_fetch(t3, rom, 0, 4, rng3, false);
+    checks++;
+    if (t3.transactions != b) {
+      fails++;
+      printf("  FAIL an uncached fetch evicted the ROM line in its slot\n");
+    }
+    printf("  uncached fetches: not kept, never stale, ROM slot untouched\n");
   }
 
   printf("m1_fetch_bridge: checks=%ld fails=%ld\n", checks, fails);
