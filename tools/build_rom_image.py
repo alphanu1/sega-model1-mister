@@ -362,6 +362,11 @@ def pack_stream(zip_path, game):
 # the board has been configured.
 EE_PART = '93c45.bin'
 
+# The default contents of RAMA, the V60's battery-backed RAM, for the sets MAME
+# gives one (ROM_REGION "nvram"). The core loads it on ioctl index 6. NetMerc's
+# holds its gun alignment: all FF but bytes 0x38 and 0x40.
+NV_PARTS = {'netmerc': 'netmerc_nvram.bin'}
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -437,6 +442,23 @@ def main():
         print(f"{eep}: {len(ee)} bytes of I/O board EEPROM")
     else:
         print(f"note: {EE_PART} not in {args.zip}; the I/O board will read a blank part")
+
+    # One hex byte per line, the EEPROM's shape; the bench streams it on
+    # index 6 through the real loader.
+    if args.game in NV_PARTS:
+        try:
+            with zipfile.ZipFile(args.zip) as zf:
+                nv = zf.read(NV_PARTS[args.game])
+        except (KeyError, OSError):
+            nv = None
+        if nv is not None:
+            nvp = os.path.join(args.out, f'{args.game}_nv.hex')
+            with open(nvp, 'w') as f:
+                for b in nv:
+                    f.write('%02x\n' % b)
+            print(f"{nvp}: {len(nv)} bytes of default NVRAM (RAMA)")
+        else:
+            print(f"note: {NV_PARTS[args.game]} not in {args.zip}; RAMA starts as SDRAM holds it")
 
     if args.bin:
         binp = os.path.join(args.out, f'{args.game}_stream.bin')

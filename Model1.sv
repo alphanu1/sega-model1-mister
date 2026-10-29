@@ -267,6 +267,7 @@ module emu
   wire is_vf = (game == 7'd1);
   wire is_swa = (game == 7'd2);
   wire is_ww  = (game == 7'd3);
+  wire is_nm  = (game == 7'd4);
 
   // ROMA MIRRORING, per game.
   //
@@ -308,6 +309,10 @@ module emu
   // EPR-14869 and it boots on it, so it stays on the first board until its own
   // firmware has been run here.
   wire io_board2 = (game == 7'd3);
+
+  // NetMerc reads its camera's orientation from a head tracker that MiSTer
+  // does not have; m1_main seeds the forward pose MAME seeds. See there.
+  wire hmd_pose = (game == 7'd4);
 
   // THE INPUT MAP IS PER GAME, AND IT HAS TO BE.
   //
@@ -537,6 +542,22 @@ module emu
   wire [7:0] ww_stick_y = p1_up    ? (status[12] ? 8'hff : 8'h00) :
                           p1_down  ? (status[12] ? 8'h00 : 8'hff) : swa_ay;
 
+  // ------------------------------------------------------ NetMerc, analogue
+  //
+  //   0x00 STICKX    0x01 (nothing, 0xff)    0x02 STICKY
+  //
+  // NetMerc's stick aims the gun. It took the VR pedals' bytes: 0x02 was the
+  // brake, RESTING AT 0x01, so the gun sat pitched hard over in play - the
+  // top of the gun and the hands' wrong side toward the camera. MAME's
+  // DPRAM in play reads 7f ff 7f at 0x00-0x02 with the stick at rest
+  // (model1io2 an_callback 0 and 2, both defaulting to 0x7f).
+  //
+  // Wing War's stick, with both axes the other way round: netmerc declares
+  // PORT_REVERSE on STICKY and not on STICKX, wingwar the opposite. The flip
+  // keeps 0x80 at 0x80, as swa_ax's does. O[12]/O[13] still flip them.
+  wire [7:0] nm_stick_x = (ww_stick_x == 8'h80) ? 8'h80 : (8'hff - ww_stick_x);
+  wire [7:0] nm_stick_y = (ww_stick_y == 8'h80) ? 8'h80 : (8'hff - ww_stick_y);
+
   // -------------------------------------------- Star Wars Arcade, the GUNNER
   //
   // swa is a two-SEAT cabinet, not merely two-player: one pilot, one gunner,
@@ -577,9 +598,11 @@ module emu
 
   // Bytes 0x00-0x02 and 0x04-0x05 are per game. Everything else in the sweep is
   // the same for all of them.
-  wire [7:0] io_an0 = is_swa ? swa_stick_x : is_ww ? ww_stick_x : io_wheel;
-  wire [7:0] io_an1 = is_swa ? swa_stick_y : is_ww ? ww_stick_y : io_accel;
-  wire [7:0] io_an2 = is_swa ? swa_throttle : io_brake;
+  wire [7:0] io_an0 = is_swa ? swa_stick_x : is_ww ? ww_stick_x :
+                      is_nm  ? nm_stick_x  : io_wheel;
+  wire [7:0] io_an1 = is_swa ? swa_stick_y : is_ww ? ww_stick_y :
+                      is_nm  ? 8'hff       : io_accel;
+  wire [7:0] io_an2 = is_swa ? swa_throttle : is_nm ? nm_stick_y : io_brake;
   wire [7:0] io_an4 = is_swa ? swa_gun_x : 8'hff;
   wire [7:0] io_an5 = is_swa ? swa_gun_y : 8'hff;
 
@@ -599,9 +622,9 @@ module emu
                               io_an5,    // 0x05  swa STICK2Y
                               io_an4,    // 0x04  swa STICK2X
                               8'hff,     // 0x03  swa skips this channel
-                              io_an2,    // 0x02  vr BRAKE   / swa THROTTLE
+                              io_an2,    // 0x02  vr BRAKE   / swa THROTTLE / netmerc STICKY
                               io_an1,    // 0x01  vr ACCEL   / swa STICK1Y
-                              io_an0};   // 0x00  vr WHEEL   / swa STICK1X
+                              io_an0};   // 0x00  vr WHEEL   / swa STICK1X  / netmerc STICKX
 
   // ROM download. m1_rom_loader consumes this and writes SDRAM through the
   // controller's dedicated high-priority write port.
@@ -1414,6 +1437,7 @@ assign p_addr = {dsb_saddr,
     .in_bytes(io_in_bytes),
     .roma_mode(roma_mode),
     .io2(io_board2),
+    .hmd_pose(hmd_pose),
 
     // The 3D layer's SDRAM masters: p5 for the polygon models, p6 for tgp_ram.
     .r3d_rom_req(r3d_rom_req), .r3d_rom_addr(r3d_rom_addr),
