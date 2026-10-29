@@ -96,6 +96,20 @@ and the MRAs are untouched.
 - The full-system run with the fix (`build/run_swafix`) was still short of
   the ship frames when this was written.
 
+### Everywhere else
+
+Virtua Racing never reaches the upper half, but every tgp_ram access now
+takes the arbiter's latch cycle, and that moves SDRAM grant timing for the
+V60 (its cycle hash parts from tile-overrun's at frame 129). Board clocks,
+attract (the bench sits in VR's test menu), FRAME_PPM=1, every frame of 404
+compared against tile-overrun: **402 identical, 2 differ** - frame 395, the
+menu's header band being redrawn while it is scanned out, torn at a
+different line (3,557 px, rows 13-72), and frame 401, one scanline (row 363).
+Both are the "screen wiped while drawn" class recorded under tile-overrun:
+the same content reaching the screen a few lines earlier or later; the frames
+either side are identical and so is the last frame of a 462-frame run.
+`build/vr_frame395_base_vs_fix.png`.
+
 ### Cost
 
 quartus_map 34,566 -> **34,644 ALM (+78)**, block memory bits unchanged
