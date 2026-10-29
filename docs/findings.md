@@ -20,6 +20,149 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — NETMERC IN PLAY: THE CAMERA IS THE HEAD TRACKER'S POSE, AND TWO MORE INPUTS THE CORE NEVER GAVE THE GAME
+
+Branch `netmerc-play`, on `test-all` (6419a0e). Ben, on the board with the
+`netmerc-layers` build: "layering is still wrong, plus it feels like the
+camera is in the wrong place". Attract was fine.
+
+**Three faults, all inputs the game reads that the core never supplied. None
+is in the renderer, the V60 or the TGP, and the display-list upper half
+(0x4000) is not one of them.** Each was found by making MAME draw what the
+bench draws, then naming the input that does it.
+
+### 1. The camera: DPRAM 0x80-0x8b, the head tracker's pose
+
+NetMerc is a VR game. A Polhemus tracker on the player's head (MAME declares
+its board, an i386SX, and does not run it) supplies six 16-bit words at DPRAM
+0x80-0x8b, and the V60 reads them every frame (a read tap on
+0xc00100-0xc00117: each byte read every second frame) as the camera's orientation.
+MAME's `netmerc_state::machine_reset` seeds a pose looking forward,
+`{0, 0, 0, 12868, 25736, 12868}` (12868 = 90 degrees), and over 3,000 frames
+nothing writes it again. Nothing in the core wrote it - EPR-14869 fills
+0x00-0x0e, 0x20 and 0x100-0x17f - so it was zero.
+
+- **MAME with the six words zeroed every frame** (headless, coin at frame 600,
+  trigger pulsed) draws the board's picture: the camera turned sideways and
+  down, a grey and blue block (the player's own side) over the left half and
+  the HUD, gun and hands gone. 170,373 / 180,579 / 166,047 of 190,464 pixels
+  differ from the seeded run at frames 2000, 2600 and 3000; the attract frame
+  (1500) is identical, because the attract camera does not read the pose.
+- **The full-system bench** (`tb_m1_frame`, our V60, TGP, I/O Z80 and 3D,
+  board clocks, `sim/input/netmerc_play.txt`) on `test-all` - which already
+  has vf-swa-geo's display-list upper half - reaches play at bench frame
+  ~1,650 and draws exactly that picture. Its pose prints as zero throughout.
+
+**Fix** (e51410c): `m1_main` writes MAME's twelve bytes through the I/O side
+of the DPRAM while the V60 and the Z80 are held in reset, round and round,
+so every reset seeds them as MAME's machine_reset does. Game id 4 only
+(`Model1.sv` `hmd_pose`). The bench prints `0000 0000 0000 3244 6488 3244`
+from frame 5.
+
+### 2. The gun pitched over: the stick bytes were Virtua Racing's pedals
+
+With the camera right, the gun was drawn from above. NetMerc's stick aims the
+gun, on ADC channels 0 and 2: MAME's DPRAM reads `7f ff 7f` at 0x00-0x02 in
+play. The core publishes the VR pedals there for any game without its own
+map, and 0x02 is the brake, **resting at 0x01** - the gun held at one end of
+its travel (MAME with STICKY forced to 0x01 draws the same gun). The fault
+Wing War's pitch axis had.
+
+**Fix** (e51410c): `Model1.sv` gives NetMerc 0x00 = STICKX, 0x01 = 0xff,
+0x02 = STICKY, centred at 0x80 - Wing War's stick with both axes reversed,
+because netmerc declares PORT_REVERSE on STICKY and wingwar on STICKX. MAME
+with exactly `80 ff 80` forced on those reads draws the gun as at `7f ff 7f`.
+**The direction of each axis is read off MAME's declarations and is not
+checked on the board.**
+
+### 3. The gun rolled half over: RAMA's two alignment bytes
+
+With the stick centred the bench drew the gun rolled ~170 degrees, where MAME
+draws it upright. The gun's matrix in our list (the second matrix of the
+third viewport group) was `-0.9648 -0.0001 0.2628 / 0.1306 -0.8681 0.4789 /
+0.2281 0.4964 0.8376`, MAME's `0.9999 0.0001 -0.0103 / ...`, everything else
+in the group equal. Ruled out on the way, each by measurement:
+
+- **The TGP**: MAME's whole coprocessor conversation into play (1,720 frames,
+  36,474 answers, `tools/mame_tgp_stream.lua` with the same inputs) replayed
+  into our TGP (`make tgp_replay`): **one** answer differs - frame 261,
+  MAME `8000006c`, ours 0, a negative denormal our FP units flush. Flushing it
+  in MAME changes nothing on screen. The gun's matrix is built by the TGP
+  (commands 0x15/0x12/0x14/0x05/0x12/0x11 from angles -106 and 42), and our
+  TGP gives the same words for the same inputs.
+- **DPRAM**: every byte the V60 reads in play, in MAME, is equal to ours but
+  0x0e (MAME 0x0f, ours 0xff); forcing 0xff in MAME changes nothing.
+
+**The cause is RAMA.** MAME loads a default NVRAM for netmerc
+(`ROM_REGION "nvram"`, netmerc_nvram.bin): all FF but bytes 0x38 and 0x40,
+which are 00. The core never loaded RAMA (SDRAM at 0x1F40000), so on the
+bench it reads FF there and on the board whatever SDRAM held. **MAME started
+from an all-FF RAMA produces our gun matrix to the last printed digit.** Byte
+0x38 alone sets one axis of the gun, 0x40 the other. They read as the gun's
+alignment.
+
+**Fix** (7ca7b89): m1_rom_loader routes ioctl **index 6** to RAMA, bounded at
+64 KB (character RAM is the next word); the NetMerc MRAs send the set's own
+`netmerc_nvram.bin` on it (gen_mra.py emits it from MAME's "nvram" region;
+verify_mra.py checks it), so no ROM data is in the tree.
+`tb_m1_rom_loader`: four probes and the first byte past the end - fails 5
+of them on the old loader. The frame bench streams it from
+`build/rom/<game>_nv.hex`, which build_rom_image.py now writes.
+
+### Bench, before / after (board clocks, the same script)
+
+Frame 1675 of each run, the same script; MAME with the same three inputs
+for the gun's rotation (the 9 rotation words of the third group's second
+matrix, compared as raw words):
+
+| run | commit | pose (DPRAM 0x80) | stick 0x00-0x02 | RAMA 0x38/0x40 | gun rotation | picture |
+|---|---|---|---|---|---|---|
+| before | test-all 6419a0e | all zero | 80 01 01 | ff ff | - | camera sideways and down, grey block over the HUD: the board's picture, and MAME's with the pose zeroed |
+| pose | e51410c, stick off | seeded | 80 01 01 | ff ff | - | hangar ahead, gun seen from above |
+| pose + stick | e51410c | seeded | 80 ff 80 | ff ff | **= MAME from an all-FF RAMA, word for word** | gun rolled over |
+| **all three** | 7ca7b89 | seeded | 80 ff 80 | 00 00 | **= MAME's default, word for word** | hangar ahead, gun upright in both hands |
+
+The translation words differ in their low bits (the bench is ~150 frames
+behind MAME's run in the same scene). Pictures: `build/bench_four_1675.png`
+in the worktree (left to right as the table).
+
+### Not changed, seen
+
+- **Every other game's RAMA is also never loaded.** MAME starts them all-FF
+  (`nvram_device::DEFAULT_ALL_1`); ours start as SDRAM holds them. Nothing
+  measured depends on it; an FF image on index 6 for every MRA would match
+  MAME.
+- **NetMerc still runs EPR-14869**, not its own model1io2 firmware (EPR-18021).
+  Both publish the stick on bytes 0 and 2; the only DPRAM byte read in play
+  that differs is 0x0e, measured harmless.
+- MiSTer has no head tracker, so the pose is fixed forward; looking round with
+  a second stick would be a feature, not a fix.
+- The TGP's one denormal (`8000006c` -> 0) is the open denormal question
+  (README); harmless here.
+- Terrain shading against MAME (netmerc-layers' "darker") was not looked at.
+- The NetMerc MRA's button names are Virtua Racing's.
+
+### Wrong turns
+
+- The brief's lead was the 0x4000 display-list cap. It is a real fault and
+  NetMerc does cross it in play, but the bench with that fix already in drew
+  the board's picture. The pose was found by reading MAME's `netmerc_state`
+  before tracing anything: a machine_reset that writes DPRAM says the
+  hardware gets data from somewhere MAME does not run.
+- I took the twisted gun for a V60 or TGP fault and set a 3-hour TGPSTREAM
+  bench going. MAME answered it in minutes: replay MAME's stream into our TGP
+  (identical), census the DPRAM reads (identical), then vary what MAME starts
+  with. The bench was stopped.
+- The first full-fix bench "stalled" downloading index 6: the watchdog counts
+  `dl_words`, which only the main download incremented, and a 64 KB stream
+  that writes every word runs past its 200,000 cycles. The new task counts
+  its words.
+- The first "after" run printed a zero pose at frame 25 and seeded from frame
+  50; the committed RTL (no initialiser on the index register) prints it from
+  frame 5. Both are long before the V60 leaves reset; not chased.
+
+---
+
 ## 2026-10-29 — WING WAR NEVER RAN: THE V60 COULD NOT EXECUTE FROM RAM, AND IT HAD THE WRONG I/O BOARD
 
 Branch `wingwar-boot`, on `main` (1daae7a). Ben: Wing War does not boot, and
