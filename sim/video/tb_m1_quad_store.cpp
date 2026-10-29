@@ -22,6 +22,11 @@
 //   * a replay repeated several times, because the band architecture walks the
 //     same sorted list once per band and a store that consumes itself would draw
 //     the first band and nothing else.
+//   * VIEWPORT GROUPS. MAME sorts and draws at every viewport command, so the
+//     order is per viewport and a later viewport paints over an earlier one
+//     whatever the depths. The key is {group, z}, and a key that is not a whole
+//     number of passes wide (35 bits, nine passes) must still leave its result
+//     in the array the replay reads.
 
 #include "Vm1_quad_store.h"
 #include "verilated.h"
@@ -37,7 +42,7 @@ static long checks = 0, fails = 0, printed = 0;
 static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static float    u2f(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 
-struct Q { int16_t x0, y0, x1, y1, x2, y2, x3, y3; uint32_t col, z; bool moire; int seq; };
+struct Q { int16_t x0, y0, x1, y1, x2, y2, x3, y3; uint32_t col, z; bool moire; int seq; int grp = 0; };
 
 struct Dut {
     Vm1_quad_store* d = new Vm1_quad_store;
@@ -58,6 +63,7 @@ struct Dut {
             d->in_x0 = q.x0; d->in_y0 = q.y0; d->in_x1 = q.x1; d->in_y1 = q.y1;
             d->in_x2 = q.x2; d->in_y2 = q.y2; d->in_x3 = q.x3; d->in_y3 = q.y3;
             d->in_col = q.col; d->in_z = q.z; d->in_moire = q.moire;
+            d->in_grp = q.grp;
             tick();
         }
         d->in_valid = 0; tick();
@@ -97,9 +103,11 @@ struct Dut {
     }
 };
 
-// quad_t::compare: z descending, ties by submission order.
+// quad_t::compare: z descending, ties by submission order - within a viewport
+// group, and the groups in list order (tgp_render draws at each viewport).
 static std::vector<Q> model(std::vector<Q> qs) {
     std::stable_sort(qs.begin(), qs.end(), [](const Q& a, const Q& b) {
+        if (a.grp != b.grp) return a.grp < b.grp;
         float za = u2f(a.z), zb = u2f(b.z);
         if (za != zb) return za > zb;
         return a.seq < b.seq;
@@ -200,6 +208,26 @@ int main(int argc, char** argv) {
           }
       } }
 
+    printf("test: VIEWPORT GROUPS paint in list order, whatever their depth\n");
+    { // NetMerc's shape: terrain far and near, then enemies, then the gun at a
+      // depth the terrain's near polygons are behind - and the gun still last.
+      std::vector<Q> q; int id = 0;
+      for (int i = 0; i < 30; i++) { Q a = mk(id++, (float)(5 + i * 37 % 400)); a.grp = 0; q.push_back(a); }
+      for (int i = 0; i < 10; i++) { Q a = mk(id++, (float)(200 + i * 13));     a.grp = 1; q.push_back(a); }
+      for (int i = 0; i < 12; i++) { Q a = mk(id++, (float)(20 + i * 50));      a.grp = 2; q.push_back(a); }
+      compare(t, q, "viewport groups");
+      std::vector<Q> got = t.replay();
+      checks++;
+      // The last twelve out are the gun, whatever their z.
+      bool last = got.size() == q.size();
+      for (size_t i = got.size() - 12; last && i < got.size(); i++) if (got[i].x0 < 40) last = false;
+      if (!last) { fails++; printf("  FAIL the last group did not paint last\n"); } }
+
+    printf("test: all eight groups, the top one saturated by the caller, ties inside each\n");
+    { std::vector<Q> q;
+      for (int i = 0; i < 200; i++) { Q a = mk(i, (float)(i % 5)); a.grp = 7 - (i % 8); q.push_back(a); }
+      compare(t, q, "eight groups"); }
+
     printf("test: an empty frame replays nothing and does not hang\n");
     { std::vector<Q> q; compare(t, q, "empty"); }
 
@@ -278,6 +306,10 @@ int main(int argc, char** argv) {
                     default: z = ldexpf(1.0f, (int)(rng() % 60) - 30); break;
                 }
                 q.push_back(mk(i, z, (rng() & 1) != 0));
+                // Groups rise through the list as viewport commands do, and
+                // half the iterations use one group, the case every game but
+                // NetMerc and Wing War is.
+                if (iter & 1) q.back().grp = (int)((i * 8) / n);
             }
             compare(t, q, "fuzz");
         }
@@ -291,7 +323,8 @@ int main(int argc, char** argv) {
             std::vector<Q> q;
             int n = 1 + (int)(rng() % 300);
             for (int i = 0; i < n; i++)
-                q.push_back(mk(i, (float)((int)(rng() % 64) - 32), (rng() & 1) != 0));
+            { q.push_back(mk(i, (float)((int)(rng() % 64) - 32), (rng() & 1) != 0));
+              q.back().grp = (int)(rng() % 8); }
             compare(t, q, "stalled fuzz");
         }
     }

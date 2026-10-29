@@ -94,7 +94,24 @@ module m1_quad_store #(
   // what this module's own bench drives. 1: outside, through the ext_* ports -
   // m1_raster3d puts both banks' payloads in DDR3 that way. The pipeline is the
   // same either way; only the backing moves.
-  parameter bit          EXT_PAY = 1'b0
+  parameter bit          EXT_PAY = 1'b0,
+  // THE VIEWPORT GROUP IS THE TOP OF THE SORT KEY. MAME's tgp_render flushes
+  // the quads it has collected - sorts them and draws them - at every viewport
+  // command (case 3 calls draw_objects before set_viewport), so the painter's
+  // order is per viewport, and a later viewport paints over an earlier one
+  // whatever their depths. NetMerc uses that as its layering: three or four
+  // viewports a list with the same rectangle - terrain, then the enemies, then
+  // the player's gun, hands and health bar. One sort over the whole frame mixed
+  // them and the terrain painted over the gun and the enemies.
+  //
+  // m1_raster3d numbers the groups and the key is {group, z}: ascending group,
+  // and within a group descending z with submission order on ties, exactly as
+  // before. THREE BITS because the 2,048-deep key array is built from M10K in
+  // its x5 mode: 32 bits take seven blocks and use 35, so a 35-bit key costs no
+  // block RAM. Measured across the five games, the most groups a list carries
+  // is four (NetMerc); a list with more than eight has its later groups merged
+  // into the eighth.
+  parameter int unsigned GW      = 3
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -106,6 +123,7 @@ module m1_quad_store #(
   input  logic signed [15:0] in_x2, in_y2, in_x3, in_y3,
   input  logic [23:0] in_col,
   input  logic [31:0] in_z,
+  input  logic [GW-1:0] in_grp,              // viewport group, 0 = first
   input  logic        in_moire,
 
   // ---- sort
@@ -175,6 +193,8 @@ module m1_quad_store #(
   localparam int unsigned VW = XW + YW;
   // {band_lo, band_hi, moire, col565}: lo > hi means no band at all.
   localparam int unsigned AT_W = 2 * BW + 17;
+  // The sort key: the viewport group above the depth.
+  localparam int unsigned KW   = 32 + GW;
 
   // SPLIT AT 2,048 DEEP, EXPLICITLY. Quartus maps any array deeper than 2,048
   // into the 4,096 x 2 block mode, and then a 32-bit key costs 16 blocks
@@ -256,7 +276,7 @@ module m1_quad_store #(
   wire         mfull  = (mfill == (MW+1)'(MD));
   wire         mempty = (mfill == '0);
   (* ramstyle = "M10K" *) logic [AT_W-1:0] att_lo  [NLO];  (* ramstyle = "M10K" *) logic [AT_W-1:0] att_hi  [NHI];
-  (* ramstyle = "M10K" *) logic [31:0]     key_lo  [NLO];  (* ramstyle = "M10K" *) logic [31:0]     key_hi  [NHI];
+  (* ramstyle = "M10K" *) logic [KW-1:0]   key_lo  [NLO];  (* ramstyle = "M10K" *) logic [KW-1:0]   key_hi  [NHI];
   // Two index arrays, ping-ponged by the radix passes.
   (* ramstyle = "M10K" *) logic [IW-1:0]   idx_a_lo [NLO]; (* ramstyle = "M10K" *) logic [IW-1:0]   idx_a_hi [NHI];
   (* ramstyle = "M10K" *) logic [IW-1:0]   idx_b_lo [NLO]; (* ramstyle = "M10K" *) logic [IW-1:0]   idx_b_hi [NHI];
@@ -375,11 +395,11 @@ module m1_quad_store #(
         if (in_hi(count[IW-1:0])) begin
           att_hi[hi_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
-          key_hi[hi_a(count[IW-1:0])]  <= sort_key(in_z);
+          key_hi[hi_a(count[IW-1:0])]  <= {in_grp, sort_key(in_z)};
         end else begin
           att_lo[lo_a(count[IW-1:0])]  <= {band_range(in_y0, in_y1, in_y2, in_y3), in_moire,
                                            in_col[23:19], in_col[15:10], in_col[7:3]};
-          key_lo[lo_a(count[IW-1:0])]  <= sort_key(in_z);
+          key_lo[lo_a(count[IW-1:0])]  <= {in_grp, sort_key(in_z)};
         end
         count <= count + 1'b1;
       end else if (dbg_dropped != 16'hffff) begin
@@ -396,9 +416,16 @@ module m1_quad_store #(
   } rstate_t;
   rstate_t rst_st;
 
-  localparam int unsigned NPASS = 32 / RADIX;
+  localparam int unsigned NPASS = (KW + RADIX - 1) / RADIX;
   localparam int unsigned NBUCK = 1 << RADIX;
   localparam int unsigned PW    = $clog2(NPASS);
+  // THE SORTED ORDER MUST END IN idx_a, because idx_a is what the replay
+  // reads. Each pass moves the order from one index array to the other, so
+  // with an EVEN number of passes it starts in idx_a and ends there; with an
+  // odd number - nine, for the 35-bit key - it has to start in idx_b. Starting
+  // in idx_a regardless would replay the order after eight of the nine
+  // passes: sorted by depth and not by group, which is the fault being fixed.
+  localparam bit START_B = NPASS[0];
 
   logic [PW-1:0] pass;                // which digit of the key
   logic [IW:0]  ri;
@@ -444,11 +471,11 @@ module m1_quad_store #(
   // the two never run at once in one store. idx_rd is the mux of the two
   // registered reads, which is what the registered mux of two reads was.
   logic [IW-1:0] idx_a_q, idx_b_q;
-  logic [31:0]   key_rd;
+  logic [KW-1:0] key_rd;
   logic [IW-1:0] idx_a_addr;
   logic          idx_a_sel_hi, idx_b_sel_hi, key_sel_hi;
   logic [IW-1:0] idx_a_q_lo, idx_a_q_hi, idx_b_q_lo, idx_b_q_hi;
-  logic [31:0]   key_q_lo, key_q_hi;
+  logic [KW-1:0] key_q_lo, key_q_hi;
   always_ff @(posedge clk) begin
     // Stage one of the replay holds with the rest of it: pi advances in the
     // same cycle this read is taken, so a free-running read had moved on to
@@ -494,7 +521,10 @@ module m1_quad_store #(
 
   // The RADIX-bit field selected by `pass`, taken with a shift so the width is a
   // parameter rather than four hand-written slices that stop matching it.
-  wire [31:0] key_shifted = key_rd >> (RADIX * pass);
+  // Padded to a whole number of digits, so the last pass reads zeros above
+  // the group rather than whatever a narrower shift leaves there.
+  wire [NPASS*RADIX-1:0] key_pad = (NPASS*RADIX)'(key_rd);
+  wire [NPASS*RADIX-1:0] key_shifted = key_pad >> (RADIX * pass);
   wire [RADIX-1:0] digit = key_shifted[RADIX-1:0];
 
   // The one read and the one write of each table, as the sequencer below makes
@@ -531,15 +561,20 @@ module m1_quad_store #(
     end else begin
       case (rst_st)
         R_IDLE: if (sort_start) begin
-          pass <= '0; which <= 1'b0; ri <= '0;
+          pass <= '0; which <= START_B; ri <= '0;
           rst_st <= R_INIT;
         end
 
         // Submission order to start with: a stable sort then keeps it as the
         // tie-break, exactly as quad_t::compare does with the address.
         R_INIT: begin
-          if (in_hi(ri[IW-1:0])) idx_a_hi[hi_a(ri[IW-1:0])] <= ri[IW-1:0];
-          else                   idx_a_lo[lo_a(ri[IW-1:0])] <= ri[IW-1:0];
+          if (START_B) begin
+            if (in_hi(ri[IW-1:0])) idx_b_hi[hi_a(ri[IW-1:0])] <= ri[IW-1:0];
+            else                   idx_b_lo[lo_a(ri[IW-1:0])] <= ri[IW-1:0];
+          end else begin
+            if (in_hi(ri[IW-1:0])) idx_a_hi[hi_a(ri[IW-1:0])] <= ri[IW-1:0];
+            else                   idx_a_lo[lo_a(ri[IW-1:0])] <= ri[IW-1:0];
+          end
           if (ri + 1 >= count) begin ri <= '0; hi <= '0; rst_st <= R_CNT; end
           else                       ri <= ri + 1'b1;
         end
