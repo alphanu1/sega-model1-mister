@@ -20,6 +20,171 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-29 — TEST-ALL: FOUR BRANCHES IN ONE BUILD; WHAT THE MERGE CHANGED, AND WHAT IT DID NOT
+
+Branch `test-all` (local, not pushed), on `main` 1daae7a, merging in order
+`wingwar-boot`, `netmerc-layers`, `vf-swa-geo` and `swa-sound`, then main's
+cd68187 (docs). Every bench below is the merged RTL against each branch's own
+evidence.
+
+### Merge resolutions
+
+- **`rtl/m1_integrated.sv`** - the only RTL conflict, and a textual one. Main
+  (the frame buffer, vr-freeze) had added `dbg_r3_*` assigns and the
+  display-list flip counter just before `assign r3_dl_data = r3d_dl_data`;
+  `vf-swa-geo` replaced that one assign with the on-chip/p6 select
+  (`r3_dl_valid = r3_dl_lo_valid || r3_dlhi_valid`). Kept main's block and
+  vf-swa-geo's select. Nothing else overlaps: the frame buffer lives on DDR3
+  (m1_ddram_mux, m1_fb_flush) and never touches p6, which carries tgp_ram and
+  now the lists' upper halves through `m1_p6_arb`. vr-freeze's colour-upload
+  bound (`TGP_RAM_WORDS`, 0xC0000) ends exactly at DLHI_BASE (0xCE0000 words),
+  so a stray command-4 upload still cannot reach the lists' SDRAM half.
+- `m1_main.sv` merged clean: wingwar-boot's RAM fetch mapping (`if_word`,
+  `if_nocache`) and vf-swa-geo's `sel_dlhi` route are separate always blocks;
+  main's ROM-window write drop does not cover `sel_dlhi`, as it must not.
+- `v60.sv`: vf-swa-geo carried vr-freeze's text byte for byte, merged as no
+  change.
+- Makefile, README, HANDOFF, findings: union. The docs keep every entry, in
+  date order.
+
+### Collisions checked
+
+- **SDRAM (word addresses)**: tgp_ram 0xC20000-0xCDFFFF, display-list upper
+  halves 0xCE0000-0xCE7FFF (vf-swa-geo), I/O firmware 0xD00000, sound 68000
+  ROM 0x1000000, RAM 0x1040000, PCM1 0x1080000, PCM2 0x1280000-0x147FFFF, DSB
+  Z80 ROM 0x1480000-0x148FFFF, MPEG 0x1490000-0x168FFFF, DSB RAM
+  0x1690000-0x1693FFF, work RAM 0xF80000, NVRAM 0xFA0000, char RAM 0xFA8000.
+  No overlap. (The brief's 0x19C0000 is DLHI_BASE as a BYTE address; the
+  DSB's 0x1480000 etc. are WORD addresses, i.e. bytes 0x2900000-0x2D27FFF.)
+- **OSD**: O[20] (Star Wars music volume) is used once, by the DSB; no other
+  branch adds an option. Wing War's I/O board is chosen by the game id, not
+  the OSD.
+- **Port count**: swa-sound's twelfth SDRAM port met vr-freeze's freeze
+  diagnostic, which declared `sd_pend` 11 bits wide for `dbg_req` - a width
+  warning in `lint_top`, and the DSB's port invisible to overlay row 08.
+  Widened to 12 (`sd_age` too); row 08's spare bit is now port 0B.
+- **`make elab` failed after the merge**: `dsb_mpeg`/`dsb_z80` include their
+  generated tables and the elab target had no `-Irtl/sound` (Quartus has it
+  through mister_project.sh). Added.
+- **`tools/verify_mra.py` rejected Star Wars' MRA**: index 5 is 0xCA0000 bytes
+  with the DSB appended; it expected 0x880000. It now expects the DSB on the
+  swa sets only and checks its two region boundaries.
+
+### The MRA generator reproduces every shipped MRA
+
+`tools/gen_mra.py` had drifted from the MRAs long before this merge: it wrote
+no game id (index 4), no EEPROM (index 3), no sound stream (index 5) and one
+button map for every game, so regenerating would have broken all ten sets, not
+only Wing War's. It now writes all of it - the sound and DSB streams parsed
+from model1.cpp's regions, padded as the loader expects - plus Wing War's
+model1io2 firmware and the clones' copro data ROM and tables. Regenerated, the
+ten MRAs are **byte-identical** to the branches' hand-edited ones except the
+"HAND-EDITED" notes, which are gone; `make_crt_mra.py` then reproduces all ten
+CRT MRAs. `verify_mra.py` passes vr, vf, swa, wingwar, netmerc.
+
+**Found, not fixed: Star Wars (Japan)'s MRA has no copro data ROM or tables**,
+so its polygon ROMs sit at 0x600000 - the Wing War clones' fault again (MAME
+gives swaj the same copro_data as swa). The generator reproduces it as shipped
+and says so in `COPRO_DATA`; adding swaj there is the fix. Its index 0 also
+names only `swaj.zip`, with no parent fallback.
+
+### Benches (merged RTL)
+
+- `make test`: 72 result lines, every one fails=0, uncovered 0 (counts in
+  HANDOFF). `make elab` clean; `lint_top` only the two pre-existing warnings
+  (m2_sound_board:206, m1_integrated dbg_hud_obj); `make lint` stops at the
+  pre-existing mb86233_regs SYNCASYNCNET.
+- **Wing War** (`tb_m1_frame GAME=wingwar`, 1,000 M cycles, wingwar-boot's
+  command): not halted, 484 vblanks (the old build halted at 237), the
+  airbase scene at frame 625 and the city/helicopter scene at the end, 81
+  objects / 1,132 quads (wingwar-boot: 1,134). **The sky is still grey on the
+  bench**; Ben has since seen it correct on the board (wingwar-boot rbf), so
+  it is a bench-only difference, not a core fault - and the display-list fix
+  did not change it.
+- **NetMerc**: render3d on the three gameplay frames (3000, 3600, 3900) is
+  byte-identical to netmerc-layers' "after" pictures (0.38/0.36/0.25% off
+  MAME's surfaces).
+- **Virtua Fighter** (`vf_match.txt`, board clocks, 1,550 M cycles): frame
+  780 the full stone floor with both fighters on it; 980-1100 a fight with
+  the clock running and a knockdown, no instant DRAW.
+- **Star Wars**: tgp_ram out of the SDRAM model at frames 100-900 is
+  byte-identical to vf-swa-geo's fixed run (which equals MAME's 121,575
+  colour words), with the DSB released and held alike. The ship frames were
+  not reached before the runs were stopped (below).
+- **Star Wars DSB**: `DSB_SECS=300 tb_dsb_board` 26,699 port accesses, 0
+  fails, 3,142,656 samples bit-exact; `DSB_FULL=1 tb_dsb_mpeg` 25,944,992
+  checks, 0 fails - swa-sound's figures exactly (its RTL is unchanged by the
+  merge).
+- **Virtua Racing** (attract, board clocks, FRAME_PPM=1, 650 M cycles)
+  against main 1daae7a: 567 of 570 frames identical; 395 (rows 13-73), 401
+  (row 363) and 406 (8 px, row 25) differ - 395 and 401 are the frames
+  vf-swa-geo recorded against tile-overrun (the menu header redrawn while
+  scanned out); the last frame identical.
+- **`make render3d_fuzz` fixed**: the target lacked the frame-buffer sources,
+  and the bench never set `fb_go` ("the ROM is loaded"), so the frame buffer
+  never started and every hash was the empty picture's - it passed vacuously.
+  Now: 40 episodes PASS, 0 wedged, 0 tex escapes, cold-start hash
+  `60b228b6a6b0fbe3` with 189,518 pixels painted - the same hash netmerc-layers
+  got by hand with `-GFB_DDR3=0`, so the frame buffer and the band display
+  paint that frame identically.
+
+### Star Wars' crawl, missing on the swa-sound build (Ben, the board)
+
+Ben: on the swa-sound rbf the music works but the yellow crawl in attract is
+gone; on the vf-swa-geo rbf (original MRAs, no music) the crawl IS drawn. So
+the music addition breaks it. **Not found; paused by Ben** to test this build
+first. What was established:
+
+- **Where it is** (MAME, headless snapshots every 25 frames from a cold
+  start): EPA screen, copyright, corvette ~1,100, Star Destroyer ~1,400-2,800,
+  "A long time ago..." ~2,925, the STAR WARS logo ~2,900-3,350, the crawl from
+  ~3,500 ("Episode IV" ~3,825) to past 4,775. The bench runs about 80 frames
+  behind MAME at ~1.3 M cycles a frame, and ran here at ~1,000 M cycles per
+  100 minutes with six benches sharing the machine - the crawl is ~5,000 M
+  cycles, about 8 hours of bench.
+- **The music starts with it**: in MAME's 300 s capture the V60 sends
+  `ae 50 01` (song 1) at 55.6 s, about frame 3,200, between the logo and the
+  crawl, and the 68000 answers `01`. The crawl is the first thing drawn while
+  the DSB plays.
+- **The crawl is 3D and our renderer draws it**: render3d on MAME's state at
+  frames 3,900 and 4,300 paints the crawl as MAME shows it (178 objects,
+  1,168 quads), drawn whole 44 lines after the swap. Not a renderer or frame
+  buffer capacity fault.
+- **The 68000's transmit line is not it, by volume**: MAME's attract has 27
+  V60 sound bytes and 6 68000 bytes in 300 s, so the 31.25 kbaud pacing
+  costs a few ms in total.
+- **A bench that can see it now exists**: `tb_m1_frame` carries the DSB on
+  port 11 exactly as Model1.sv (`FRAME_DSB=1`, with
+  `FRAME_SNDBIN=build/rom/swa_snd_dsb.bin`, the sound stream with the DSB ROMs
+  appended); before this it had eleven ports and no DSB, so it could not
+  have shown the fault. Two runs (DSB released / held) reached frame ~1,200,
+  before the music, when Ben stopped the investigation; up to there the DSB
+  took 9 bytes, decoded nothing, and the pictures differ only by the later
+  boot (the longer sound download). Not continued.
+- Also seen, separate: `m1_sound_usart` has no receive path ("nothing ever
+  sends TO the main CPU in a game we run"), but MAME wires the 68000's TX to
+  the main board's RXD (model1.cpp:1850) and Star Wars' 68000 does answer
+  (`TX 00`/`01` above). Both builds lack it, so it cannot be what changed; it
+  is a candidate if the crawl turns out to depend on a reply.
+
+### Fit (Quartus 17.0, full compile of 049c8a3, three seeds in parallel)
+
+| seed | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | worst hold |
+|---|---|---|---|---|---|---|---|---|
+| 3 | 37,346 | 537 | 53 | **-0.289** | +0.425 | +5.920 | +0.227 | +0.184 |
+| **5** | **37,446** | **537** | **53** | **+0.197** | **+1.320** | **+6.995** | **+0.327** | **+0.242** |
+| 11 | 37,212 | 537 | 53 | **-0.018** | +0.291 | +5.469 | +0.048 | +0.241 |
+
+Seed 5 closes every clock, setup, hold, recovery (+4.303) and removal
+(+0.739): `build/Model1_testall_seed5_37446.rbf`, md5
+`a98ca51b1bdb5f190b071c4848b3dc46`, reports in `build/testall_s5_reports/`.
+Against swa-sound alone (seed 5, 37,199 / 537 / 53) the other three branches
+cost ~250 ALM and no M10K. clk_3d is the clock that misses on two seeds of
+three: the margin the 3D clock had (+0.8 on most single-branch builds) is
+gone at this size.
+
+---
+
 ## 2026-10-29 — WING WAR NEVER RAN: THE V60 COULD NOT EXECUTE FROM RAM, AND IT HAD THE WRONG I/O BOARD
 
 Branch `wingwar-boot`, on `main` (1daae7a). Ben: Wing War does not boot, and

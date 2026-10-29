@@ -22,6 +22,77 @@
 
 ---
 
+# 2026-10-29: TEST-ALL - WING WAR, NETMERC LAYERS, VF/SWA DISPLAY LISTS AND STAR WARS' MUSIC IN ONE BUILD. FITTED; NOT ON THE BOARD.
+
+Branch **`test-all`** (local, not pushed, not merged into main), on `main`
+1daae7a: `wingwar-boot`, `netmerc-layers`, `vf-swa-geo`, `swa-sound` merged
+in that order, then main's cd68187. `docs/findings.md` 2026-10-29 (test-all)
+has the merge resolutions, the collision checks and every bench.
+
+**For the board: `build/Model1_testall_seed5_37446.rbf`**, md5
+`a98ca51b1bdb5f190b071c4848b3dc46` (RTL of 049c8a3; reports in
+`build/testall_s5_reports/`): 37,446 ALM, 537 M10K, 53 DSP; setup clk_3d
++0.197, clk_sys +1.320, clk_cpu +6.995, pll_hdmi +0.327; hold all positive
+(worst +0.242); recovery/removal positive. Seeds 3 and 11 miss clk_3d
+(-0.289, -0.018) - see findings. Use the MRAs in `mra/` of this branch (Wing
+War's index 2 is model1io2's EPR-16891; Star Wars' index 5 carries the DSB).
+
+## What to check on the board
+
+- **Star Wars' crawl is expected to be MISSING** (Ben, 2026-10-29: it shows on
+  the vf-swa-geo rbf, not on swa-sound's; this build has the music). Paused,
+  not fixed. Worth noting: corvette and Star Destroyer hull (the display-list
+  fix), the hull's lower-edge specks (were they late bands? this build has the
+  frame buffer), and the Death Star run late in attract (does it still vanish
+  with the display-list fix in?).
+- Wing War: boots, attract with 3D, play (as on the wingwar-boot rbf).
+- Virtua Fighter: a full-size arena in a real match.
+- NetMerc: attract as before; gameplay layering is netmerc-play's.
+- Virtua Racing: attract and a race, unchanged from main.
+- Overlay row 08 digits 4-6 now have twelve port bits; bit 11 is the DSB.
+
+## Done on this branch beyond the merges
+
+- `tools/gen_mra.py` writes every MRA as shipped (index 4 game id, index 3
+  EEPROM, index 5 sound and DSB streams from model1.cpp's regions, buttons,
+  Wing War's I/O board, the clones' copro ROMs); regenerating gives the
+  branches' MRAs byte for byte minus the HAND-EDITED notes, which are gone;
+  `make_crt_mra.py` follows. `verify_mra.py` knows the DSB stream.
+- `sd_pend` widened to twelve ports; `make elab` finds the DSB tables;
+  `make render3d_fuzz` runs the frame buffer (fb_go) and passes.
+- `tb_m1_frame` has the DSB on port 11 (`FRAME_DSB=1`,
+  `FRAME_SNDBIN=build/rom/swa_snd_dsb.bin` = swa_snd.bin + epr-16471.2 +
+  mpr-16514.57 + mpr-16515.58) - the only bench that can show the crawl fault.
+- A +2 dB DSB gain was made and reverted on Ben's word (the level is right).
+
+## Not done / open
+
+- **The crawl.** MAME: "A long time ago" ~frame 2,925, logo to ~3,350, the
+  music command at ~3,200 (55.6 s), the crawl ~3,500-4,800+. The bench needs
+  ~5,000 M cycles (~8 h) to get there; two runs were stopped at ~1,200 by Ben.
+- **Star Wars (Japan)'s MRA lacks the copro data ROM and tables** (polygons at
+  0x600000) - pre-existing, reproduced by the generator, fix is one line in
+  `COPRO_DATA`.
+- `m1_sound_usart` has no receive path; MAME feeds the 68000's TX to it.
+- Wing War's sky is grey on the bench only (correct on the board).
+
+## make test (expected block for the instructions file)
+
+72 lines, all `fails=0`, uncovered 0. Differences from the rules file's block:
+new `dsb_mpeg[lat=20]: checks=105764`, `dsb_z80[...]: checks=62011`,
+`dsb_board[lat=40,4s]: ports=269`, `m1_ctc: checks=50`,
+`v60_mul_mem: checks=1084`, `m1_p6_arb: checks=5641907`,
+`m2_ddr3: checks=19`, `m2_ddr3_arb: checks=26`,
+`m1_ddram_mux: checks=796258`, `m1_fb_flush: checks=93120`,
+`m1_fb_read: checks=24`, `m1_drive_inputs: checks=8291488`; moved:
+`m1_sdram` 58462 (NP 7) / 60290 (NP 12), `m1_fetch_bridge: checks=175228`,
+`m1_rom_loader: checks=10481`, `m1_ddram_payload: checks=2891`,
+`m1_tile_fetch: checks=1840406`, `m1_quad_store: checks=30135`;
+`m1_geo_planes` prints once. The whole list is `build/test_summary.txt` in
+the worktree.
+
+---
+
 # 2026-10-29: WING WAR RUNS ON THE BENCH - THE V60 COULD NOT EXECUTE FROM RAM, AND THE I/O BOARD WAS THE WRONG ONE. NOT ON THE BOARD YET.
 
 Branch **`wingwar-boot`** (local, not pushed), on `main` (1daae7a).
