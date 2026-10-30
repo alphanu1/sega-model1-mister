@@ -133,8 +133,6 @@ module emu
     "Model1;;",
     "-;",
     "O[2],Video timing,Original 24kHz,Scandoubled;",
-    "O[3],Debug overlay,Off,On;",
-    "O[10:8],SDRAM read phase,CL+2,CL+3,CL+4,CL+5,CL+1,CL+0;",
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
     "O[11],Pedals,Up=Accel,Up=Brake;",
@@ -1368,12 +1366,10 @@ assign p_addr = {dsb_saddr,
     // depths are appended after them, because they are the ones that have
     // never been reachable: CL+2 was the floor of the old selector, so whether
     // the capture window continues below it has never been observable.
-    .rd_lat_sel(status[10:8] == 3'd0 ? 3'd2 :   // CL+2 - the board's default
-                status[10:8] == 3'd1 ? 3'd3 :
-                status[10:8] == 3'd2 ? 3'd4 :
-                status[10:8] == 3'd3 ? 3'd5 :
-                status[10:8] == 3'd4 ? 3'd1 :   // CL+1 - new, below the floor
-                                       3'd0),   // CL+0 - new, below the floor
+    // The OSD's "SDRAM read phase" (O[10:8]) is gone for the release (Ben,
+    // 2026-10-30): CL+2, its default and the only depth this board captures
+    // at, is fixed. O[10:8] is free.
+    .rd_lat_sel(3'd2),
     .sd_cke(SDRAM_CKE), .sd_cs_n(SDRAM_nCS), .sd_ras_n(SDRAM_nRAS),
     .sd_cas_n(SDRAM_nCAS), .sd_we_n(SDRAM_nWE), .sd_ba(SDRAM_BA),
     .sd_a(SDRAM_A), .sd_dqm({SDRAM_DQMH, SDRAM_DQML}),
@@ -1561,7 +1557,7 @@ assign p_addr = {dsb_saddr,
 
   // THE FREEZE DIAGNOSTIC (2026-10-28). Virtua Racing freezes to black on the
   // board, the 3D never comes back, and RESTART does not recover it. Built
-  // with M1_FREEZE_DIAG defined, the overlay (OSD Debug overlay = On) shows
+  // with M1_FREEZE_DIAG defined, the overlay (always on in such a build) shows
   // the rows below instead of the old ones, and a snapshot of the machine at
   // the moment it stopped, which survives RESTART. docs/HANDOFF.md says how to
   // read it. Off in every normal build.
@@ -2151,10 +2147,10 @@ assign p_addr = {dsb_saddr,
   if (DEBUG_OVERLAY || FREEZE_DIAG) begin : g_diag
   m1_diag #(.NWORDS(NDW)) diag (
     .clk(clk_sys), .ce_pix(ce_pix), .rst_n(mem_rst_n),
-    // Off by default: it is an instrument, not a feature, and it sits on top
-    // of the picture. Kept in the build because it has now found four faults
-    // that nothing else could see, and the next hardware problem will want it.
-    .enable(status[3]),
+    // Only built with M1_FREEZE_DIAG (DEBUG_OVERLAY is 0): a diagnostic
+    // build shows it always. The OSD's "Debug overlay" (O[3]) is gone for the
+    // release (Ben, 2026-10-30); O[3] is free.
+    .enable(1'b1),
     .hb(vid_hb), .vb(vid_vb),
     .words(dw_packed),
     .in_r(vid_r), .in_g(vid_g), .in_b(vid_b),
