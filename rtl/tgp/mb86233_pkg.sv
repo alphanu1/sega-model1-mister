@@ -148,6 +148,15 @@ package mb86233_pkg;
     alu_touches_st = alu_is_int_d(op) | alu_is_fp_d(op) | (op == ALU_FCPD);
   endfunction
 
+  // R771 (the Model 2 core's): ops that do nothing at all -- no D, no P, no
+  // ST. MAME's alu_pre default plus nop (0x00, 0x12, 0x15, 0x1c-0x1f). The core
+  // skips the ALU for them: nothing would come out of it but the ST it went in
+  // with.
+  function automatic logic alu_is_none(input logic [4:0] op);
+    alu_is_none = !alu_writes_d(op) && !alu_writes_p(op) && !alu_touches_st(op)
+               && (op != ALU_FDVD);
+  endfunction
+
   // Status update mask. Every op that touches flags uses the same one. Only
   // ZRD and SGD are ever *set*; CPD, OVD and DVZD are in the mask so they are
   // cleared and never restored.

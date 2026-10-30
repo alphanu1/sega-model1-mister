@@ -105,6 +105,11 @@ module mb86233_core (
   logic [31:0] ir;                 // latched instruction
 
   logic        d_lab, d_ldmov, d_stm, d_lipl, d_repgrp, d_ldi, d_branch, d_unimpl;
+  // The Model 2 core's R771-R774 (sega-model2-mister 757ede8b) and R778
+  // (e75a2cd0), ported 2026-10-29: see findings, "the crawl".
+  logic        d_noalu;            // R771: the op writes no D, no P, no ST
+  logic        ret_now;            // R773: an instruction retires this cycle
+  logic        pf_load;            // R772: load ir and the decode from the prefetch
   logic [8:0]  d_r1, d_r2;
   logic [4:0]  d_alu;
   logic [2:0]  d_sub, d_op7;
@@ -393,7 +398,7 @@ module mb86233_core (
     end
   end
 
-  mb86233_alu u_alu (
+  mb86233_alu #(.SHORT(1'b1)) u_alu (   // R774
     .clk(clk), .rst_n(rst_n),
     .in_valid(alu_in_valid), .op(alu_op_r),
     .reg_a(pre_a), .reg_b(pre_b), .reg_d(pre_d), .reg_p(pre_p),
@@ -429,7 +434,13 @@ module mb86233_core (
   // Running the ALU unconditionally lets `ldi 0x19` — whose immediate puts 0x0f
   // (cfxd) in bits 25:21 — write D and destroy the value it just loaded.
   logic alu_active;
-  assign alu_active = d_lab | d_ldmov | d_repgrp;
+  // R771: and not for an op that does nothing. A nop's ST comes back
+  // unchanged, and a transfer to D is already written by S_DST; the ALU's copy
+  // of it is the same word. lab and ld/mov with no ALU op skip S_ALU
+  // altogether, and the 0x0f group passes through it in one cycle, as a
+  // branch does. (Model 2 measured nop as 30% of its TGP's time.)
+  assign alu_active = (d_lab | d_ldmov | d_repgrp) & ~d_noalu;
+  wire   skip_alu   = (d_lab | d_ldmov) & d_noalu;
 
 
   // RETIMING: the ALU op reaches the FP operand mux through a REGISTER, not
@@ -489,9 +500,28 @@ module mb86233_core (
   assign ea_src = agu_ea + ((x_src_200 || x_lab_a200) ? 17'h200 : 17'd0);
   assign ea_dst = agu_ea + (x_dst_200 ? 17'h200 : 17'd0);
 
-  assign prog_addr = (state == S_SRC || state == S_SRC_W)
-                     && (x_src_sp == mb86233_pkg::EP_PROG)
-                     ? agu_ea[15:0] : seq_pc;
+  // R772: THE NEXT INSTRUCTION IS READ WHILE THIS ONE EXECUTES. Every state
+  // after S_FETCH_W that is not a program-space source read presents pc + 1,
+  // so the word is on prog_rdata in whichever state retires. If the sequencer
+  // is going to pc + 1, that state loads ir and the decode from it exactly as
+  // S_FETCH_W would and goes straight to S_DECODE: two cycles of every
+  // sequential instruction. If it is going to pc itself -- an active rep
+  // re-running this instruction -- ir and the decode already hold it. Anything
+  // else (a taken branch, a return) fetches as before. S_FETCH_W keeps pc:
+  // the M10K does not care, but tb_mb86233_core's program memory answers in
+  // the same cycle and must see pc there.
+  wire src_prog = (x_src_sp == mb86233_pkg::EP_PROG) && !x_src_reg;
+  assign prog_addr = (state == S_SRC || state == S_SRC_W) && src_prog
+                     ? agu_ea[15:0]
+                     : (state == S_FETCH || state == S_FETCH_W) ? seq_pc : seq_pc + 16'd1;
+  // The sequencer's own choice (mb86233_seq next_pc), restated: a rep goes to
+  // pc_exec; otherwise an active repeat holds pc; otherwise pc_exec, which is
+  // pc + 1 unless a branch of subtype 0-3 or 5 passed its condition.
+  wire seq_rep_now = d_repgrp & (d_fsub == 3'd2);
+  wire seq_taken   = d_branch & seq_cond_passed
+                   & (d_bsub != 3'd4) & (d_bsub != 3'd6) & (d_bsub != 3'd7);
+  wire pf_same     = !seq_rep_now && (seq_rep != 8'd1);
+  assign pf_load   = ret_now && !pf_same && !seq_taken;
 
   assign clr_a_now = (state == S_RETIRE) & d_repgrp & (d_fsub == 3'd0) & d_clra;
   assign clr_b_now = (state == S_RETIRE) & d_repgrp & (d_fsub == 3'd0) & d_clrb;
@@ -542,7 +572,24 @@ module mb86233_core (
                d_bdata[8:7], seq_pc, ir);
   end
 
-  assign retire    = (state == S_RETIRE);
+  // R773: AN INSTRUCTION RETIRES IN THE STATE IT FINISHES IN. ld/mov in
+  // S_DST (a register destination, no ALU op; not after a program-space
+  // source, whose operand is what prog_rdata holds there) or on the ALU's
+  // result; lab in S_LAB_WB. ld/mov to memory or io retires in S_RETIRE (the
+  // Model 2 core's R778: io_ack and mem_stall into the sequencer was a timing
+  // path). ldi, lipl, stm, the 0x0f group and the branches keep S_RETIRE,
+  // where their writes and the sequencer's branch inputs are -- but one with
+  // nothing to read in S_ALU goes there straight from S_DECODE.
+  wire ret_dst   = (state == S_DST) && d_ldmov && d_noalu && x_dst_reg && !src_prog;
+  wire ret_alu   = (state == S_ALU) && d_ldmov && alu_out_valid;
+  wire ret_labwb = (state == S_LAB_WB);
+  assign ret_now = (state == S_RETIRE) || ret_dst || ret_alu || ret_labwb;
+  state_e nxt_ret;
+  assign nxt_ret = (pf_load || pf_same) ? S_DECODE : S_FETCH;
+  wire dec_ret   = !(d_lab | d_ldmov) && !alu_active && !brul_regform
+                && !(d_repgrp && d_repreg);
+
+  assign retire    = ret_now;   // R773
   assign retire_pc = seq_pc;
   assign unimplemented = d_unimpl | x_unimpl | rf_rd_unimpl | rf_wr_unimpl
                        | seq_unimpl;
@@ -592,42 +639,48 @@ module mb86233_core (
       alu_launched <= 1'b0;
       alu_op_r     <= 5'd0;
       fp_post_r    <= 1'b0;
+      d_noalu      <= 1'b0;
     end else begin
+      // ir and the decode load on S_FETCH_W, or on whichever state retires when
+      // the next instruction is pc + 1 (R772).
+      if ((state == S_FETCH_W) || pf_load) begin
+        ir <= prog_rdata;
+        d_noalu <= mb86233_pkg::alu_is_none(c_alu);   // R771
+        // Registered here, from the same value and on the same edge as ir.
+        d_lab <= c_lab;
+        d_ldmov <= c_ldmov;
+        d_stm <= c_stm;
+        d_lipl <= c_lipl;
+        d_repgrp <= c_repgrp;
+        d_ldi <= c_ldi;
+        d_branch <= c_branch;
+        d_unimpl <= c_unimpl;
+        d_r1 <= c_r1;
+        d_r2 <= c_r2;
+        d_alu <= c_alu;
+        d_sub <= c_sub;
+        d_op7 <= c_op7;
+        d_cond <= c_cond;
+        d_bsub <= c_bsub;
+        d_bdata <= c_bdata;
+        d_binv <= c_binv;
+        d_ldireg <= c_ldireg;
+        d_ldival <= c_ldival;
+        d_lsel <= c_lsel;
+        d_lval <= c_lval;
+        d_lpimm <= c_lpimm;
+        d_fsub <= c_fsub;
+        d_clra <= c_clra;
+        d_clrb <= c_clrb;
+        d_clrd <= c_clrd;
+        d_repreg <= c_repreg;
+        d_repimm <= c_repimm;
+        d_stmsub <= c_stmsub;
+        d_stmm <= c_stmm;
+      end
       unique case (state)
         S_FETCH:   state <= S_FETCH_W;
         S_FETCH_W: begin
-          ir <= prog_rdata;
-          // Registered here, from the same value and on the same edge as ir.
-          d_lab <= c_lab;
-          d_ldmov <= c_ldmov;
-          d_stm <= c_stm;
-          d_lipl <= c_lipl;
-          d_repgrp <= c_repgrp;
-          d_ldi <= c_ldi;
-          d_branch <= c_branch;
-          d_unimpl <= c_unimpl;
-          d_r1 <= c_r1;
-          d_r2 <= c_r2;
-          d_alu <= c_alu;
-          d_sub <= c_sub;
-          d_op7 <= c_op7;
-          d_cond <= c_cond;
-          d_bsub <= c_bsub;
-          d_bdata <= c_bdata;
-          d_binv <= c_binv;
-          d_ldireg <= c_ldireg;
-          d_ldival <= c_ldival;
-          d_lsel <= c_lsel;
-          d_lval <= c_lval;
-          d_lpimm <= c_lpimm;
-          d_fsub <= c_fsub;
-          d_clra <= c_clra;
-          d_clrb <= c_clrb;
-          d_clrd <= c_clrd;
-          d_repreg <= c_repreg;
-          d_repimm <= c_repimm;
-          d_stmsub <= c_stmsub;
-          d_stmm <= c_stmm;
           state <= S_DECODE;
         end
 
@@ -638,6 +691,7 @@ module mb86233_core (
           // resolve, so it takes the read states like any other source operand.
           if (brul_memform && brul_ea_simple) state <= S_BRUL_RD;
           else if (d_lab || d_ldmov) state <= S_SRC;
+          else if (dec_ret)     state <= S_RETIRE;   // R773
           else                  state <= S_ALU;
         end
 
@@ -665,7 +719,7 @@ module mb86233_core (
             // instruction loaded neither register.
             lab_b_val <= (x_lab_b_sp == mb86233_pkg::EP_IO) ? io_rdata
                                                             : mem_rdata;
-            state     <= S_ALU;
+            state     <= skip_alu ? S_LAB_WA : S_ALU;   // R771
           end
         end
 
@@ -676,12 +730,14 @@ module mb86233_core (
         // own arithmetic. One register per cycle: the file has a single write
         // port and the ALU's own writeback to d/p does not use it.
         S_LAB_WA: state <= S_LAB_WB;
-        S_LAB_WB: state <= S_RETIRE;
+        S_LAB_WB: state <= nxt_ret;   // R773
 
-        S_DST:   state <= x_dst_reg ? S_ALU : S_DST_W;
+        S_DST:   state <= !x_dst_reg ? S_DST_W
+                        : ret_dst   ? nxt_ret
+                        : skip_alu  ? S_RETIRE : S_ALU;   // R771, R773
         S_DST_W: begin
           if (!mem_stall && !(x_dst_sp == mb86233_pkg::EP_IO && !io_ack))
-            state <= S_ALU;
+            state <= skip_alu ? S_RETIRE : S_ALU;        // R771
         end
 
         S_ALU: begin
@@ -692,7 +748,7 @@ module mb86233_core (
           // high during the very cycle div_done fires, and the FSM would never
           // leave this state.
           if (!alu_active || alu_out_valid) begin
-            state        <= d_lab ? S_LAB_WA : S_RETIRE;
+            state        <= d_lab ? S_LAB_WA : ret_alu ? nxt_ret : S_RETIRE;   // R773
             alu_launched <= 1'b0;
           end
         end
@@ -708,7 +764,7 @@ module mb86233_core (
           // stm/stmh: bit 0 selects floating point, bits 2:1 the cfxd rounding
           // mode. Only sub-op 5 is implemented in MAME; the rest log.
           if (d_stm && d_stmsub == 3'd5) reg_m <= d_stmm;
-          state <= S_FETCH;
+          state <= nxt_ret;   // R772
         end
 
         default: state <= S_FETCH;
@@ -802,7 +858,6 @@ module mb86233_core (
       end
 
       S_RETIRE: begin
-        seq_valid     = 1'b1;
         seq_is_rep    = d_repgrp & (d_fsub == 3'd2);
         // REP WITH A REGISTER COUNT MUST DRIVE THE REGISTER-FILE ADDRESS.
         //
@@ -871,6 +926,7 @@ module mb86233_core (
 
       default: ;
     endcase
+    seq_valid = ret_now;   // R773: on whichever state retires
   end
 
 endmodule

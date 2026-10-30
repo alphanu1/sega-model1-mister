@@ -42,7 +42,14 @@
 `timescale 1ns/1ps
 
 module mb86233_alu #(
-  parameter bit FLUSH_DENORM_IN = 1'b0
+  parameter bit FLUSH_DENORM_IN = 1'b0,
+  // R774 (the Model 2 core's, sega-model2-mister 757ede8b): an op that needs
+  // neither FP unit -- the integer, shift and convert ops, fabd and fned --
+  // jumps from stage 1 to the last stage and answers three cycles early. Only
+  // for a caller that issues one op and waits for out_valid (mb86233_core
+  // does): a later long op could otherwise meet an earlier short one in the
+  // last stage. 0 keeps the uniform latency (the streaming ALU bench).
+  parameter bit SHORT = 1'b0
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -396,12 +403,22 @@ module mb86233_alu #(
   logic        pxv  [1:ALU_LAT];
   logic [31:0] pxd  [1:ALU_LAT];
   r1_src_e     psrc [1:ALU_LAT];
+  logic        psh1;                 // R774: stage 1 holds a short op
+
+  // R774: the ops whose result is ready from stage 1's registers. Here every
+  // one of them is in int_result at stage 0 already (the converts are not
+  // split across stages as in the Model 2 copy), so the jump carries pint[1].
+  wire is_short = SHORT && (mb86233_pkg::alu_is_int_d(op)
+                         || op == mb86233_pkg::ALU_FABD || op == mb86233_pkg::ALU_FNED);
+  wire jump     = pv[1] && psh1;
 
   integer pi;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       for (pi = 1; pi <= ALU_LAT; pi = pi + 1) pv[pi] <= 1'b0;
+      psh1 <= 1'b0;
     end else begin
+      psh1  <= is_short;
       pv[1] <= in_valid;   pop[1]  <= op;
       pint[1] <= int_result;
       pst[1] <= st_in;     psrc[1] <= r1_src;
@@ -411,6 +428,16 @@ module mb86233_alu #(
         pint[pi] <= pint[pi-1];
         pst[pi]  <= pst[pi-1];  psrc[pi] <= psrc[pi-1];
         pxv[pi]  <= pxv[pi-1];  pxd[pi]  <= pxd[pi-1];
+      end
+      // R774: a short op leaves the line at stage 1 and lands in the last.
+      if (SHORT) begin
+        pv[2] <= pv[1] && !psh1;
+        if (jump) begin
+          pv[ALU_LAT]   <= 1'b1;            pop[ALU_LAT]  <= pop[1];
+          pint[ALU_LAT] <= pint[1];
+          pst[ALU_LAT]  <= pst[1];          psrc[ALU_LAT] <= psrc[1];
+          pxv[ALU_LAT]  <= pxv[1];          pxd[ALU_LAT]  <= pxd[1];
+        end
       end
     end
   end

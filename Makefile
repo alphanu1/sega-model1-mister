@@ -48,7 +48,7 @@ SRCS_m1_cdc_pulse := rtl/mem/m1_cdc_pulse.sv
 SND_RTL := $(wildcard rtl/sound/*.sv) $(wildcard rtl/sound/fx68k/*.sv) $(wildcard rtl/sound/jt12/*.v)
 SRCS_TOP_CORE = rtl/mem/m1_sdram.sv rtl/mem/m1_cdc_port.sv \
   rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/mem/bw_monitor.sv \
-  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv \
+  rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/io/m1_hmd_pose.sv rtl/tgp/m1_copro_if.sv \
   rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) \
   rtl/io/m1_rom_loader.sv rtl/io/m1_speed_report.sv rtl/io/m1_uart_tx.sv \
   rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
@@ -104,7 +104,7 @@ SRCS_m1_mainram := rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv
 # core: no framework, no clocking, no I/O board, no TGP.
 SRCS_m1_integrated := rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv \
   rtl/io/m1_decode.sv rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_rom_loader.sv \
-  rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
+  rtl/io/m1_ioboard.sv rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/io/m1_hmd_pose.sv rtl/tgp/m1_copro_if.sv rtl/mem/bw_monitor.sv \
   rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv rtl/video/m1_tile_decode.sv rtl/video/m1_tile_fetch.sv \
   rtl/video/m1_tile_mixer.sv rtl/video/m1_video_timing.sv \
   rtl/video/m1_palette.sv rtl/video/m1_video.sv rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv \
@@ -204,7 +204,7 @@ SRCS_mb86233_core := $(RTL)/mb86233_pkg.sv $(RTL)/fp_mul.sv $(RTL)/fp_add.sv \
 SRCS_mb86233_seq := $(RTL)/mb86233_pkg.sv $(RTL)/mb86233_seq.sv
 
 .PHONY: test_ctc
-.PHONY: all lint lint_v60 lint_top test test_multipcm multipcm_replay test_dsb_mpeg test_dsb_z80 test_dsb_board m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
+.PHONY: all lint lint_v60 lint_top test test_multipcm multipcm_replay test_dsb_mpeg test_dsb_z80 test_dsb_board m1_tgp test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_hmd_pose test_ioboard test_uart_tx test_speed_report test_snd_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_alu test_agu test_seq test_fp_div test_regs test_mem test_dec test_xfer test_core area quartus quartus_list quartus_report clean distclean v60_trace tgp_trace tgp_wrtrace
 
 all: test
 
@@ -312,7 +312,7 @@ lint_v60:
 	  rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv --top-module s32_v60
 	iverilog -g2012 -o /dev/null rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv
 
-test: test_dsb_mpeg test_dsb_z80 test_dsb_board test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank test_p6_arb test_multipcm
+test: test_dsb_mpeg test_dsb_z80 test_dsb_board test_v60_alu test_v60_shift test_v60_ifetch test_bw_monitor test_sdram_model test_m1_sdram test_cdc_port test_cdc_pulse test_fetch_bridge test_rom_loader test_decode test_glue test_sound_usart test_ddram_payload test_m2_ddr3 test_m2_ddr3_arb test_ddram_mux test_fb_flush test_fb_read test_scan15 test_drive_inputs test_hmd_pose test_ioboard test_ctc test_uart_tx test_speed_report test_copro_if test_tile_decode test_tile_mixer test_tile_fetch test_video_timing test_listctl test_palette test_diag test_video test_raster_fill test_fp_mul test_fp_add test_fp_div test_alu test_agu test_seq test_regs test_mem test_dec test_xfer test_core test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_recip test_geo_color test_geo_norm test_geo_clip test_geo_planes test_geometry test_quad_store test_lightbank test_p6_arb test_multipcm
 
 # Built twice. The narrow build is not a smaller version of the same test: at
 # the real widths a 500 k-cycle run cannot wrap a 24-bit counter or saturate an
@@ -455,6 +455,18 @@ test_scan15:
 	  n=$$((n+1)); PLUS="+rnd=1 +slip3=20 +slip1=5 +seed=$$sd" bash sim/video/run_scan15.sh 0 60 2 0 | grep -q '^PASS' \
 	    || { f=$$((f+1)); echo "  FAIL scan15 slip seed $$sd"; }; done; \
 	echo "m1_scan15: runs=$$n fails=$$f"; test $$f -eq 0
+
+# NetMerc's head pose writer. Built TWICE: at the hardware's tick and timeout
+# (2^15, 2^20) and narrow (2^6, 2^9), where the tick wraps every 64 cycles and
+# the abandoned-block timeout fires thousands of times - neither is reached
+# often at the real widths in a run this short.
+test_hmd_pose:
+	verilator --binary --timing -j 0 -Wno-fatal $(VFLAGS) -Wno-DECLFILENAME --top-module tb_m1_hmd_pose \
+	  -GCYCLES=16000000 rtl/io/m1_hmd_pose.sv sim/io/tb_m1_hmd_pose.sv -o tb_hmd_pose --Mdir obj_hmd_pose
+	./obj_hmd_pose/tb_hmd_pose | tee $(TMPDIR)/hmd_pose.log; ! grep -q "FAIL" $(TMPDIR)/hmd_pose.log
+	verilator --binary --timing -j 0 -Wno-fatal $(VFLAGS) -Wno-DECLFILENAME --top-module tb_m1_hmd_pose \
+	  -GTICK_W=6 -GTO_W=9 rtl/io/m1_hmd_pose.sv sim/io/tb_m1_hmd_pose.sv -o tb_hmd_pose_n --Mdir obj_hmd_pose_n
+	./obj_hmd_pose_n/tb_hmd_pose_n | tee $(TMPDIR)/hmd_pose_n.log; ! grep -q "FAIL" $(TMPDIR)/hmd_pose_n.log
 
 test_drive_inputs:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_drive_inputs \
@@ -1139,7 +1151,7 @@ m1_boot:
 	  rtl/cpu/v60/v60_bus.sv rtl/cpu/v60/v60.sv rtl/cpu/v60/v60_fp.sv rtl/cpu/v60/v60_ifetch.sv rtl/cpu/v60/v60_alu.sv rtl/cpu/v60/v60_shift.sv rtl/io/m1_decode.sv \
 	  rtl/io/m1_glue.sv rtl/io/m1_sound_usart.sv rtl/io/m1_ioboard.sv rtl/tgp/m1_copro_if.sv \
 	  rtl/cpu/tv80/tv80_alu.v rtl/cpu/tv80/tv80_reg.v rtl/cpu/tv80/tv80_mcode.v \
-	  rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv \
+	  rtl/cpu/tv80/tv80_core.v rtl/cpu/tv80/tv80s.v rtl/io/m1_ioz80.sv rtl/io/m1_hmd_pose.sv \
 	  rtl/tgp/m1_tgp.sv $(SRCS_mb86233_core) rtl/mem/m1_tdp_ram.sv rtl/m1_mainram.sv rtl/mem/m1_sdram.sv \
 	  rtl/mem/m1_cdc_port.sv rtl/mem/m1_cdc_pulse.sv rtl/mem/m1_fetch_bridge.sv \
 	  rtl/video/m1_listctl.sv \
@@ -1204,7 +1216,7 @@ m1_frame:
 	  -GSTREAMBIN='"build/rom/$(GAME)_stream.bin"' \
 	  -GSNDBIN='"$(FRAME_SNDBIN)"' -GGAME_IS_VR=$(if $(filter vr,$(GAME)),1,0) \
 	  -GRUN_CYCLES="64'd$(FRAME_CYCLES)" \
-	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GIO2=$(FRAME_IO2) -GHMD_POSE=$(FRAME_HMD) -GNM_STICK=$(FRAME_NMSTICK) -GDPTRACE=$(FRAME_DPTRACE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
+	  -GROMA_MODE=$(FRAME_ROMA_MODE) -GIO2=$(FRAME_IO2) -GHMD_POSE=$(FRAME_HMD) -GHMD_STICK=$(FRAME_HMD_STICK) -GHMD_MODE=$(FRAME_HMD_MODE) -GNM_STICK=$(FRAME_NMSTICK) -GDPTRACE=$(FRAME_DPTRACE) -GDDR_LAT=$(FRAME_DDR_LAT) -GDDR_BUSY=$(FRAME_DDR_BUSY) \
 	  -GDOWNLOAD=$(FRAME_DOWNLOAD) -GHOLD_CPU=$(FRAME_HOLD_CPU) \
 	  -GPRESS_IN0=$(FRAME_PRESS) -GCOIN_AT="64'd$(FRAME_COIN)" -GTRACE_FRAMES=$(FRAME_TRACE) \
 	  -GPCTRACE=$(V60_PCTRACE) -GPCTRACE_MAX="64'd$(V60_PCTRACE_MAX)" -GWRTRACE=$(V60_WRTRACE) \
@@ -1288,6 +1300,12 @@ FRAME_IO2 ?= $(if $(filter wingwar wingwarj wingwaru wingwar360,$(GAME)),1,0)
 # NetMerc's head-tracker pose in DPRAM 0x80 (m1_main's seeder). FRAME_HMD=0 with
 # GAME=netmerc reproduces the zero pose every build before it had.
 FRAME_HMD ?= $(if $(filter netmerc,$(GAME)),1,0)
+# The left stick for the head look, held for the run (DECIMAL, as -G takes it:
+# hps_io's [7:0] X, [15:8] Y, signed; 0 is centred), and the look mode (0 look,
+# 1 Y inverted, 2 fixed forward). FRAME_HMD_STICK=32832 is 0x8040: X +64
+# (right), Y -128 (fully up).
+FRAME_HMD_STICK ?= 0
+FRAME_HMD_MODE ?= 0
 # NetMerc's stick bytes at rest (0x00 0x80, 0x01 0xff, 0x02 0x80), as Model1.sv
 # publishes them; 0 gives the pedal bytes every game had before (0x02 = 0x01).
 FRAME_NMSTICK ?= $(if $(filter netmerc,$(GAME)),1,0)

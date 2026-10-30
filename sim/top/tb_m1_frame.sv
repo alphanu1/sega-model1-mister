@@ -96,6 +96,10 @@ module tb_m1_frame #(
     // NetMerc's head pose seeded at reset, as Model1.sv does for game id 4.
     // The Makefile sets it from GAME.
     parameter bit     HMD_POSE   = 1'b0,
+    // The left stick m1_hmd_pose turns the head with, held for the whole run
+    // (hps_io's format: [7:0] X, [15:8] Y, signed), and the look mode (O[22:21]).
+    parameter logic [15:0] HMD_STICK = 16'h0000,
+    parameter logic [1:0]  HMD_MODE  = 2'd0,
     // NetMerc's stick bytes at rest (Model1.sv nm_stick_*), not the pedals'.
     parameter bit     NM_STICK   = 1'b0,
     // DPRAM access trace (V60 side), deduplicated; 0 = off. See DPT lines.
@@ -188,6 +192,9 @@ module tb_m1_frame #(
     // must leave all three identical to the cycle; the first frame whose line
     // differs says when it stopped being so. 0 disables it.
     parameter integer HASHEVERY  = 0,
+    // LISTPUB=1 prints every display-list publish and flip (see "IS EACH LIST
+    // FINISHED IN TIME?"); a flip onto an unpublished list prints regardless.
+    parameter integer LISTPUB    = 0,
     // THE AUTOPILOT: from this clk_sys cycle on, the wheel steers toward the
     // grey road just above the car, read off this bench's own picture at
     // each vertical blank, and the accelerator is held down (eased in a hard
@@ -471,7 +478,7 @@ m1_integrated core (
     .DDRAM_RD(ddr_rd), .DDRAM_DIN(ddr_din), .DDRAM_BE(ddr_be), .DDRAM_WE(ddr_we),
     .roma_mode(2'(ROMA_MODE)),
     .io2(IO2),
-    .hmd_pose(HMD_POSE),
+    .hmd_pose(HMD_POSE), .hmd_stick(HMD_STICK), .hmd_mode(HMD_MODE),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
@@ -3347,6 +3354,50 @@ always @(posedge clk) begin
             bands_this_frame = 0;
             bpf_frames = bpf_frames + 1;
         end
+    end
+end
+
+// ------------------------------------------ IS EACH LIST FINISHED IN TIME?
+//
+// Star Wars (and any game in the automatic double-buffer mode, listctl bit 2)
+// builds a list behind a terminator: it writes 000f at word 0x38 first, copies
+// the body, and PUBLISHES by overwriting word 0x38 last. The hardware flips
+// every second frame whether or not the game is done, so a list published
+// after its flip is walked as header + terminator: an EMPTY 3D frame.
+// LISTPUB lines: every publish/terminate of word 0x38 with its time, and
+// LISTFLIP at every flip with whether the list now shown is published and how
+// many frames ago it was (the slack).
+reg     lp_req_d = 0;
+reg     lp_pub [0:1];
+longint lp_pub_t [0:1];
+reg     lp_sel_d = 0;
+integer lp_flips = 0, lp_late = 0;
+initial begin lp_pub[0] = 0; lp_pub[1] = 0; lp_pub_t[0] = 0; lp_pub_t[1] = 0; end
+always @(posedge clk_cpu) begin
+    lp_req_d <= core.main.m_req;
+    if (core.main.m_req && !lp_req_d && core.main.m_we
+        && (core.main.sel_dlist0 || core.main.sel_dlist1)
+        && core.main.m_addr[15:1] == 15'h0038) begin
+        lp_pub[core.main.sel_dlist1]   = (core.main.m_wdata[15:0] != 16'h000f);
+        lp_pub_t[core.main.sel_dlist1] = cycles;
+        if (LISTPUB) $display("LISTPUB f=%0d buf=%0d w=%04h t=%0d.%02d fr",
+                 frames, core.main.sel_dlist1, core.main.m_wdata[15:0],
+                 cycles / 1390821, ((cycles % 1390821) * 100) / 1390821);
+    end
+end
+always @(posedge clk) begin
+    if (rst_n_sys && core.listctl_sel != lp_sel_d) begin
+        lp_sel_d = core.listctl_sel;
+        lp_flips = lp_flips + 1;
+        // The list shown from this flip is the one the game wrote into the
+        // buffer listctl now selects: bit 6 set = list 1 (set_current_render_list).
+        if (!lp_pub[core.listctl_sel]) lp_late = lp_late + 1;
+        if (LISTPUB || !lp_pub[core.listctl_sel])
+            $display("LISTFLIP f=%0d sel=%0d %s slack=%0d.%02d fr late_total=%0d of %0d",
+                 frames, core.listctl_sel, lp_pub[core.listctl_sel] ? "published" : "LATE(terminated)",
+                 (cycles - lp_pub_t[core.listctl_sel]) / 1390821,
+                 (((cycles - lp_pub_t[core.listctl_sel]) % 1390821) * 100) / 1390821,
+                 lp_late, lp_flips);
     end
 end
 

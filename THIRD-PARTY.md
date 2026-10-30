@@ -95,6 +95,21 @@ the band buffer is the write combiner and `rtl/video/m1_fb_flush.sv`,
 original here, copies each filled band into DDR3. `rtl/mem/m1_ddram_mux.sv`,
 which shares the one DDRAM port with the quad payload, is original here too.
 
+### The TGP's speed-ups — from the Model 2 core — GPL-3.0-or-later
+The Model 2 core's copy of this project's MB86233 core was made about twice as
+fast with its result stream unchanged (its design study R771-R774 and R778).
+Ported back 2026-10-29 from **sega-model2-mister `757ede8b`** (R771-R774) and
+**`e75a2cd0`** (R778), the same author's core:
+
+| here | there | changed |
+|---|---|---|
+| `rtl/tgp/mb86233_core.sv` | the same | R771 (skip the ALU for an op that writes no D, P or ST), R772 (prefetch pc + 1 while executing), R773 (retire in the finishing state), with R778's change (ld/mov to memory or io retires in S_RETIRE). Model 1's decode registers load in a block of their own, on S_FETCH_W or the prefetch; Model 2's R737 operand hold is not here, so rep / brul read the register file in S_RETIRE as before |
+| `rtl/tgp/mb86233_alu.sv` | the same | R774's SHORT parameter; the jump carries pint[1], since Model 1's converts are not split across stages (Model 2's R588 / R731) |
+| `rtl/tgp/mb86233_pkg.sv` | the same | `alu_is_none` |
+
+Not ported: R775 (ldif loads a register), which changes results toward MAME
+and needs its own replay; R888's posted buffer-RAM writes (2A board).
+
 ### The wheel modes — idea from the Model 2 core
 `rtl/io/m1_drive_inputs.sv` is written here. Its Wheel A / Wheel B pedal
 mapping follows the Model 2 core's `rtl/io/m2_cab_inputs.sv` (sega-model2-mister

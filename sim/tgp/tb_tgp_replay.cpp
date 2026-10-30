@@ -95,6 +95,9 @@ int main(int argc, char** argv) {
   // so a command stream can be framed into commands (the dispatcher's pop)
   // and arguments, and two streams compared command by command.
   FILE* cmdlog = getenv("CMDLOG") ? fopen(getenv("CMDLOG"), "w") : nullptr;
+  // OURLOG=<file>: every word our TGP pushes, in order - the whole result
+  // stream, so a faster core can be required to give exactly the same one.
+  FILE* ourlog = getenv("OURLOG") ? fopen(getenv("OURLOG"), "w") : nullptr;
 
   auto* d = new Vm1_tgp;
   long cyc = 0;
@@ -122,6 +125,12 @@ int main(int argc, char** argv) {
   std::deque<uint32_t> lastcmd;          // the last words the TGP popped
   long answers = 0, fails = 0, popped_total = 0, ram_w = 0;
   long busy_cyc = 0, retires = 0; uint16_t last_ret = 0;
+  long pf_busy = 0, pf_ret = 0;
+  // Per frame, also: copro RAM, table and data-ROM accesses, words popped and
+  // answers pushed - what the frame's coprocessor time is spent on.
+  long n_ram = 0, n_tbl = 0, n_dat = 0, n_push = 0;
+  long pf_ram = 0, pf_tbl = 0, pf_dat = 0, pf_pop = 0, pf_push = 0;
+  FILE* perframe = getenv("PERFRAME") ? fopen(getenv("PERFRAME"), "w") : nullptr;
   int frame = 0;
 
   // One outstanding access per port, answered after a latency.
@@ -144,15 +153,15 @@ int main(int argc, char** argv) {
         else           d->ram_rdata = cram[d->ram_addr & 0x1fff];
         d->ram_ack = 1; pr.busy = false;
       }
-    } else if (d->ram_req) { pr.busy = true; pr.wait = newwait(); }
+    } else if (d->ram_req) { pr.busy = true; pr.wait = newwait(); n_ram++; }
     if (pt.busy) {
       if (pt.wait > 0) pt.wait--;
       else { d->tbl_rdata = tables[d->tbl_addr & 0xffff]; d->tbl_ack = 1; pt.busy = false; }
-    } else if (d->tbl_req) { pt.busy = true; pt.wait = newwait(); }
+    } else if (d->tbl_req) { pt.busy = true; pt.wait = newwait(); n_tbl++; }
     if (pd.busy) {
       if (pd.wait > 0) pd.wait--;
       else { d->dat_rdata = data[d->dat_addr & 0x7ffff]; d->dat_ack = 1; pd.busy = false; }
-    } else if (d->dat_req) { pd.busy = true; pd.wait = newwait(); }
+    } else if (d->dat_req) { pd.busy = true; pd.wait = newwait(); n_dat++; }
     d->eval();
     // busy = not parked on an empty command FIFO; retires counted off the
     // wrapping 16-bit counter's changes.
@@ -168,7 +177,7 @@ int main(int argc, char** argv) {
       lastcmd.push_back(fin.front()); if (lastcmd.size() > 24) lastcmd.pop_front();
       fin.pop_front(); popped_total++;
     }
-    if (push) ours.push_back(pv);
+    if (push) { ours.push_back(pv); n_push++; if (ourlog) fprintf(ourlog, "%08x\n", pv); }
     // compare as soon as both sides have a word
     while (!ours.empty() && !want.empty()) {
       uint32_t a = ours.front(), b = want.front();
@@ -205,7 +214,18 @@ int main(int argc, char** argv) {
   char line[128];
   while (fgets(line, sizeof line, sf)) {
     char sp, rw; unsigned a, v, m;
-    if (line[0] == 'F') { frame = atoi(line + 2); continue; }
+    if (line[0] == 'F') {
+      // PERFRAME=<file>: per frame, the cycles the core spent not parked on an
+      // empty command FIFO and the instructions it retired - its own time for
+      // that frame's coprocessor work, against MAME's one instruction a cycle.
+      // Columns: frame busy retires ram tbl dat popped pushed.
+      if (perframe) fprintf(perframe, "%d %ld %ld %ld %ld %ld %ld %ld\n", frame, busy_cyc - pf_busy,
+                            retires - pf_ret, n_ram - pf_ram, n_tbl - pf_tbl, n_dat - pf_dat,
+                            popped_total - pf_pop, n_push - pf_push);
+      pf_busy = busy_cyc; pf_ret = retires;
+      pf_ram = n_ram; pf_tbl = n_tbl; pf_dat = n_dat; pf_pop = popped_total; pf_push = n_push;
+      frame = atoi(line + 2); continue;
+    }
     if (line[0] == 'T') {
       want.push_back((uint32_t)strtoul(line + 2, nullptr, 16));
       // let the core produce what MAME already has before moving on, so a

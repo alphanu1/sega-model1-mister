@@ -1,5 +1,19 @@
 # TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
 
+**Board test of `swa-crawl` (rbf 072664af: main 115c719 + the TGP port +
+the hold on an unfinished list), Ben 2026-10-29:** Star Wars' crawl is good
+and the Death Star no longer disappears; VF, VR, Wing War and NetMerc
+unchanged and good; **every game runs at the correct frame rate.**
+- **NetMerc: head look on the left stick - NEEDED FOR THIS RELEASE.** The
+  head pose is fixed facing forward; Ben wants the left stick to look around
+  (the cabinet's headset), the gun on the right stick.
+  **Built on `netmerc-look` (2026-10-30), fitted, not on the board yet** -
+  see the section below.
+- **AFTER THIS RELEASE - seams:** Star Wars, Virtua Fighter and Virtua Racing
+  still show small seams (VR: a small piece of road missing with the grass
+  behind, which looks like a seam, not an overrun). Not for this release.
+
+
 **Board test of `m1-seams` (rbf fb3ae845; main c9c02ca + the band-row fill
 fix), Ben 2026-10-29:** Star Wars looking good (boosters and hull clean);
 Wing War good; VR and VF good, and their sound "much better" -- the cause is
@@ -10,7 +24,10 @@ Still open from this test:
 - **Star Wars crawl:** the yellow text still flickers, vanishes and comes back
   far away. Ben: it did not happen before the DSB sound board; on
   `vf-swa-geo` (no DSB) it was fine. With the Death Star agent
-  (`swa-deathstar`, run_dsb vs run_nodsb).
+  (`swa-deathstar`, run_dsb vs run_nodsb). **Later (Ben): it happens on
+  vf-swa-geo too. Cause found and fixed on `swa-crawl`, for the board: see
+  the section below** (the list walked before the game published it, with a
+  TGP at 11.4 CPI making the build late).
 - **Wing War, the VR-buttons screen:** a little tile or texel overrun.
   Later.
 - **NetMerc controls:** the head pose is fixed facing forward (seeded at
@@ -80,6 +97,191 @@ main on his word; no release yet. 15 kHz output not tested.
   the Star Wars crawl flicker (Ben, 2026-10-29: the flicker is on the no-DSB
   build too). Needs `make test`, a fit and a board check of every game's
   sound before it goes in.
+
+---
+
+# 2026-10-30: NETMERC'S HEAD LOOK ON THE LEFT STICK, THE GUN ON THE RIGHT
+
+Branch **`netmerc-look`** (local, not pushed), on `swa-crawl` (3763abd, the
+build Ben approved). `findings.md` 2026-10-30 "NetMerc's head look" has the
+measurements.
+
+- **The pose format, measured in MAME** (headless, the default NVRAM, each
+  word poked during play and snapshotted): word 3 (0x86-0x87) is **yaw, +
+  looks right**; word 5 (0x8a-0x8b) is **pitch, + looks down**; word 4 is roll;
+  words 0-2 are the head's position (read and used, kept at 0). Units are
+  **radians x 8192**: 12868 = pi/2, 25736 = pi - MAME's forward seed. No
+  smoothing in the game (a step shows complete 4 frames later); yaw with
+  pitch keeps the horizon level. The game reads the twelve bytes every second
+  frame, ascending, low byte first, within ~6 us.
+- **`rtl/io/m1_hmd_pose.sv`** (new, in `m1_main` where the reset seeder was):
+  left stick -> absolute head pose, self-centring. +-15-count dead band
+  subtracted, then yaw x115 (+-90 degrees) and pitch x57 (+-45). Rewrites the
+  twelve bytes every 1.1 ms through the I/O side's port, and continuously in
+  reset (the old seed). **No tearing by construction**: no burst while the V60
+  is in a block read (`busy` from its 0x80..0x8b reads), no write in a cycle
+  with one of the twelve on the V60's bus, a burst abandoned if the read
+  comes before byte 0, ascending one byte a cycle, one snapshot per burst; it
+  yields every Z80 write cycle and retries on a V60 write.
+- **OSD O[22:21] "NetMerc head look"**: Left stick (default) / Left stick Y
+  inv / Off. Off = the old behaviour (pose forward, both sticks on the gun) for
+  a one-stick pad. No other OSD bit moved; 21-22 were free.
+- **The gun** (Model1.sv `nm_*`): right stick, d-pad still full deflection,
+  O[12]/O[13] still flip it. Game id 4 only; no other game's path changed.
+- `io_raddr` is now `z_addr` (the Z80 reads at its own address, not the
+  shared port's muxed one), so the pose writer cannot move the firmware's
+  read in play.
+- **MRAs unchanged.**
+
+## Proof
+
+- `make test_hmd_pose` (now in `make test`): every stick value in every mode
+  against a separate reference; a model V60 reading the block as the game
+  does (interrupt splits, abandoned blocks, read captured on the request's
+  first edge as m1_main does); every complete block from one burst; port
+  rules. Two builds (tick/timeout 2^15/2^20 and 2^6/2^9), fails=0. Three
+  mutations (no bus gate, no busy, no Z80 yield) each fail it.
+- `make test`: all pass, including the two new lines (see findings).
+  `make lint_top`: only the two width warnings swa-crawl already has
+  (m2_sound_board.sv:206, m1_integrated.sv dbg_hud_obj) - none new.
+  `make elab`: clean.
+- `tb_m1_frame`, netmerc, 40 M cycles (~30 frames after the download), stick
+  held at 0x8040 (X +64, Y -128): DPRAM pose `0000 0000 0000 4847 6488 1954`
+  = yaw 18,503 and pitch 6,484, exactly the reference. **All 13 dumped frames
+  byte-identical to swa-crawl's** run of the same length (attract does not
+  read the pose), and every FRAME: summary line identical but the bench's
+  count of I/O-port writes during reset (12/13 of the old seeder's rate: one
+  idle cycle between bursts). The bench does not reach play in that window
+  (play is ~1,650 frames); the game's own read in play is the board's
+  question.
+
+## Fit (Quartus 17.0, one seed per Ben, under the fit lock)
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| swa-crawl s5 (base) | f3ed360 | 38,640 | 548 | 57 | +0.732 | +0.830 | +5.003 | +0.142 | +0.244 |
+| **netmerc-look s5** | 7fa821d | **38,699** | **548** | **59** | **+0.531** | **+0.211** | **+5.241** | **+0.053** | **+0.238** |
+
+Every clock closes (h2f_user0 +1.625; hold worst +0.238 on pll_audio, ours
++0.243/+0.250/+0.256). `m1_hmd_pose` is 101 ALM and 158 registers in the fit.
+
+**For the board: `build/wt-look/build/Model1_netmercLook_seed5_38699.rbf`**,
+md5 `2d054e87f0fe4d3bb5e8a5b448215e67`; reports in
+`build/wt-look/build/look_s5_reports/`.
+
+## What to check on the board
+
+1. **NetMerc in play, sticks released**: as on swa-crawl - looking forward,
+   gun upright in both hands. Nothing should have moved.
+2. **Left stick**: right looks right, up looks up, released snaps back to
+   forward; full deflection is 90 degrees sideways / 45 up or down. Any
+   jitter or a one-frame jump while turning would be a torn word - report
+   it, the design says it cannot happen.
+3. **Right stick aims the gun**, the d-pad too; the left stick must not move
+   the gun. If an axis is reversed, O[12]/O[13] still flip the gun.
+4. **OSD "NetMerc head look"**: Left stick Y inv flips the look's up/down;
+   Off brings back the old fixed view with both sticks on the gun.
+5. Every other game: nothing in their path changed (game id 4 only); a quick
+   boot of VR is enough.
+
+## Not done / seen
+
+- The look latency is the rewrite period (1.1 ms) plus the game's own
+  two-frame read and render; no extra frame held.
+- The head-position words stay at 0; their axes and units were not pinned
+  down (a lean on the stick is not something a pad has).
+- Pitch past +-45 only shows floor or sky; yaw past 90 is reachable in the
+  format (it wraps at +-4 radians) but a stick gives no way to look back.
+- The bench did not reach play (that is ~1,650 frames, outside the rule);
+  the game's read of a moving pose in play is proven by the block bench and
+  in MAME, not in tb_m1_frame.
+- **Wrong turns:** a 13-minute frame run without `FRAME_PPM`, which is what
+  writes `build/frames/dlsel.txt` (the pose lines) - run it with
+  FRAME_PPM=10. The first version of the writer gated only on "no read in
+  progress"; the block bench showed a burst that starts the cycle before
+  the V60's request rises writes byte 0 on the same edge the RAM captures it
+  for the V60 (old byte, new high byte next): the fix is never writing in a
+  cycle with one of the twelve on the bus, and abandoning a burst whose byte
+  0 the read beat.
+
+---
+
+# 2026-10-29: THE STAR WARS CRAWL - THE LIST WALKED BEFORE IT WAS PUBLISHED; THE TGP 2x FASTER (MODEL 2's R771-R774)
+
+Branch **`swa-crawl`** (local, not pushed), on `main` (115c719).
+`findings.md` 2026-10-29 "the Star Wars crawl" has every number.
+
+- **Cause**: Star Wars uses the automatic double buffer and publishes each
+  list last (000f at word 0x38, the body, then word 0x38). Our pass starts AT
+  the flip - `m1_raster3d`'s "vblank after the flip" rule (9e242f8) has a
+  one-cycle hole and never took effect - so the build had ~0.98 frame where
+  MAME, which walks at the vblank after the flip, gives ~2. The crawl's build
+  is TGP-paced (12 `in.w` answers per letter), our TGP ran at 11.4 CPI, and
+  at the peak the build (estimated 0.75-1.05 frame) missed the flip: the list
+  was walked as header + terminator, an empty 3D frame. No capacity is hit
+  (peak 435 objects, 3,244 quads, list end 0x39fe).
+- **Fix 1, the TGP** (`mb86233_core`, `_alu`, `_pkg`): the Model 2 core's
+  R771-R774 + R778 ported (THIRD-PARTY.md). Result stream word-for-word
+  identical to the old RTL on MAME's traffic: Star Wars 1-6100 (4,089,476
+  words), VR 1-3000 (2,085,192). CPI 11.35 -> 5.67 (Star Wars), 11.72 ->
+  5.89 (VR); the crawl's peak 0.40 -> 0.20 frame.
+- **Fix 2, the hold** (`m1_raster3d`, relist): a walk made before the vblank
+  after its flip that finds no content is discarded - the last frame stays
+  up - and repeated until the list is published or that vblank. Zero added
+  latency on a list complete at the flip (VR logs and pictures
+  byte-identical); a late list is shown no later than MAME would. Closing the
+  hole instead was measured and dropped: +1 frame on every game.
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| **swa-crawl s5** | f3ed360 | **38,640** | **548** | **57** | +0.732 | +0.830 | +5.003 | +0.142 | +0.244 |
+
+**For the board: `build/Model1_swacrawl_seed5_38640.rbf`**, md5
+`072664af8aa23520f4aa9d4772d3491d`; reports in `build/swacrawl_s5_reports/`.
+One seed, per Ben (board-test build); every clock closes.
+
+## What to check on the board
+
+1. **Star Wars attract, the crawl**: the text stays up from "A long time
+   ago" to the end, no flicker, no gap.
+2. **Every game's pace**: the TGP takes half the cycles. VR, VF, Wing War,
+   NetMerc should be the same or quicker; anything slower or glitching is
+   news (the answers are proven identical, the timing is not).
+3. **Star Wars' Death Star** (the other open report): worth a look on this
+   build - a list walked before it was published would look like that too,
+   though MAME's Death Star builds are short (0.02 frame).
+
+## How to repeat it
+
+- `make tgp_replay GAME=swa TGP_STREAM=<stream>` with `OURLOG=<file>` (the
+  whole result stream) and `PERFRAME=<file>` (per frame: busy cycles,
+  retires, memory accesses, words popped, answers). Streams: Star Wars
+  `build/wt-deathstar/build/ds/ts_swa.txt`, truncated at "F 6101" into
+  `build/wt-crawl/build/crawl/ts_6100.txt`; VR captured with
+  `GAME=vr TS_FRAMES=3000 tools/mame_run.sh tools/mame_tgp_stream.lua -video
+  none -sound none` (`build/wt-crawl/build/crawl/ts_vr.txt`, 33 s).
+- `tb_m1_raster3d` with `PUB_BUILD=<lines>` (and `PUB_TERM_LINE`, default
+  392) on a MAME dump: the late-publish model; the summary line `LATENCY:`
+  gives flip-to-screen per list, empty frames and walks discarded.
+  `build/wt-crawl/build/crawl/sweep.sh <dump> <tag> <lines...>` runs old vs
+  new (the old RTL is `build/crawl/old/m1_raster3d.sv`, main's).
+
+## Not done, and why
+
+- **Our real build time in the crawl is not measured** - only estimated
+  (V60 ~0.44 x our relative speed + the TGP). No full-system run reaches it
+  (ours trails MAME by ~215 frames; the crawl peak is ~our 5,100, ~9 h of
+  tb_m1_frame). The board is the measurement.
+- **The TGP is still ~5.7 CPI.** Model 2's R888 (posted buffer-RAM writes,
+  the ALU under the transfer) and its proposed next steps (decode pipelined
+  into the previous instruction, operand reads from S_DECODE) are the next
+  levers; R775 (ldif loads a register) is unported.
+- **lint_top** fails on two width warnings that are not this change
+  (`m2_sound_board.sv:206`, `m1_integrated.sv:888`).
+- Baseline drift seen in `make test` (not this change): `m1_geometry`
+  checks=11776 (its real-model section skips without `build/real_objects.txt`
+  in a worktree), `m1_quad_store` checks=30135 against the instructions'
+  18,500.
 
 ---
 

@@ -151,6 +151,7 @@ module emu
     "O[20],Star Wars music volume,Firmware,MAME;",
     "O[12],Stick Y axis,Normal,Inverted;",
     "O[13],Stick X axis,Normal,Inverted;",
+    "O[22:21],NetMerc head look,Left stick,Left stick Y inv,Off;",
     "-;",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
@@ -311,8 +312,19 @@ module emu
   wire io_board2 = (game == 7'd3);
 
   // NetMerc reads its camera's orientation from a head tracker that MiSTer
-  // does not have; m1_main seeds the forward pose MAME seeds. See there.
-  wire hmd_pose = (game == 7'd4);
+  // does not have. The LEFT STICK stands in for the player's head: m1_main's
+  // m1_hmd_pose writes the pose, forward when the stick is released, turned
+  // up to +-90 degrees of yaw and +-45 of pitch at full deflection (that
+  // module carries the format, measured in MAME). The gun moves to the right
+  // stick (nm_stick_* below).
+  //
+  // O[22:21] "NetMerc head look": 0 Left stick, 1 Left stick with Y inverted
+  // (push up to look down, as a flight game has it), 2 Off - the pose fixed
+  // forward and both sticks aiming the gun, which is what this core did
+  // before, for a pad with one stick. The OSD cannot select 3; it reads as Off.
+  wire       hmd_pose = (game == 7'd4);
+  wire [1:0] hmd_mode = status[22:21];
+  wire       hmd_look = !hmd_mode[1];
 
   // THE INPUT MAP IS PER GAME, AND IT HAS TO BE.
   //
@@ -555,8 +567,24 @@ module emu
   // Wing War's stick, with both axes the other way round: netmerc declares
   // PORT_REVERSE on STICKY and not on STICKX, wingwar the opposite. The flip
   // keeps 0x80 at 0x80, as swa_ax's does. O[12]/O[13] still flip them.
-  wire [7:0] nm_stick_x = (ww_stick_x == 8'h80) ? 8'h80 : (8'hff - ww_stick_x);
-  wire [7:0] nm_stick_y = (ww_stick_y == 8'h80) ? 8'h80 : (8'hff - ww_stick_y);
+  //
+  // THE GUN IS ON THE RIGHT STICK when the head look is on: the left stick is
+  // the player's head (hmd_mode above), so it must not also swing the gun.
+  // The d-pad still aims it, at full deflection, exactly as before. With the
+  // look Off it is Wing War's stick unchanged - both sticks, the further-
+  // pushed winning - so a one-stick pad aims as it always did.
+  wire [7:0] nm_ax = !x_inv              ? rx_d  :
+                     (rx_d == 8'h80)     ? 8'h80 : (8'hff - rx_d);
+  wire [7:0] nm_ay = !status[12]         ? ry_d  :
+                     (ry_d == 8'h80)     ? 8'h80 : (8'hff - ry_d);
+  wire [7:0] nm_gx = p1_left  ? (x_inv ? 8'hff : 8'h00) :
+                     p1_right ? (x_inv ? 8'h00 : 8'hff) : nm_ax;
+  wire [7:0] nm_gy = p1_up    ? (status[12] ? 8'hff : 8'h00) :
+                     p1_down  ? (status[12] ? 8'h00 : 8'hff) : nm_ay;
+  wire [7:0] nm_src_x = hmd_look ? nm_gx : ww_stick_x;
+  wire [7:0] nm_src_y = hmd_look ? nm_gy : ww_stick_y;
+  wire [7:0] nm_stick_x = (nm_src_x == 8'h80) ? 8'h80 : (8'hff - nm_src_x);
+  wire [7:0] nm_stick_y = (nm_src_y == 8'h80) ? 8'h80 : (8'hff - nm_src_y);
 
   // -------------------------------------------- Star Wars Arcade, the GUNNER
   //
@@ -1437,7 +1465,7 @@ assign p_addr = {dsb_saddr,
     .in_bytes(io_in_bytes),
     .roma_mode(roma_mode),
     .io2(io_board2),
-    .hmd_pose(hmd_pose),
+    .hmd_pose(hmd_pose), .hmd_stick(joy0_lstick), .hmd_mode(hmd_mode),
 
     // The 3D layer's SDRAM masters: p5 for the polygon models, p6 for tgp_ram.
     .r3d_rom_req(r3d_rom_req), .r3d_rom_addr(r3d_rom_addr),
