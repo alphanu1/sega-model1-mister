@@ -92,8 +92,12 @@ module m1_integrated (
   input  logic [1:0]  roma_mode,
   // The I/O board variant, from the game id: 1 is model1io2 (Wing War).
   input  logic        io2,
-  // NetMerc: seed the head-tracker pose in DPRAM 0x80 (m1_main).
+  // NetMerc: the head-tracker pose in DPRAM 0x80, from the left stick
+  // (m1_main, m1_hmd_pose). The stick is in clk_sys's domain; the module
+  // synchronises it.
   input  logic        hmd_pose,
+  input  logic [15:0] hmd_stick,
+  input  logic [1:0]  hmd_mode,
 
   // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
   output logic        iofw_req,
@@ -397,7 +401,7 @@ module m1_integrated (
     .rom_loaded(rom_loaded_sync[1]),
     .roma_mode(roma_mode),
     .io2(io2),
-    .hmd_pose(hmd_pose),
+    .hmd_pose(hmd_pose), .hmd_stick(hmd_stick), .hmd_mode(hmd_mode),
     .in_bytes(in_bytes),
     // The I/O board Z80's firmware, from the loader's own download index.
     // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.

@@ -96,6 +96,10 @@ module tb_m1_frame #(
     // NetMerc's head pose seeded at reset, as Model1.sv does for game id 4.
     // The Makefile sets it from GAME.
     parameter bit     HMD_POSE   = 1'b0,
+    // The left stick m1_hmd_pose turns the head with, held for the whole run
+    // (hps_io's format: [7:0] X, [15:8] Y, signed), and the look mode (O[22:21]).
+    parameter logic [15:0] HMD_STICK = 16'h0000,
+    parameter logic [1:0]  HMD_MODE  = 2'd0,
     // NetMerc's stick bytes at rest (Model1.sv nm_stick_*), not the pedals'.
     parameter bit     NM_STICK   = 1'b0,
     // DPRAM access trace (V60 side), deduplicated; 0 = off. See DPT lines.
@@ -474,7 +478,7 @@ m1_integrated core (
     .DDRAM_RD(ddr_rd), .DDRAM_DIN(ddr_din), .DDRAM_BE(ddr_be), .DDRAM_WE(ddr_we),
     .roma_mode(2'(ROMA_MODE)),
     .io2(IO2),
-    .hmd_pose(HMD_POSE),
+    .hmd_pose(HMD_POSE), .hmd_stick(HMD_STICK), .hmd_mode(HMD_MODE),
     .clk_sys(clk), .ce_pix(ce_pix),
     .clk_cpu(clk_cpu), .ce_cpu(ce_cpu),
     // clk_3d WAS NOT CONNECTED, and this bench builds with -Wno-PINMISSING.
