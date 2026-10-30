@@ -27,11 +27,13 @@ exact build it ships.
 **There is sound**: the sound PCB's 68000, its YM3438 and both MultiPCM
 channels, reached over the main board's uPD71051C USART. Confirmed on hardware
 in attract and in play across Virtua Racing, Virtua Formula, Virtua Fighter and
-Star Wars Arcade. **Sega NetMerc is the exception** — its audio comes out tiny,
-high-pitched and at the wrong rate, which is a sample-clock fault and is open.
+Star Wars Arcade. The MultiPCM now has MAME's envelope generator, 12-bit
+samples and interpolation, so notes fade instead of stopping dead. **Sega
+NetMerc is nearly silent**: its sample ROM `mpr-18134` is a bad dump (all 0xFF)
+in every set, MAME's included; the hiss it used to make is gone.
 
-**Star Wars Arcade has a SECOND sound board, and it is built (branch
-`swa-sound`, 2026-10-29) but NOT YET TESTED ON A BOARD.** It is the only Model 1
+**Star Wars Arcade has a SECOND sound board, and it is built and plays on
+the board (2026-10-29).** It is the only Model 1
 game with a **DSB** — a Z80 driving an MPEG-1 Layer II player with 4 MB of
 music, listening to what the sound 68000 transmits. Its effects come from the
 normal board; its *music*, including the theme 55 s into attract, comes from
@@ -70,17 +72,17 @@ each with the instrument that produced it and what it corrected.
 Six Model 1 titles, all packed by `tools/gen_mra.py` and verified byte-for-byte
 against an independently written packer with `make verify_mra`.
 
-**All six boot on hardware** as of 2026-09-16. Booting is the floor, not the
+**All six play on hardware** as of 2026-10-30 (Ben, board tests); every game runs at the correct frame rate. Booting is the floor, not the
 goal -- what is wrong in each is below, and `docs/HANDOFF.md` carries the detail.
 
 | Game | On hardware | In MAME (the oracle) |
 |---|---|---|
-| Virtua Racing | boots, plays, 2D and 3D, with sound | yes |
-| Virtua Formula | boots, plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
-| Virtua Fighter | boots, has sound and reads its controls, but is **not playable** — the fighting arena is the wrong size during a match; attract and character select are correct | yes |
-| Sega NetMerc | boots, but **needs the model1io2 I/O board** (below); audio is tiny, high-pitched and at the wrong rate, and the 3D draws over the 2D HUD | reaches its title screen |
-| Star Wars Arcade | **boots and plays**, with sound and its own input map, as of 2026-09-16 — but its **attract screen is wrong**: the title logo never appears (command 0x02 direct polygons, unimplemented); the Star Destroyer drew only partly as white slivers and a ship was missing from the intro (both fixed in simulation on `vf-swa-geo`, the display lists' upper halves), and its music board (the DSB) is built on `swa-sound`; neither is yet tried on hardware | yes |
-| Wing War | **did not run** before 2026-10-29: the V60 could not execute the routines the game copies into RAM, and it had the wrong I/O board. Both fixed on branch `wingwar-boot`: reaches its 3D attract on the bench (the sky is grey, not MAME's cyan); **not yet tried on hardware** | yes |
+| Virtua Racing | plays, 2D and 3D, with sound; the attract freeze is fixed | yes |
+| Virtua Formula | plays, 2D and 3D, with sound; a Virtua Racing clone | yes |
+| Virtua Fighter | plays: the arena is the right size and full matches work (a V60 multiply-to-memory fault) | yes |
+| Sega NetMerc | plays: camera, gun and layering right (head pose, stick, default NVRAM); **look around with the left stick, aim with the right** (OSD `NetMerc head look`: Left stick, Left stick Y inverted, Off). Nearly silent - one sample ROM is a bad dump in every set | reaches its title screen |
+| Star Wars Arcade | plays; ships complete, the music board (DSB) plays, the opening crawl scrolls and the Death Star stays | yes |
+| Wing War | plays, for the first time: code run from RAM, its own I/O board (`model1io2.zip`), the sky from polygon RAM | yes |
 
 **15 kHz and wheels.** The OSD's `Video` puts the picture out at 15 kHz
 interlaced through a scan converter (the Model 2 core's, retrorepair's design),

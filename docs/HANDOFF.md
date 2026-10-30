@@ -4,7 +4,7 @@
 the hold on an unfinished list), Ben 2026-10-29:** Star Wars' crawl is good
 and the Death Star no longer disappears; VF, VR, Wing War and NetMerc
 unchanged and good; **every game runs at the correct frame rate.**
-- **NetMerc: head look on the left stick - NEEDED FOR THIS RELEASE.** The
+- **NetMerc head look on the left stick: DONE, on the board (Ben, 2026-10-30, rbf 2d054e87): "all good"; VR, VF and Wing War controls checked on the same build ("all working well"). Merged into main.** Was: The
   head pose is fixed facing forward; Ben wants the left stick to look around
   (the cabinet's headset), the gun on the right stick.
   **Built on `netmerc-look` (2026-10-30), fitted, not on the board yet** -
