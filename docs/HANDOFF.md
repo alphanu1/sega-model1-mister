@@ -1,3 +1,16 @@
+# RELEASED 2026-10-30: Model1_20261030 (main 9136c4e, seed 5)
+
+`releases/Model1_20261030.rbf`, md5 6037b8b7ab97b7adee3c2ee653b479d6: every
+clock positive on setup and hold, HDMI included (clk_sys +0.463, clk_3d
++0.556, clk_cpu +5.901, HDMI +0.512); 38,683 ALM, 548 M10K, 59 DSP;
+BUILD_DATE 261030. Board-tested by Ben on all six games before release.
+`releases/mra/` holds the twelve MRAs (the six parent sets, each with its
+[15kHz CRT] version); the clones (Wing War US/Japan/R360, Star Wars Japan) are
+not shipped, untested. Replaces Model1_20260917; the old Model1_MiSTer.zip is
+gone. releases/README.md rewritten for the release.
+
+---
+
 # TODO / KNOWN ISSUES FOR THE NEXT RELEASE NOTES (Ben, 2026-10-29)
 
 **Board test of `swa-crawl` (rbf 072664af: main 115c719 + the TGP port +

@@ -1,179 +1,152 @@
 # Sega Model 1 — releases
 
+**All six Model 1 games play**, at full speed: Virtua Racing, Virtua Formula,
+Virtua Fighter, Star Wars Arcade, Wing War and Sega NetMerc.
+
 Copy to the SD card:
 
 | from | to |
 |---|---|
-| `Model1_20260917.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
-| `Virtua Racing.mra` | `/media/fat/_Arcade/` |
-| `Virtua Formula.mra` | `/media/fat/_Arcade/` |
-| `Star Wars Arcade.mra` | `/media/fat/_Arcade/` |
+| `Model1_20261030.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
+| the MRAs, from `mra/` | `/media/fat/_Arcade/` (or a folder inside it, such as `_Arcade/_Model1/`) |
 
-**One core, deliberately.** Earlier releases shipped a fallback alongside the
-current build; that only ever made it possible to run the wrong one. If you need
-an older build it is in the git history of this repository.
+`mra/` has twelve MRAs: one per game, and a `[15kHz CRT]` version of each that
+starts the game at 15 kHz for a CRT.
 
-ROMs are supplied by you and must be in `/media/fat/games/mame/` as the MRA
+**One core, deliberately.** If you need an older build it is in the git
+history of this repository.
+
+ROMs are supplied by you and go in `/media/fat/games/mame/`, named as the MRA
 names them. Nothing here contains ROM data.
 
-**You need the I/O board's firmware as well as the game.** It is a separate BIOS
-set, not part of any game zip:
+## ROMs
 
-| zip | why |
+All sets are MAME's.
+
+| zip | for |
 |---|---|
-| `vr.zip` | Virtua Racing: the game, its coprocessor microcode, its sound program and PCM samples, and `93c45.bin` — the I/O board's settings EEPROM |
-| `vformula.zip` | Virtua Formula. A Virtua Racing CLONE, so a split set holds only the six parts that differ and the rest come from `vr.zip`; a merged set carries everything itself |
-| `swa.zip` | Star Wars Arcade |
-| `model1io.zip` **or** `daytona93.zip` | `epr-14869.25`, the I/O board's Z80 firmware |
+| `vr.zip` | Virtua Racing |
+| `vformula.zip` | Virtua Formula. A Virtua Racing clone: with a split set you also need `vr.zip` |
+| `vf.zip` | Virtua Fighter |
+| `swa.zip` | Star Wars Arcade, including its music board's ROMs (`epr-16471.2`, `mpr-16514.57`, `mpr-16515.58`, all in MAME's set) |
+| `wingwar.zip` | Wing War |
+| `netmerc.zip` | Sega NetMerc, including `netmerc_nvram.bin`, the default settings that hold the gun's alignment |
+| `model1io.zip` **or** `daytona93.zip` | `epr-14869`, the I/O board's Z80 firmware, for every game except Wing War |
+| `model1io2.zip` | `epr-16891.6`, the I/O board firmware for **Wing War**, which uses a different I/O board |
 
-Either of the last two will do; the MRAs accept both. **The core runs the real
-I/O board Z80 and there is no behavioural fallback**, so without that firmware a
-game does not boot — it waits forever for a board that never answers. MAME will
-not start these games without the same file, so a complete romset already has it.
+**The core runs the real I/O board Z80 and there is no fallback**, so without
+its firmware a game does not boot: it waits forever for a board that never
+answers. MAME needs the same files, so a complete romset already has them.
 
-**Check what you are running.** `Model1_20260917.rbf` is `4b008b61b51eaad2b81bc835462cc205`, 4,647,148 bytes. If the
-core on your card does not have that md5 you are not running this build — and
-the usual reason is a second file: MiSTer resolves `<rbf>Model1</rbf>` by
-scanning for names starting `Model1` followed by `.` or `_`, and keeps the
-lexicographically greatest. `_` sorts after `.`, so a spare `Model1_old.rbf` in
-`cores/` silently wins over `Model1.rbf`. Keep exactly one, and keep fallbacks
-out of `cores/`.
+**Check what you are running.** `Model1_20261030.rbf` has the md5
+`6037b8b7ab97b7adee3c2ee653b479d6`. If yours doesn't match, the usual reason is
+a second file: MiSTer picks the core whose name sorts last, and `_` sorts after
+`.`, so a spare `Model1_old.rbf` in `cores/` quietly wins over `Model1.rbf`.
+Keep exactly one, and keep backups out of `cores/`.
 
-**SDRAM:** a **128 MB** module. The core addresses 64 MB of it — the packed game
-image is ~25 MB and the sound regions sit above 32 MB. It has only ever been run
-on 128 MB, so that is the only size that can be claimed.
+**SDRAM:** a **128 MB** module. That's the only size it has been run on.
 
-## What works
+## New in `Model1_20261030`
 
-**Virtua Racing, Virtua Formula and Star Wars Arcade.** All three boot, run and
-read their controls. The 2D layers, the coprocessor, and the 3D geometry and
-rasteriser are all running.
+**Games**
 
-Virtua Formula is the same game on the linked-cabinet F1 board and is a Virtua
-Racing clone in MAME: only the program ROMs, the two boot ROMs and one banked
-pair differ.
+- **Wing War boots and plays, for the first time.** The game copies small
+  routines into RAM and runs them there, which the core couldn't do, and it
+  uses a different I/O board from the other games (MAME's `model1io2`), now
+  built. Its sky is back too: it's a 3D model the game uploads at boot, which
+  the core never stored.
+- **Virtua Fighter plays properly.** The arena is the right size, so full
+  matches work. A CPU multiply into memory never wrote its result back.
+- **Sega NetMerc works in game.** The camera, the gun and its alignment, and
+  the 3D layering are right: the core now gives the game the headset's
+  starting position, the gun's stick and its saved calibration.
+  **Look around with the left stick, aim with the right** (see *OSD* below).
+- **Star Wars Arcade:**
+  - the ships are complete: half of the colour data was being dropped;
+  - **the music board is in**: Star Wars' second sound board, a Z80 and an
+    MPEG audio player, now plays the music;
+  - the opening crawl scrolls properly and the Death Star stays put.
+- **Virtua Racing's attract freeze is fixed.** The same CPU bug as Virtua
+  Fighter.
 
-**Star Wars Arcade is new in this build, and it plays** — but **its attract
-sequence does not draw correctly**. Read the entry below before deciding whether
-it is broken for you; it is a known gap, not damage to your setup.
+**Picture**
 
-It had never loaded at all before: its reset vector jumps into a region of the
-address map that every other shipped game leaves empty, and the core decoded
-that region as unpopulated. It has its own input map — stick to aim,
-Fire/Thumb/Button 3 on A/B/X, and a second pad drives the gunner seat.
+- The 3D is drawn whole into DDR3 before it is shown, so the late 3D bands are
+  gone.
+- Tile overruns are fixed.
+- The thin lines through ships and mountains are gone: rows were lost at the
+  edges of the 3D drawing bands.
+- If a game hasn't finished its 3D in time, the last frame stays up instead of
+  an empty one, with no added lag.
 
-Every MRA here is verified byte for byte against an independently written packer
-— the MRA is expanded exactly as MiSTer expands it and diffed against a separate
-implementation of the same layout.
+**Sound**
 
-**Sound works in all three**, in attract and in play: the sound PCB's 68000, its
-YM3438 and both MultiPCM channels, confirmed on hardware.
+- The sample chips now have proper volume envelopes, 12-bit samples and
+  smoothing, so notes fade out instead of cutting off, and the harsh hiss is
+  gone. Every game benefits.
+- The sound link runs at the real arcade speed.
 
-One thing that is correct but looks wrong: **Virtua Racing's attract mode is
-silent on the real cabinet too.** A quiet attract screen is not a fault. Coin up
-and the music and effects are there.
+**Speed and space**
+
+- The geometry coprocessor is about twice as fast, ported from the Sega Model 2
+  core.
+- About 6,000 ALMs saved, and some polygon data moved to DDR3, which made room
+  for all of the above.
+
+**Other**
+
+- `Analog control` wheel modes for the racers.
+- 15 kHz CRT MRAs for every game. Not yet tested on a CRT: reports welcome.
+
+## OSD
+
+| setting | what it does |
+|---|---|
+| `Video timing` | `Original 24kHz` or `Scandoubled` |
+| `Video` | `Native 24kHz` or `15kHz interlaced` (fixed on in the `[15kHz CRT]` MRAs), with `15kHz lines` and `15kHz pairing` |
+| `Pedals` | swaps throttle and brake, for pads whose axis runs the other way |
+| `Analog control` | `Standard`, `Wheel A` (each pedal on the up half of an axis) or `Wheel B` (each pedal on its full travel) |
+| `Stick X axis` / `Stick Y axis` | invert the aim (Star Wars, NetMerc's gun) |
+| `Star Wars music volume` | `Firmware` (the game's own levels and fades, the default) or `MAME` |
+| `NetMerc head look` | `Left stick` (default): look around with the left stick, aim with the right. `Left stick Y inv` flips up and down. `Off`: a fixed forward view, with both sticks on the gun |
+| `Test switch` / `Service switch` | the cabinet's switches, for the games' own test menus |
+
+The games are configured in their own test menus, so there is no DIP menu.
 
 ## Controls
 
-| | Virtua Racing / Formula | Star Wars Arcade |
-|---|---|---|
-| Steer / aim | left stick, or d-pad | either stick, or d-pad |
-| Accelerate | R2, or right stick up | — |
-| Brake | L2, or right stick down | — |
-| Buttons | VR1–VR4 on A, B, X, Y | Fire / Thumb / Button 3 on A, B, X |
-| Shift | R1 / L1, or d-pad up / down | — |
-| Start | Start | Start (pad 2 Start joins as gunner) |
-| Coin | Select | Select |
+| | Virtua Racing / Formula | Virtua Fighter | Star Wars Arcade | Wing War | NetMerc |
+|---|---|---|---|---|---|
+| Move | left stick or d-pad: steer | d-pad | either stick or d-pad: aim | stick: fly | left stick: look; right stick: aim |
+| Buttons | Accelerate R2, Brake L2, Shift R1/L1, VR1-VR4 on A/B/X/Y | Punch, Kick, Guard on A, B, X | Fire, Thumb, Button 3 on A, B, X | Machine Gun, Missile, Smoke on A, B, X; View 1-4 on L1, R1, L2, R2 | Trigger and Thumb: set them with the OSD's button mapping |
+| Start / Coin | Start / Select | Start / Select | Start / Select (pad 2 Start joins as gunner) | Start / Select | Start / Select |
 
-`Pedals` in the OSD swaps throttle and brake, because both sit on the right
-stick's Y axis and pad axis polarity is not standardised — MiSTer has no
-analogue trigger input, so a pad's LT/RT cannot be read as pedals at all. The
-buttons stay live alongside, and the larger of the two wins.
+Service, Test and Coin 2 are mappable and unbound by default.
 
-`Stick X axis` and `Stick Y axis` in the OSD invert Star Wars' aim if either
-direction feels backwards.
+## Known issues
 
-Service, Test and Coin 2 are mappable and unbound by default. The games are
-configured through their own test menus, which is why there is no DIP menu.
+- Small seams in Star Wars Arcade, Virtua Fighter and Virtua Racing (on Virtua
+  Racing, very occasionally a sliver of road with the grass showing through).
+- Wing War: the photo screens fill in from left to right, there's a small
+  glitch on the VR buttons screen, and some polygon colours differ from MAME's.
+- **NetMerc is nearly silent.** One of its sample ROMs, `mpr-18134`, is a bad
+  dump (all `0xFF`) in every set going, MAME's included, so most of its sound
+  isn't there to play. Its ground is also a little darker than it should be,
+  and its button names are still Virtua Racing's.
+- The Wing War clones (US, Japan, R360) and Star Wars Arcade (Japan) are not
+  shipped: they're untested.
 
-## Not finished, as of `Model1_20260917.rbf`
-
-This list describes the RBF named above. Every entry is removed in the same
-change as the RBF that fixes it, so if an item is still here it is still true of
-the newest build in this directory. **The heading carries the RBF's name for
-exactly that reason — if they disagree, trust neither and check.**
-
-- **STAR WARS ARCADE'S ATTRACT SCREEN IS WRONG, IN TWO SEPARATE WAYS.** The
-  game boots, plays, reads its controls and has sound — but what you see before
-  you start is not what the cabinet shows.
-
-  **The Star Wars logo never appears.** After the Star Destroyer passes, the
-  yellow outlined title should fill the screen. It is drawn with a display list
-  command that supplies polygons already projected into screen space, and this
-  core walks that command and discards it — the code to emit those polygons was
-  never written. The same gap is why Virtua Fighter's knives are missing. It is
-  not a Star Wars fault and no setting will bring it back.
-
-  **The Star Destroyer draws only partly**, as thin pale slivers rather than a
-  solid shaded hull, and entirely white where the reference is shaded grey with
-  blue engine glow. **Undiagnosed.** It is *not* the quad store running out —
-  that store is not overflowing here.
-
-  **A ship is missing from the intro** as well. Undiagnosed, and possibly the
-  same direct-polygon gap as the logo.
-
-  Neither is a regression. Star Wars had never loaded at all until this build,
-  so this is the first time anyone has seen its attract screen on this core.
-
-- **STAR WARS HAS NO MUSIC, AND IT NEVER WILL ON THIS CORE.** The Star Wars
-  theme that should play over the attract sequence does not, and this is not a
-  fault in the sound you can hear elsewhere.
-
-  **Star Wars Arcade has a SECOND sound board.** Besides the 68000, YM3438 and
-  MultiPCM board that every Model 1 game carries — which this core does
-  implement, and which is what you hear — Star Wars adds a **DSB: a Z80 driving
-  an MPEG decoder with 4 MB of music data** (`mpr-16514`, `mpr-16515`). The main
-  sound board forwards commands to it. None of it is built here.
-
-  It is the only Model 1 game with one, which is why every other shipped game
-  has its music and this one does not. Effects and voices come from the normal
-  board and are present; the music is MPEG streamed off a board that does not
-  exist in this core yet.
-
-- **Scenery comes and goes on busy stretches of Virtua Racing.** The store that
-  holds transformed quads for a frame fills in display-list order and drops
-  whatever arrives once it is full — 3,072 quads, against peaks of about 3,034
-  while driving. Cars are early in the list and survive; track and scenery are
-  later and are discarded. The same corner on the same racing line looks correct
-  in attract mode and drops in play. The fix is to move the quad payload to
-  SDRAM; on-chip memory is 551 of 553 blocks and nothing further fits.
-
-- **The 2D tile fetch can overrun.** When it does, that scanline is displayed
-  again rather than updated. Deliberate and stable — the alternative tears every
-  following line — but it is not correct.
-
-- **Three games are not shipped, and two of them cannot be.** Virtua Fighter
-  boots, has sound and reads its controls, but **is not playable**: the
-  fighting arena is the wrong size during a match, which makes a real fight
-  unplayable even though attract and character select are correct. Two display
-  list commands are parsed and discarded and either could be the cause — the
-  polygon RAM upload, which has no consumer because there is no polygon RAM in
-  the core, and direct already-projected polygons. It is a candidate for a
-  later release, not this one. **Wing War and
-  Sega NetMerc use a different I/O board** — MAME gives both `SEGA_MODEL1IO2`,
-  a different device rather than different firmware — and this core implements
-  only the first board, so no control reaches either game however it is mapped.
-  That board is not built. See `docs/io-board.md` in the source repository.
+Please report anything else you find, with the game and where.
 
 ## Credits
 
 The V60 implementation is **[meathax](https://github.com/meathax)**'s, from the
 [s32](https://github.com/meathax/s32) Sega System 32 project. The sound board's
 68000 is **fx68k**, by Jorge Cwik (ijor), and its YM3438 is **jt12**, by Jose
-Tejada (jotego). The Z80 is **T80**, originally by Daniel Wallner. The framework
-is **MiSTer-devel**'s. The hardware behaviour was verified throughout against
-**MAME**, whose Model 1 driver and MB86233 coprocessor model are the reference
-this core is checked against — the coprocessor is fuzzed per opcode against it
-and the V60's instruction stream is diffed against its tracer from reset.
+Tejada (jotego). The Z80 is **T80**, originally by Daniel Wallner. The 15 kHz
+scan converter is retrorepair's design, from the Sega Model 2 core. The
+framework is **MiSTer-devel**'s. The hardware behaviour was verified throughout
+against **MAME**, whose Model 1 driver, MB86233 coprocessor model and Star
+Wars music board (`dsbz80`) are the references this core is checked against.
 
 GPL-3.0-or-later. Full detail in `THIRD-PARTY.md` in the source repository.
