@@ -20,6 +20,132 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-10-30 — NETMERC'S HEAD LOOK: THE POSE IS YAW AT WORD 3 AND PITCH AT WORD 5, RADIANS x 8192, AND THE LEFT STICK NOW DRIVES IT
+
+Branch `netmerc-look`, on `swa-crawl` (3763abd). Ben, for the release: the
+camera on the left stick (the cabinet's headset), the gun on the right.
+
+### The pose format, measured in MAME
+
+MAME 0.289, `netmerc` from its default NVRAM (a fresh `-nvram_directory` each
+run, so `netmerc_nvram.bin` loads), headless (`-video none -sound none`), coin
+at frame 600 and the trigger pulsed until play. From frame 2200 a Lua frame
+notifier writes all twelve bytes every frame through the V60's view of the
+DPRAM (`0xc00100 + 2*byte`, low byte at the even index), alternating 30
+frames of MAME's forward pose with 30 of one word changed, a snapshot at the
+end of each. Scripts: `build/look/posetest.lua`, `build/look/step.lua`,
+`build/look/run.sh` in the worktree; contact sheets `build/mont_b1.png`
+(every word +-4096, yaw and pitch +-8192), `build/mont_combo2.png` (yaw with
+pitch), `build/mont_step.png` (a step).
+
+| word | DPRAM | forward | changing it | sign |
+|---|---|---|---|---|
+| 0-2 | 0x80-0x85 | 0, 0, 0 | moves the eye against the body: the gun and hands shift and grow or shrink | read and used |
+| **3** | 0x86-0x87 | 12868 | **yaw**: the body-fixed gun slides to one edge, the scenery turns | **+ looks RIGHT** |
+| 4 | 0x88-0x89 | 25736 | roll: the horizon tilts | |
+| **5** | 0x8a-0x8b | 12868 | **pitch**: the platform and legs come into view, or the sky | **+ looks DOWN** |
+
+- **Units are radians x 8192 (Q3.13).** 12868 = pi/2 x 8192 and 25736 = pi x
+  8192 to the integer, which is what MAME's "12868 ≈ 90°" comment means; it is
+  not 65536 to the circle (that would make 12868 70.7 degrees). +4096 (28.6
+  degrees) of yaw puts the gun at the screen edge, +8192 (57) takes it off.
+- **Yaw and pitch combine as a head turns.** With pitch -2048 and yaw +-4096
+  or +-8192 the horizon stays level - no roll is induced - so word 3 is a yaw
+  taken before the pitch, in the head's own frame.
+- **No smoothing.** A step of +8192 yaw shows complete on screen 4 frames
+  later and nothing in between (the game reads every second frame; then the
+  list and the frame). A stick can drive it directly.
+- **The position words are read and used** (the eye moves against the body),
+  so the core keeps them at 0, as MAME's seed has them. Their axes and units
+  were not pinned down: nothing on this cabinet moves them.
+- **The read**: a read tap on 0xc00100-0xc00117 in play: every second frame,
+  all twelve bytes in ascending order, 0x80 first, low byte before high, from
+  PCs 0xfc250b-0xfc258f (12 bytes of code apart, one instruction each), the
+  whole block within ~6 us, ~15.9 ms after MAME's frame notifier.
+- MACHINE_NOT_WORKING: nothing odd in this area - the pose is applied
+  exactly as written, and +-90 degrees of yaw and +-45 of pitch draw
+  cleanly. The scene moves on between snapshots (frame 2229 is still the
+  tunnel mouth, 2259 the canyon), so every comparison is against the
+  forward frame 30 frames earlier in the same run, not across runs.
+
+### What the core does now
+
+`rtl/io/m1_hmd_pose.sv`, instantiated in `m1_main` where the reset seeder was:
+
+- **Absolute look, self-centring.** Released is MAME's forward pose. The
+  left stick's +-15-count dead band (the core's other sticks use the same) is
+  subtracted, the remaining +-112 counts scaled: yaw x115 (+-12,880, +-90.1
+  degrees), pitch x57 (+-6,384, +-44.6). Ninety degrees of yaw turns the view
+  fully sideways and 45 of pitch looks down onto the platform or up into
+  open sky; both look right in MAME and a wider pitch only shows sky or
+  floor. Stick right looks right, stick up looks up.
+- **O[22:21] "NetMerc head look"**: Left stick (default), Left stick Y inv,
+  Off. Off is the old behaviour - pose fixed forward, both sticks aim the
+  gun - for a pad with one stick. Bits 21-22 were free (O[20] was the
+  highest used; 1, 4, 5 are also free).
+- **The gun is on the right stick** (Model1.sv `nm_*`), with the d-pad still
+  at full deflection and O[12]/O[13] still flipping its axes. Off restores
+  Wing War's both-sticks arbitration unchanged.
+- **The write**: twelve bytes through the I/O side's byte port, every 2^15
+  cycles (1.1 ms) and continuously while the V60 and the Z80 are held in
+  reset (the old seed). Never in a Z80 write cycle (z_we is a one-cycle pulse
+  with no retry), a byte held until io_ack when a V60 write takes the port.
+- **No word is read half-written.** The port is a byte wide, so the
+  guarantee is timing: a burst starts only when no block read is in progress
+  (`busy`: set by a V60 read of 0x80-0x8a, cleared by its read of 0x8b, or
+  2^20 cycles after a block abandoned part-way), writes ascending one byte a
+  cycle, never in a cycle with one of the twelve on the V60's bus, and is
+  abandoned if a read arrives before byte 0 is in. Each burst writes one
+  snapshot of the pose.
+- **`io_raddr` is now `z_addr`**, the Z80's own address, not the port's
+  muxed write address: only the reset seeder moved that, while the Z80 was
+  held, but the pose writer now uses the port in play.
+- The stick and the mode cross from clk_sys: two flops, and the stick is
+  taken only when two consecutive samples agree.
+
+### Proof
+
+`make test_hmd_pose` (in `make test`), built twice:
+
+    hmd_pose[tick=15,to=20]: checks=262276 fails=0 map=262144 blocks=131 known=131 split=40 abandoned=2 bursts=321 writes=3852 retries=98 max_gap=992574 max_block=974592
+    hmd_pose[tick=6,to=9]: checks=271786 fails=0 map=262144 blocks=9641 known=8695 split=2683 abandoned=208 bursts=43815 writes=525780 retries=8791 max_gap=1410 max_block=802
+
+- the mapping for all 65,536 stick values in each of the four modes against
+  a separately written reference;
+- a model V60 reading the block as the game does (bytes held 2-5 cycles,
+  4-40 apart, 1 in 40 gaps an interrupt of up to half the timeout, 2% of
+  blocks abandoned), with the read captured at the request's FIRST edge, as
+  `m1_main` does (B_IDLE -> B_LOCAL registers dpram_q there), and a
+  same-edge write read as old data; every complete block must come from one
+  burst, and every byte be stable for its whole read;
+- random Z80 pulses and V60 writes on the port; positions 0, roll 25736,
+  yaw/pitch equal to the reference whenever the stick had settled;
+- three mutations each fail it: no bus gate (TORN, "byte 0 changed during
+  its read"), no `busy` (TORN), no Z80 yield ("writer drove the port in a Z80
+  cycle").
+
+`tb_m1_frame`, netmerc, 40 M cycles, stick held at 0x8040 (X +64, Y -128):
+DPRAM pose `0000 0000 0000 4847 6488 1954` - yaw 18,503 and pitch 6,484, the
+reference exactly - and all 13 dumped frames byte-identical to swa-crawl's
+(attract does not read the pose). The window does not reach play.
+
+Fit, seed 5: 38,699 ALM, 548 M10K, 59 DSP; clk_3d +0.531, clk_sys +0.211,
+clk_cpu +5.241, pll_hdmi +0.053, hold +0.238. The module is 101 ALM.
+
+### Wrong turns
+
+- The writer's first gate was only "no block read in progress". The bench
+  found the hole at once: a burst decided the cycle before the V60's request
+  rises writes byte 0 on the very edge the RAM captures byte 0 for the V60
+  (`m1_main` registers dpram_q on the request's first edge), so the V60 gets
+  the old low byte and, a read later, the new high byte. Never writing in a
+  cycle with one of the twelve on the bus, and abandoning a burst whose
+  byte 0 the read beat, closes it; the mutation that removes it fails.
+- Reading MAME's "12868 ≈ 90°" as 65536 to the circle gives 70.7 degrees;
+  the numbers are pi/2 and pi in Q3.13 exactly.
+
+---
+
 ## 2026-10-29 — THE STAR WARS CRAWL VANISHES BECAUSE ITS LIST IS WALKED BEFORE THE GAME HAS PUBLISHED IT; THE TGP WAS HALF THE REASON
 
 Branch `swa-crawl`, on `main` (115c719). Ben: in Star Wars' attract the
@@ -667,6 +793,8 @@ in the worktree (left to right as the table).
   that differs is 0x0e, measured harmless.
 - MiSTer has no head tracker, so the pose is fixed forward; looking round with
   a second stick would be a feature, not a fix.
+  **Done 2026-10-30** (`netmerc-look`): the left stick turns the head, the
+  gun is on the right stick - see "NetMerc's head look" above.
 - The TGP's one denormal (`8000006c` -> 0) is the open denormal question
   (README); harmless here.
 - Terrain shading against MAME (netmerc-layers' "darker") was not looked at.

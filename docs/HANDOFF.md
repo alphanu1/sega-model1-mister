@@ -7,6 +7,8 @@ unchanged and good; **every game runs at the correct frame rate.**
 - **NetMerc: head look on the left stick - NEEDED FOR THIS RELEASE.** The
   head pose is fixed facing forward; Ben wants the left stick to look around
   (the cabinet's headset), the gun on the right stick.
+  **Built on `netmerc-look` (2026-10-30), fitted, not on the board yet** -
+  see the section below.
 - **AFTER THIS RELEASE - seams:** Star Wars, Virtua Fighter and Virtua Racing
   still show small seams (VR: a small piece of road missing with the grass
   behind, which looks like a seam, not an overrun). Not for this release.
@@ -85,6 +87,112 @@ main on his word; no release yet. 15 kHz output not tested.
   is byte-identical. Untested on the board: no swaj.zip here (verify_mra
   against swa.zip stops only at the Japan program, epr-16468.14).
 - **15 kHz MRAs:** untested on this build.
+
+---
+
+# 2026-10-30: NETMERC'S HEAD LOOK ON THE LEFT STICK, THE GUN ON THE RIGHT
+
+Branch **`netmerc-look`** (local, not pushed), on `swa-crawl` (3763abd, the
+build Ben approved). `findings.md` 2026-10-30 "NetMerc's head look" has the
+measurements.
+
+- **The pose format, measured in MAME** (headless, the default NVRAM, each
+  word poked during play and snapshotted): word 3 (0x86-0x87) is **yaw, +
+  looks right**; word 5 (0x8a-0x8b) is **pitch, + looks down**; word 4 is roll;
+  words 0-2 are the head's position (read and used, kept at 0). Units are
+  **radians x 8192**: 12868 = pi/2, 25736 = pi - MAME's forward seed. No
+  smoothing in the game (a step shows complete 4 frames later); yaw with
+  pitch keeps the horizon level. The game reads the twelve bytes every second
+  frame, ascending, low byte first, within ~6 us.
+- **`rtl/io/m1_hmd_pose.sv`** (new, in `m1_main` where the reset seeder was):
+  left stick -> absolute head pose, self-centring. +-15-count dead band
+  subtracted, then yaw x115 (+-90 degrees) and pitch x57 (+-45). Rewrites the
+  twelve bytes every 1.1 ms through the I/O side's port, and continuously in
+  reset (the old seed). **No tearing by construction**: no burst while the V60
+  is in a block read (`busy` from its 0x80..0x8b reads), no write in a cycle
+  with one of the twelve on the V60's bus, a burst abandoned if the read
+  comes before byte 0, ascending one byte a cycle, one snapshot per burst; it
+  yields every Z80 write cycle and retries on a V60 write.
+- **OSD O[22:21] "NetMerc head look"**: Left stick (default) / Left stick Y
+  inv / Off. Off = the old behaviour (pose forward, both sticks on the gun) for
+  a one-stick pad. No other OSD bit moved; 21-22 were free.
+- **The gun** (Model1.sv `nm_*`): right stick, d-pad still full deflection,
+  O[12]/O[13] still flip it. Game id 4 only; no other game's path changed.
+- `io_raddr` is now `z_addr` (the Z80 reads at its own address, not the
+  shared port's muxed one), so the pose writer cannot move the firmware's
+  read in play.
+- **MRAs unchanged.**
+
+## Proof
+
+- `make test_hmd_pose` (now in `make test`): every stick value in every mode
+  against a separate reference; a model V60 reading the block as the game
+  does (interrupt splits, abandoned blocks, read captured on the request's
+  first edge as m1_main does); every complete block from one burst; port
+  rules. Two builds (tick/timeout 2^15/2^20 and 2^6/2^9), fails=0. Three
+  mutations (no bus gate, no busy, no Z80 yield) each fail it.
+- `make test`: all pass, including the two new lines (see findings).
+  `make lint_top`: only the two width warnings swa-crawl already has
+  (m2_sound_board.sv:206, m1_integrated.sv dbg_hud_obj) - none new.
+  `make elab`: clean.
+- `tb_m1_frame`, netmerc, 40 M cycles (~30 frames after the download), stick
+  held at 0x8040 (X +64, Y -128): DPRAM pose `0000 0000 0000 4847 6488 1954`
+  = yaw 18,503 and pitch 6,484, exactly the reference. **All 13 dumped frames
+  byte-identical to swa-crawl's** run of the same length (attract does not
+  read the pose), and every FRAME: summary line identical but the bench's
+  count of I/O-port writes during reset (12/13 of the old seeder's rate: one
+  idle cycle between bursts). The bench does not reach play in that window
+  (play is ~1,650 frames); the game's own read in play is the board's
+  question.
+
+## Fit (Quartus 17.0, one seed per Ben, under the fit lock)
+
+| build | commit | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold |
+|---|---|---|---|---|---|---|---|---|---|
+| swa-crawl s5 (base) | f3ed360 | 38,640 | 548 | 57 | +0.732 | +0.830 | +5.003 | +0.142 | +0.244 |
+| **netmerc-look s5** | 7fa821d | **38,699** | **548** | **59** | **+0.531** | **+0.211** | **+5.241** | **+0.053** | **+0.238** |
+
+Every clock closes (h2f_user0 +1.625; hold worst +0.238 on pll_audio, ours
++0.243/+0.250/+0.256). `m1_hmd_pose` is 101 ALM and 158 registers in the fit.
+
+**For the board: `build/wt-look/build/Model1_netmercLook_seed5_38699.rbf`**,
+md5 `2d054e87f0fe4d3bb5e8a5b448215e67`; reports in
+`build/wt-look/build/look_s5_reports/`.
+
+## What to check on the board
+
+1. **NetMerc in play, sticks released**: as on swa-crawl - looking forward,
+   gun upright in both hands. Nothing should have moved.
+2. **Left stick**: right looks right, up looks up, released snaps back to
+   forward; full deflection is 90 degrees sideways / 45 up or down. Any
+   jitter or a one-frame jump while turning would be a torn word - report
+   it, the design says it cannot happen.
+3. **Right stick aims the gun**, the d-pad too; the left stick must not move
+   the gun. If an axis is reversed, O[12]/O[13] still flip the gun.
+4. **OSD "NetMerc head look"**: Left stick Y inv flips the look's up/down;
+   Off brings back the old fixed view with both sticks on the gun.
+5. Every other game: nothing in their path changed (game id 4 only); a quick
+   boot of VR is enough.
+
+## Not done / seen
+
+- The look latency is the rewrite period (1.1 ms) plus the game's own
+  two-frame read and render; no extra frame held.
+- The head-position words stay at 0; their axes and units were not pinned
+  down (a lean on the stick is not something a pad has).
+- Pitch past +-45 only shows floor or sky; yaw past 90 is reachable in the
+  format (it wraps at +-4 radians) but a stick gives no way to look back.
+- The bench did not reach play (that is ~1,650 frames, outside the rule);
+  the game's read of a moving pose in play is proven by the block bench and
+  in MAME, not in tb_m1_frame.
+- **Wrong turns:** a 13-minute frame run without `FRAME_PPM`, which is what
+  writes `build/frames/dlsel.txt` (the pose lines) - run it with
+  FRAME_PPM=10. The first version of the writer gated only on "no read in
+  progress"; the block bench showed a burst that starts the cycle before
+  the V60's request rises writes byte 0 on the same edge the RAM captures it
+  for the V60 (old byte, new high byte next): the fix is never writing in a
+  cycle with one of the twelve on the bus, and abandoning a burst whose byte
+  0 the read beat.
 
 ---
 
