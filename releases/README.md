@@ -44,7 +44,11 @@ a second file: MiSTer picks the core whose name sorts last, and `_` sorts after
 `.`, so a spare `Model1_old.rbf` in `cores/` quietly wins over `Model1.rbf`.
 Keep exactly one, and keep backups out of `cores/`.
 
-**SDRAM:** a **128 MB** module. That's the only size it has been run on.
+**SDRAM:** a **64 MB or larger** module. The core addresses 64 MB (one 32M x 16
+chip: 8,192 rows, 1,024 columns, 4 banks) and uses up to about 45 MB of it -
+Star Wars, with its music data, is the largest - so a 32 MB module is too
+small. It has been tested on a 128 MB module, which works because the core
+uses only its first 64 MB.
 
 ## New in `Model1_20261030`
 
