@@ -760,21 +760,21 @@ NVRAM_NOTE = [
 ]
 
 
-ERASED_NVRAM_NOTE = [
-    "    <!-- RAMA, the V60's battery-backed RAM, all FF: this set has no default",
-    "         image (MAME's NVRAM is DEFAULT_ALL_1). Sent so RAMA is this game's",
-    '         and not what the last game left in SDRAM; the saved settings file',
-    '         overrides it. -->',
-]
-
-
 def emit_nvram(setname, regions):
     """Index 6: the default NVRAM image, for a set whose MAME definition has an
-    "nvram" region (only netmerc); every other set sends 64 KB of FF."""
+    "nvram" region (only netmerc). Every other set sends nothing, and RAMA
+    comes up as whatever SDRAM holds.
+
+    NOT MAME's all-FF fill (DEFAULT_ALL_1), although that is what MAME starts
+    every Model 1 set from and VF boots from it there. Sent as 64 KB of FF on
+    index 6 it black-screened Virtua Fighter on the board (2026-11-05, rbf
+    ac1c72f5; the same MRA without that block boots) while Virtua Racing
+    booted. So it is a fault in this core that an all-FF RAMA reaches, not the
+    game's behaviour; until it is found, VF and the rest keep the old
+    behaviour. A saved .nvm (index 7) still overrides RAMA."""
     loads = regions.get('"nvram"')
     if not loads:
-        return ([''] + ERASED_NVRAM_NOTE + ['    <rom index="6" md5="none">',
-                '        <part repeat="65536">FF</part>', '    </rom>'])
+        return []
     out = [''] + NVRAM_NOTE + [f'    <rom index="6" zip="{zip_for(setname, 6)}" md5="none">']
     out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
     return out + ['    </rom>']

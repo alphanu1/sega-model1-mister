@@ -165,6 +165,27 @@ the same reason; here the tag is first so neither part needs a staging copy.
   one without an `nvram` region 64 KB of FF on index 6 (DEFAULT_ALL_1), so
   every set starts from its own erased parts, not the last game's.
 
+  **The index-6 FF block is WITHDRAWN (2026-11-05, same day).** On the board,
+  rbf ac1c72f5, the Virtua Fighter MRA with it black-screened; the same MRA
+  with only that block removed boots (test MRA C), as does the old MRA.
+  Virtua Racing booted with it. MAME is not the cause: model1.cpp fills RAMA
+  with FF for every set ("vf (at least) depends on default being 1-filled
+  for ranking to initialize properly"), and MAME 0.289 VF started from an
+  explicit 64 KB all-FF `nvram` file is drawing at frames 1,500 and 3,000
+  (187,440 and 170,001 of 190,464 pixels non-black). So an all-FF RAMA
+  reaches a fault in this core, not yet found. The MRAs send nothing on
+  index 6 again except NetMerc's own image, and RAMA comes up as whatever
+  SDRAM holds, as before. The erased EEPROM on index 3 stays: the same board
+  test booted with it.
+
+  What MAME's I/O firmware writes into a blank 93C46 in the first 1,200
+  frames (identical at 3,000), as the bytes MAME's `ioboard_eeprom` holds:
+  vf and vformula `45 53 41 47` ("SEGA" with each 16-bit word byte-swapped)
+  followed by about 30 small configuration words and zeros; swa `33 53 41 32`
+  ("S32A" swapped), then FF; wingwar `53 33 32 41 46 30` ("S32AF0") and a
+  block repeated at 0x44; netmerc nothing (all FF). They differ per game, and
+  none is needed: the erased part boots.
+
 ### Proof
 
 `make test_nv_save`, `sim/io/tb_m1_nv_save.sv` (new): the real

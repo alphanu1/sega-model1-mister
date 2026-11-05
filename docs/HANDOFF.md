@@ -33,6 +33,18 @@ BUILD_DATE 261105. **For the board:
 `ac1c72f5cf6f47fe8a9765bef6c39604`; reports in `build/wt-nvram/build/rc_s5_reports/`.
 It needs the MRAs from this branch's `mra/` (index 7, the new button lists).
 
+## Board, 2026-11-05: the all-FF RAMA block black-screened VF; withdrawn
+
+On the board, rbf ac1c72f5: VR booted, VF was a black screen with the new MRA. Of
+three test MRAs, the old MRA boots, the new one without the EEPROM FF block
+was not reported, the new one without the 64 KB RAMA FF block (test C) boots.
+So the index-6 FF fill is the fault. MAME fills RAMA with FF for every set and
+VF boots from it there (findings 2026-11-05, the correction in the NVRAM
+entry), so this core mishandles an all-FF RAMA somewhere: **open, not found**.
+`tools/gen_mra.py` sends nothing on index 6 again (NetMerc's image excepted);
+the regenerated VF MRA is byte-identical to test C. MRA-only: rbf ac1c72f5
+stays the release candidate, no refit.
+
 ## Not run / known
 
 - `make m1_main` fails fast_ifetch, no_fp and no_fp_injected (r1=0 after 33
@@ -62,9 +74,10 @@ Not merged, not released, not on the board. `docs/findings.md` 2026-11-05
   reset keeps what the firmware wrote. `ee_img` replaces the io2 special case:
   no index 3 and no saved image = an erased part.
 - All twenty MRAs in `mra/` regenerated (`tools/gen_mra.py`): index 7; sets
-  without MAME's images send erased ones (index 3: 128 x FF, index 6: 64 KB x
-  FF). **`releases/mra/` is NOT updated** (the release is the coordinator's);
-  its twelve files must be copied from `mra/` with the rbf, because a 65,672
+  without MAME's EEPROM image send an erased one (index 3: 128 x FF). The
+  64 KB all-FF RAMA on index 6 that stood here black-screened VF on the board
+  and is withdrawn (see the inputs-osd entry above). **`releases/mra/` is
+  NOT updated** (the release is the coordinator's); its twelve files must be copied from `mra/` with the rbf, because a 65,672
   MRA on an older rbf is ignored (index 7 goes nowhere) and an old MRA on
   this rbf cannot save (index 255).
 - MAME: VR and VF keep their test-menu settings in RAMA (3 bytes change for one

@@ -208,14 +208,6 @@
         <part repeat="2097152">00</part>
     </rom>
 
-    <!-- RAMA, the V60's battery-backed RAM, all FF: this set has no default
-         image (MAME's NVRAM is DEFAULT_ALL_1). Sent so RAMA is this game's
-         and not what the last game left in SDRAM; the saved settings file
-         overrides it. -->
-    <rom index="6" md5="none">
-        <part repeat="65536">FF</part>
-    </rom>
-
     <!-- The saved settings: "M1NVRAM1", the 93C46 (128 bytes), RAMA (64 KB).
          Sent after the defaults above, so a saved file overrides them;
          a file without the tag is ignored. OSD: Save settings (NVRAM). -->

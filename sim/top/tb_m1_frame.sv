@@ -67,6 +67,9 @@ module tb_m1_frame #(
     // The set's default RAMA (MAME's ROM_REGION "nvram"), one hex byte a line,
     // streamed on index 6 when present. Only NetMerc has one.
     parameter string  NVHEX      = "",
+    // Send index 3 even when the image is all FF: what an MRA that sends an
+    // erased part does (gen_mra.py, sets without MAME's ioboard:eeprom).
+    parameter bit     EE_FORCE   = 0,
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -3864,7 +3867,7 @@ initial begin
         if (iofw_ok) run_iofw_download();
         $display("SNDROM-AFTER-IOFW: %04h %04h",
                  device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
-        if (ee_ok)   run_ee_download();
+        if (ee_ok || EE_FORCE) run_ee_download();
         if (nv_ok)   run_nv_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");
