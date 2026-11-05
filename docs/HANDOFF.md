@@ -1,3 +1,54 @@
+# 2026-11-05, BRANCH inputs-osd (on nvram-save): THE RELEASE CANDIDATE
+
+Not merged, not released, not on the board. Three branches' work in one
+build: `nvram-save` (12f4262, below), the inputs and OSD (d9f7762), and the
+V60 FP flags fix picked from `vf-issue6` (958e272 -> 6cf471d; its Makefile
+targets and a standalone findings entry came across, its quad-log change to
+`tb_m1_raster3d.cpp` did not, because the log it extends is not on main).
+
+- **#2 buttons**: `rtl/io/m1_pad_map.sv`, a layout per game id; MRAs list only
+  real buttons. `make test_pad_map`: 600,258 comparisons with main's bytes, 0
+  differ; NetMerc deliberately differs (Thumb and MVD Holder now reachable,
+  Trigger moved from "VR4" to the first button).
+- **#7 Star Wars throttle**: `rtl/io/m1_swa_throttle.sv`, DPRAM 0x02 (measured
+  in MAME: 200 released/slow, 28 fast). Throttle Up / Down buttons, or OSD
+  `O[26]` right stick Y.
+- **#9**: `J1,...` in CONF_STR (keyboard joystick on by default).
+- **#4**: `O[25:24]` Aspect ratio, Original / Full Screen / ARC1 / ARC2.
+- OSD bits now used: 0, 2, 6, 7, 11-26 (23 is the NVRAM save, momentary).
+
+## Fit (Quartus 17.0, seed 5, aggressive routability ALWAYS, under the lock)
+
+| build | ALM | M10K | DSP | clk_3d | clk_sys | clk_cpu | pll_hdmi | hold worst |
+|---|---|---|---|---|---|---|---|---|
+| main 7168ad8 (tile-backdrop, seed 1, from its fit summary) | 38,688 | 548 | 59 | - | - | - | -0.211 | - |
+| **inputs-osd 6cf471d, seed 5** | **38,950** | **548** | **60** | **+0.283** | **+0.626** | **+6.079** | **+0.346** | **+0.202** (clk_sys) |
+
+Every clock closes on setup, hold, recovery and removal; recovery worst
++3.896 (HDMI), removal worst +0.600 (clk_3d). Synthesis against main's
+(seed-independent): ALMs needed 38,129 -> 38,390 (+261), ALUTs 57,458 ->
+57,844, registers 35,638 -> 36,014, block bits equal, DSP 59 -> 60.
+BUILD_DATE 261105. **For the board:
+`build/wt-nvram/build/Model1_rc_nvram_inputs_seed5_38950.rbf`**, md5
+`ac1c72f5cf6f47fe8a9765bef6c39604`; reports in `build/wt-nvram/build/rc_s5_reports/`.
+It needs the MRAs from this branch's `mra/` (index 7, the new button lists).
+
+## Not run / known
+
+- `make m1_main` fails fast_ifetch, no_fp and no_fp_injected (r1=0 after 33
+  cycles). **Identical on main 7168ad8**, run from a `git archive` of it, so
+  it predates this work; not investigated.
+- `make lint` stops at `mb86233_regs.sv` SYNCASYNCNET (unchanged from main);
+  every other lint line is clean. `lint_top` reports only the two width
+  warnings main already has.
+- the project rules' expected `make test` block is not in this tree (untracked); new
+  lines: `m1_nv_save[io2=0]: checks=460292 fails=0`,
+  `m1_nv_save[io2=1]: checks=230147 fails=0`,
+  `m1_pad_map: checks=600464 fails=0`, `m1_swa_throttle: checks=3723 fails=0`;
+  `m1_rom_loader` is 10,487 on main and here (the block says 10,477).
+
+---
+
 # 2026-11-05, BRANCH nvram-save (from main 7168ad8): THE GAMES' SETTINGS ARE SAVED (issues #8, #2 NVRAM)
 
 Not merged, not released, not on the board. `docs/findings.md` 2026-11-05
