@@ -54,8 +54,12 @@ static inline int pal5bit(int v) { v &= 0x1f; return (v << 3) | (v >> 2); }
 
 // The whole chain for one pixel, independent of the RTL's structure.
 long ref_wins[5] = {0,0,0,0,0};
+// Category-1 pen-0 pixels painted by the opaque pass outside window mode, and
+// how many of those are still on top at the end: the case the core dropped to
+// the backdrop. Counted so the fixture is seen to reach it.
+long ref_rect_cat1 = 0, ref_rect_cat1_shown = 0;
 static void ref_rgb(int x, int y, int* R, int* G, int* B) {
-  int pal[4], transp[4], prio[4];
+  int pal[4], transp[4], prio[4], dis[4];
   for (int L = 0; L < 4; L++) {
     // IN WINDOW MODE BOTH MAPS OF A PAIR SCROLL FROM THE EVEN MAP'S REGISTERS.
     // draw_common reads hscr/vscr before the shift and returns immediately for
@@ -72,7 +76,11 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
     uint32_t tn = tw & TILE_MASK;
     uint8_t px = ref_pixel(tn, my & 7, mx & 7);
     pal[L] = (((tw >> 7) & 0xff) << 4) | px;
-    transp[L] = (px == 0) || ((vscr >> 15) & 1);
+    transp[L] = (px == 0);
+    // draw_common's `if (vscr & 0x8000) return;`: a disabled map draws
+    // nothing in either pass, the opaque one included. In window mode the even
+    // map's register is the one tested, for both (`vscr` above already is).
+    dis[L] = (vscr >> 15) & 1;
     prio[L] = (tw >> 15) & 1;
   }
   // Window/split-scroll. `ctrl` is the PAIR's even vscr — MAME reads
@@ -120,11 +128,11 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   // that never wins a visible pixel is a layer this suite cannot test, and it now
   // fails outright rather than passing quietly.
   //
-  // Separately, and NOT the reason for the above: `cat0` treats layers 2 and 3 as
-  // opaque unconditionally — `transp[i] && i < 2` — so a layer whose vscr disable
-  // bit is set still paints. MAME's `if (vscr & 0x8000) return;` skips it before
-  // any category decision. The RTL matches this model, so the suite cannot see it.
-  // Suspected bug, unresolved, deliberately not folded into a window change.
+  // Separately: `cat0` used to treat layers 2 and 3 as opaque unconditionally
+  // with the disable bit folded into `transp`, so a disabled layer 2 or 3 still
+  // painted. MAME's `if (vscr & 0x8000) return;` skips it before any category
+  // decision. It is `dis` now, and the third fixture frame (pair 2/3 out of
+  // window mode, layer 3 disabled) is what reaches it.
   int win_off[4];
   for (int L = 0; L < 4; L++) {
     uint16_t ctrl = tile_ram[0x5004 + (L & 2)];
@@ -167,11 +175,15 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   //
   // Read as `mask ^ category`, every category-1 tile on an even tilemap was
   // suppressed wherever the bit was clear — which is where the game's text is.
+  //
+  // AND IT DOES NOT EXIST IN WINDOW MODE: that branch draws through
+  // tile_layer->draw() and never reaches draw_rect, where the mask lives.
   int mbit[4];
   for (int L = 0; L < 4; L++) {
     uint16_t m = tile_ram[((L & 2) ? 0x6800 : 0x6000) + y * 4 + (x >> 7)];
     if (L & 1) m = (uint16_t)~m;
     mbit[L] = (m >> (15 - ((x >> 3) & 15))) & 1;
+    if (tile_ram[0x5004 + (L & 2)] & 0x6000) mbit[L] = 0;
   }
 
   // Mixer: paint back to front, MAME's draw order 6,4,2,0 then 7,5,3,1.
@@ -183,14 +195,24 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   int winner = -1;
   // The mask gate is the same in both passes — it is a property of the tilemap,
   // not of the category.
+  //
+  // Outside window mode the opaque pass of 6 and 4 is draw_rect's, whose test
+  // is `srct == tpri || flags & TILEMAP_DRAW_OPAQUE`: category-1 tiles are
+  // written too, pen 0 as the tile's own colour 0. In window mode it is
+  // tile_layer->draw(), which keeps the category test under OPAQUE.
+  extern long ref_rect_cat1;
   auto cat0 = [&](int i) {
+    if (dis[i]) return;
     if (win_off[i]) return;                  // this line belongs to the partner
-    if (prio[i]) return;
+    bool rect = (i >= 2) && !(tile_ram[0x5004 + (i & 2)] & 0x6000);
+    if (prio[i] && !rect) return;
     if (mbit[i]) return;                 // this column is not drawn from map i
     if (transp[i] && i < 2) return;      // 6 and 4 are opaque, 2 and 0 are not
     idx = pal[i]; winner = i;
+    if (prio[i] && transp[i]) ref_rect_cat1++;
   };
   auto cat1 = [&](int i) {
+    if (dis[i]) return;
     if (win_off[i]) return;
     if (!prio[i] || transp[i]) return;
     if (mbit[i]) return;                 // same gate, same polarity
@@ -198,6 +220,7 @@ static void ref_rgb(int x, int y, int* R, int* G, int* B) {
   };
   cat0(3); cat0(2); cat0(1); cat0(0);
   cat1(3); cat1(2); cat1(1); cat1(0);
+  if (winner >= 0 && prio[winner] && transp[winner]) ref_rect_cat1_shown++;
   ref_wins[winner < 0 ? 4 : winner]++;
 
   uint16_t e = pal_ram[idx & 0xfff];
@@ -221,8 +244,13 @@ int main(int argc, char** argv) {
   // correctness with content the design does not claim to support would be
   // testing the wrong thing; the overrun is checked separately below.
   for (size_t i = 0; i < tile_ram.size(); i++) {
+    // 0x8aa0 and 0x8b41 are category 1 in palette banks 0x15 and 0x16. A
+    // category-1 tile in bank 0
+    // would make the opaque pass's pen 0 index 0 - the backdrop's own entry -
+    // and the suite could not tell drawing it from dropping it (it could not:
+    // tying the mixer's all_cat off passed every check until this changed).
     static const uint16_t font[8] = {0x0020, 0x0041, 0x0042, 0x0043,
-                                     0x8020, 0x8041, 0x0000, 0x00ff};
+                                     0x8aa0, 0x8b41, 0x0000, 0x00ff};
     // Vary by tile ROW, not by column. Indexing with (i & 7) changes the tile
     // every column, which is the all-distinct worst case wearing a font's
     // clothing — 62 fetches per layer per line, over budget, exactly what this
@@ -287,13 +315,13 @@ int main(int argc, char** argv) {
 
   long checks = 0, fails = 0;
 
-  // Frame 0 warms the line buffers; frame 1 and 2 are checked.
-  printf("test: two full frames, every visible pixel against the reference\n");
+  // Frame 0 warms the line buffers; frames 1, 2 and 3 are checked.
+  printf("test: three full frames, every visible pixel against the reference\n");
   int x = 0, y = 0;
   long captured = 0, frames = 0;
   bool prev_vb = false;
 
-  for (long n = 0; n < (long)H_TOTAL * V_TOTAL * CE_DIV * 3 + 4000; n++) {
+  for (long n = 0; n < (long)H_TOTAL * V_TOTAL * CE_DIV * 4 + 4000; n++) {
     tick();
     if (!d->ce_pix) continue;
 
@@ -312,9 +340,16 @@ int main(int argc, char** argv) {
       // which splits vertically at v and draws both maps, and modes 2/3, which
       // split horizontally and are not implemented. ctrl is the pair's even vscr,
       // so this moves layer 2's scroll with it, exactly as the hardware does.
-      tile_ram[0x5006] = (frames & 1)
-                       ? (uint16_t)(0x2000 | (uint16_t)(-160 & 0x1ff))   // mode 1
-                       : (uint16_t)(0x4000 | (uint16_t)(-160 & 0x1ff));  // mode 2
+      //
+      // The third is pair 2/3 OUT of window mode, where the opaque pass is
+      // draw_rect's: category-1 tiles' pen 0 drawn as their own colour, the
+      // row mask applied, and layer 3's disable bit (0x5007 = 0x8000) obeyed.
+      static const uint16_t CTRL23[3] = {
+        (uint16_t)(0x4000 | (uint16_t)(-160 & 0x1ff)),   // mode 2
+        (uint16_t)(0x2000 | (uint16_t)(-160 & 0x1ff)),   // mode 1
+        (uint16_t)0x0101,                                 // not window
+      };
+      tile_ram[0x5006] = CTRL23[frames % 3];
     }
     prev_vb = d->vid_vb;
 
@@ -336,7 +371,7 @@ int main(int argc, char** argv) {
     } else if (x) {
       x = 0; y++;
     }
-    if (frames >= 3) break;
+    if (frames >= 4) break;
   }
 
   printf("  %ld pixels compared over %ld frames, worst-layer fetches %u\n",
@@ -359,6 +394,13 @@ int main(int argc, char** argv) {
              "at all\n", L);
       fails++;
     }
+  printf("  opaque-pass category-1 pen 0: painted %ld, shown %ld\n",
+         ref_rect_cat1, ref_rect_cat1_shown);
+  if (ref_rect_cat1_shown == 0) {
+    printf("  FAIL: no category-1 pen-0 pixel of tilemap 2/3 is shown - the "
+           "fixture does not reach draw_rect's opaque pass\n");
+    fails++;
+  }
   printf("m1_video: checks=%ld fails=%ld\n", checks, fails);
   delete d;
   return fails ? 1 : 0;

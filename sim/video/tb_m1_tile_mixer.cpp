@@ -18,8 +18,13 @@
 // worth anything.
 //
 // Exhaustive: the mixer's whole input space that affects the decision is
-// 4 tilemaps x (prio, transparent, disabled, masked) plus poly_valid = 2^17
-// states, so every one is enumerated rather than sampled.
+// 4 tilemaps x (prio, transparent, disabled, masked, all_cat) plus poly_valid
+// = 2^21 states, so every one is enumerated rather than sampled.
+//
+// `all_cat` is draw_rect's `srct == tpri || flags & TILEMAP_DRAW_OPAQUE`:
+// outside window mode tilemaps 2/3's opaque category-0 pass writes category-1
+// tiles too, pen 0 included. It must do nothing on tilemaps 0/1, whose passes
+// are not opaque - the sweep drives all four bits to hold that.
 //
 // `masked` is gated OUTSIDE the transparency test on purpose, and this test is
 // what holds that. Tilemaps 2 and 3 draw their category-0 pass opaque, so
@@ -44,12 +49,13 @@ int main(int argc, char** argv) {
   long checks = 0, fails = 0;
   long won[10] = {0};
 
-  for (uint32_t s = 0; s < (1u << 17); s++) {
+  for (uint32_t s = 0; s < (1u << 21); s++) {
     uint32_t prio  =  s        & 0xf;
     uint32_t transp = (s >> 4) & 0xf;
     uint32_t dis    = (s >> 8) & 0xf;
     uint32_t pv     = (s >> 12) & 1;
     uint32_t masked = (s >> 13) & 0xf;
+    uint32_t allc   = (s >> 17) & 0xf;
 
     d->pal_index = ((uint64_t)PAL[3] << 36) | ((uint64_t)PAL[2] << 24) |
                    ((uint64_t)PAL[1] << 12) | PAL[0];
@@ -57,6 +63,7 @@ int main(int argc, char** argv) {
     d->prio = prio;
     d->disabled = dis;
     d->masked = masked;
+    d->all_cat = allc;
     d->poly_index = POLY;
     d->poly_valid = pv;
     d->backdrop = BACK;
@@ -69,8 +76,9 @@ int main(int argc, char** argv) {
     auto paint_cat0 = [&](int i) {
       if (dis & (1 << i)) return;
       if (masked & (1 << i)) return;            // column shows the other category
-      if (prio & (1 << i)) return;              // this tile belongs to cat1
       bool opaque = (i >= 2);                   // layers 6 and 4
+      // this tile belongs to cat1 - unless the opaque pass is draw_rect's
+      if ((prio & (1 << i)) && !(opaque && (allc & (1 << i)))) return;
       if ((transp & (1 << i)) && !opaque) return;
       pixel = PAL[i]; src = 4 + i;
     };
@@ -88,9 +96,9 @@ int main(int argc, char** argv) {
     checks++;
     if (d->pixel != pixel || d->source != src) {
       if (fails < 12)
-        printf("  FAIL prio=%x transp=%x dis=%x msk=%x poly=%u  got pixel=%03x src=%u"
+        printf("  FAIL prio=%x transp=%x dis=%x msk=%x allc=%x poly=%u  got pixel=%03x src=%u"
                "  want pixel=%03x src=%d\n",
-               prio, transp, dis, masked, pv, (unsigned)d->pixel, (unsigned)d->source,
+               prio, transp, dis, masked, allc, pv, (unsigned)d->pixel, (unsigned)d->source,
                pixel, src);
       fails++;
     }

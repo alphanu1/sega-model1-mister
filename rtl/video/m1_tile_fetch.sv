@@ -510,12 +510,19 @@ module m1_tile_fetch #(
             lb_we          <= 4'((4'd1 << gn) - 4'd1);
             lb_addr        <= sx[8:0];
             lb_pal         <= dec_pal;
-            lb_transparent <= dec_transp | dec_disabled;
+            lb_transparent <= dec_transp;
             lb_prio        <= dec_prio;
             // The mask bit alone, NOT combined with the tile's category: its
             // polarity was applied when the word was read (m1_video inverts it
             // for the odd tilemap, MAME's `if (win) m = ~m`).
-            lb_masked      <= px_m;
+            //
+            // A DISABLED LAYER (vscr bit 15) IS MASKED, NOT TRANSPARENT.
+            // draw_common returns before drawing anything - `if (vscr &
+            // 0x8000) return;` - but tilemaps 2 and 3 draw their category-0
+            // pass opaque, and an opaque pass ignores transparency, so folded
+            // into lb_transparent as it was a disabled tilemap 2 or 3 still
+            // painted every pixel it owned.
+            lb_masked      <= px_m | dec_disabled;
 
             sx  <= sx + 10'(gn);
             rem <= rem - gn;
