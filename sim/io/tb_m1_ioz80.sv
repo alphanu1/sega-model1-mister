@@ -86,6 +86,9 @@ module tb_m1_ioz80 #(
   m1_ioz80 dut (
     .clk(clk), .rst_n(rst_n), .io2(IO2),
     .fw_req(fw_req), .fw_word(fw_word), .fw_ack(fw_ack), .fw_din(fw_din),
+    // The EEPROM's write-through is acknowledged and dropped; with no image
+    // the part is erased, which is what this bench always gave it.
+    .fw_we(), .fw_wdata(), .ee_img(1'b0),
     .in0(8'hff), .in1(8'hff), .in2(8'hff),
     .dsw1(8'hff), .dsw2(8'hff), .dsw3(8'hff),
     .dp_busy(1'b0),
