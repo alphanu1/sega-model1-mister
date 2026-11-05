@@ -147,6 +147,21 @@ module m1_rom_loader #(
   parameter logic [15:0] NV_INDEX      = 16'd6,
   parameter logic [26:0] NV_END        = 27'h0_10000,  // 64 KB
   parameter logic [25:1] NV_BASE       = 25'hFA0000,   // 0x1F40000 >> 1, m1_main's NVRAM_BASE
+  // THE SAVED NVRAM FILE, index 7 (the MRA's <nvram index="7" size="65672">).
+  // Main_MiSTer sends it after every <rom> before the <nvram> element, so it
+  // lands on top of the set's defaults (index 3, index 6), and only when the
+  // file exists. Its layout, which m1_nv_port uploads in the same order:
+  //
+  //   0x00000-0x00007  "M1NVRAM1", the tag
+  //   0x00008-0x00087  the 93C46, 64 words, as index 3 sends them
+  //   0x00088-0x10087  RAMA, 64 KB, as index 6 sends it
+  //
+  // NOTHING IS TAKEN UNLESS ALL FOUR TAG WORDS ARRIVE FIRST. Main zero-fills a
+  // buffer of the MRA's size, reads the file over it and sends all of it, so
+  // the 256-byte file the old MRAs' <nvram index="255"> left behind arrives
+  // as 65,672 bytes of nothing. Without the tag that would write zeros over
+  // RAMA and the EEPROM - NetMerc's gun alignment and VR's "SEGA" block.
+  parameter logic [15:0] NVS_INDEX     = 16'd7,
   parameter logic [15:0] EE_END        = 16'd128,    // 64 words of 16 bits
   parameter logic [25:1] EE_WOFF       = 25'h002000, // word offset from IOFW_BASE
   // Word address. The polygon region ends at word 0xC20000 and the V60's work
@@ -256,6 +271,9 @@ module m1_rom_loader #(
   // Stays low for a game whose MRA sends no sound stream, which holds the board
   // in reset -- silence rather than a 68000 loose in whatever SDRAM holds.
   output logic        snd_loaded,
+  // The EEPROM's SDRAM block holds an image: index 3 or a tagged index 7
+  // wrote it since power-on. m1_ioz80 loads FFFF (an erased part) otherwise.
+  output logic        ee_img,
   output logic        overflow,     // buffer was written while full
 
   // DID THE MICROCODE ACTUALLY ARRIVE? Nothing measured this, and its absence
@@ -346,8 +364,25 @@ module m1_rom_loader #(
                       (~mem_ready | (level >= (AW+1)'(FIFO_DEPTH - WAIT_MARGIN)));
 
   logic is_sdram, is_tgp, is_iofw, is_ee, is_snd, is_nv;
+  logic is_nvs, nvs_ee, nvs_ram, nvs_tag, nvs_ok;
   // Routed by index, not by address. Every stream starts at byte 0.
-  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee || is_snd || is_nv;
+  assign is_sdram = (ioctl_index == ROM_INDEX) || is_iofw || is_ee || is_snd || is_nv
+                 || ((nvs_ee || nvs_ram) && nvs_ok);
+  // Index 7's three parts. nvs_ok is the tag, word by word: word 0 starts it,
+  // every later tag word must match as well.
+  assign is_nvs  = (ioctl_index == NVS_INDEX);
+  assign nvs_tag = is_nvs && (ioctl_addr[26:3] == 24'd0);
+  assign nvs_ee  = is_nvs && (ioctl_addr[26:8] == 19'd0) && (ioctl_addr[7:3] != 5'd0)
+                          && (ioctl_addr[7:0] < 8'h88);
+  assign nvs_ram = is_nvs && (27'(ioctl_addr) >= 27'h88) && (27'(ioctl_addr) < 27'h10088);
+  function automatic logic [15:0] nvs_tagw(input logic [1:0] i);
+    case (i)   // "M1NVRAM1", little-endian words as hps_io delivers them
+      2'd0: nvs_tagw = 16'h314d;
+      2'd1: nvs_tagw = 16'h564e;
+      2'd2: nvs_tagw = 16'h4152;
+      default: nvs_tagw = 16'h314d;
+    endcase
+  endfunction
   assign is_nv    = (ioctl_index == NV_INDEX) && (27'(ioctl_addr) < NV_END);
   assign is_snd   = (ioctl_index == SND_INDEX) && (27'(ioctl_addr) < SND_PCM2_END);
   assign is_tgp   = (ioctl_index == TGP_INDEX) && (ioctl_addr < TGP_PROG_END);
@@ -359,7 +394,8 @@ module m1_rom_loader #(
   assign stream_ok = ioctl_download &&
                      ((ioctl_index == ROM_INDEX) || (ioctl_index == TGP_INDEX) ||
                       (ioctl_index == IOFW_INDEX) || (ioctl_index == EE_INDEX) ||
-                      (ioctl_index == SND_INDEX) || (ioctl_index == NV_INDEX));
+                      (ioctl_index == SND_INDEX) || (ioctl_index == NV_INDEX) ||
+                      is_nvs);
 
   // ------------------------------------------------------------ SDRAM side
   logic        req_q;
@@ -382,6 +418,7 @@ module m1_rom_loader #(
       tgp_wr <= 1'b0; tgp_addr <= '0; tgp_din <= '0; tgp_lo <= '0;
       rom_loaded_raw <= 1'b0; overflow <= 1'b0; sok_d <= 1'b0; dl_done <= 1'b0;
       snd_loaded <= 1'b0; snd_seen <= 1'b0;
+      nvs_ok <= 1'b0; ee_img <= 1'b0;
       ucode_words <= '0; ucode_csum <= '0;
       sdram_csum <= 24'd0; sdram_words <= 24'd0;
       // THE ARRAYS ARE DELIBERATELY NOT CLEARED HERE.
@@ -397,6 +434,11 @@ module m1_rom_loader #(
       sok_d  <= stream_ok;
 
       // -------------------------------------------------------- accept
+      if (stream_ok && ioctl_wr && nvs_tag)
+        nvs_ok <= ((ioctl_addr[2:1] == 2'd0) || nvs_ok)
+               && (ioctl_dout == nvs_tagw(ioctl_addr[2:1]));
+      if (stream_ok && ioctl_wr && is_sdram && !fifo_full && (is_ee || nvs_ee))
+        ee_img <= 1'b1;
       if (stream_ok && ioctl_wr) begin
         if (is_sdram) begin
           if (fifo_full) begin
@@ -410,6 +452,9 @@ module m1_rom_loader #(
             // and below the V60's work RAM.
             fifo_addr[wptr[AW-1:0]] <=
                 is_nv   ? (NV_BASE + 25'(ioctl_addr[15:1]))
+              // Index 7: the EEPROM words at index 3's block, RAMA at index 6's.
+              : nvs_ee  ? (IOFW_BASE + EE_WOFF + 25'(ioctl_addr[7:1] - 7'd4))
+              : nvs_ram ? (NV_BASE + 25'(16'(ioctl_addr[16:1] - 16'h44)))
               : is_ee   ? (IOFW_BASE + EE_WOFF + 25'(ioctl_addr[25:1]))
               : is_iofw ? (IOFW_BASE + 25'(ioctl_addr[25:1]))
               // TWO WAYS, NOT THREE. The two sample sets are CONTIGUOUS in

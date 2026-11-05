@@ -96,8 +96,13 @@ module m1_main #(
   // code and block RAM has no room for it - see m1_ioz80.
   output logic        iofw_req,
   output logic [13:0] iofw_word,
+  // The EEPROM's write-through to its SDRAM block (m1_ioz80's fw_we).
+  output logic        iofw_we,
+  output logic [15:0] iofw_wdata,
   input  logic        iofw_ack,
   input  logic [15:0] iofw_din,
+  // The EEPROM's block holds an image (m1_rom_loader's ee_img), synchronised.
+  input  logic        ee_img,
 
   // ------------------------------------------------- coprocessor microcode
   // From m1_rom_loader, in the FAST memory domain. The program RAM inside
@@ -599,7 +604,8 @@ module m1_main #(
       m1_ioz80 ioboard (
         .clk(clk), .rst_n(~rst_cpu), .io2(io2),
         .fw_req(iofw_req), .fw_word(iofw_word),
-        .fw_ack(iofw_ack), .fw_din(iofw_din),
+        .fw_we(iofw_we), .fw_wdata(iofw_wdata),
+        .fw_ack(iofw_ack), .fw_din(iofw_din), .ee_img(ee_img),
         .in0 (in_bytes[8*8  +: 8]),
         .in1 (in_bytes[9*8  +: 8]),
         .in2 (in_bytes[10*8 +: 8]),
@@ -677,6 +683,8 @@ module m1_main #(
         dbg_io_replies = 16'd0;
         iofw_req       = 1'b0;
         iofw_word      = 14'd0;
+        iofw_we        = 1'b0;
+        iofw_wdata     = 16'd0;
       end
       // io_ack is driven by the RAM; nothing consumes it in this branch.
     end

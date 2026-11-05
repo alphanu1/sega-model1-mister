@@ -590,7 +590,14 @@ def emit(setname, chunks, cross_checked, regions):
 
     out += [
         '',
-        '    <nvram index="255" size="256"/>',
+        # THE SAVED SETTINGS (2026-11-05): RAMA and the I/O board's 93C46,
+        # tagged, in the layout m1_rom_loader and m1_nv_port share. After
+        # every <rom>, because Main sends the file when the parser closes this
+        # element: it lands on top of the defaults (index 3, index 6).
+        '    <!-- The saved settings: "M1NVRAM1", the 93C46 (128 bytes), RAMA (64 KB).',
+        '         Sent after the defaults above, so a saved file overrides them;',
+        '         a file without the tag is ignored. OSD: Save settings (NVRAM). -->',
+        '    <nvram index="7" size="65672"/>',
         '',
         # THE NAMES FOLLOW Model1.sv's joy0 BITS, and the old ones did not.
         #
@@ -714,12 +721,22 @@ DSB_NOTE = [
 ]
 
 
+ERASED_EEPROM_NOTE = [
+    "    <!-- The I/O board's 93C46, erased: this set has no image (MAME's part",
+    '         powers up all ones). Sent so the part\'s SDRAM block is this game\'s',
+    '         and not what the last game left there; the saved settings file',
+    '         overrides it. -->',
+]
+
+
 def emit_eeprom(setname, regions):
     """Index 3: the I/O board's 93C46 image, for a set whose MAME definition
-    has an ioboard:eeprom region (only vr)."""
+    has an ioboard:eeprom region (only vr); every other set sends an erased
+    part (128 bytes of FF)."""
     loads = regions.get('"ioboard:eeprom"')
     if not loads:
-        return []
+        return ([''] + ERASED_EEPROM_NOTE + ['    <rom index="3" md5="none">',
+                '        <part repeat="128">FF</part>', '    </rom>'])
     out = [''] + EEPROM_NOTE + [f'    <rom index="3" zip="{zip_for(setname, 3)}" md5="none">']
     out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
     return out + ['    </rom>']
@@ -734,12 +751,21 @@ NVRAM_NOTE = [
 ]
 
 
+ERASED_NVRAM_NOTE = [
+    "    <!-- RAMA, the V60's battery-backed RAM, all FF: this set has no default",
+    "         image (MAME's NVRAM is DEFAULT_ALL_1). Sent so RAMA is this game's",
+    '         and not what the last game left in SDRAM; the saved settings file',
+    '         overrides it. -->',
+]
+
+
 def emit_nvram(setname, regions):
     """Index 6: the default NVRAM image, for a set whose MAME definition has an
-    "nvram" region (only netmerc)."""
+    "nvram" region (only netmerc); every other set sends 64 KB of FF."""
     loads = regions.get('"nvram"')
     if not loads:
-        return []
+        return ([''] + ERASED_NVRAM_NOTE + ['    <rom index="6" md5="none">',
+                '        <part repeat="65536">FF</part>', '    </rom>'])
     out = [''] + NVRAM_NOTE + [f'    <rom index="6" zip="{zip_for(setname, 6)}" md5="none">']
     out += [f'        <part name="{n}"/>' for _, _, n, _ in loads]
     return out + ['    </rom>']

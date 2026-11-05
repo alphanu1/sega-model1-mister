@@ -151,6 +151,9 @@ module emu
     "O[13],Stick X axis,Normal,Inverted;",
     "O[22:21],NetMerc head look,Left stick,Left stick Y inv,Off;",
     "-;",
+    // The game's settings (RAMA and the I/O board's EEPROM) to the MRA's
+    // <nvram index="7">: m1_nv_port. Momentary: its edge asks Main to save.
+    "R[23],Save settings (NVRAM);",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
     "V,v",`BUILD_DATE
@@ -666,7 +669,13 @@ module emu
     if (!pll_locked)                                    game_id <= 8'd0;
     else if (ioctl_wr && (ioctl_index == GAMEID_INDEX)) game_id <= ioctl_dout[7:0];
   end
-  wire        ioctl_wait;
+  // ioctl_wait is the loader's during a download and the NVRAM save's during
+  // an upload; each is gated on its own transfer, because the line stalls the
+  // HPS itself.
+  wire        ioctl_wait, ldr_ioctl_wait, nv_ioctl_wait;
+  assign ioctl_wait = ldr_ioctl_wait | nv_ioctl_wait;
+  wire        ioctl_upload, ioctl_rd, nv_save_req;
+  wire [15:0] ioctl_din;
 
   hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
   (
@@ -701,7 +710,15 @@ module emu
     .ioctl_addr(ioctl_addr),
     .ioctl_dout(ioctl_dout),
     .ioctl_index(ioctl_index),
-    .ioctl_wait(ioctl_wait)
+    .ioctl_wait(ioctl_wait),
+    // THE NVRAM SAVE. Main_MiSTer writes the MRA's <nvram> section back only
+    // after the core raises ioctl_upload_req; until 2026-11-05 none of these
+    // were connected, so the file it created was never filled or read back.
+    .ioctl_upload(ioctl_upload),
+    .ioctl_upload_req(nv_save_req),
+    .ioctl_upload_index(8'd7),
+    .ioctl_din(ioctl_din),
+    .ioctl_rd(ioctl_rd)
   );
 
   // ---------------------------------------------------------------- clocks
@@ -997,8 +1014,14 @@ module emu
   // m1_rom_loader is where the loader put it, and the two must agree - a
   // mismatch is a Z80 executing whatever else is at that address.
   localparam logic [25:1] IOFW_BASE = 25'hD00000;
-  wire        iofw_req;
+  wire        iofw_req, iofw_we, iofw_ack;
   wire [13:0] iofw_word;
+  wire [15:0] iofw_wdata;
+  // Port 4 as the controller sees it: the Z80's requests and the NVRAM
+  // save's reads, served one at a time by m1_nv_port.
+  wire        p4_req, p4_we;
+  wire [25:1] p4_addr;
+  wire [15:0] p4_din, iofw_dout;
 
   // The 3D layer's two masters, from m1_integrated in the clk_sys domain.
   wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
@@ -1031,14 +1054,27 @@ module emu
   // REVERTED -- see docs/HANDOFF.md, 2026-09-13. It bought 54 M10K and cost
   // the 3D layer, and four real bugs fixed inside it did not bring the picture
   // back. The work is preserved in build/dlist_work/ with its tests.
-  assign iofw_ack = p_ack[4];
+  // PORT 4 IS SHARED WITH THE NVRAM SAVE (2026-11-05), and carries the
+  // EEPROM's write-through. m1_nv_port queues the two; see its header.
+  m1_nv_port u_nv_port (
+    .clk(clk_sys), .rst_n(mem_rst_n),
+    .save_btn(status[23]), .save_req(nv_save_req),
+    .ioctl_upload(ioctl_upload), .ioctl_rd(ioctl_rd),
+    .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
+    .ioctl_din(ioctl_din), .ioctl_wait(nv_ioctl_wait),
+    .io_req(iofw_req), .io_we(iofw_we),
+    .io_addr(IOFW_BASE + {11'd0, iofw_word}), .io_din(iofw_wdata),
+    .io_ack(iofw_ack), .io_dout(iofw_dout),
+    .p_req(p4_req), .p_we(p4_we), .p_addr(p4_addr), .p_din(p4_din),
+    .p_ack(p_ack[4]), .p_dout(p_dout[4][15:0])
+  );
 
 
   // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
   assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
-                   r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+                   r3d_tex_req, r3d_rom_req, p4_req, tgp_mem_req, ifp_req, char_req, sdr_req};
   assign p_we   = {dsb_swe,  snd_ram_we,  1'b0,         1'b0,         1'b0,
-                   r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+                   r3d_tex_we,  1'b0,        p4_we,    1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -1076,13 +1112,13 @@ assign p_addr = {dsb_saddr,
                  // cycles after reset. The unit benches all passed; only a
                  // bench that boots the CPU sees it.
                  r3d_tex_addr, {r3d_rom_addr[25:2], 1'b0},
-                 IOFW_BASE + {10'd0, iofw_word},
+                 p4_addr,
                  tgp_mem_addr, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
-                   r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+                   r3d_tex_din, 16'd0, p4_din, 16'd0, 16'd0, 16'd0, sdr_din};
   assign p_be   = {dsb_sbe, snd_ram_be, 2'b11, 2'b11, 2'b11,
-                   2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                   2'b11,       2'd0,  2'b11, 2'd0,  2'd0,  2'd0,  sdr_be};
 
   // One master per port: no arbitration, no ownership, nothing to get wrong.
   assign snd_rom_ack = p_ack[7];
@@ -1479,14 +1515,15 @@ assign p_addr = {dsb_saddr,
 
     // The I/O board Z80's firmware fetch, on port 7.
     .iofw_req(iofw_req), .iofw_word(iofw_word),
-    .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
+    .iofw_we(iofw_we), .iofw_wdata(iofw_wdata),
+    .iofw_ack(iofw_ack), .iofw_din(iofw_dout),
 
     .char_req(char_req), .char_addr(char_addr),
     .char_data(char_data), .char_ack(char_ack),
 
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
     .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
-    .ioctl_wait(ioctl_wait),
+    .ioctl_wait(ldr_ioctl_wait),
     .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
     .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
     .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),

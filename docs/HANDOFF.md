@@ -1,3 +1,35 @@
+# 2026-11-05, BRANCH nvram-save (from main 7168ad8): THE GAMES' SETTINGS ARE SAVED (issues #8, #2 NVRAM)
+
+Not merged, not released, not on the board. `docs/findings.md` 2026-11-05
+"THE CORE HAD NO SAVE PATH" has the measurements.
+
+- The MRA's `<nvram>` is now `index="7" size="65672"`: "M1NVRAM1", the I/O
+  board's 93C46 (128 bytes), RAMA (64 KB). Loaded by `m1_rom_loader` only after
+  the whole tag; saved by `rtl/io/m1_nv_port.sv` (new) through SDRAM port 4,
+  shared with the Z80's firmware fetch. OSD: `R[23]` "Save settings (NVRAM)".
+- The 93C46 writes through to its SDRAM block (`m1_ioz80` `fw_we`), so a game
+  reset keeps what the firmware wrote. `ee_img` replaces the io2 special case:
+  no index 3 and no saved image = an erased part.
+- All twenty MRAs in `mra/` regenerated (`tools/gen_mra.py`): index 7; sets
+  without MAME's images send erased ones (index 3: 128 x FF, index 6: 64 KB x
+  FF). **`releases/mra/` is NOT updated** (the release is the coordinator's);
+  its twelve files must be copied from `mra/` with the rbf, because a 65,672
+  MRA on an older rbf is ignored (index 7 goes nowhere) and an old MRA on
+  this rbf cannot save (index 255).
+- MAME: VR and VF keep their test-menu settings in RAMA (3 bytes change for one
+  setting); no test-menu action touched the EEPROM in VR, VF, Star Wars or
+  Wing War.
+- Old 256-byte `.nvm` files need no deleting: untagged, ignored, overwritten
+  by the first save.
+- Bench: `make test_nv_save` (now in `make test`). The `ioctl_rd` term of the
+  upload wait is not proven by it (Main waits for the acknowledge to fall,
+  which the wait already holds).
+- VR's service menu (issue #4 report): in MAME 0.289 only VR1 (Red) moves the
+  cursor, and only DOWN, wrapping EXIT -> first item; VR2 and VR3 do nothing
+  on the menu; VR4 (Green) enters; Service also steps down. The game does it.
+
+---
+
 # MERGED 2026-11-05, NOT RELEASED: the tile backdrop (issue #6 item 3, tile-backdrop 72a3fc2)
 
 The sky's colour where nothing covers a pixel now follows MAME: no row mask in

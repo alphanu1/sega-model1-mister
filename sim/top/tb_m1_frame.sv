@@ -327,8 +327,9 @@ wire [15:0] r3d_tex_din;
 // and never reached the code that sends sound bytes. It presented as a SOUND
 // fault three layers away from the actual cause.
 localparam logic [25:1] IOFW_BASE = 25'hD00000;
-wire        iofw_req;
+wire        iofw_req, iofw_we;
 wire [13:0] iofw_word;
+wire [15:0] iofw_wdata;   // the EEPROM's write-through (m1_ioz80 fw_we)
 
 // ELEVEN PORTS, NOT SEVEN, SO THE SOUND BOARD IS REALLY HERE (2026-09-15).
 //
@@ -356,7 +357,7 @@ wire  [1:0] dsb_sbe;
 assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
                  r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
 assign p_we   = {dsb_swe, snd_ram_we,  1'b0,        1'b0,         1'b0,
-                 r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+                 r3d_tex_we,  1'b0,        iofw_we,  1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -387,9 +388,9 @@ assign p_addr = {dsb_saddr,
                  {tgp_mem_addr[25:2], 1'b0}, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
-                 r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+                 r3d_tex_din, 16'd0, iofw_wdata, 16'd0, 16'd0, 16'd0, sdr_din};
 assign p_be   = {dsb_sbe, snd_ram_be,  2'b11, 2'b11, 2'b11,
-                 2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 2'b11,       2'd0,  2'b11, 2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -541,6 +542,7 @@ m1_integrated core (
     .sdr_dout(p_dout[0][15:0]), .sdr_ack(p_ack[0]),
 
     .iofw_req(iofw_req), .iofw_word(iofw_word),
+    .iofw_we(iofw_we), .iofw_wdata(iofw_wdata),
     .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
     .if_req(ifp_req), .if_addr(), .if_sdram_addr(ifp_addr),
     .if_data(p_dout[2]), .if_ack(p_ack[2]),

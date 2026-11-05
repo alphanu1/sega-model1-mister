@@ -106,8 +106,19 @@ module m1_ioz80 #(
   output logic        fw_req,
   output logic [13:0] fw_word,   // 16-bit word index; 0..0x1FFF is firmware,
                                  // 0x2000.. is the settings EEPROM
+  // THE EEPROM IS WRITTEN THROUGH TO SDRAM (2026-11-05). Each WRITE or ERASE
+  // the firmware makes is also sent to the EEPROM's SDRAM block, so that block
+  // is always the part's current contents: the NVRAM save (m1_nv_port) reads
+  // it from there, and a reset reloads what the firmware last wrote instead of
+  // the MRA's image, as a real 93C46 keeps it.
+  output logic        fw_we,
+  output logic [15:0] fw_wdata,
   input  logic        fw_ack,
   input  logic [15:0] fw_din,
+  // The EEPROM's SDRAM block holds an image: the MRA sent index 3, or a saved
+  // NVRAM file carried one (m1_rom_loader's ee_img). Without one the part
+  // powers up erased, as MAME's does with no region and no .nv file.
+  input  logic        ee_img,
 
   // Cabinet inputs, ACTIVE LOW at rest (0xff = nothing pressed), matching
   // model2.cpp's port definitions: IN0 = {VR3,VR2,VR1,START1,SERVICE,TEST,
@@ -212,7 +223,7 @@ module m1_ioz80 #(
     // blunt instrument and the right one - the core simply does not advance,
     // which is exactly what a CPU waiting on memory does, and it needs no
     // assumption about which T-state samples what.
-    .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss && ee_ready),
+    .reset_n(rst_n), .clk(clk), .cen(cen && !fw_miss && ee_ready && !ee_wb_pend),
     // /INT is the CTC's, and only on the second board: EPR-14869 runs with
     // interrupts unused and its /INT has always been tied off here.
     .wait_n(1'b1), .int_n(!(io2 && ctc_int)), .nmi_n(1'b1), .busrq_n(1'b1),
@@ -395,6 +406,14 @@ module m1_ioz80 #(
   // held until it lands - `ee_ready` gates `cen` - which costs 64 SDRAM reads
   // once, and removes any question of the firmware reading the array early.
   logic        ee_ready;
+  // The write-through (see fw_we): ee_wb_pend is raised by the EEPROM block
+  // when the firmware writes a word and dropped by ee_wb_done once SDRAM has
+  // taken it. The Z80 is held while it is pending - a few dozen cycles against
+  // the milliseconds a real 93C46 spends on a write, which the firmware polls
+  // for - so a second write can never arrive before the first is out.
+  logic        ee_wb_pend, ee_wb_done, fw_wr_q;
+  logic  [5:0] ee_wb_a;
+  logic [15:0] ee_wb_d;
   logic  [6:0] ee_ld_i;          // 0..63, plus the terminal count
   logic        ee_ld_we;
   logic  [5:0] ee_ld_a;
@@ -406,15 +425,25 @@ module m1_ioz80 #(
       fw_cv <= 1'b0; fw_ca <= '0; fw_w <= '0; fw_req <= 1'b0;
       ee_ready <= 1'b0; ee_ld_i <= 7'd0;
       ee_ld_we <= 1'b0; ee_ld_a <= 6'd0; ee_ld_d <= 16'd0;
+      fw_wr_q <= 1'b0; ee_wb_done <= 1'b0;
     end else begin
       ee_ld_we <= 1'b0;
+      ee_wb_done <= 1'b0;
       // Held until acknowledged, not pulsed. Anything talking to this
       // controller that pulses a request has it missed - the rule is in
       // the rules file and it has cost this project two sessions.
-      if ((ee_ld_go || fw_miss) && !fw_req && !fw_ack) fw_req <= 1'b1;
+      // A pending EEPROM write goes before a fetch; the Z80 is held for it
+      // anyway. Not while the preload runs: the Z80 cannot have written yet.
+      if ((ee_ld_go || fw_miss || ee_wb_pend) && !fw_req && !fw_ack && !ee_wb_done) begin
+        fw_req  <= 1'b1;
+        fw_wr_q <= !ee_ld_go && ee_wb_pend;
+      end
       if (fw_ack) begin
         fw_req <= 1'b0;
-        if (ee_ld_go) begin
+        if (fw_wr_q) begin
+          fw_wr_q    <= 1'b0;
+          ee_wb_done <= 1'b1;
+        end else if (ee_ld_go) begin
           // The image is little-endian 16-bit words, the same order the array
           // is addressed in, so it goes straight in. The WRITE ITSELF is done
           // in the EEPROM block below: `ee` must have exactly one driver or
@@ -428,7 +457,11 @@ module m1_ioz80 #(
           // the LAST game loaded there (Virtua Racing's "SEGA" image, say).
           // Loading that into a different board's settings part would make
           // the boot depend on what was played before.
-          ee_ld_d  <= io2 ? 16'hffff : fw_din;
+          // ee_img replaces `io2` here (2026-11-05): with the write-through
+          // and the saved NVRAM file, the second board's block can hold its
+          // own image, and a first-board set without index 3 (vf, swa,
+          // vformula) read whatever the last game left there.
+          ee_ld_d  <= ee_img ? fw_din : 16'hffff;
           ee_ld_i  <= ee_ld_i + 7'd1;
           if (ee_ld_i == 7'd63) ee_ready <= 1'b1;
         end else begin
@@ -440,7 +473,10 @@ module m1_ioz80 #(
     end
   end
   assign fw_word = ee_ld_go ? (14'h2000 + {8'd0, ee_ld_i[5:0]})
+                 : fw_wr_q  ? (14'h2000 + {8'd0, ee_wb_a})
                             : {1'b0, A[13:1]};
+  assign fw_we    = fw_wr_q;
+  assign fw_wdata = ee_wb_d;
   assign fw_q    = A[0] ? fw_w[15:8] : fw_w[7:0];
   // WRITE ON THE SAME EDGE AS THE READ, AND THAT IS THE POINT.
   //
@@ -620,8 +656,8 @@ module m1_ioz80 #(
   // completes, then 16 bits MSB-first on the next sixteen clocks.
   // Powers up erased (all-ones): the firmware finds a virgin part, applies its
   // defaults, and writes them back -- so WRITE/ERASE/EWEN are implemented, not
-  // just READ. Contents are volatile here; persistence can ride the NVRAM
-  // mechanism later if board-local settings turn out to matter.
+  // just READ. Persistent since 2026-11-05: every write goes through to the
+  // part's SDRAM block (fw_we), which the NVRAM file saves and loads.
   // THE EEPROM'S 64 WORDS ARE AN MLAB, NOT 1,024 FLIP-FLOPS (2026-09-11).
   //
   // A 93C46 is bit-banged: every access here happens on a rising edge of
@@ -680,6 +716,7 @@ module m1_ioz80 #(
       ee_in <= 16'd0; ee_wcnt <= 5'd0; ee_ewen <= 1'b0; ee_addr <= 6'd0;
       ee_st <= EE_CMD; ee_clk_d <= 1'b0;
       ee_ra <= 6'd0; ee_rd_pend <= 2'd0;
+      ee_wb_pend <= 1'b0; ee_wb_a <= 6'd0; ee_wb_d <= 16'd0;
     end else begin
       ee_we = 1'b0; ee_wa = 6'd0; ee_wd = 16'd0;
       // The download's write into the array. It happens only while ee_ready is
@@ -764,6 +801,11 @@ module m1_ioz80 #(
 
       // ONE write site, and the MLAB's registered read.
       if (ee_we) ee[ee_wa] <= ee_wd;
+      // The firmware's own writes (not the preload) go on to SDRAM too.
+      if (ee_wb_done) ee_wb_pend <= 1'b0;
+      if (ee_we && !ee_ld_we) begin
+        ee_wb_pend <= 1'b1; ee_wb_a <= ee_wa; ee_wb_d <= ee_wd;
+      end
       ee_q <= ee[ee_ra];
     end
   end
