@@ -42,7 +42,11 @@ module tb_m1_nv_save #(
   parameter int ROUNDS = 4,
   parameter int SEED   = 1,
   parameter int IO2    = 0,
-  parameter int NOWAIT = 0
+  parameter int NOWAIT = 0,
+  // A real saved file (the board's), loaded as Main loads it: index 2, index 3
+  // erased, no index 6, then the file on index 7. Checked word for word in
+  // SDRAM, for reset staying held while it streams, and saved back unchanged.
+  parameter string NVFILE = ""
 );
   localparam int NVSZ = 65672;
   localparam logic [25:1] NV_BASE = 25'hFA0000;
@@ -371,6 +375,51 @@ module tb_m1_nv_save #(
     check(seen == 3, "the Z80 never reached its loop: held, or lost");
   endtask
 
+  // Nothing the loader holds in reset may run while a stream is arriving.
+  int released_during_dl = 0;
+  always @(posedge clk) if (ioctl_download && rom_loaded) released_during_dl++;
+
+  task automatic run_file();
+    byte unsigned f[$], got[$], none[$];
+    int fd, c, miss, n;
+    logic [15:0] q, w;
+    fd = $fopen(NVFILE, "rb");
+    if (fd == 0) begin $display("m1_nv_save: SKIPPED, no file %s", NVFILE); return; end
+    while ((c = $fgetc(fd)) != -1) f.push_back(8'(c));
+    $fclose(fd);
+    check(f.size() == NVSZ, $sformatf("the file is %0d bytes", f.size()));
+    $display("file %s: %0d bytes", NVFILE, f.size());
+    for (int i = 0; i < 64; i++) ee_def[i] = 16'hffff;
+    make_prog(0, '{default: 0}, '{default: 16'h0});
+    power_on(1, 0, 1, f);
+    // the EEPROM as the Z80 sees it, and as SDRAM holds it
+    miss = 0;
+    n = 64;
+    for (int i = 0; i < n; i++) begin
+      w = {f[8 + 2*i + 1], f[8 + 2*i]};
+      if (u_z80.ee[i] !== w) begin if (miss++ < 4) check(0, $sformatf("EEPROM word %0d is %04x, the file %04x", i, u_z80.ee[i], w)); end
+      else checks++;
+    end
+    // RAMA, every word, through the V60's port
+    miss = 0;
+    // A run-time bound and no declaration in the body. With a constant bound
+    // the loop and its p0 call were expanded, and the build took 25 GB.
+    n = 32768;
+    for (int i = 0; i < n; i++) begin
+      w = {f[32'h88 + 2*i + 1], f[32'h88 + 2*i]};
+      p0(0, i, 16'h0, q);
+      if (q !== w) begin if (miss++ < 4) check(0, $sformatf("RAMA word %04x is %04x, the file %04x", i, q, w)); end
+      else checks++;
+    end
+    check(miss == 0, $sformatf("%0d RAMA words differ from the file", miss));
+    check(released_during_dl == 0, $sformatf("reset released for %0d cycles while a stream was arriving", released_during_dl));
+    wait_sled();
+    osd_save(got);
+    expect_file(got, f, "the board's file saved back");
+    $display("m1_nv_save[file]: checks=%0d fails=%0d", checks, fails);
+    $finish;
+  endtask
+
   // ------------------------------------------------------------ the run
   initial begin
     int unsigned s = SEED;
@@ -379,6 +428,7 @@ module tb_m1_nv_save #(
     logic [15:0] wd[64], q;
     int nwr, nram;
     if ($test$plusargs("nowait") && NOWAIT == 0) $display("use -GNOWAIT=1");
+    if (NVFILE != "") run_file();
     for (int r = 0; r < ROUNDS; r++) begin
       // spacing log-uniform 1..400 (round 0 the tightest the HPS can be)
       spacing = (r == 0) ? 1 : int'($exp($ln(1.0) + ($urandom(s + r) % 1000) / 1000.0 * $ln(400.0)));
