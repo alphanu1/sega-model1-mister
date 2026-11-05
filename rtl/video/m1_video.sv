@@ -277,6 +277,23 @@ module m1_video #(
   // 512 x 15 memory - bank and group as the address, one M10K in 512 x 20 - so
   // the ring is 16 blocks where the double buffer was 32.
   logic [1:0]  disp_bank;              // the bank the beam is reading
+
+  // WHETHER PAIR 2/3 WAS IN WINDOW MODE, per line-buffer bank. The mixer needs
+  // it because MAME's category-0 opaque pass for tilemaps 2/3 is two different
+  // draws depending on it:
+  //
+  //   not window: draw_rect, whose test is `srct == tpri || flags &
+  //               TILEMAP_DRAW_OPAQUE` - EVERY pixel of the map, category-1
+  //               tiles included, pen 0 as that tile's own colour 0
+  //   window:     tile_layer->draw(), where configure_blit_parameters keeps
+  //               the category test under OPAQUE and clears only the layer
+  //               bits - category-0 tiles only, pen 0 included
+  //
+  // Per bank rather than per frame because the ring holds lines rendered
+  // either side of a configuration latch. Written when the line's layer 2 is
+  // started, read beside the bank the beam shows.
+  logic [3:0]  lb_win23;
+  logic        win23_q;
   logic [8:0]  r_next;                 // the next line to render
   logic [8:0]  btag [4];               // the line each bank holds, complete
   logic        lost_line;              // a display line found no finished buffer
@@ -582,7 +599,7 @@ module m1_video #(
       cfg_valid <= 1'b0; latch_cfg <= 1'b1; cfg_pending <= 1'b1; vbs_d <= 1'b0;
       hscr_r <= '0; vscr_r <= '0; ctrl_r <= '0; f_start <= 1'b0;
       dbg_ctrl[0] <= '0; dbg_ctrl[1] <= '0;
-      mask_r <= '0; mask_i <= '0;
+      mask_r <= '0; mask_i <= '0; lb_win23 <= '0;
       seq_tram_addr <= '0; seq_owns_tram <= 1'b1;
       dbg_fetches <= '0; dbg_overruns <= '0;
       disp_bank <= 2'd0; r_next <= '0; lost_line <= 1'b0; lost_no <= '0;
@@ -736,8 +753,21 @@ module m1_video #(
           // missing text: `INSERT COIN(S)`, `CREDIT 0` and the ranking table live
           // there, tile RAM held them all along, and the census showed tilemap 0
           // winning zero pixels for 640 consecutive frames.
-          mask_r[{mask_i, 4'd0} +: 16] <= cur_layer[0] ? ~tram_data : tram_data;
+          //
+          // AND NOT AT ALL IN WINDOW MODE. draw_common's window branch
+          // (ctrl & 0x6000) draws through tile_layer[]->draw() and never calls
+          // draw_rect, the only place the mask exists. Applied there, the odd
+          // map of a pair read the game's zero table inverted - all ones -
+          // and was masked on every pixel of the rows it owns, which left
+          // those rows to the backdrop: palette 0, a fixed blue. Measured on
+          // MAME's own frames, docs/findings.md 2026-11-05. Model 2 found the
+          // same line first (its R755).
+          mask_r[{mask_i, 4'd0} +: 16] <= win_mode ? 16'h0000
+                                         : (cur_layer[0] ? ~tram_data : tram_data);
           if (mask_i == 2'd3) begin
+            // This line's window decision for pair 2/3, kept with its bank
+            // for the mixer; see lb_win23.
+            if (cur_layer == 2'd2) lb_win23[cur_line[1:0]] <= win_mode;
             seq_owns_tram <= 1'b0;
             f_start       <= 1'b1;
             q             <= Q_RUN;
@@ -853,6 +883,10 @@ module m1_video #(
   always_comb
     for (int L = 0; L < 4; L++) rd_q[L] = lb_q[L];
 
+  // Registered from disp_bank on the same edge as lane_q, so it describes the
+  // line the pixels came from.
+  always_ff @(posedge clk) win23_q <= lb_win23[disp_bank];
+
   // ------------------------------------------------------------- mixing
   logic [3:0][11:0] mix_pal;
   logic [3:0]       mix_transp, mix_prio, mix_masked;
@@ -874,7 +908,8 @@ module m1_video #(
     .transparent(mix_transp),
     .prio(mix_prio),
     .masked(mix_masked),
-    .disabled(4'b0000),          // already folded into transparent by the fetch
+    .all_cat({~win23_q, ~win23_q, 2'b00}),
+    .disabled(4'b0000),          // already folded into masked by the fetch
     .poly_index(12'd0),          // unused: the 3D layer's colour is RGB
     .poly_valid(poly_hit),
     .backdrop(12'd0),

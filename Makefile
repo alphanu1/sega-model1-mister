@@ -382,6 +382,11 @@ test_video:
 # (DUMP_DIR absolute: mame_run.sh runs MAME from build/mamerun) and
 # PRESS="1500:Coin 1:10,1560:1 Player Start:10" to play rather than attract,
 # then `make video2d DUMPS="build/tiledump/*/" V2D_ARGS="-lat 16 -q"`.
+# Against MAME's own picture: dump with SNAP=1 NO3D=1 (the 2D alone; add a
+# second SNAP=1 dump of the same frames without NO3D for -full), then
+#   make video2d DUMPS=build/bd/vf_play_2d V2D_ARGS="-q -mame -full build/bd/vf_play_full"
+# which counts every pixel off MAME and names why each uncovered one is
+# (docs/findings.md 2026-11-05).
 # See sim/video/tb_m1_video2d.cpp for the options.
 DUMPS    ?= build/tiledump/*/
 V2D_ARGS ?= -q

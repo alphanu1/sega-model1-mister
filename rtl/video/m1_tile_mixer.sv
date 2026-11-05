@@ -50,6 +50,17 @@
 // TILEMAP_DRAW_OPAQUE, so pen 0 is written rather than skipped. Everything
 // else treats pen 0 as transparent. Without that the backdrop never gets
 // filled and whatever the framebuffer held last frame shows through.
+//
+// AND OUTSIDE WINDOW MODE THAT PASS IGNORES THE CATEGORY TOO. draw_rect's
+// test is `*srct == tpri || flags & TILEMAP_DRAW_OPAQUE`: under OPAQUE every
+// pixel of the map is written, category-1 tiles included, each as its own
+// tile's colour (bank << 4 | pen). The category-1 pass then overdraws only
+// their non-transparent pixels, so a category-1 tile's pen 0 shows that
+// tile's colour 0 - the sky's colour, black at night - where this mixer used
+// to drop it to the backdrop, palette 0, a fixed blue. In window mode MAME
+// draws through tile_layer->draw() instead, which keeps the category test
+// under OPAQUE, so there a category-1 pen 0 does fall to the backdrop.
+// `all_cat` carries which of the two the line was drawn with.
 
 `timescale 1ns/1ps
 
@@ -75,6 +86,11 @@ module m1_tile_mixer (
   // — a masked pixel there would still be drawn. MAME applies the mask outside
   // the TILEMAP_DRAW_OPAQUE test, so it must be gated outside this one too.
   input  logic [3:0]       masked,
+
+  // Per tilemap: its category-0 pass draws every tile whatever its category
+  // (draw_rect under TILEMAP_DRAW_OPAQUE). Only meaningful on 2 and 3, the
+  // opaque passes; m1_video drives it from the line's window mode.
+  input  logic [3:0]       all_cat,
 
   // The 3D image. Not generated until M2, so `poly_valid` is tied low for now
   // and the slot is kept because inserting a depth later would silently change
@@ -107,10 +123,13 @@ module m1_tile_mixer (
   always_comb begin
     for (int i = 0; i < 4; i++) begin
       // Tilemaps 2 and 3 draw their category-0 pass opaque, so pen 0 counts as
-      // a hit there and nowhere else.
+      // a hit there and nowhere else - and outside window mode so does a
+      // category-1 tile (all_cat).
       automatic logic opaque_pass = (i >= 2);
       hit_cat1[i] = !disabled[i] && !masked[i] &&  prio[i] && !transparent[i];
-      hit_cat0[i] = !disabled[i] && !masked[i] && !prio[i] && (!transparent[i] || opaque_pass);
+      hit_cat0[i] = !disabled[i] && !masked[i]
+                 && (!prio[i] || (opaque_pass && all_cat[i]))
+                 && (!transparent[i] || opaque_pass);
     end
   end
 

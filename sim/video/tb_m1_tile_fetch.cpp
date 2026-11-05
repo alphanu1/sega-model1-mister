@@ -195,7 +195,7 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
     uint32_t colour = (tw >> 7) & 0xff;
     uint8_t pix = ref_pixel(tnum, map_y & 7, map_x & 7);
     uint16_t want_pal = (uint16_t)((colour << 4) | pix);
-    bool want_tr = (pix == 0) || ((vscr >> 15) & 1);
+    bool want_tr = (pix == 0);
     bool want_pr = (tw >> 15) & 1;
 
     checks++;
@@ -203,7 +203,10 @@ static void verify(Fetch& f, int line, int layer, uint16_t hscr, uint16_t vscr,
       if (bad < 6) printf("  FAIL %s: pixel %d never written\n", what, sx);
       bad++; fails++; continue;
     }
-    int want_mk = want_mask_bit(rmask, sx, loff, sen, h, sright);
+    // A DISABLED LAYER (vscr bit 15) comes out MASKED: draw_common returns
+    // before drawing anything, and tilemaps 2/3's opaque pass would draw a
+    // merely transparent pixel anyway.
+    int want_mk = want_mask_bit(rmask, sx, loff, sen, h, sright) | ((vscr >> 15) & 1);
     // A MASKED PIXEL IS CHECKED FOR ITS MASK BIT ONLY. The mixer never reads
     // anything else of it (m1_tile_mixer: !masked gates both passes), and the
     // engine does not fetch a column whose every pixel is masked, so the other

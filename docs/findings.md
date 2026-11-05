@@ -20,6 +20,197 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-11-05 — THE FIXED BLUE WHERE THE SKY SHOULD BE IS THE ROW MASK APPLIED IN WINDOW MODE; MAME NEVER APPLIES IT THERE
+
+Branch `tile-backdrop`, on `main` (2657c46). Issue #6 item 3. On the board,
+in Virtua Racing and Virtua Fighter some camera angles show a flat blue that
+does not match the sky, and on VF's night stage (stage 3, against Sarah) the
+same blue appears where the sky is black. MAME, and the arcade, show the
+sky's own colour there.
+
+### What I believed
+
+That a pixel no tile or polygon covers shows palette entry 0 - in VR and VF
+pen `0xfd02`, RGB (16,66,255) - because that is what `screen_update_model1`
+fills the bitmap with before drawing, and that the core's backdrop was
+therefore MAME's. The fill is right. What was wrong is which pixels reach it:
+in MAME the cases that showed it on the board are covered by a tile.
+
+### The instrument: MAME's own picture, the 2D alone
+
+`tools/mame_tile_dump.lua` gained three switches:
+
+- `SNAP=1` writes MAME's screen beside each dump (496 x 384 RGB). **It is the
+  picture at the NEXT notifier**, measured: VR attract 296-306 dumped every
+  frame, each rendered through `tb_m1_video2d`, matched MAME's picture one
+  notifier later to 0 pixels on all nine frames, and the same notifier's by
+  52 to 88,827 pixels (the sea scrolls).
+- `NO3D=1` turns every word the game writes to either display list into
+  `0x000f`, so `tgp_render` reads type `0x000f000f` - its `default:` - and
+  draws nothing. The fill and the eight tilemap draws are untouched. The game
+  does not read its lists back: tile RAM and palette were byte-identical with
+  and without it on all 291 VR attract dumps, and tile RAM on all 546 VF play
+  dumps.
+- `DUMP_LIST` for named frames.
+
+`tb_m1_video2d -mame` compares every visible pixel of the real `m1_video`
+against that picture, and for each pixel the mixer gave to the backdrop
+(source 15) names why tilemaps 2/3 did not cover it, from `draw_common`
+against the frame's tile RAM: CAT1 (non-window, the owning map has a
+category-1 tile there), WINMASK (window mode and the row mask removed the
+owning map), WINCAT1 (window mode, category-1 pen 0 - MAME's backdrop too),
+DISABLED (vscr bit 15). `-full DIR` takes a second dump of the same frames
+with the 3D, and counts a differing pixel as `seen` where MAME's 2D-only and
+full pictures agree, i.e. no polygon covers it on the board either.
+`align_err` checks that every source-15 pixel carries palette 0's colour, so
+the verdict is sampled on the right pixel (0 throughout).
+
+VF's night stage came from a scripted game: coin, start, Akira, then
+alternating punch and kick every 6 frames while holding right - the CPU loses
+stages 1 and 2 to that, and stage 3 is the night stage against Sarah (frames
+~8300-10700).
+
+### Reproduced: yes. The census, before
+
+Backdrop pixels off MAME's 2D picture, and of those, not covered by MAME's 3D:
+
+| Scene (MAME 0.289) | frames | backdrop off MAME | seen with 3D | cause |
+|---|---:|---:|---:|---|
+| VR attract, 300-9000 every 30 | 291 | 3,176,945 (180 frames) | 2,270,956 | all WINMASK |
+| VF attract, 300-9000 every 30 | 291 | 185,008 (22 frames) | 179,313 | all WINMASK |
+| VF play to stage 3, 300-11200 every 100 | 110 | 543,572 (16 frames) | 249,714 | WINMASK 542,487, CAT1 1,085 |
+
+Three named scenes:
+
+- **VR frame 1800** (medium course ranking): pair 2/3 `ctrl = 0x23ce`,
+  window mode 1, `v = (-ctrl) & 0x1ff = 50`, tilemap 3 above. Rows 0-49 are
+  (16,66,255) ours, (16,57,255) MAME's - the top of the sky tilemap: 22,714
+  pixels, all WINMASK, all seen.
+- **VF play frame 9200**, stage 3 night, Akira v Sarah, round 3 K.O.:
+  `ctrl = 0x23b5`, `v = 75`. The top 75 rows behind the HUD are (16,66,255)
+  ours and **(0,0,0)** MAME's: 24,642 pixels, all WINMASK, all seen. That is
+  the night-scene symptom exactly.
+- **VF play frame 1000** (player select): pair 2/3 out of window mode
+  (`ctrl = 0`). 567 pixels of the portrait's frame are (16,66,255) ours and
+  (0,0,255) MAME's: category-1 tiles' pen 0, CAT1.
+
+Plus whole-screen differences that are the same mechanism on pair 0/1: VR
+frames 1950, 1980, 3600 set `0x5004 = 0x4000` (window mode 2) for a
+transition MAME shows black, and ours showed the sky through a fully masked
+tilemap 0/1 - 168,640 to 188,911 non-backdrop pixels a frame, 1,415,198 over
+the run.
+
+DISABLED and WINCAT1: 0 differing pixels in every capture. A disabled
+tilemap 2 is common - NetMerc sets `0x5006 = 0x8000` on 80 of its 100
+frames - and the old core did paint it, but every tile word of that map is
+zero: tile 0, bank 0, index 0, the backdrop's own entry. Painting it and not
+painting it are the same colour, so no captured pixel could differ.
+
+### What MAME does (segaic24.cpp, model1_v.cpp)
+
+1. **Window mode has no row mask.** `draw_common`'s `ctrl & 0x6000` branch
+   draws through `tile_layer[]->draw()`; the mask only exists in
+   `draw_rect`, which that branch never calls. `m1_video` applied it
+   unconditionally, so the odd map of a pair read the game's all-zero table
+   inverted - all ones - and was masked on every pixel of the rows it owns.
+   With `v` small (VR's and VF's camera tilting the horizon) those top rows
+   fell to the backdrop. Model 2 found the same line (its R755); it noted
+   VR's `ctrl = 0x2000` gives `v = 0` and so never shows it, which is true of
+   attract's first frames and not of the rest.
+2. **Outside window mode, the opaque pass draws category-1 tiles too.**
+   `draw_rect`'s test is `*srct == tpri || flags & TILEMAP_DRAW_OPAQUE`, so
+   `draw(6/4, 0, TILEMAP_DRAW_OPAQUE)` writes every pixel of tilemaps 3 and
+   2, a category-1 tile's pen 0 as that tile's colour 0; the category-1 pass
+   overdraws only its non-transparent pixels. The mixer required `!prio` in
+   that pass. In window mode it is `tilemap_t::draw`, and
+   `configure_blit_parameters` keeps the category test under OPAQUE (it
+   clears only the layer bits), so there a category-1 pen 0 is MAME's
+   backdrop too - which is why the mixer has to know which of the two drew
+   the line.
+3. **A disabled layer draws nothing** - `if (vscr & 0x8000) return;` before
+   either branch. The fetch folded the disable bit into `transparent`, and
+   tilemaps 2/3's opaque pass ignores transparency, so a disabled tilemap 2
+   or 3 still painted. `tb_m1_video.cpp` had carried this as a "suspected
+   bug, unresolved" since the window work; no captured pixel differs from
+   it, so it is fixed from the source and proved by the directed bench only.
+
+### The fix
+
+- `rtl/video/m1_video.sv` Q_MASK_W: the mask is zero in window mode (any of
+  modes 1-3), as Model 2's R755 has it.
+- `rtl/video/m1_video.sv` `lb_win23`: pair 2/3's window decision is kept per
+  line-buffer bank and registered beside the bank the beam reads; it drives
+  the mixer's new `all_cat` input on tilemaps 2/3.
+- `rtl/video/m1_tile_mixer.sv`: `hit_cat0` on an opaque pass accepts a
+  category-1 tile when `all_cat` is set.
+- `rtl/video/m1_tile_fetch.sv`: a disabled layer is `masked`, not
+  `transparent`.
+
+No memory added: four flag bits and one register.
+
+### Proof
+
+The same captures, after - **0 pixels off MAME's 2D picture in every frame**
+of VR attract (291), VF attract (291) and VF play through the night stage
+(110); 0 backdrop pixels off MAME, all causes. Worst line render unchanged
+(VR 2,349, VF 2,145 cycles of 3,280), no lost lines.
+
+Other games, 2D-only MAME frames, attract 300-6240 every 60 (100 frames
+each), pixels off MAME before -> after:
+
+| | before | after |
+|---|---:|---:|
+| Star Wars | 96 (WINMASK) | 0 |
+| NetMerc | 0 | 0 |
+| Wing War | 1,413,469 | 812,312 |
+
+Wing War's 601,157 were CAT1 backdrop pixels (its pair 2/3 runs out of
+window mode with category-1 tiles over the sky) and are gone. The 812,312
+left are NOT backdrop and are unchanged by this work, the same count before
+and after: colour differences inside the full-screen photographs of the
+aircraft intros (e.g. frame 2100, the castle behind the Fokker: `d6c6de`
+ours, `e7d6ef` MAME's). Not attributed - a palette fade landing between the
+dump and the picture would look like this, and I did not check.
+
+Directed benches, each broken on purpose to show it discriminates:
+
+- `tb_m1_tile_mixer`: exhaustive over `all_cat` as well, **2,097,152
+  checks** (was 131,072), 0 fails. The old `!prio` rule fails 43,120.
+- `tb_m1_video`: a third checked frame with pair 2/3 out of window mode and
+  layer 3 disabled; the reference follows MAME on all three rules, and the
+  category-1 font tiles moved out of palette bank 0 - in bank 0 a category-1
+  pen 0 is index 0, the backdrop's own entry, and the suite passed with
+  `all_cat` tied off. **571,393 checks** (was 380,929), 0 fails. The mask
+  applied in window mode fails 71,162; `all_cat` tied off 351; `all_cat` set
+  in window mode too 888; disable folded into transparent 3,159.
+- `tb_m1_tile_fetch`: expects a disabled layer masked; 1,840,406 checks, 0
+  fails, count unchanged.
+
+### Fit (Quartus 17.0.0 Build 595, `make rbf`, default seed, 0 errors)
+
+`build/rbf_out/Model1_tile_backdrop.rbf`, md5
+`2f94e91254cf2ca980baf5209360bb78`. **38,688 / 41,910 ALM (92%)**, 548 / 553
+M10K, 59 / 112 DSP. Setup slack: clk_sys (80.0 MHz) +0.243 ns, clk_3d (58.95
+MHz) +0.310 ns, clk_cpu (29.47 MHz) +5.271 ns, SDRAM_CLK_pin +11.550 ns,
+h2f_user0 +3.630 ns; the framework's `pll_hdmi` -0.211 ns (TNS -1.506), not
+our logic, as in earlier builds. Hold positive on every clock (worst +0.219
+ns, clk_3d). Not yet run on the board.
+
+### Set aside: the "dominant sky pen" backdrop
+
+An uncommitted change elsewhere replaced palette 0 with the most frequent pen
+of tilemap 2's top 160 lines, histogrammed per frame. It would have hidden
+these symptoms in the scenes it was tuned on, but it is not what the board or
+MAME does: MAME's fill stays palette 0, and in every case measured here the
+pixel was never meant to reach the fill at all. It would also have been
+wrong where the fill is right - window-mode category-1 pen 0, and the
+pixels tilemaps 2/3 genuinely leave uncovered: over the 100-frame captures
+above, a disabled tilemap 2/3 leaves NetMerc 2,189,360 backdrop pixels and
+Star Wars 190,464, every one of them palette 0 in MAME too. I did not build
+on it.
+
+---
+
 ## 2026-10-30 — NETMERC'S HEAD LOOK: THE POSE IS YAW AT WORD 3 AND PITCH AT WORD 5, RADIANS x 8192, AND THE LEFT STICK NOW DRIVES IT
 
 Branch `netmerc-look`, on `swa-crawl` (3763abd). Ben, for the release: the
