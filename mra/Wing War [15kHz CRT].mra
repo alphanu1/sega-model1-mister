@@ -211,5 +211,5 @@
          a file without the tag is ignored. OSD: Save settings (NVRAM). -->
     <nvram index="7" size="65672"/>
 
-    <buttons names="Machine Gun,Missile,Smoke,Unused 4,View 1,View 2,View 3,View 4,Start,Coin,Service,Test,Coin 2" default="A,B,X,Y,L1,R1,L2,R2,Start,Select"/>
+    <buttons names="Machine Gun,Missile,Smoke,View 1,View 2,View 3,View 4,Start,Coin,Service,Test" default="A,B,X,L1,R1,L2,R2,Start,Select"/>
 </misterromdescription>

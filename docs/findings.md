@@ -20,6 +20,51 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-11-05 — PER-GAME BUTTONS, STAR WARS' THROTTLE, KEYBOARD JOYSTICK, ASPECT RATIO (issues #2, #7, #9, #4)
+
+Branch `inputs-osd`, on `nvram-save`.
+
+**Buttons (#2).** Every game shared one layout - eight game buttons, then
+Start, Coin, Service, Test, Coin 2 at joystick bits 12-16 - so Virtua
+Fighter, Star Wars and Wing War listed "Unused 4".."Unused 8". Now
+`rtl/io/m1_pad_map.sv` keys the layout on the game id, as the Model 2 core
+does, and each MRA lists only real buttons. The first three buttons stay at
+bits 4-6 everywhere, so the pedal buttons the analogue paths read do not
+move. `make test_pad_map` drives every named button, every d-pad direction,
+both OSD switches and 200,000 random combinations per game, at its old bit
+through main's equations (7168ad8, copied into the bench) and at its new bit
+through the module: IN.0/IN.1/IN.2 equal on all 600,258 comparisons, and all
+196 single controls clear MAME 0.289's bit. Three mutations (Wing War's View 1,
+Star Wars' player 2 Start, NetMerc's Service/Test swapped) each fail it.
+
+**NetMerc was not equal to main, deliberately.** Main gave it the driving
+layout, so its Trigger was "VR4" and MAME's Thumb and MVD Holder (IN.1 bits 1
+and 2) were unreachable, while "VR1-3", "Start", "Coin 2" and d-pad up/down
+drove bits MAME marks unused. It now has Trigger, Thumb, MVD Holder, Coin,
+Service, Test; the comparison with main is masked to MAME's bits for it.
+
+**Star Wars' throttle (#7).** MAME: MSM6253 channel 2 (`an_callback<2>`,
+"THROTTLE", PORT_MINMAX(28,200), PORT_REVERSE, default 0x7f). Measured in MAME
+0.289 headless, the field set from lua and the DPRAM read through the V60's
+`0xc00004`: released, DPRAM 0x02 reads 0xc8 (200); driven to 28 it reads
+0x1c; DPRAM 0x00, 0x01, 0x03-0x07 do not move. On INPUT TEST 2/2 the pilot's
+bar is at FAST for 28 and SLOW for 200. The core held 127 there.
+`rtl/io/m1_swa_throttle.sv`: Throttle Up (toward 28) and Throttle Down
+(toward 200) step it one count per 2^19 clk_sys cycles (6.55 ms; the whole
+172-count travel in 1.13 s) and it stays where it is let go; power-on 127, as
+before. OSD `O[26]` "Star Wars throttle: Right stick Y" puts it on the right
+stick instead (up 28, centre 114, down 199) and the right stick then no longer
+steers. `make test_swa_throttle`: 3,723 checks, 0 fails.
+
+**Keyboard joystick (#9).** `J1,...` in CONF_STR, the Model 2 core's line, with
+the driving games' names; each MRA's `<buttons>` replaces them.
+
+**Aspect ratio (#4).** `O[25:24]` Original / Full Screen / [ARC1] / [ARC2],
+the Model 2 core's line and expressions; Original is the old fixed 4:3.
+
+
+---
+
 ## 2026-11-05 — THE CORE HAD NO SAVE PATH. THE GAMES KEEP THEIR TEST-MENU SETTINGS IN RAMA; THE NVRAM FILE NOW CARRIES RAMA AND THE 93C46
 
 Branch `nvram-save`, on `main` (7168ad8). Issues #8 and #2 (the NVRAM part):

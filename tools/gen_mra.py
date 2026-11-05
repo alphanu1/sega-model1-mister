@@ -223,19 +223,27 @@ def zip_for(setname, index):
 # (EPR-18021) but is still sent EPR-14869 until its own firmware has been run.
 IO2_SETS = ('wingwar', 'wingwaru', 'wingwarj', 'wingwar360')
 
-# Per-family buttons, in Model1.sv's joy0 bit order (see the note in emit()).
+# Per-family buttons, in joy0 bit order from bit 4: each game's own layout
+# since 2026-11-05 (rtl/io/m1_pad_map.sv has the table), so an MRA lists only
+# real buttons. The defaults keep each control on the pad button it had when
+# every game shared one layout.
 BUTTONS_DRIVE = ('Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,'
                  'Start,Coin,Service,Test,Coin 2', 'R2,L2,R1,L1,A,B,X,Y,Start,Select')
 BUTTONS = {
-    'vf':  ('Punch,Kick,Guard,Unused 4,Unused 5,Unused 6,Unused 7,Unused 8,'
-            'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
-    'swa': ('Fire,Thumb,Button 3,Unused 4,Unused 5,Unused 6,Unused 7,Unused 8,'
-            'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
-    'wingwar': ('Machine Gun,Missile,Smoke,Unused 4,View 1,View 2,View 3,View 4,'
-                'Start,Coin,Service,Test,Coin 2', 'A,B,X,Y,L1,R1,L2,R2,Start,Select'),
+    'vf':  ('Punch,Kick,Guard,Start,Coin,Service,Test,Coin 2', 'A,B,X,Start,Select'),
+    # Throttle Up / Down: issue #7, m1_swa_throttle
+    'swa': ('Fire,Thumb,Button 3,Throttle Up,Throttle Down,Start,Coin,Service,Test,Coin 2',
+            'A,B,X,R1,L1,Start,Select'),
+    # No Coin 2: MAME's wingwar leaves IN.0 bit 1 unused (wingwar360 has it)
+    'wingwar': ('Machine Gun,Missile,Smoke,View 1,View 2,View 3,View 4,'
+                'Start,Coin,Service,Test', 'A,B,X,L1,R1,L2,R2,Start,Select'),
+    'wingwar360': ('Machine Gun,Missile,Smoke,View 1,View 2,View 3,View 4,'
+                   'Start,Coin,Service,Test,Coin 2', 'A,B,X,L1,R1,L2,R2,Start,Select'),
+    # MAME's netmerc: Trigger, Thumb, MVD Holder on IN.1; no Start, no Coin 2
+    'netmerc': ('Trigger,Thumb,MVD Holder,Coin,Service,Test', 'A,B,X,Select'),
 }
 BUTTONS['swaj'] = BUTTONS['swa']
-for _s in ('wingwaru', 'wingwarj', 'wingwar360'):
+for _s in ('wingwaru', 'wingwarj'):
     BUTTONS[_s] = BUTTONS['wingwar']
 
 # Notes carried inside the sound stream for one set's program ROM.
@@ -605,7 +613,8 @@ def emit(setname, chunks, cross_checked, regions):
         # d-pad. Model1.sv wires bit 4 to the accelerator, but this element
         # called it Start - so every button the OSD offered was mislabelled by
         # eight positions and the pedals were not offered at all. The core's
-        # order, from Model1.sv:
+        # order for the driving games (every game's own layout is in
+        # rtl/io/m1_pad_map.sv since 2026-11-05):
         #
         #   4 accelerate   5 brake       6 shift up   7 shift down
         #   8 VR1          9 VR2        10 VR3       11 VR4
