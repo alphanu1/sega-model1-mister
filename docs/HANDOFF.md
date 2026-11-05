@@ -1,3 +1,19 @@
+# MERGED 2026-11-05, NOT RELEASED: the tile backdrop (issue #6 item 3, tile-backdrop 72a3fc2)
+
+The sky's colour where nothing covers a pixel now follows MAME: no row mask in
+window mode (Model 2's R755), the opaque pass on tilemaps 2/3 draws category-1
+tiles too, and a disabled layer draws nothing. VR, VF and VF stage 3 (night)
+render 0 px off MAME 0.289; Star Wars and NetMerc 0; Wing War's intro photos
+still differ (812,312 px over 100 frames, not backdrop, cause unknown).
+Fitted (rbf 2f94e912): 38,688 ALM, 548 M10K, core clocks and hold clean, HDMI
+-0.211. On the board: all good on every game. The backtilecolour heuristic
+(dominant sky pen) is set aside; see docs/findings.md 2026-11-05.
+
+Open on issue #6: Sarah doesn't grab Lau in the attract intro; Sarah's legs
+glitch before the stage 2/3/4 fights. Being worked on in branch vf-issue6.
+
+---
+
 # RELEASED 2026-10-30: Model1_20261030 (main 9136c4e, seed 5)
 
 `releases/Model1_20261030.rbf`, md5 6037b8b7ab97b7adee3c2ee653b479d6: every
