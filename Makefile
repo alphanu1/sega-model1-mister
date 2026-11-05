@@ -872,6 +872,22 @@ tgp_replay:
 	./obj_tgp_replay/tb_tgp_replay $(TGP_STREAM) build/rom/$(GAME)_tgp_prog.hex \
 	  build/rom/$(GAME)_tgp_tables.hex build/rom/$(GAME)_stream.bin
 
+# THE V60'S FLOATING POINT AGAINST MAME'S OWN OPERANDS: every FP instruction
+# MAME ran in a window of real code, through v60_fp, result and flags bit for
+# bit (sim/cpu/tb_v60_fp_replay.cpp; vectors from tools/v60_fp_capture.py).
+# Not in `make test`: the vectors come from a ROM. docs/findings.md 2026-11-05.
+FPV ?= build/fpv/sweep.txt
+v60_fp_replay:
+	verilator --cc --exe --build -O2 -Wno-fatal $(VFLAGS) --top-module v60_fp \
+	  rtl/cpu/v60/v60_fp.sv sim/cpu/tb_v60_fp_replay.cpp -o tb_v60_fp_replay --Mdir obj_v60_fp_replay
+	./obj_v60_fp_replay/tb_v60_fp_replay $(FPV)
+
+# The same bench on hand-written vectors, no ROM needed: which flags each FP
+# instruction leaves alone. CVTSW keeps CY and MOVFS keeps all four (MAME
+# op2.hxx), each tried right after an op that leaves the unit's CY set.
+v60_fp_flags:
+	$(MAKE) v60_fp_replay FPV=sim/cpu/v60_fp_flags.txt
+
 test_copro_if:
 	verilator --cc --exe --build -O2 $(VFLAGS) --top-module m1_copro_if \
 	  -CFLAGS "-O2 -std=c++17" \
@@ -1135,7 +1151,7 @@ elab:
 	  head -10 $(TMPDIR)/elab_real.txt; exit 1; \
 	else echo "elab: Model1 elaborates, every port and module resolves"; fi
 
-.PHONY: tgp_replay test_v60_ifetch test_snd_report elab render render3d render3d_fuzz video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank test_p6_arb m1_main m1_boot m1_frame rbf mra verify_mra
+.PHONY: v60_fp_replay v60_fp_flags tgp_replay test_v60_ifetch test_snd_report elab render render3d render3d_fuzz video2d quartus_list quartus_paths v60_cpi test_v60_in_mem test_v60_mul_mem test_raster_band test_listwalk test_geo_xform test_fp_to_int test_geo_project test_geo_det test_geo_rsqrt test_geo_color test_geo_norm test_geo_clip test_geometry test_quad_store test_lightbank test_p6_arb m1_main m1_boot m1_frame rbf mra verify_mra
 # Optimisation target. Every figure so far was taken at Aggressive Performance,
 # so that stays the default and the numbers remain comparable. An area question
 # wants QOPT="Aggressive Area" — for combinational-heavy designs the two differ

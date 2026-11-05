@@ -104,7 +104,15 @@ module v60_fp (
     output            done,
     output reg        writes,      // 0 for CMPF, which sets flags only
     output reg [31:0] result,
-    output reg        o_z, o_s, o_ov, o_cy
+    output reg        o_z, o_s, o_ov, o_cy,
+    // WHICH OF THE FOUR FLAGS THIS INSTRUCTION WRITES, {cy, ov, s, z}. MAME's
+    // CVTSW sets S, OV and Z and leaves CY alone, and MOVFS sets no flag at
+    // all (op2.hxx); the unit's o_cy/o_* are not driven for those, so without
+    // this the CPU copied whatever the previous FP instruction had left there.
+    // Measured on Virtua Fighter (tb_v60_fp_replay, MAME's own operands): 22 of
+    // 1,982 FP ops in the stage 3 sweep and 34 of 645 in the attract Lau scene
+    // came out with the wrong CY - every one a CVTSW. docs/findings.md 2026-11-05.
+    output reg [3:0]  o_fmask
 );
 
 // ---------------------------------------------------------------- pipeline
@@ -496,7 +504,7 @@ always @(posedge clk) begin
 if (rst) begin
     fst <= F_IDLE;
     result <= 32'd0; writes <= 1'b0;
-    o_z <= 1'b0; o_s <= 1'b0; o_ov <= 1'b0; o_cy <= 1'b0;
+    o_z <= 1'b0; o_s <= 1'b0; o_ov <= 1'b0; o_cy <= 1'b0; o_fmask <= 4'b0000;
     fp_pk <= '0; fp_ux <= '0; fp_uy <= '0; fp_rx <= '0; fp_ry <= '0;
     fp_kind <= 1'b0;
     fdiv_rem <= '0; fdiv_qacc <= '0; fdiv_den <= '0; fdiv_cnt <= '0;
@@ -507,6 +515,8 @@ else if (ce) begin
     F_IDLE: if (start) begin
         logic [31:0] r; logic [31:0] iv; logic ov;
         r = 32'd0; iv = 32'd0; ov = 1'b0;
+        o_fmask <= (op == 8'h5f) ? ((subop == 5'h00) ? 4'b1111 : 4'b0111)   // CVTWS / CVTSW
+                                 : ((subop == 5'h08) ? 4'b0000 : 4'b1111);  // MOVFS / the rest
 
     if (op == 8'h5f) begin
         if (subop == 5'h00) begin              // CVTWS int->float

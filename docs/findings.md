@@ -20,6 +20,29 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-11-05 — V60: CVTSW KEEPS CY AND MOVFS KEEPS ALL FLAGS, AS MAME DOES
+
+Picked from `vf-issue6` (958e272) into the release candidate; the whole
+investigation is that branch's findings entry, "Items 1 and 2: the V60's
+floating point, against MAME's own operands". In short:
+
+MAME's tracer over two windows of Virtua Fighter (stage 3's sweep, 1,982 FP
+instructions; the attract Lau v Sarah scene, 645), paired by
+`tools/v60_fp_capture.py`, replayed through `v60_fp` by
+`sim/cpu/tb_v60_fp_replay.cpp` (`make v60_fp_replay FPV=<vectors>`): results
+equal on all of them, flags wrong 22 and 34 times, every one CY after CVTSW.
+MAME's opCVTSW sets S, OV and Z and leaves CY; v60.sv copied all four flags on
+every FP op, so CY came from whatever FP instruction ran before. MOVFS (no
+flags in MAME) had the same fault. `v60_fp` now reports which flags an
+instruction writes (`o_fmask`, {cy, ov, s, z}) and v60.sv writes only those.
+`make v60_fp_flags` (hand-written vectors, no ROM): 0 of 9 wrong after, 4
+before. At every CVTSW site in both windows the next flag-setting instruction
+overwrites CY before anything reads it, so this is MAME's behaviour fixed, not
+the cause of issue 6.
+
+
+---
+
 ## 2026-11-05 — PER-GAME BUTTONS, STAR WARS' THROTTLE, KEYBOARD JOYSTICK, ASPECT RATIO (issues #2, #7, #9, #4)
 
 Branch `inputs-osd`, on `nvram-save`.
