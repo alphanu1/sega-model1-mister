@@ -1,3 +1,32 @@
+# 2026-11-06: RELEASED Model1_20261106 (main, merge of inputs-osd)
+
+`releases/Model1_20261106.rbf` is the inputs-osd fit (seed 5, md5
+`ac1c72f5cf6f47fe8a9765bef6c39604`, numbers below), with the twelve
+`releases/mra/` files copied from `mra/` (index 7 nvram, per-game buttons).
+Issues: #9, #8, #7, #4, #2 closed; #6 commented, open for items 1 and 2.
+
+Board, before release: VF, VR and NetMerc boot and play; VF saves and loads its
+settings (test C, the release MRA's form). Star Wars and Wing War were not
+re-tested on this rbf.
+
+**The NVRAM load black screen did not recur and is not explained.** On
+2026-11-05 a VF save followed by a reload was a black screen; on 2026-11-06 the
+same MRA saved and loaded correctly. The file from the failing run
+(`build/wt-nvram/build/board/vf_test_c_saved.nvm`, not in git) boots to attract
+in the whole-core bench loaded exactly as the MRA sends it (`tb_m1_frame
+MRA_ORDER=1 NVFILE=...`, c7ebafd), with the saved settings (USA, free play).
+
+**Index 3 + index 6 together still black-screened VF on the board**, also
+unexplained: test B (all-FF RAMA on index 6, no index 3) boots, test C (erased
+EEPROM on index 3, no index 6) boots, both together did not. The bench boots
+all three (`EE_FORCE`, `NVHEX`). The only internal difference is `ee_img`, and
+with an FF image the Z80 sees the same EEPROM either way. Not in the bench:
+`m1_nv_port`, which sits between the Z80's fetch and SDRAM port 4 on the board
+(Model1.sv); SDRAM leftovers; Main's real timing. NetMerc's MRA still sends
+both (its RAMA image holds the gun alignment) and boots on the board.
+
+---
+
 # 2026-11-05, BRANCH inputs-osd (on nvram-save): THE RELEASE CANDIDATE
 
 Not merged, not released, not on the board. Three branches' work in one

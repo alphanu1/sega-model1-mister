@@ -7,11 +7,12 @@ Copy to the SD card:
 
 | from | to |
 |---|---|
-| `Model1_20261030.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
+| `Model1_20261106.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
 | the MRAs, from `mra/` | `/media/fat/_Arcade/` (or a folder inside it, such as `_Arcade/_Model1/`) |
 
 `mra/` has twelve MRAs: one per game, and a `[15kHz CRT]` version of each that
-starts the game at 15 kHz for a CRT.
+starts the game at 15 kHz for a CRT. **Use the MRAs from this release with
+this core**: older MRAs still boot, but they can't save settings.
 
 **One core, deliberately.** If you need an older build it is in the git
 history of this repository.
@@ -38,8 +39,8 @@ All sets are MAME's.
 its firmware a game does not boot: it waits forever for a board that never
 answers. MAME needs the same files, so a complete romset already has them.
 
-**Check what you are running.** `Model1_20261030.rbf` has the md5
-`6037b8b7ab97b7adee3c2ee653b479d6`. If yours doesn't match, the usual reason is
+**Check what you are running.** `Model1_20261106.rbf` has the md5
+`ac1c72f5cf6f47fe8a9765bef6c39604`. If yours doesn't match, the usual reason is
 a second file: MiSTer picks the core whose name sorts last, and `_` sorts after
 `.`, so a spare `Model1_old.rbf` in `cores/` quietly wins over `Model1.rbf`.
 Keep exactly one, and keep backups out of `cores/`.
@@ -49,6 +50,31 @@ chip: 8,192 rows, 1,024 columns, 4 banks) and uses up to about 45 MB of it -
 Star Wars, with its music data, is the largest - so a 32 MB module is too
 small. It has been tested on a 128 MB module, which works because the core
 uses only its first 64 MB.
+
+## New in `Model1_20261106`
+
+- **Settings save** (#8, #2). Change a game's settings in its test menu, then
+  OSD → `Save settings (NVRAM)`. They load automatically the next time you
+  start the game. The file holds the game's battery-backed RAM and its I/O
+  board's EEPROM, which together are everything the arcade keeps. Saving is
+  manual: nothing is saved until you choose it. Old `.nvm` files from earlier
+  MRAs are ignored, so there's no need to delete them.
+- **Star Wars Arcade's throttle works** (#7). `Throttle Up` and `Throttle Down`
+  (R1 and L1 by default) move it like the cabinet's lever, and it stays where
+  you leave it. Or set OSD → `Star Wars throttle` → `Right stick Y` to use the
+  right stick; it then no longer aims.
+- **Each game shows only its own buttons** (#2). NetMerc's are its own now, and
+  its Thumb and MVD Holder buttons work for the first time.
+- **Keyboard joystick emulation is on by default** (#9).
+- **Aspect ratio** option in the OSD (#4): `Original`, `Full Screen`, or the
+  two custom ratios from `MiSTer.ini`.
+- **The colour behind the tile layers is right** (#6, item 3): Virtua
+  Fighter's stage 3 sky is no longer blue where it should be black.
+- A V60 floating-point instruction fix: two instructions changed flags they
+  shouldn't.
+
+Virtua Racing's service menu moves only down, on VR1, and VR4 selects. That's
+the game's own behaviour: MAME does the same.
 
 ## New in `Model1_20261030`
 
@@ -112,6 +138,9 @@ uses only its first 64 MB.
 | `Analog control` | `Standard`, `Wheel A` (each pedal on the up half of an axis) or `Wheel B` (each pedal on its full travel) |
 | `Stick X axis` / `Stick Y axis` | invert the aim (Star Wars, NetMerc's gun) |
 | `Star Wars music volume` | `Firmware` (the game's own levels and fades, the default) or `MAME` |
+| `Aspect ratio` | `Original` (4:3), `Full Screen`, or the custom ratios `ARC1` / `ARC2` from `MiSTer.ini` |
+| `Star Wars throttle` | `Buttons` (Throttle Up / Down, the default) or `Right stick Y` |
+| `Save settings (NVRAM)` | saves the game's settings; they load automatically next time |
 | `NetMerc head look` | `Left stick` (default): look around with the left stick, aim with the right. `Left stick Y inv` flips up and down. `Off`: a fixed forward view, with both sticks on the gun |
 | `Test switch` / `Service switch` | the cabinet's switches, for the games' own test menus |
 
@@ -122,10 +151,10 @@ The games are configured in their own test menus, so there is no DIP menu.
 | | Virtua Racing / Formula | Virtua Fighter | Star Wars Arcade | Wing War | NetMerc |
 |---|---|---|---|---|---|
 | Move | left stick or d-pad: steer | d-pad | either stick or d-pad: aim | stick: fly | left stick: look; right stick: aim |
-| Buttons | Accelerate R2, Brake L2, Shift R1/L1, VR1-VR4 on A/B/X/Y | Punch, Kick, Guard on A, B, X | Fire, Thumb, Button 3 on A, B, X | Machine Gun, Missile, Smoke on A, B, X; View 1-4 on L1, R1, L2, R2 | Trigger and Thumb: set them with the OSD's button mapping |
-| Start / Coin | Start / Select | Start / Select | Start / Select (pad 2 Start joins as gunner) | Start / Select | Start / Select |
+| Buttons | Accelerate R2, Brake L2, Shift R1/L1, VR1-VR4 on A/B/X/Y | Punch, Kick, Guard on A, B, X | Fire, Thumb, Button 3 on A, B, X; Throttle Up / Down on R1 / L1 | Machine Gun, Missile, Smoke on A, B, X; View 1-4 on L1, R1, L2, R2 | Trigger, Thumb, MVD Holder on A, B, X |
+| Start / Coin | Start / Select | Start / Select | Start / Select (pad 2 Start joins as gunner) | Start / Select | Coin on Select (no Start button) |
 
-Service, Test and Coin 2 are mappable and unbound by default.
+Service and Test (and Coin 2 where the game has one) are mappable and unbound by default.
 
 ## Known issues
 
@@ -135,8 +164,10 @@ Service, Test and Coin 2 are mappable and unbound by default.
   glitch on the VR buttons screen, and some polygon colours differ from MAME's.
 - **NetMerc is nearly silent.** One of its sample ROMs, `mpr-18134`, is a bad
   dump (all `0xFF`) in every set going, MAME's included, so most of its sound
-  isn't there to play. Its ground is also a little darker than it should be,
-  and its button names are still Virtua Racing's.
+  isn't there to play. Its ground is also a little darker than it should be.
+- Virtua Fighter (#6): Sarah doesn't grab Lau in the attract intro, and some
+  fighters' poses are wrong while the camera sweeps in before a first-round
+  fight.
 - The Wing War clones (US, Japan, R360) and Star Wars Arcade (Japan) are not
   shipped: they're untested.
 
