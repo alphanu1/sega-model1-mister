@@ -83,7 +83,7 @@ module m1_loader_harness (
     .sdr_wr_req(wr_req), .sdr_wr_addr(wr_addr), .sdr_wr_din(wr_din),
     .sdr_wr_be(wr_be), .sdr_wr_ack(wr_ack),
     .tgp_wr(tgp_wr), .tgp_addr(tgp_addr), .tgp_din(tgp_din),
-    .rom_loaded(rom_loaded), .snd_loaded(snd_loaded), .overflow(overflow),
+    .rom_loaded(rom_loaded), .snd_loaded(snd_loaded), .ee_img(), .overflow(overflow),
     .ucode_words(ucode_words), .ucode_csum(ucode_csum)
   ,
     // Added with the SDRAM write-side census. Named rather than left out:

@@ -99,9 +99,12 @@ module m1_integrated (
   input  logic [15:0] hmd_stick,
   input  logic [1:0]  hmd_mode,
 
-  // The I/O board Z80's firmware fetch, to an SDRAM port at the top level.
+  // The I/O board Z80's firmware fetch, to an SDRAM port at the top level,
+  // and its EEPROM's write-through (m1_ioz80's fw_we).
   output logic        iofw_req,
   output logic [13:0] iofw_word,
+  output logic        iofw_we,
+  output logic [15:0] iofw_wdata,
   input  logic        iofw_ack,
   input  logic [15:0] iofw_din,
 
@@ -406,7 +409,9 @@ module m1_integrated (
     // The I/O board Z80's firmware, from the loader's own download index.
     // The I/O board Z80's firmware fetch, straight out to SDRAM port 7.
     .iofw_req(m_iofw_req), .iofw_word(m_iofw_word),
+    .iofw_we(m_iofw_we), .iofw_wdata(m_iofw_wdata),
     .iofw_ack(m_iofw_ack), .iofw_din(iofw_dout_cpu),
+    .ee_img(ee_img_sync[1]),
     // Microcode from the loader, written in the FAST domain into the dual-clock
     // program RAM inside m1_tgp. Complete before the CPU is released, so there
     // is no crossing to handshake.
@@ -766,7 +771,13 @@ module m1_integrated (
   logic frame_start_3d;
   // The I/O board Z80's firmware fetch, CPU side and the crossed address.
   localparam logic [25:1] IOFW_BASE = 25'hD00000;
-  logic        m_iofw_req, m_iofw_ack;
+  logic        m_iofw_req, m_iofw_ack, m_iofw_we;
+  logic [15:0] m_iofw_wdata;
+  // The loader's ee_img, static long before the Z80 is released (it is held
+  // until rom_loaded has been stable for a second); two flops all the same.
+  logic        ee_img_sys;
+  logic [1:0]  ee_img_sync;
+  always_ff @(posedge clk_cpu) ee_img_sync <= {ee_img_sync[0], ee_img_sys};
   logic [13:0] m_iofw_word;
   wire  [25:1] iofw_addr_sys;
   m1_cdc_pulse u_frame_pulse (
@@ -1041,17 +1052,18 @@ module m1_integrated (
   // that reads exactly like a broken CPU rather than a missing synchroniser.
   //
   // Everything else that crosses here already goes through this module; this
-  // one now does too. Read-only, so the write side is tied off.
+  // one now does too. It writes as well since 2026-11-05: the EEPROM's
+  // write-through to its block (m1_ioz80's fw_we).
   logic [15:0] iofw_dout_cpu;
   m1_cdc_port #(.AW(25), .DW(16), .BEW(2)) u_iofw_cdc (
     .a_clk(clk_cpu), .a_rst_n(rst_n_cpu),
-    .a_req(m_iofw_req), .a_we(1'b0),
+    .a_req(m_iofw_req), .a_we(m_iofw_we),
     .a_addr(IOFW_BASE + {10'd0, m_iofw_word}),
-    .a_din(16'd0), .a_be(2'b11),
+    .a_din(m_iofw_wdata), .a_be(2'b11),
     .a_dout(iofw_dout_cpu), .a_ack(m_iofw_ack), .a_busy(),
     .b_clk(clk_sys), .b_rst_n(rst_n_sys),
-    .b_req(iofw_req), .b_we(), .b_addr(iofw_addr_sys),
-    .b_din(), .b_be(),
+    .b_req(iofw_req), .b_we(iofw_we), .b_addr(iofw_addr_sys),
+    .b_din(iofw_wdata), .b_be(),
     .b_dout(iofw_din), .b_ack(iofw_ack)
   );
   // [14:1], not [13:1]: the window is 32 KB now, the top half of it
@@ -1225,7 +1237,8 @@ module m1_integrated (
     .tgp_wr(u_tgp_wr), .tgp_addr(u_tgp_addr), .tgp_din(u_tgp_din),
     .ucode_words(dbg_ucode_words), .ucode_csum(dbg_ucode_csum),
     .sdram_csum(dbg_sdram_csum), .sdram_words(dbg_sdram_words),
-    .rom_loaded(rom_loaded_o), .snd_loaded(snd_loaded_o), .overflow(ldr_overflow)
+    .rom_loaded(rom_loaded_o), .snd_loaded(snd_loaded_o), .ee_img(ee_img_sys),
+    .overflow(ldr_overflow)
   );
 
   bw_monitor #(.MASTERS(5), .CW(24), .BW(8)) mon (

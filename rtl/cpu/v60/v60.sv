@@ -466,6 +466,7 @@ reg         fp_busy;
 wire        fp_done, fp_writes;
 wire [31:0] fp_result;
 wire        fp_o_z, fp_o_s, fp_o_ov, fp_o_cy;
+wire [3:0]  fp_o_fmask;     // {cy, ov, s, z} the instruction writes; see v60_fp
 `endif
 
 // 0x5B/0x5D bit string / bit field state (V60-10)
@@ -2940,8 +2941,12 @@ else if (ce) begin
         end else begin
             fp_start <= 1'b0;
             if (fp_done) begin
-                f_z  <= fp_o_z;  f_s  <= fp_o_s;
-                f_ov <= fp_o_ov; f_cy <= fp_o_cy;
+                // Only the flags the instruction writes: CVTSW keeps CY and
+                // MOVFS keeps all four, as MAME's op2.hxx does.
+                if (fp_o_fmask[0]) f_z  <= fp_o_z;
+                if (fp_o_fmask[1]) f_s  <= fp_o_s;
+                if (fp_o_fmask[2]) f_ov <= fp_o_ov;
+                if (fp_o_fmask[3]) f_cy <= fp_o_cy;
                 wb_val  <= fp_result;
                 fp_busy <= 1'b0;
                 st      <= st_t'(fp_writes ? S_FP_WB : S_NEXT);
@@ -4625,7 +4630,8 @@ v60_fp u_fp (
     .start(fp_start), .op(cur_op), .subop(subop[4:0]),
     .a(op1), .b(fp_b), .cw(tkcw[2:0]),
     .done(fp_done), .writes(fp_writes), .result(fp_result),
-    .o_z(fp_o_z), .o_s(fp_o_s), .o_ov(fp_o_ov), .o_cy(fp_o_cy)
+    .o_z(fp_o_z), .o_s(fp_o_s), .o_ov(fp_o_ov), .o_cy(fp_o_cy),
+    .o_fmask(fp_o_fmask)
 );
 `endif
 

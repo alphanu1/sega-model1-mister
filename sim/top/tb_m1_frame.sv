@@ -67,6 +67,17 @@ module tb_m1_frame #(
     // The set's default RAMA (MAME's ROM_REGION "nvram"), one hex byte a line,
     // streamed on index 6 when present. Only NetMerc has one.
     parameter string  NVHEX      = "",
+    // Send index 3 even when the image is all FF: what an MRA that sends an
+    // erased part does (gen_mra.py, sets without MAME's ioboard:eeprom).
+    parameter bit     EE_FORCE   = 0,
+    // THE MRA'S OWN ORDER AND THE SAVED FILE, as Main_MiSTer sends them.
+    // MRA_ORDER streams 4, 0, 1, 2, 3, 5, 6 and then index 7 -- the order of
+    // the elements in mra/*.mra -- instead of this bench's historical order
+    // (sound first). Index 7 is what arcade_nvm_load sends for <nvram
+    // index="7" size="65672">: a zero-filled buffer of that size with
+    // NVFILE read over it, sent whether or not the file exists.
+    parameter bit     MRA_ORDER  = 0,
+    parameter string  NVFILE     = "",
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -327,8 +338,9 @@ wire [15:0] r3d_tex_din;
 // and never reached the code that sends sound bytes. It presented as a SOUND
 // fault three layers away from the actual cause.
 localparam logic [25:1] IOFW_BASE = 25'hD00000;
-wire        iofw_req;
+wire        iofw_req, iofw_we;
 wire [13:0] iofw_word;
+wire [15:0] iofw_wdata;   // the EEPROM's write-through (m1_ioz80 fw_we)
 
 // ELEVEN PORTS, NOT SEVEN, SO THE SOUND BOARD IS REALLY HERE (2026-09-15).
 //
@@ -356,7 +368,7 @@ wire  [1:0] dsb_sbe;
 assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
                  r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
 assign p_we   = {dsb_swe, snd_ram_we,  1'b0,        1'b0,         1'b0,
-                 r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+                 r3d_tex_we,  1'b0,        iofw_we,  1'b0,        1'b0,    1'b0,     sdr_we};
 // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -387,9 +399,9 @@ assign p_addr = {dsb_saddr,
                  {tgp_mem_addr[25:2], 1'b0}, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
 assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
-                 r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+                 r3d_tex_din, 16'd0, iofw_wdata, 16'd0, 16'd0, 16'd0, sdr_din};
 assign p_be   = {dsb_sbe, snd_ram_be,  2'b11, 2'b11, 2'b11,
-                 2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                 2'b11,       2'd0,  2'b11, 2'd0,  2'd0,  2'd0,  sdr_be};
 
 // ROM download, wired exactly as Model1.sv wires it.
 wire        ioctl_wait;
@@ -541,6 +553,7 @@ m1_integrated core (
     .sdr_dout(p_dout[0][15:0]), .sdr_ack(p_ack[0]),
 
     .iofw_req(iofw_req), .iofw_word(iofw_word),
+    .iofw_we(iofw_we), .iofw_wdata(iofw_wdata),
     .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
     .if_req(ifp_req), .if_addr(), .if_sdram_addr(ifp_addr),
     .if_data(p_dout[2]), .if_ack(p_ack[2]),
@@ -1786,6 +1799,44 @@ task automatic run_ee_download;
         ioctl_index    <= 16'd0;
         $display("download: I/O board EEPROM streamed on index 3 (word 0 = %02h%02h)",
                  eerom[1], eerom[0]);
+        $fflush;
+    end
+endtask
+
+// Index 7, as Main_MiSTer's arcade_nvm_load sends it: 65,672 bytes, zero
+// unless NVFILE supplies them.
+reg [7:0] nvsbuf [0:65671];
+task automatic run_nvs_download;
+    integer w, fd, c, n;
+    begin
+        for (w = 0; w < 65672; w = w + 1) nvsbuf[w] = 8'h00;
+        n = 0;
+        if (NVFILE != "") begin
+            fd = $fopen(NVFILE, "rb");
+            if (fd != 0) begin
+                c = $fgetc(fd);
+                while (c >= 0 && n < 65672) begin nvsbuf[n] = c[7:0]; n = n + 1; c = $fgetc(fd); end
+                $fclose(fd);
+            end
+        end
+        @(posedge clk);
+        ioctl_index    <= 16'd7;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 32836; w = w + 1) begin
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {nvsbuf[w*2 + 1], nvsbuf[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            dl_words    = dl_words + 1;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: saved NVRAM streamed on index 7 (%0d bytes from %s, tag %02h%02h)",
+                 n, NVFILE, nvsbuf[1], nvsbuf[0]);
         $fflush;
     end
 endtask
@@ -3844,7 +3895,18 @@ initial begin
     $display("SDRAM ready (mem_ready), HOLD_CPU=%0d", HOLD_CPU);
     $fflush;
 
-    if (DOWNLOAD) begin
+    if (DOWNLOAD && MRA_ORDER) begin
+        run_gameid_download(GAME_IS_VR ? 8'd0 : 8'd1);
+        run_download();
+        run_ucode_download();
+        if (iofw_ok) run_iofw_download();
+        if (ee_ok || EE_FORCE) run_ee_download();
+        if (SNDBIN != "") run_snd_download(); else run_snd_probes();
+        if (nv_ok)   run_nv_download();
+        run_nvs_download();
+        while (!loader_done) @(posedge clk);
+        $display("loader reports the ROM is in memory (MRA order)");
+    end else if (DOWNLOAD) begin
         run_gameid_download(8'd0);   // 0 = Virtua Racing
         // THE SOUND STREAM, END TO END. Nothing has ever tested it.
         if (SNDBIN != "") run_snd_download(); else run_snd_probes();
@@ -3862,7 +3924,7 @@ initial begin
         if (iofw_ok) run_iofw_download();
         $display("SNDROM-AFTER-IOFW: %04h %04h",
                  device.read_at(64'h1000000+0), device.read_at(64'h1000000+1));
-        if (ee_ok)   run_ee_download();
+        if (ee_ok || EE_FORCE) run_ee_download();
         if (nv_ok)   run_nv_download();
         while (!loader_done) @(posedge clk);
         $display("loader reports the ROM is in memory");

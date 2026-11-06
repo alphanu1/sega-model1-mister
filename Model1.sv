@@ -124,8 +124,11 @@ module emu
   assign BUTTONS   = 0;
 
   // 496x384 is close to 4:3; let the framework letterbox rather than stretch.
-  assign VIDEO_ARX = 13'd4;
-  assign VIDEO_ARY = 13'd3;
+  // O[25:24] "Aspect ratio" (issue #4), the Model 2 core's line: Original 4:3,
+  // Full Screen, or the framework's two custom ratios.
+  wire [1:0] ar = status[25:24];
+  assign VIDEO_ARX = (ar == 2'd0) ? 13'd4 : 13'(ar - 2'd1);
+  assign VIDEO_ARY = (ar == 2'd0) ? 13'd3 : 13'd0;
 
   // ------------------------------------------------------------------- OSD
   `include "build_id.v"
@@ -133,6 +136,7 @@ module emu
     "Model1;;",
     "-;",
     "O[2],Video timing,Original 24kHz,Scandoubled;",
+    "O[25:24],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
     "O[6],Test switch,Off,On;",
     "O[7],Service switch,Off,On;",
     "O[11],Pedals,Up=Accel,Up=Brake;",
@@ -150,9 +154,19 @@ module emu
     "O[12],Stick Y axis,Normal,Inverted;",
     "O[13],Stick X axis,Normal,Inverted;",
     "O[22:21],NetMerc head look,Left stick,Left stick Y inv,Off;",
+    // Issue #7: Star Wars' throttle on its two buttons, or on the right
+    // stick's Y (the right stick then no longer steers).
+    "O[26],Star Wars throttle,Buttons,Right stick Y;",
     "-;",
+    // The game's settings (RAMA and the I/O board's EEPROM) to the MRA's
+    // <nvram index="7">: m1_nv_port. Momentary: its edge asks Main to save.
+    "R[23],Save settings (NVRAM);",
     "T[0],Reset;",
     "R[0],Reset and close OSD;",
+    // Issue #9: keyboard joystick emulation on by default, as the Model 2
+    // core has it. These are the driving games' names; each MRA's <buttons>
+    // replaces them with its own game's (m1_pad_map has the layouts).
+    "J1,Accelerate,Brake,Shift Up,Shift Down,VR1,VR2,VR3,VR4,Start,Coin,Service,Test,Coin 2;",
     "V,v",`BUILD_DATE
   };
 
@@ -181,7 +195,9 @@ module emu
   // Bit order matches the MRA's <buttons names=...> list, which is what maps
   // pad buttons onto these. The two must be edited together — they disagreed
   // once, the MRA naming bit 4 "Start" while this read it as Coin, and a
-  // mismatch there is invisible until someone presses the button.
+  // mismatch there is invisible until someone presses the button. Since
+  // 2026-11-05 the layout is per game: rtl/io/m1_pad_map.sv. The first three
+  // buttons are at bits 4-6 in every game, so the pedals stay here.
   wire io_accel_b  = joy0[4];
   wire io_brake_b  = joy0[5];
   // THE GEARBOX IS ON THE D-PAD AS WELL AS ON BUTTONS.
@@ -191,31 +207,15 @@ module emu
   // player actually uses. The d-pad's up and down are free, because steering
   // takes only left and right, and up/down for gears is what a driving game
   // does anyway. Both routes are live: whichever the player has mapped works.
-  wire io_shift_up = joy0[6] | joy0[3];   // button, or d-pad up
-  wire io_shift_dn = joy0[7] | joy0[2];   // button, or d-pad down
-  wire io_vr1      = joy0[8];
-  wire io_vr2      = joy0[9];
-  wire io_vr3      = joy0[10];
-  wire io_vr4      = joy0[11];
-  wire io_start    = joy0[12];
-  wire io_coin     = joy0[13];
-  wire io_service  = joy0[14] | status[7];
-  wire io_test     = joy0[15] | status[6];
 
-  // Coin 2 has a real bit on the board — measured at IN.0 bit 1 — and is left
-  // off the MRA's name list because this is a single-seat cabinet and the pad
-  // has run out of buttons. Wired rather than tied off, so naming it later is
-  // one line rather than a hunt for which bit it was.
-  wire io_coin2    = joy0[16];
+  // Coin 2 has a real bit on the board — measured at IN.0 bit 1 — and is the
+  // last name on each MRA that has one (m1_pad_map).
 
   // Steering on the d-pad as well as the stick.
   // Two players, for the fighters. joy[0] right, [1] left, [2] down, [3] up,
   // buttons from [4] - the same order the VR decode above relies on.
   wire p1_right = joy0[0], p1_left = joy0[1], p1_down = joy0[2], p1_up = joy0[3];
-  wire p1_b1    = joy0[4], p1_b2   = joy0[5], p1_b3   = joy0[6];
   wire p2_right = joy1[0], p2_left = joy1[1], p2_down = joy1[2], p2_up = joy1[3];
-  wire p2_b1    = joy1[4], p2_b2   = joy1[5], p2_b3   = joy1[6];
-  wire io_start2   = joy1[12];
 
   wire io_steer_l  = joy0[1];
   wire io_steer_r  = joy0[0];
@@ -336,53 +336,22 @@ module emu
   //
   // model1.cpp INPUT_PORTS_START( vr ) and ( vf ). Active LOW throughout, so
   // idle is all-ones and a press is a bit going low.
-  wire [7:0] io_in0_vr = ~{io_vr3, io_vr2, io_vr1, io_start,
-                           io_service, io_test, io_coin2, io_coin};
-  wire [7:0] io_in1_vr = ~{2'b00, io_shift_up, io_shift_dn, 3'b000, io_vr4};
-  wire [7:0] io_in2_vr = 8'hff;       // drive board RX line, nothing on it here
-
-  // Virtua Fighter. IN.0 bit 5 is START2 where VR has its first view button -
-  // without it player 2 cannot join at all.
-  wire [7:0] io_in0_vf = ~{2'b00, io_start2, io_start,
-                           io_service, io_test, io_coin2, io_coin};
-  wire [7:0] io_in1_vf = ~{p1_left, p1_right, p1_up, p1_down,
-                           1'b0, p1_b3, p1_b2, p1_b1};
-  wire [7:0] io_in2_vf = ~{p2_left, p2_right, p2_up, p2_down,
-                           1'b0, p2_b3, p2_b2, p2_b1};
-
-  // Star Wars Arcade. INPUT_PORTS_START( swa ).
   //
-  // IN.0 is bit for bit Virtua Fighter's -- coin, coin2, test, service, START1
-  // at 0x10 and START2 at 0x20 -- so it is shared rather than retyped. IN.1 is
-  // its own: two buttons for EACH player plus a third for player 1, and the
-  // two players are interleaved rather than given a byte each.
-  //
-  //   0x01 P1 button 1   0x02 P1 button 2   0x10 P1 button 3
-  //   0x04 P2 button 1   0x08 P2 button 2
-  //
-  // IN.2 is declared entirely unused, so it stays idle-high.
-  wire [7:0] io_in1_swa = ~{3'b000, p1_b3, p2_b2, p2_b1, p1_b2, p1_b1};
-
-  // Wing War. INPUT_PORTS_START( wingwar ).
-  //
-  // IN.0 IS ALREADY VIRTUA RACING'S, BIT FOR BIT -- coin at 0x01, the
-  // no-toggle service at 0x04, SERVICE1 at 0x08, START1 at 0x10 and View 1-3
-  // at 0x20/0x40/0x80. Nothing to do, and worth stating because Start not
-  // working on the board was first read as a mapping fault. It is not one.
-  //
-  // IN.1 differs by exactly one reachable bit. View 4 at 0x01 already lands on
-  // io_vr4; Machine Gun (0x10), Missile (0x20) and Smoke (0x40) are the three
-  // weapons, and only the first two had anything driving them -- the gear
-  // levers, by coincidence of position. SMOKE WAS TIED LOW AND UNREACHABLE.
-  //
-  // The three take joy0[4]/[5]/[6], which are the pedals and first gear on a
-  // racer and free here, so they sit under the MRA's first three button names.
-  wire [7:0] io_in1_ww = ~{1'b0, joy0[6], joy0[5], joy0[4], 3'b000, io_vr4};
-
-  wire [7:0] io_in0 = (is_vf | is_swa) ? io_in0_vf : io_in0_vr;
-  wire [7:0] io_in1 = is_swa ? io_in1_swa : is_ww ? io_in1_ww :
-                      is_vf  ? io_in1_vf  : io_in1_vr;
-  wire [7:0] io_in2 = is_vf ? io_in2_vf : io_in2_vr;
+  // EACH GAME HAS ITS OWN BUTTON LAYOUT SINCE 2026-11-05 (issue #2), keyed on
+  // the game id, so each MRA lists only that game's real buttons - no more
+  // "Unused 4".."Unused 8" holding Start and Coin at bits 12 and 13. The
+  // layouts, the bytes and the reasons are in rtl/io/m1_pad_map.sv;
+  // tb_m1_pad_map checks every named button against the fixed layout this
+  // replaced and against MAME's bit. NetMerc gains Thumb and MVD Holder,
+  // which the driving layout it was given could not reach.
+  wire [7:0] io_in0, io_in1, io_in2;
+  wire       swa_thr_up, swa_thr_dn;
+  m1_pad_map u_pad_map (
+    .game(game), .joy0(joy0), .joy1(joy1),
+    .osd_test(status[6]), .osd_service(status[7]),
+    .in0(io_in0), .in1(io_in1), .in2(io_in2),
+    .thr_up(swa_thr_up), .thr_dn(swa_thr_dn)
+  );
 
   // The three MSM6253 channels. Each idle value is measured rather than assumed
   // — see docs/io-board.md — and they are not the same: steering rests centred
@@ -472,8 +441,11 @@ module emu
   wire [7:0] ly_d = (swa_ly > 8'h70 && swa_ly < 8'h90) ? 8'h80 : swa_ly;
   wire [7:0] rx_d = (swa_rx > 8'h70 && swa_rx < 8'h90) ? 8'h80 : swa_rx;
   wire [7:0] ry_d = (swa_ry > 8'h70 && swa_ry < 8'h90) ? 8'h80 : swa_ry;
-  wire [7:0] swa_ax_r = (dev(rx_d) > dev(lx_d)) ? rx_d : lx_d;
-  wire [7:0] swa_ay_r = (dev(ry_d) > dev(ly_d)) ? ry_d : ly_d;
+  // With "Star Wars throttle: Right stick Y" the right stick is the throttle
+  // and only the left one flies the ship.
+  wire       swa_thr_stick = is_swa & status[26];
+  wire [7:0] swa_ax_r = (!swa_thr_stick && dev(rx_d) > dev(lx_d)) ? rx_d : lx_d;
+  wire [7:0] swa_ay_r = (!swa_thr_stick && dev(ry_d) > dev(ly_d)) ? ry_d : ly_d;
 
   // X IS REVERSED BY DECLARATION, NOT BY TASTE.
   //
@@ -525,10 +497,14 @@ module emu
   wire [7:0] swa_stick_y = p1_up    ? (status[12] ? 8'd227 : 8'd27 ) :
                            p1_down  ? (status[12] ? 8'd27  : 8'd227) : swa_sy_a;
 
-  // THROTTLE is PORT_MINMAX(28,200) with a 0x7f default and nothing on this pad
-  // to drive it, so it rests mid-travel. 0x01 -- the value an idle VR pedal
-  // takes -- would be a throttle held at one end.
-  wire [7:0] swa_throttle = 8'd127;
+  // THROTTLE is PORT_MINMAX(28,200) with a 0x7f default. Until 2026-11-05
+  // nothing on the pad drove it and it rested mid-travel (0x01, the value an
+  // idle VR pedal takes, would be a throttle held at one end).
+  // ISSUE #7: THE THROTTLE MOVES NOW (m1_swa_throttle, instantiated after
+  // the PLL because it is clocked: MAME's 28..200 on DPRAM 0x02, 28 the fast
+  // end). Throttle Up / Down step it and it stays where it is let go; or the
+  // right stick's Y, dead band and all, takes it.
+  wire [7:0] swa_throttle;
 
   // ------------------------------------------------------ Wing War, analogue
   //
@@ -666,7 +642,13 @@ module emu
     if (!pll_locked)                                    game_id <= 8'd0;
     else if (ioctl_wr && (ioctl_index == GAMEID_INDEX)) game_id <= ioctl_dout[7:0];
   end
-  wire        ioctl_wait;
+  // ioctl_wait is the loader's during a download and the NVRAM save's during
+  // an upload; each is gated on its own transfer, because the line stalls the
+  // HPS itself.
+  wire        ioctl_wait, ldr_ioctl_wait, nv_ioctl_wait;
+  assign ioctl_wait = ldr_ioctl_wait | nv_ioctl_wait;
+  wire        ioctl_upload, ioctl_rd, nv_save_req;
+  wire [15:0] ioctl_din;
 
   hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io
   (
@@ -701,7 +683,15 @@ module emu
     .ioctl_addr(ioctl_addr),
     .ioctl_dout(ioctl_dout),
     .ioctl_index(ioctl_index),
-    .ioctl_wait(ioctl_wait)
+    .ioctl_wait(ioctl_wait),
+    // THE NVRAM SAVE. Main_MiSTer writes the MRA's <nvram> section back only
+    // after the core raises ioctl_upload_req; until 2026-11-05 none of these
+    // were connected, so the file it created was never filled or read back.
+    .ioctl_upload(ioctl_upload),
+    .ioctl_upload_req(nv_save_req),
+    .ioctl_upload_index(8'd7),
+    .ioctl_din(ioctl_din),
+    .ioctl_rd(ioctl_rd)
   );
 
   // ---------------------------------------------------------------- clocks
@@ -741,6 +731,14 @@ module emu
     .outclk_2 (clk_sdram),
     .outclk_3 (clk_3d),
     .locked   (pll_locked)
+  );
+
+  // Star Wars' throttle lever (issue #7); see swa_throttle above.
+  m1_swa_throttle u_swa_thr (
+    .clk(clk_sys), .rst_n(pll_locked),
+    .up(swa_thr_up), .dn(swa_thr_dn),
+    .stick(swa_thr_stick), .ry(ry_d ^ 8'h80),
+    .thr(swa_throttle)
   );
 
   // TWO RESETS, AND THE SPLIT IS LOAD-BEARING.
@@ -997,8 +995,14 @@ module emu
   // m1_rom_loader is where the loader put it, and the two must agree - a
   // mismatch is a Z80 executing whatever else is at that address.
   localparam logic [25:1] IOFW_BASE = 25'hD00000;
-  wire        iofw_req;
+  wire        iofw_req, iofw_we, iofw_ack;
   wire [13:0] iofw_word;
+  wire [15:0] iofw_wdata;
+  // Port 4 as the controller sees it: the Z80's requests and the NVRAM
+  // save's reads, served one at a time by m1_nv_port.
+  wire        p4_req, p4_we;
+  wire [25:1] p4_addr;
+  wire [15:0] p4_din, iofw_dout;
 
   // The 3D layer's two masters, from m1_integrated in the clk_sys domain.
   wire        r3d_rom_req, r3d_tex_req, r3d_tex_we;
@@ -1031,14 +1035,27 @@ module emu
   // REVERTED -- see docs/HANDOFF.md, 2026-09-13. It bought 54 M10K and cost
   // the 3D layer, and four real bugs fixed inside it did not bring the picture
   // back. The work is preserved in build/dlist_work/ with its tests.
-  assign iofw_ack = p_ack[4];
+  // PORT 4 IS SHARED WITH THE NVRAM SAVE (2026-11-05), and carries the
+  // EEPROM's write-through. m1_nv_port queues the two; see its header.
+  m1_nv_port u_nv_port (
+    .clk(clk_sys), .rst_n(mem_rst_n),
+    .save_btn(status[23]), .save_req(nv_save_req),
+    .ioctl_upload(ioctl_upload), .ioctl_rd(ioctl_rd),
+    .ioctl_index(ioctl_index), .ioctl_addr(ioctl_addr),
+    .ioctl_din(ioctl_din), .ioctl_wait(nv_ioctl_wait),
+    .io_req(iofw_req), .io_we(iofw_we),
+    .io_addr(IOFW_BASE + {11'd0, iofw_word}), .io_din(iofw_wdata),
+    .io_ack(iofw_ack), .io_dout(iofw_dout),
+    .p_req(p4_req), .p_we(p4_we), .p_addr(p4_addr), .p_din(p4_din),
+    .p_ack(p_ack[4]), .p_dout(p_dout[4][15:0])
+  );
 
 
   // PORT 4 IS THE I/O BOARD'S NOW, not the read-back sweep's. See DEBUG_OVERLAY.
   assign p_req  = {dsb_sreq, snd_ram_req, snd_pcm2_req, snd_pcm1_req, snd_rom_req,
-                   r3d_tex_req, r3d_rom_req, iofw_req, tgp_mem_req, ifp_req, char_req, sdr_req};
+                   r3d_tex_req, r3d_rom_req, p4_req, tgp_mem_req, ifp_req, char_req, sdr_req};
   assign p_we   = {dsb_swe,  snd_ram_we,  1'b0,         1'b0,         1'b0,
-                   r3d_tex_we,  1'b0,        1'b0,     1'b0,        1'b0,    1'b0,     sdr_we};
+                   r3d_tex_we,  1'b0,        p4_we,    1'b0,        1'b0,    1'b0,     sdr_we};
   // Character RAM lives at CHAR_BASE in SDRAM, exactly where m1_main maps the
 // CPU's writes to 0x780000-0x7fffff. The renderer emits an offset within that
 // region, so the base has to be added here — without it the tilemap fetches
@@ -1076,13 +1093,13 @@ assign p_addr = {dsb_saddr,
                  // cycles after reset. The unit benches all passed; only a
                  // bench that boots the CPU sees it.
                  r3d_tex_addr, {r3d_rom_addr[25:2], 1'b0},
-                 IOFW_BASE + {10'd0, iofw_word},
+                 p4_addr,
                  tgp_mem_addr, ifp_addr,
                  25'hFA8000 + {6'd0, char_addr}, sdr_addr};
   assign p_din  = {dsb_sdin, snd_ram_wdata, 16'd0, 16'd0, 16'd0,
-                   r3d_tex_din, 16'd0, 16'd0, 16'd0, 16'd0, 16'd0, sdr_din};
+                   r3d_tex_din, 16'd0, p4_din, 16'd0, 16'd0, 16'd0, sdr_din};
   assign p_be   = {dsb_sbe, snd_ram_be, 2'b11, 2'b11, 2'b11,
-                   2'b11,       2'd0,  2'd0,  2'd0,  2'd0,  2'd0,  sdr_be};
+                   2'b11,       2'd0,  2'b11, 2'd0,  2'd0,  2'd0,  sdr_be};
 
   // One master per port: no arbitration, no ownership, nothing to get wrong.
   assign snd_rom_ack = p_ack[7];
@@ -1479,14 +1496,15 @@ assign p_addr = {dsb_saddr,
 
     // The I/O board Z80's firmware fetch, on port 7.
     .iofw_req(iofw_req), .iofw_word(iofw_word),
-    .iofw_ack(p_ack[4]), .iofw_din(p_dout[4][15:0]),
+    .iofw_we(iofw_we), .iofw_wdata(iofw_wdata),
+    .iofw_ack(iofw_ack), .iofw_din(iofw_dout),
 
     .char_req(char_req), .char_addr(char_addr),
     .char_data(char_data), .char_ack(char_ack),
 
     .ioctl_download(ioctl_download), .ioctl_index(ioctl_index),
     .ioctl_wr(ioctl_wr), .ioctl_addr(ioctl_addr), .ioctl_dout(ioctl_dout),
-    .ioctl_wait(ioctl_wait),
+    .ioctl_wait(ldr_ioctl_wait),
     .ldr_wr_req(ldr_wr_req), .ldr_wr_addr(ldr_wr_addr),
     .ldr_wr_din(ldr_wr_din), .ldr_wr_be(ldr_wr_be), .ldr_wr_ack(ldr_wr_ack),
     .tgp_mem_req(tgp_mem_req), .tgp_mem_addr(tgp_mem_addr),

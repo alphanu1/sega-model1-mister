@@ -234,6 +234,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_dec.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_xfer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/tgp/mb86233_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_rom_loader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_nv_port.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_pad_map.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/io/m1_swa_throttle.sv
 
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_decode.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/m1_tile_fetch.sv

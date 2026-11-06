@@ -20,6 +20,214 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
+## 2026-11-05 — V60: CVTSW KEEPS CY AND MOVFS KEEPS ALL FLAGS, AS MAME DOES
+
+Picked from `vf-issue6` (958e272) into the release candidate; the whole
+investigation is that branch's findings entry, "Items 1 and 2: the V60's
+floating point, against MAME's own operands". In short:
+
+MAME's tracer over two windows of Virtua Fighter (stage 3's sweep, 1,982 FP
+instructions; the attract Lau v Sarah scene, 645), paired by
+`tools/v60_fp_capture.py`, replayed through `v60_fp` by
+`sim/cpu/tb_v60_fp_replay.cpp` (`make v60_fp_replay FPV=<vectors>`): results
+equal on all of them, flags wrong 22 and 34 times, every one CY after CVTSW.
+MAME's opCVTSW sets S, OV and Z and leaves CY; v60.sv copied all four flags on
+every FP op, so CY came from whatever FP instruction ran before. MOVFS (no
+flags in MAME) had the same fault. `v60_fp` now reports which flags an
+instruction writes (`o_fmask`, {cy, ov, s, z}) and v60.sv writes only those.
+`make v60_fp_flags` (hand-written vectors, no ROM): 0 of 9 wrong after, 4
+before. At every CVTSW site in both windows the next flag-setting instruction
+overwrites CY before anything reads it, so this is MAME's behaviour fixed, not
+the cause of issue 6.
+
+
+---
+
+## 2026-11-05 — PER-GAME BUTTONS, STAR WARS' THROTTLE, KEYBOARD JOYSTICK, ASPECT RATIO (issues #2, #7, #9, #4)
+
+Branch `inputs-osd`, on `nvram-save`.
+
+**Buttons (#2).** Every game shared one layout - eight game buttons, then
+Start, Coin, Service, Test, Coin 2 at joystick bits 12-16 - so Virtua
+Fighter, Star Wars and Wing War listed "Unused 4".."Unused 8". Now
+`rtl/io/m1_pad_map.sv` keys the layout on the game id, as the Model 2 core
+does, and each MRA lists only real buttons. The first three buttons stay at
+bits 4-6 everywhere, so the pedal buttons the analogue paths read do not
+move. `make test_pad_map` drives every named button, every d-pad direction,
+both OSD switches and 200,000 random combinations per game, at its old bit
+through main's equations (7168ad8, copied into the bench) and at its new bit
+through the module: IN.0/IN.1/IN.2 equal on all 600,258 comparisons, and all
+196 single controls clear MAME 0.289's bit. Three mutations (Wing War's View 1,
+Star Wars' player 2 Start, NetMerc's Service/Test swapped) each fail it.
+
+**NetMerc was not equal to main, deliberately.** Main gave it the driving
+layout, so its Trigger was "VR4" and MAME's Thumb and MVD Holder (IN.1 bits 1
+and 2) were unreachable, while "VR1-3", "Start", "Coin 2" and d-pad up/down
+drove bits MAME marks unused. It now has Trigger, Thumb, MVD Holder, Coin,
+Service, Test; the comparison with main is masked to MAME's bits for it.
+
+**Star Wars' throttle (#7).** MAME: MSM6253 channel 2 (`an_callback<2>`,
+"THROTTLE", PORT_MINMAX(28,200), PORT_REVERSE, default 0x7f). Measured in MAME
+0.289 headless, the field set from lua and the DPRAM read through the V60's
+`0xc00004`: released, DPRAM 0x02 reads 0xc8 (200); driven to 28 it reads
+0x1c; DPRAM 0x00, 0x01, 0x03-0x07 do not move. On INPUT TEST 2/2 the pilot's
+bar is at FAST for 28 and SLOW for 200. The core held 127 there.
+`rtl/io/m1_swa_throttle.sv`: Throttle Up (toward 28) and Throttle Down
+(toward 200) step it one count per 2^19 clk_sys cycles (6.55 ms; the whole
+172-count travel in 1.13 s) and it stays where it is let go; power-on 127, as
+before. OSD `O[26]` "Star Wars throttle: Right stick Y" puts it on the right
+stick instead (up 28, centre 114, down 199) and the right stick then no longer
+steers. `make test_swa_throttle`: 3,723 checks, 0 fails.
+
+**Keyboard joystick (#9).** `J1,...` in CONF_STR, the Model 2 core's line, with
+the driving games' names; each MRA's `<buttons>` replaces them.
+
+**Aspect ratio (#4).** `O[25:24]` Original / Full Screen / [ARC1] / [ARC2],
+the Model 2 core's line and expressions; Original is the old fixed 4:3.
+
+
+---
+
+## 2026-11-05 — THE CORE HAD NO SAVE PATH. THE GAMES KEEP THEIR TEST-MENU SETTINGS IN RAMA; THE NVRAM FILE NOW CARRIES RAMA AND THE 93C46
+
+Branch `nvram-save`, on `main` (7168ad8). Issues #8 and #2 (the NVRAM part):
+Virtua Fighter, Star Wars, Wing War and Virtua Racing lose their test-menu
+settings (region, Free Play) at every load.
+
+### What was wrong
+
+`Model1.sv`'s `hps_io` had no `ioctl_upload`, `ioctl_din`, `ioctl_rd` or
+`ioctl_upload_req`, and nothing took the MRAs' `<nvram index="255"
+size="256">`. Main_MiSTer (`support/arcade/mra_loader.cpp`, `menu.cpp`)
+saves the MRA's `<nvram>` when the core has raised `ioctl_upload_req`
+(`UIO_CHK_UPLOAD`) and on the system menu's "Save settings" - the second
+uploads unconditionally, which is how a 256-byte `.nvm` came to exist - and
+sends it back after the `<rom>`s before the element, only if the file exists.
+
+### Where the settings live (MAME 0.289, headless, inputs driven from lua)
+
+`model1.cpp` has two non-volatile stores: RAMA (`0x400000-0x40ffff`,
+`nvram_device::DEFAULT_ALL_1`) and the I/O board's `EEPROM_93C46_16BIT`
+(`model1io.cpp`, `model1io2.cpp`). `model1io2`'s "backup ram" at `0xe000` is
+plain `.ram()`, not saved. Measured by changing one setting in the test menu
+and diffing MAME's `nvram/<set>/nvram` and `ioboard_eeprom` against an
+identical run without the change:
+
+| set | the change | RAMA bytes differing | EEPROM bytes differing |
+|---|---|---|---|
+| vr | GAME SYSTEM, START CREDIT (VR1 to it, VR2 to change) | 3 | 0 |
+| vf | GAME ASSIGNMENT, MATCH COUNT(1P) 2 -> 3 (on screen) | 3 | 0 |
+| swa | GAME ASSIGNMENTS, first item, Test pressed (not confirmed on screen) | 18 | 0 |
+| wingwar | the press left the menu: no setting changed | 15 (attract-timing noise) | 0 |
+
+So VR and VF keep their test-menu settings (COUNTRY among them) in RAMA.
+Star Wars and Wing War were not driven to a confirmed change. No test-menu
+action changed the EEPROM in any of the four; it holds the I/O board's
+identity ("SEGA" in vf's, "S32AF0" in wingwar's), written by the firmware to
+a virgin part at boot. Both are saved regardless.
+
+### The file
+
+`<nvram index="7" size="65672"/>`, after every `<rom>` so a saved file lands
+on top of the defaults:
+
+    0x00000-0x00007  "M1NVRAM1"
+    0x00008-0x00087  the 93C46, 64 words, as index 3 sends them
+    0x00088-0x10087  RAMA, 64 KB, as index 6 sends it (the V60's byte order)
+
+**Nothing is taken unless all four tag words arrive first.** `arcade_nvm_load`
+zero-fills a buffer of the MRA's size, reads the file over it and sends all
+of it, so the 256-byte file the old MRAs left behind arrives as 65,672 bytes;
+untagged it would have written zeros over RAMA (NetMerc's gun alignment) and
+the EEPROM (VR's "SEGA" block). Old files are ignored and the first save
+overwrites them; nobody needs to delete one. Model 2's R945 tags its file for
+the same reason; here the tag is first so neither part needs a staging copy.
+
+- **Load**, `m1_rom_loader` index 7: the EEPROM words to index 3's SDRAM block,
+  RAMA to index 6's, through the existing write FIFO.
+- **Save**, `rtl/io/m1_nv_port.sv` (new): the OSD's "Save settings (NVRAM)"
+  (`R[23]`) raises `ioctl_upload_req` with index 7. The upload reads each word
+  from SDRAM through port 4, shared with the I/O board's firmware fetch (one
+  transaction at a time; neither waits behind more than one of the other)
+  rather than a thirteenth controller port. `ioctl_wait` is held from
+  `ioctl_rd` until the word is in `ioctl_din`, gated on `ioctl_upload`.
+- **The EEPROM is written through to SDRAM**, `m1_ioz80` `fw_we`: every WRITE
+  or ERASE the firmware makes also goes to the part's SDRAM block, the Z80 held
+  for the few dozen cycles it takes. The save reads it there, and an OSD reset
+  now reloads what the firmware last wrote rather than the MRA's image, as a
+  real 93C46 keeps it.
+- **`ee_img`**: the part is loaded from that block only if index 3 or a tagged
+  index 7 wrote it since power-on, otherwise it is erased (FFFF). This replaces
+  `io2 ? 16'hffff : fw_din`: vf, swa and vformula never sent index 3 and read
+  whatever the previous game had left there.
+- **MRAs**, `tools/gen_mra.py`, all twenty regenerated: index 7 as above; a set
+  without MAME's `ioboard:eeprom` region sends 128 bytes of FF on index 3, and
+  one without an `nvram` region 64 KB of FF on index 6 (DEFAULT_ALL_1), so
+  every set starts from its own erased parts, not the last game's.
+
+  **The index-6 FF block is WITHDRAWN (2026-11-05, same day).** On the board,
+  rbf ac1c72f5, the Virtua Fighter MRA with it black-screened; the same MRA
+  with only that block removed boots (test MRA C), as does the old MRA.
+  Virtua Racing booted with it. MAME is not the cause: model1.cpp fills RAMA
+  with FF for every set ("vf (at least) depends on default being 1-filled
+  for ranking to initialize properly"), and MAME 0.289 VF started from an
+  explicit 64 KB all-FF `nvram` file is drawing at frames 1,500 and 3,000
+  (187,440 and 170,001 of 190,464 pixels non-black). So an all-FF RAMA
+  reaches a fault in this core, not yet found. The MRAs send nothing on
+  index 6 again except NetMerc's own image, and RAMA comes up as whatever
+  SDRAM holds, as before. The erased EEPROM on index 3 stays: the same board
+  test booted with it.
+
+  What MAME's I/O firmware writes into a blank 93C46 in the first 1,200
+  frames (identical at 3,000), as the bytes MAME's `ioboard_eeprom` holds:
+  vf and vformula `45 53 41 47` ("SEGA" with each 16-bit word byte-swapped)
+  followed by about 30 small configuration words and zeros; swa `33 53 41 32`
+  ("S32A" swapped), then FF; wingwar `53 33 32 41 46 30` ("S32AF0") and a
+  block repeated at 0x44; netmerc nothing (all FF). They differ per game, and
+  none is needed: the erased part boots.
+
+### Proof
+
+`make test_nv_save`, `sim/io/tb_m1_nv_save.sv` (new): the real
+`sys/hps_io.sv` (WIDE) with sys_top's acknowledge logic copied in front,
+`m1_rom_loader`, `m1_nv_port`, `m1_sdram` on `sdram_model` (unwritten words
+read 0xFFFF), `m1_cdc_port`, and `m1_ioz80` with a Z80 running a program
+served from SDRAM that bit-bangs the 93C46 (EWEN, then 1-24 random WRITEs)
+and then loops through a 300-byte NOP sled, so its fetches contend with the
+upload. The HPS side is Main's word sequence. Per round, random defaults and a
+strobe spacing log-uniform over 1-400 cycles (round 0 at 1):
+
+    boot 1  no file: the defaults; the firmware's writes; up to 400 RAMA writes
+            on port 0; a game reset reloads the WRITTEN EEPROM; the save is the
+            65,672 bytes tag + EEPROM + RAMA, byte for byte
+    boot 2  that file: EEPROM and all 32,768 RAMA words are the saved ones; a
+            second save is the same file
+    boot 3  an old 256-byte file (zeros, or random bytes), zero-padded: defaults
+    boot 4  the saved file with one tag bit flipped: defaults
+    boot 5  no index 3 and no file, SDRAM still holding the last image: FFFF
+
+First board, 6 rounds: `checks=1380854 fails=0`. Second board (Wing War's: PF
+bits, E000 RAM, the 1/2 clock enable), 4 rounds: `checks=920570 fails=0`.
+SDRAM protocol violations 0, loader overflow 0. Negative controls, one round
+each, every one caught:
+
+| mutation | result |
+|---|---|
+| the HPS ignores ioctl_wait (`NOWAIT=1`) | 65,400 of 65,672 bytes of the first save wrong |
+| no write-through (`fw_wr_q` never set) | the Z80 is held forever on its first EEPROM write (the bench now has a watchdog that fails it) |
+| the tag gate removed from index 7 | boot 3: 64 of 64 EEPROM words zero, from the old 256-byte file |
+| `ee_img` ignored (the block always loaded) | boot 5: 64 of 64 EEPROM words are the last image, not FFFF |
+| `ioctl_rd` taken out of `ioctl_wait` | **passes**: Main waits for the acknowledge to FALL as well as rise (`fpga_spi`), and the wait holds the fall, so the next strobe cannot come early. Kept as a margin, not as something the bench proves |
+
+The first version of the bench saved boot 2 while the program was still
+rewriting its words, and where a word is written twice the save held the
+first value (byte pairs in 0x0c-0x86 wrong in 4 of 10 rounds). That is a game
+writing during a save, which a real board does too; the bench now waits for
+the program to finish before saving.
+
+
+---
+
 ## 2026-11-05 — THE FIXED BLUE WHERE THE SKY SHOULD BE IS THE ROW MASK APPLIED IN WINDOW MODE; MAME NEVER APPLIES IT THERE
 
 Branch `tile-backdrop`, on `main` (2657c46). Issue #6 item 3. On the board,
