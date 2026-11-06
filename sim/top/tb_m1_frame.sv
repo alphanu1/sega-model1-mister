@@ -70,6 +70,14 @@ module tb_m1_frame #(
     // Send index 3 even when the image is all FF: what an MRA that sends an
     // erased part does (gen_mra.py, sets without MAME's ioboard:eeprom).
     parameter bit     EE_FORCE   = 0,
+    // THE MRA'S OWN ORDER AND THE SAVED FILE, as Main_MiSTer sends them.
+    // MRA_ORDER streams 4, 0, 1, 2, 3, 5, 6 and then index 7 -- the order of
+    // the elements in mra/*.mra -- instead of this bench's historical order
+    // (sound first). Index 7 is what arcade_nvm_load sends for <nvram
+    // index="7" size="65672">: a zero-filled buffer of that size with
+    // NVFILE read over it, sent whether or not the file exists.
+    parameter bit     MRA_ORDER  = 0,
+    parameter string  NVFILE     = "",
     // The whole packed SDRAM image, in words. Build it with
     //   python3 tools/build_rom_image.py vr <vr.zip> -o build/rom --bin
     // Set STREAM_WORDS to 0 to run without it, which is the old behaviour and
@@ -1791,6 +1799,44 @@ task automatic run_ee_download;
         ioctl_index    <= 16'd0;
         $display("download: I/O board EEPROM streamed on index 3 (word 0 = %02h%02h)",
                  eerom[1], eerom[0]);
+        $fflush;
+    end
+endtask
+
+// Index 7, as Main_MiSTer's arcade_nvm_load sends it: 65,672 bytes, zero
+// unless NVFILE supplies them.
+reg [7:0] nvsbuf [0:65671];
+task automatic run_nvs_download;
+    integer w, fd, c, n;
+    begin
+        for (w = 0; w < 65672; w = w + 1) nvsbuf[w] = 8'h00;
+        n = 0;
+        if (NVFILE != "") begin
+            fd = $fopen(NVFILE, "rb");
+            if (fd != 0) begin
+                c = $fgetc(fd);
+                while (c >= 0 && n < 65672) begin nvsbuf[n] = c[7:0]; n = n + 1; c = $fgetc(fd); end
+                $fclose(fd);
+            end
+        end
+        @(posedge clk);
+        ioctl_index    <= 16'd7;
+        ioctl_download <= 1'b1;
+        @(posedge clk);
+        for (w = 0; w < 32836; w = w + 1) begin
+            while (ioctl_wait) @(posedge clk);
+            ioctl_wr   <= 1'b1;
+            ioctl_addr <= w * 2;
+            ioctl_dout <= {nvsbuf[w*2 + 1], nvsbuf[w*2]};
+            @(posedge clk);
+            ioctl_wr   <= 1'b0;
+            dl_words    = dl_words + 1;
+            @(posedge clk);
+        end
+        ioctl_download <= 1'b0;
+        ioctl_index    <= 16'd0;
+        $display("download: saved NVRAM streamed on index 7 (%0d bytes from %s, tag %02h%02h)",
+                 n, NVFILE, nvsbuf[1], nvsbuf[0]);
         $fflush;
     end
 endtask
@@ -3849,7 +3895,18 @@ initial begin
     $display("SDRAM ready (mem_ready), HOLD_CPU=%0d", HOLD_CPU);
     $fflush;
 
-    if (DOWNLOAD) begin
+    if (DOWNLOAD && MRA_ORDER) begin
+        run_gameid_download(GAME_IS_VR ? 8'd0 : 8'd1);
+        run_download();
+        run_ucode_download();
+        if (iofw_ok) run_iofw_download();
+        if (ee_ok || EE_FORCE) run_ee_download();
+        if (SNDBIN != "") run_snd_download(); else run_snd_probes();
+        if (nv_ok)   run_nv_download();
+        run_nvs_download();
+        while (!loader_done) @(posedge clk);
+        $display("loader reports the ROM is in memory (MRA order)");
+    end else if (DOWNLOAD) begin
         run_gameid_download(8'd0);   // 0 = Virtua Racing
         // THE SOUND STREAM, END TO END. Nothing has ever tested it.
         if (SNDBIN != "") run_snd_download(); else run_snd_probes();

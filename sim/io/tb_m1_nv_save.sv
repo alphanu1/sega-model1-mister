@@ -392,6 +392,7 @@ module tb_m1_nv_save #(
     for (int i = 0; i < 64; i++) ee_def[i] = 16'hffff;
     make_prog(0, '{default: 0}, '{default: 16'h0});
     power_on(1, 0, 1, f);
+    $display("SDRAM words written after the load: %0d", device.mem.num());
     // the EEPROM as the Z80 sees it, and as SDRAM holds it
     miss = 0;
     n = 64;
