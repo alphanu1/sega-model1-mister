@@ -1,3 +1,24 @@
+# 2026-11-12: branch v60-manual BOARD-TESTED (not merged, not released)
+
+`v60-manual` (dda8813, off main 2f17a82): NOT keeps CY, MUL's OV, DIVX/DIVUX
+overflow leaves the destination, a zero divisor takes Zero Divide (#21), and
+IEEE denormals are the default (V60_FTZ opts back into the flush). Every
+change cites NEC's uPD70616 Programmer's Reference Manual (1986); see
+docs/findings.md 2026-11-12. rbf seed 5, md5
+`5a612f04e53ceac2c717897d845b7b2e`: 39,361 ALM, 548/553 M10K, 60 DSP, every
+clock clean (worst setup HDMI +0.061, core +0.138; hold +0.220).
+
+Board, Ben 2026-11-12: every game loads and works as before. AND STAR WARS'
+CRAWL TEXT NO LONGER DISAPPEARS. That was the open "yellow text flickers,
+vanishes and comes back far away" from the 2026-10-29 tests below. Which of
+the changes cured it is not established. The candidates are the denormals
+(the text recedes into tiny values) and MUL/DIVX on the projection; a seeded
+bench of the crawl, FTZ against IEEE, would say. Not yet done.
+
+The new tb_v60_manual adds one line to CLAUDE.md's expected `make test`
+block (CLAUDE.md is git-ignored, so it is added by hand):
+`v60_manual: checks=840562 fails=0 cases=278770 (not=1368 mul=142168 mulu=87264 div=1848 divu=1848 rem=1848 remu=1848 divx=26769 divux=13809) zero_divides=776 ov_set=209738 ov_clear=69032 cy_kept=115546/115254`
+
 # 2026-11-06: RELEASED Model1_20261106 (main, merge of inputs-osd)
 
 `releases/Model1_20261106.rbf` is the inputs-osd fit (seed 5, md5
