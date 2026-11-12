@@ -1,4 +1,8 @@
-# 2026-11-12: branch v60-manual BOARD-TESTED (not merged, not released)
+# 2026-11-12: RELEASED Model1_20261112 (main, fast-forward of v60-manual)
+
+`releases/Model1_20261112.rbf` is the rbf below, board-tested by Ben on all
+games. MRAs unchanged from Model1_20261106. #6 untouched by this release.
+
 
 `v60-manual` (dda8813, off main 2f17a82): NOT keeps CY, MUL's OV, DIVX/DIVUX
 overflow leaves the destination, a zero divisor takes Zero Divide (#21), and

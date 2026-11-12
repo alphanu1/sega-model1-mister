@@ -7,7 +7,7 @@ Copy to the SD card:
 
 | from | to |
 |---|---|
-| `Model1_20261106.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
+| `Model1_20261112.rbf` | `/media/fat/_Arcade/cores/` — **rename to `Model1.rbf` on the card** |
 | the MRAs, from `mra/` | `/media/fat/_Arcade/` (or a folder inside it, such as `_Arcade/_Model1/`) |
 
 `mra/` has twelve MRAs: one per game, and a `[15kHz CRT]` version of each that
@@ -39,8 +39,8 @@ All sets are MAME's.
 its firmware a game does not boot: it waits forever for a board that never
 answers. MAME needs the same files, so a complete romset already has them.
 
-**Check what you are running.** `Model1_20261106.rbf` has the md5
-`ac1c72f5cf6f47fe8a9765bef6c39604`. If yours doesn't match, the usual reason is
+**Check what you are running.** `Model1_20261112.rbf` has the md5
+`5a612f04e53ceac2c717897d845b7b2e`. If yours doesn't match, the usual reason is
 a second file: MiSTer picks the core whose name sorts last, and `_` sorts after
 `.`, so a spare `Model1_old.rbf` in `cores/` quietly wins over `Model1.rbf`.
 Keep exactly one, and keep backups out of `cores/`.
@@ -50,6 +50,18 @@ chip: 8,192 rows, 1,024 columns, 4 banks) and uses up to about 45 MB of it -
 Star Wars, with its music data, is the largest - so a 32 MB module is too
 small. It has been tested on a 128 MB module, which works because the core
 uses only its first 64 MB.
+
+## New in `Model1_20261112`
+
+- **Star Wars Arcade's opening crawl stays on screen.** The yellow text no
+  longer flickers, vanishes and comes back far in the distance.
+- **The V60 CPU follows NEC's own manual** (the uPD70616 Programmer's
+  Reference Manual, 1986) in the few places where it followed MAME instead:
+  NOT leaves the carry flag alone, MUL sets overflow only when the result
+  doesn't fit, DIVX leaves its destination unchanged on overflow, a divide by
+  zero takes the CPU's Zero Divide exception, and the floating point keeps very
+  small numbers as IEEE 754 says instead of rounding them to zero. Every game
+  plays as before; the Star Wars crawl is the one visible change.
 
 ## New in `Model1_20261106`
 
