@@ -49,7 +49,21 @@
 
 
 // ---------------------------------------------------------------------------
-// DENORMAL POLICY: FLUSH TO ZERO UNLESS `V60_IEEE_DENORM` IS DEFINED.
+// DENORMAL POLICY: IEEE 754 GRADUAL UNDERFLOW. `V60_FTZ` FLUSHES INSTEAD.
+//
+// CHANGED 2026-11-12, AND THIS IS WHY. NEC's uPD70616 Programmer's Reference
+// Manual (1986) says, p.1-12: "The uPD70616 floating point data types and
+// operations conform to the IEEE 754 standard", and p.8-8 has floating-point
+// underflow "delayed and a denormal result will be placed in the destination
+// operand" when the underflow trap is off. That is the silicon's documented
+// behaviour, so denormal inputs and results are now handled in every build -
+// Quartus and every bench - with no define. The flush is kept only as an
+// opt-in measurement build, `V60_FTZ`. (Until this date the shipped core
+// flushed, the IEEE path sat behind `V60_IEEE_DENORM`, and only tb_v60_fp was
+// built with it; that define is now a no-op.) docs/findings.md 2026-11-12.
+//
+// THE REST OF THIS NOTE IS THE 2026-09-11 RECORD, kept for its measurement:
+// the flush was the shipped default then, and "on" below means the flush.
 //
 // MEASURED, 2026-09-11. Full `make rbf`, not a standalone module:
 //     with denormals   42,885 ALM
@@ -153,7 +167,7 @@ function automatic [40:0] fp_unpack(input [31:0] x);
     logic [7:0] ef; logic [22:0] mf; logic [4:0] lz;
     s = x[31]; ef = x[30:23]; mf = x[22:0];
     if (ef == 8'd0) begin
-`ifdef V60_IEEE_DENORM
+`ifndef V60_FTZ
         if (mf == 23'd0) begin e = 16'sd0; m = 24'd0; end
         else begin
             // shift {0,mf} left so its leading 1 reaches bit 23.  clz28({5'd0,mf})
@@ -163,7 +177,7 @@ function automatic [40:0] fp_unpack(input [31:0] x);
             e  = -16'sd126 - $signed({11'd0, lz});
         end
 `else
-        lz = 5'd0; e = 16'sd0; m = 24'd0;   // denormal input -> zero. See header.
+        lz = 5'd0; e = 16'sd0; m = 24'd0;   // V60_FTZ: denormal input -> zero. See header.
 `endif
     end
     else begin
@@ -194,7 +208,7 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
         else res = {sign, (e[7:0] + 8'd127), m[22:0]};
     end
     else begin
-`ifdef V60_IEEE_DENORM
+`ifndef V60_FTZ
         sh  = 16'((-16'sd126) - e);              // positive denormal shift
         shd = (sh >= 16'd27) ? 27'd0 : (sg >> sh);
         lost = (sh >= 16'd27) ? (sg != 27'd0)
@@ -205,7 +219,7 @@ function automatic [31:0] fp_pack(input logic sign, input logic signed [15:0] E,
         m = m + (rup ? 25'd1 : 25'd0);
         res = {sign, (m[23] ? 8'd1 : 8'd0), m[22:0]};   // m[23] -> smallest normal
 `else
-        sh = 16'd0; shd = 27'd0; lost = 1'b0;   // denormal result -> zero. See header.
+        sh = 16'd0; shd = 27'd0; lost = 1'b0;   // V60_FTZ: denormal result -> zero. See header.
         g = 1'b0; r = 1'b0; s = 1'b0; rup = 1'b0; m = 25'd0;
         res = {sign, 31'd0};
 `endif

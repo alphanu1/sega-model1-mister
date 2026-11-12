@@ -20,7 +20,104 @@ Topic detail lives in: `io-board.md`, `2d-gap-analysis.md`,
 
 ---
 
-## 2026-11-05 — V60: CVTSW KEEPS CY AND MOVFS KEEPS ALL FLAGS, AS MAME DOES
+## 2026-11-12 — V60: NOT, MUL, DIVX/DIVUX, ZERO DIVIDE AND FP DENORMALS MOVED FROM MAME'S BEHAVIOUR TO NEC'S MANUAL
+
+**A deliberate departure from hard rule 3, on Ben's direction**: where the
+silicon's own documentation says MAME is wrong, the documentation wins. The
+instrument is the text of NEC's *uPD70616 Programmer's Reference Manual*
+(1986, preliminary; archive.org NEC_V60pgmRef, read from its OCR), checked
+instruction page by instruction page. The comparison that found these is the
+Model 2 project's V60 review (its items D6, D7, D19 and its section 13).
+
+| what | believed (= MAME, = this core until today) | the manual | changed |
+|---|---|---|---|
+| NOT.B/H/W (38/3A/3C) | CY cleared (s32's "NOT does clear it") | p.7-72: "CY Unchanged, OV Cleared" - MAME's opNOT agrees | `v60_alu.sv`: NOT out of `cy_we` |
+| MUL.B/H/W (81/83/85) | OV = high half of the product non-zero, so 1 x -1 set OV | p.7-64: OV when the double-length product does not fit the destination (the OCR reads "does fit"; the flag table and p.8-8's definition of integer overflow fix the sense) | `md_finish`: OV = bits above the sign bit are not all equal to it |
+| MULU (91/93/95) | OV = high part non-zero | p.7-66: "the product cannot fit within the precision of the destination" | none - already the manual's rule |
+| DIV min/-1 | OV set, destination unchanged | p.7-36: the same | none - already so (the quotient's low bits equal the dividend) |
+| DIVX / DIVUX (A6/B6) overflow | low 32 bits of the quotient stored, OV untouched | p.7-39/40: destination unchanged on overflow, OV "set if integer overflow occurs, otherwise cleared" | `S_DIVX`: a quotient outside signed (DIVX) or unsigned (DIVUX) 32 bits sets OV and writes nothing; otherwise OV cleared. S/Z from the unchanged low word on overflow |
+| zero divisor, DIV/DIVU/REM/REMU/DIVX/DIVUX | no trap; OV cleared (narrow) or untouched (DIVX); destination unchanged | p.8-8: "sets the PSW.OV flag and leaves the destination unmodified" and raises Integer Zero Divide; #21 (SBT +84, Fig. 8-2), code 1500h (Table 8-1, p.8-19), frame p.8-17: [SP]=next PC, PSW, 1500_0008, current PC | new `zero_divide` task in `v60.sv`, on the existing exception path (S_EXC_PUSH1...) that BRKV and the reserved-instruction vector use |
+| REM/REMU min/-1 | remainder 0, OV cleared | p.7-84/85: OV cleared, only Zero Divide listed | none |
+| FP denormals | flushed to zero in the shipped build (`V60_IEEE_DENORM` off, -353 ALM, 2026-09-11) | p.1-12: "floating point data types and operations conform to the IEEE 754 standard"; p.8-8: underflow with the trap off places "a denormal result" in the destination | `v60_fp.sv`: the IEEE path is the default everywhere; `V60_FTZ` is the opt-in flush |
+
+The parameter count of 8 in the zero-divide code word is the manual's (p.8-3:
+bytes of exception information besides PC and PSW - the code word and the
+current PC). **Not changed, seen on the way**, all read and not acted on:
+BRKV pushes 1501_0004 (MAME's EXCEPTION_CODE_AND_SIZE(0x1501, 4)) where the
+same p.8-17 frame gives a count of 8; the reserved-instruction exception
+uses SBT entry 8 with a two-word frame where the manual has Reserved Opcode
+as #16, code 1000h, with a code word; and every exception entry here clears
+PSW.IE, where p.8-3 says an exception leaves IE unchanged (only interrupts,
+bus errors and stack faults clear it).
+
+**What a zero divide now does in a game.** Virtua Racing's and Virtua
+Fighter's SBTs (at 0xFFF000; VF's SBR measured in the seed snapshot) point
+entries 8 to 22 at one handler, VR 0xFE02B0 and VF 0xFE3EC8, whose code is
+`updpsw.w #0, #40000` then `halt`. So on these games a zero divide stops the
+V60 with interrupts off, as it would on the board if the manual is right;
+MAME carries on. None was seen: zero divisors 0 in all three seeded windows
+below.
+
+### Proof
+
+- `sim/cpu/tb_v60_manual.sv` (`make test_v60_manual`, new, in `make test`):
+  the manual's semantics for every changed instruction, each case a real
+  program through the whole CPU, flags set with UPDPSW (CY both ways) and read
+  with GETPSW, the zero-divide frame read from RAM at the SBT[21] fetch.
+  MUL.B/MULU.B exhaustive; MUL/MULU .H/.W approach every limit (smax, smin,
+  umax and one past each) from 40 multipliers with b = L/a + d, d in
+  [-24, +24]; DIVX/DIVUX quotients either side of 2^31/2^32 with k in
+  [-40, +40] over 40 divisors, plus random; memory destinations for the
+  divides. **278,770 cases, 840,562 checks, 0 fails**, at ce=1 and at the
+  production ce=/3 (`-GCEDIV=3`). Against the pre-change v60.sv it fails
+  83,047 checks, all in the expected places: NOT's CY, MUL's OV (not MULU's,
+  not any result), the zero divides, and DIVX/DIVUX overflow - and none in
+  DIV min/-1 or REM, which did not change.
+- FP denormals: `make v60_fp_denorm` (new) generates 84,974 vectors
+  (`tools/v60_fp_denorm_vectors.py`: numpy.float32 results, MAME's flag
+  rules; denormal inputs, results in and below the denormal range,
+  cancellation, SCLF by 2^-30..2^30, CVTSW in all four rounding modes) and
+  replays them through `v60_fp`: **0 results and 0 flags differ**. The same
+  vectors on a `V60_FTZ` build: 34,341 results and 15,058 flags differ, so the
+  set reaches the path.
+- s32 suite (`tools/run_v60_tests.sh`): **29/29**, every bench now built as
+  shipped (no define; tb_v60_fp used to be the only one with denormals).
+  Two expectations changed and nothing else: `tb_v60_flags` case 7, MUL.W
+  1 x -1, OV=1 -> OV=0 (a one-line rewrite in the runner); and `tb_v60_divx`,
+  a marked modified copy in `sim/cpu/s32/` that the runner prefers - its
+  cases 1, 2, 5, 10, 11 and 12 are overflows (pair unchanged), case 14 is a
+  zero divide (the program moved to 0x1000 so an SBT can sit at 0; the frame
+  and the restored flags are checked).
+- `tb_v60_alu`: its transcribed reference now leaves CY alone for NOT; count
+  unchanged at 360,001.
+- **The games, where they reach the changes.** Ben's seeded bench from
+  `vf-issue6` (`tb_v60_seeded`, MAME's state and inputs, every write checked),
+  run on this RTL over its three VF windows: Wolf v Jeffry 332,535
+  instructions, Lau v Sarah 891,239, stage 3 intro 1,224,773 - **instruction
+  streams and byte changes identical to MAME in all three**. A build-only
+  monitor counted where the changes are reached: MUL with OV different from
+  MAME's 65 / 340 / 9 times (first at FF64AE / FF64AE / FF271F), NOT entered
+  with CY=1 (old core cleared it) 0 / 12 / 85 times (first FF072A), divides
+  and remainders 432 / 1,209 / 1,264 with zero divisors 0. So the changed
+  flags are produced in real VF code and nothing in these windows consumes
+  them before they are rewritten.
+- `make v60_trace GAME=vr` (2 emulated seconds, MAME vs the whole core from
+  reset, IEEE denormals in the core): **IDENTICAL for 27,375 instructions**
+  (collapsed); only loop counts differ, as before. MAME's stream there runs
+  not.b 431 times, not.w 214, mulu.h 2,048, mulu.w 6, divu.w 3, remu.w 3 and
+  no signed MUL or DIVX.
+- `make test`: every bench 0 fails; the V60 lines unchanged (v60_alu
+  360,001, v60_in_mem 4, v60_mul_mem 1,084) plus the new `v60_manual` line.
+
+### Cost - not measured
+
+No fit was run for this. The denormal path was +353 ALM in a full `make rbf`
+on 2026-09-11; the rest is a 64-bit range test in S_DIVX, a wider OV compare
+in MUL and one more source for the exception registers - no memory, no
+multiplier. Model1_20261106 fitted at 38,950 of 41,910 ALM (2,960 free),
+548/553 M10K, 60/112 DSP. Measure it in the next `make rbf`.
+
+
 
 Picked from `vf-issue6` (958e272) into the release candidate; the whole
 investigation is that branch's findings entry, "Items 1 and 2: the V60's

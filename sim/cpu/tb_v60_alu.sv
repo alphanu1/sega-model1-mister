@@ -9,6 +9,10 @@
 // size-extended ones. If the shared unit and the transcription disagree on any
 // input, one of them is wrong and the test says which opcode and width.
 //
+// ONE DELIBERATE DEPARTURE FROM THE TRANSCRIPTION (2026-11-12): NOT no longer
+// clears CY. The old code did; NEC's manual (p.7-72) and MAME both leave CY
+// unchanged, so the reference now expects cy_we = 0 for NOT.
+//
 // This is what makes the refactor safe to make at all: the 29-test V60 suite
 // covers these opcodes but not densely, and a shared adder that is subtly wrong
 // at one width would pass it and then corrupt a game months later.
@@ -103,15 +107,19 @@ module tb_v60_alu;
                        (d==2'd1) ? ((b[15]^a[15]) & (b[15]^res[15])) :
                                    ((b[31]^a[31]) & (b[31]^res[31]));
             end
+            // NOT leaves CY ALONE: NEC uPD70616 Programmer's Reference Manual
+            // (1986) p.7-72, "CY Unchanged, OV Cleared"; MAME opNOTB/H/W agree.
+            // The transcribed s32 code cleared it, and this reference followed
+            // it until 2026-11-12 (docs/findings.md).
             8'h38, 8'h3a, 8'h3c: begin // NOT
-                res = ~dimext(a,d); r_ov = 1'b0; r_cy = 1'b0;
+                res = ~dimext(a,d); r_ov = 1'b0; r_cywe = 1'b0;
             end
             8'h39, 8'h3b, 8'h3d: begin // NEG
                 res  = 32'd0 - dimext(a,d);
                 r_cy = (dimext(a,d) != 0);
                 r_ov = sgn(a,d) & sgn(res,d);
             end
-            // these three leave CY untouched in the original
+            // these three leave CY untouched in the original (NOT does too, above)
             8'ha0, 8'ha2, 8'ha4: begin res = b & a; r_ov = 1'b0; r_cywe = 1'b0; end // AND
             8'h88, 8'h8a, 8'h8c: begin res = b | a; r_ov = 1'b0; r_cywe = 1'b0; end // OR
             8'hb0, 8'hb2, 8'hb4: begin res = b ^ a; r_ov = 1'b0; r_cywe = 1'b0; end // XOR

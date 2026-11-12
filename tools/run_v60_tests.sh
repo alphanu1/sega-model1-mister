@@ -32,6 +32,10 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT="$PWD"
+# The project's temporaries rule (nothing in /tmp): g++ under Verilator writes its
+# assembler files to TMPDIR, which is /tmp unless this is set. The Makefile
+# exports it; this script is run directly, so it sets it too.
+export TMPDIR="${TMPDIR:-$ROOT/build/tmp}"; mkdir -p "$TMPDIR"
 S32="$ROOT/third_party/s32"
 VERIF="$S32/verif/v60"
 
@@ -80,8 +84,26 @@ mkdir -p "$OUT"
 pass=0; fail=0; skip=0; failed=""
 for tb in $ORDER; do
   src="$VERIF/${tb}.sv"
+  # A TEST THIS PROJECT HAS HAD TO CHANGE lives in sim/cpu/s32/ as a marked
+  # modified copy, and runs in place of the upstream file. Only for changes too
+  # big for a one-line rewrite below; each copy's header says what and why.
+  #   tb_v60_divx  2026-11-12: DIVX/DIVUX overflow and zero divide per NEC's
+  #                manual (pair unchanged, OV, exception #21), not MAME.
+  [ -f "$ROOT/sim/cpu/s32/${tb}.sv" ] && src="$ROOT/sim/cpu/s32/${tb}.sv"
   [ -f "$src" ] || { echo "SKIP  $tb (no file)"; skip=$((skip+1)); continue; }
   bdir="$OUT/$tb"; rm -rf "$bdir"; mkdir -p "$bdir"
+
+  # MUL.W 1 * -1 DOES NOT OVERFLOW. tb_v60_flags case 7 asserted OV=1, MAME's
+  # high-half test ("MAME MUL.W quirk"). NEC's manual, MUL p.7-64: OV is set
+  # when the product does not fit the destination; -1 fits. Since 2026-11-12
+  # the core follows the manual, so the expectation is rewritten on the way in.
+  # The other 21 checks in that test are untouched. docs/findings.md 2026-11-12.
+  if [ "$tb" = tb_v60_flags ]; then
+      sed -e 's/chk((cpu.r\[21\] \& 4.h4) == 4.h4,  "MUL.W 1\*-1 OV=1 (high half nonzero)");/chk((cpu.r[21] \& 4'"'"'h4) == 4'"'"'h0,  "MUL.W 1*-1 OV=0 (fits: NEC p.7-64)");/' \
+          "$src" > "$bdir/${tb}.mul.sv"
+      grep -q 'OV=0 (fits: NEC p.7-64)' "$bdir/${tb}.mul.sv" || { echo "FAIL  $tb (MUL.W rewrite did not apply)"; fail=$((fail+1)); failed="$failed $tb"; continue; }
+      src="$bdir/${tb}.mul.sv"
+  fi
 
   # THE FETCH WINDOW MOVED INTO A SUBMODULE, AND TWO TESTS POKE IT DIRECTLY.
   #
@@ -114,13 +136,12 @@ for tb in $ORDER; do
       sed -E 's/cpu\.r\[([0-9]+)\] = ([^=;][^;]*);/cpu.rf_poke(\1, \2);/g' "$src" > "$bdir/${tb}.rf.sv"
       src="$bdir/${tb}.rf.sv"
   fi
-  # tb_v60_fp's expectations come from numpy.float32 -- the MAME host-float
-  # contract -- so it must be built against the IEEE denormal path. The SHIPPED
-  # core flushes denormals to zero and is 353 ALM smaller for it; see the header
-  # of rtl/cpu/v60/v60_fp.sv. A 29/29 here therefore verifies the IEEE
-  # configuration, NOT the one that ships.
+  # tb_v60_fp's expectations come from numpy.float32 (IEEE 754, RNE). Since
+  # 2026-11-12 that is the configuration that ships: v60_fp.sv handles
+  # denormals unless V60_FTZ is defined (NEC's manual, p.1-12: the V60's
+  # floating point conforms to IEEE 754). Nothing is defined here any more, so
+  # every bench below - tb_v60_fp included - builds exactly what Quartus builds.
   tbdefs=""
-  [ "$tb" = "tb_v60_fp" ] && tbdefs="-DV60_IEEE_DENORM"
   if is_icarus "$tb"; then
     if ! iverilog -g2012 -Wno-timescale ${IDEFS:-} $tbdefs -o "$bdir/$tb.vvp" -s "$tb" $CPU "$src" > "$bdir.log" 2>&1; then
       echo "BUILDFAIL $tb (icarus)  (see $bdir.log)"; fail=$((fail+1)); failed="$failed $tb"; continue
@@ -161,7 +182,7 @@ if [ -x "$OUT/tb_v60_smc/tb_v60_smc" ]; then
 fi
 
 echo "======================================================"
-echo "V60 UNIT (our rtl/cpu/v60) [tb_v60_fp built -DV60_IEEE_DENORM; shipped core flushes]: $pass passed, $fail failed, $skip skipped${failed:+ -> FAILED:$failed}"
+echo "V60 UNIT (our rtl/cpu/v60, IEEE denormals as shipped): $pass passed, $fail failed, $skip skipped${failed:+ -> FAILED:$failed}"
 [ "$fail" -eq 0 ]
 
 rm -rf "$OUT/tb_v60_smc"

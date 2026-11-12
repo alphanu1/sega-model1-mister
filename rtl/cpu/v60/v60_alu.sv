@@ -143,14 +143,14 @@ module v60_alu (
     //
     // Add: the carry out of the operand's top bit, which for zero-extended
     // operands is sum[8] / sum[16] / sum[32]. Subtract: borrow is the
-    // complement of the carry-out. Logic ops clear it; AND/OR/XOR leave it
-    // alone in the original, so they are excluded from cy_we below.
+    // complement of the carry-out. The logic ops (NOT, AND, OR, XOR) leave it
+    // alone, so they are excluded from cy_we below and cy is a don't-care.
     wire cy_add = (d==2'd0) ? sum[8] : (d==2'd1) ? sum[16] : sum[32];
 
     always_comb begin
         if (is_addlike)      cy = cy_add;
         else if (is_sublike) cy = ~sum[32];
-        else                 cy = 1'b0;        // NOT
+        else                 cy = 1'b0;        // not written (cy_we = 0)
     end
 
     // ----- overflow -----
@@ -168,10 +168,13 @@ module v60_alu (
     assign z = zer(result, d);
     assign s = sgn(result, d);
 
-    // AND/OR/XOR DO NOT ASSIGN CARRY AT ALL in the original - they are the only
-    // arms here that leave a flag untouched rather than clearing it. NOT does
-    // clear it, so it keeps cy_we with cy driven to 0.
-    assign cy_we  = !(is_and || is_or || is_xor);
+    // AND/OR/XOR DO NOT ASSIGN CARRY AT ALL in the original, and NOT DOES NOT
+    // EITHER. The s32 original cleared CY for NOT ("NOT does clear it" stood
+    // here); NEC's uPD70616 Programmer's Reference Manual (1986), NOT, p.7-72,
+    // gives its condition codes as "CY Unchanged, OV Cleared", and MAME's
+    // opNOTB/H/W assign OV, S and Z only. So NOT is excluded from cy_we with
+    // the other logic ops. docs/findings.md 2026-11-12.
+    assign cy_we  = !(is_not || is_and || is_or || is_xor);
     assign writes = !is_cmp;
     assign valid  = is_add || is_addc || is_sub || is_cmp || is_subc
                  || is_not || is_neg || is_and || is_or  || is_xor;

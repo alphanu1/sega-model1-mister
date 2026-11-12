@@ -2092,27 +2092,52 @@ else if (ce) begin
     end
 
     // DIVX/DIVUX: unsigned magnitude division followed by architectural sign
-    // correction.  Sixty-four iterations preserve the old 64-bit expression,
-    // including low-32 quotient truncation when the mathematical result is
-    // wider than the destination register.
+    // correction, sixty-four iterations whatever the operands.
+    //
+    // A QUOTIENT THAT DOES NOT FIT 32 BITS IS AN OVERFLOW: OV SET, DESTINATION
+    // UNCHANGED. NEC uPD70616 Programmer's Reference Manual (1986), DIVX
+    // p.7-39: "Overflow occurs when the negative maximum integer is divided by
+    // -1. The destination operand does not change when an overflow or a Zero
+    // Divide exception occurs", OV "Set if integer overflow occurs, otherwise
+    // cleared"; DIVUX p.7-40 the same for the unsigned form. The 64/32 divide
+    // has more overflowing cases than min/-1, and p.8-8 defines integer
+    // overflow as a result that "cannot be expressed in the precision of the
+    // destination", so the test is the quotient's range: signed 32 bits for
+    // DIVX, unsigned for DIVUX (min/-1 is one such case). MAME stores the
+    // truncated quotient and leaves OV alone, which is what this did until
+    // 2026-11-12 (docs/findings.md). On overflow S/Z come from the unchanged
+    // low word (md_savb), as the narrow DIV's come from its unchanged dst.
     S_DIVX: begin
+        logic xdv_ovf;
+        xdv_ovf = (cur_op == 8'ha6)
+                ? (xdiv_qneg ? ((xdiv_shift_next[63:32] != 32'd0) ||
+                                (xdiv_shift_next[31] && (xdiv_shift_next[30:0] != 31'd0)))
+                             : (xdiv_shift_next[63:31] != 33'd0))
+                : (xdiv_shift_next[63:32] != 32'd0);
         mdacc <= xdiv_shift_next;
         xdiv_rem <= xdiv_rem_next;
         if (mdcnt == 6'd63) begin
-            f_z <= (xdiv_qresult == 0);
-            f_s <= xdiv_qresult[31];
-            // MAME opDIVX/opDIVUX set only S/Z and leave OV unchanged; do not clear it.
             xdiv_active <= 1'b0;
-            if (divx_mem) begin
-                // write quotient -> [op2], remainder -> [op2]+4 (audit V60-9)
-                movd_lo <= xdiv_qresult;
-                movd_hi <= xdiv_rresult;
-                st <= S_MOVD_WL;
+            f_ov <= xdv_ovf;
+            if (xdv_ovf) begin
+                f_z <= (md_savb == 32'd0);
+                f_s <= md_savb[31];
+                st <= S_NEXT;
             end
             else begin
-                queue_reg_write(xdiv_dst, xdiv_qresult, 32'hffff_ffff);
-                queue_reg_write(xdiv_dst + 5'd1, xdiv_rresult, 32'hffff_ffff);
-                st <= S_NEXT;
+                f_z <= (xdiv_qresult == 0);
+                f_s <= xdiv_qresult[31];
+                if (divx_mem) begin
+                    // write quotient -> [op2], remainder -> [op2]+4 (audit V60-9)
+                    movd_lo <= xdiv_qresult;
+                    movd_hi <= xdiv_rresult;
+                    st <= S_MOVD_WL;
+                end
+                else begin
+                    queue_reg_write(xdiv_dst, xdiv_qresult, 32'hffff_ffff);
+                    queue_reg_write(xdiv_dst + 5'd1, xdiv_rresult, 32'hffff_ffff);
+                    st <= S_NEXT;
+                end
             end
         end
         else mdcnt <= mdcnt + 1'd1;
@@ -2240,6 +2265,7 @@ else if (ce) begin
             // dividend {bus_rdata, op2val} = {high, low}: see xdv_num
             xdiv_qneg <= xdv_qneg;
             xdiv_rneg <= xdv_rneg;
+            md_savb <= xdv_num[31:0];   // the low word, for S/Z on overflow
             mdacc  <= xdv_mag_num;
             xdiv_rem    <= 0;
             mdop    <= xdv_mag_den;
@@ -3708,6 +3734,37 @@ task automatic set_zs(input [31:0] v, input [1:0] d);
     f_s <= sgn(v, d);
 endtask
 
+// INTEGER ZERO DIVIDE: EXCEPTION #21, THE SAME FRAME AS BRKV.
+//
+// NEC uPD70616 Programmer's Reference Manual (1986), all read 2026-11-12:
+//   p.8-8   "A zero divide exception occurs when a divisor of zero is used in a
+//           divide or remainder instruction. A zero divide exception sets the
+//           PSW.OV flag and leaves the destination unmodified."
+//   p.8-2   Figure 8-2: SBT entry 21 (+84) is the integer arithmetic exception
+//           vector, shared with BRKV's integer overflow (p.7-13).
+//   p.8-17  #21 Integer Exceptions, "Abort/Continue": from the top of the stack
+//           PC (Next PC), PSW, exception code with parameter count 8, PC
+//           (Current PC) - pushed in that reverse order, as BRKV's is.
+//   p.8-19  Table 8-1: integer zero divide is code 1500h (overflow is 1501h).
+//   p.8-3   the parameter count is the bytes of exception information besides
+//           PC and PSW: the code word and the current PC, so 8.
+// The PSW pushed is the one this instruction leaves - OV set, S/Z from the
+// unchanged destination - and the handler is entered with the same flags. The
+// entry itself (EL, IE, stack choice) is S_EXC_PUSH1's, unchanged: the same
+// machinery the reserved-instruction exception (vector 8) uses.
+// Only S_EXEC calls this, where pc_ret2 (pc + 2 + len1 + len2) is the
+// instruction's own total_len, i.e. the next PC.
+task automatic zero_divide(input [31:0] dst, input [1:0] d);
+    exc_vector    <= 8'd21;
+    exc_code      <= 32'h1500_0008;     // code 1500h, parameter count 8
+    exc_extra     <= pc;                // [SP+12] current PC
+    exc_retpc     <= pc_ret2;           // [SP+0]  next PC
+    exc_pushval   <= {psw[31:4], f_cy, 1'b1, sgn(dst, d), zer(dst, d)};
+    exc_has_code  <= 1'b1;
+    exc_has_extra <= 1'b1;
+    st <= S_EXC_PUSH1;
+endtask
+
 task automatic wb_op2(input [31:0] v, input [1:0] d);
     // write result to op2 (register or memory)
     //
@@ -3908,8 +3965,10 @@ task automatic exec_op;
     // single 33-bit sum. tb_v60_alu checks the unit against the expressions
     // that stood here, 360,001 cases over all thirty opcodes, zero mismatches.
     //
-    // AND/OR/XOR are the only arms that leave a flag ALONE rather than clearing
-    // it, hence alu_cy_we; CMP is SUB without the writeback, hence alu_writes.
+    // NOT/AND/OR/XOR are the arms that leave CY ALONE rather than clearing it,
+    // hence alu_cy_we (NOT joined them 2026-11-12: NEC manual p.7-72, "CY
+    // Unchanged" - see v60_alu.sv); CMP is SUB without the writeback, hence
+    // alu_writes.
     8'h80, 8'h82, 8'h84,        // ADD
     8'h90, 8'h92, 8'h94,        // ADDC
     8'ha8, 8'haa, 8'hac,        // SUB
@@ -4033,12 +4092,17 @@ task automatic exec_op;
     8'ha1, 8'ha3, 8'ha5, 8'hb1, 8'hb3, 8'hb5,       // DIV/DIVU
     8'h50, 8'h51, 8'h52, 8'h53, 8'h54, 8'h55: begin // REM/REMU
         if (dimext(a, d2) == 0) begin
-            // MAME divide-by-zero: destination unchanged and no trap, but Z/S
-            // are still set from the (unchanged) destination = the dividend, and
-            // OV is cleared (audit R20 V60-8); the old code left flags stale.
-            set_zs(dimext(b, d2), d2);
-            f_ov <= 1'b0;
-            st <= S_NEXT;
+            // ZERO DIVIDE TAKES THE INTEGER ZERO DIVIDE EXCEPTION.
+            //
+            // NEC uPD70616 Programmer's Reference Manual (1986): DIV p.7-36,
+            // DIVU p.7-38, REM p.7-84 and REMU p.7-85 each list "Exceptions:
+            // Zero Divide" and say the destination is unchanged when it occurs;
+            // p.8-8: "A zero divide exception sets the PSW.OV flag and leaves
+            // the destination unmodified." MAME takes no trap and clears OV,
+            // which is what this did until 2026-11-12 (docs/findings.md).
+            // Z and S are still taken from the unchanged destination, as they
+            // were. The frame and vector are zero_divide()'s.
+            zero_divide(b, d2);
         end
         else begin
             // DIV/DIVU distinguished by bit4 (0xaX signed / 0xbX unsigned);
@@ -4097,12 +4161,17 @@ task automatic exec_op;
     end
     8'ha6, 8'hb6: begin // DIVX/DIVUX: (reg-pair 64) / op1 -> q in reg, r in reg+1
         if (op1 == 0) begin
-            st <= S_NEXT;   // MAME: no zero-divide trap
+            // Zero Divide exception, destination pair unchanged: NEC manual
+            // DIVX p.7-39, DIVUX p.7-40, p.8-8. MAME takes no trap. `b` is the
+            // destination's LOW word (rf_rdata_b / op2val, see xdv_num), whose
+            // S/Z stand in for the quotient's as the narrow forms' do.
+            zero_divide(b, 2'd2);
         end
         else if (flag2) begin
             // dividend {rf_rdata_a, rf_rdata_b}: see xdv_num
             xdiv_qneg <= xdv_qneg;
             xdiv_rneg <= xdv_rneg;
+            md_savb <= xdv_num[31:0];   // the low word, for S/Z on overflow
             mdacc <= xdv_mag_num;
             xdiv_rem <= 0;
             mdop <= xdv_mag_den;
@@ -4543,14 +4612,27 @@ task automatic md_finish;
         uprod = mul_p[63:0];
         sprod = mul_p[63:0];
         set_zs(mdacc[31:0], d2);
-        // MAME opMUL/opMULU: OV = (product >> width) != 0 on the product's
-        // unsigned bit pattern (signed product for MUL, unsigned for MULU).
-        // For byte/half MAME shifts the 32-bit value; for word, the 64-bit one.
-        // A negative signed product therefore also sets OV (e.g. MUL.W -1*1).
-        if (!cur_op[4])  // MUL (signed)
-            f_ov <= (d2==2'd0) ? (sprod[31:8]  != 0) :
-                    (d2==2'd1) ? (sprod[31:16] != 0) :
-                                 (sprod[63:32] != 0);
+        // OV IS "THE PRODUCT DOES NOT FIT THE DESTINATION", SIGNED FOR MUL.
+        //
+        // NEC uPD70616 Programmer's Reference Manual (1986), MUL, p.7-64: "An
+        // overflow occurs when the double length intermediate product does
+        // [not] fit within the precision of the destination operand" (the OCR
+        // drops the "not"; the condition-code table reads "OV Set if integer
+        // overflow occurs", and p.8-8 defines integer overflow as a result that
+        // "cannot be expressed in the precision of the destination"). For a
+        // signed product that is: every bit above the destination's sign bit
+        // equals the sign bit. MAME's opMUL tests (product >> width) != 0 on
+        // the bit pattern, which also flags every negative product that fits -
+        // 1 * -1 gave OV=1 here until 2026-11-12. docs/findings.md 2026-11-12.
+        //
+        // MULU, p.7-66: "An overflow occurs when the product cannot fit within
+        // the precision of the destination operand" - for an unsigned product
+        // that IS a non-zero high part, so MULU's test below was already the
+        // manual's and is unchanged.
+        if (!cur_op[4])  // MUL (signed): bits [63:w-1] all equal
+            f_ov <= (d2==2'd0) ? ((sprod[31:7]  != 25'h0) && (sprod[31:7]  != 25'h1ff_ffff)) :
+                    (d2==2'd1) ? ((sprod[31:15] != 17'h0) && (sprod[31:15] != 17'h1_ffff)) :
+                                 ((sprod[63:31] != 33'h0) && (sprod[63:31] != 33'h1_ffff_ffff));
         else             // MULU (unsigned)
             f_ov <= (d2==2'd0) ? (uprod[31:8]  != 0) :
                     (d2==2'd1) ? (uprod[31:16] != 0) :
@@ -4562,6 +4644,10 @@ task automatic md_finish;
         q = md_qsign ? md_neg : mdacc[31:0];        // md_neg: -mdacc[31:0] here
         set_zs(q, d2);
         f_ov <= md_divov;      // signed min/-1 overflow (audit R20 V60-8)
+        // On min/-1 the magnitude quotient is |min| with a positive sign, whose
+        // low <width> bits ARE min: q equals the dividend, so the store leaves
+        // the destination unchanged as NEC's DIV (p.7-36) requires, and S/Z
+        // are the unchanged destination's. Checked by tb_v60_manual.
         wb_op2(q, d2);
     end
     8'h50, 8'h51, 8'h52, 8'h53, 8'h54, 8'h55: begin // REM: remainder (sign of dividend)
