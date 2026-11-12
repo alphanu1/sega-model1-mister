@@ -20,6 +20,25 @@ history of this repository.
 ROMs are supplied by you and go in `/media/fat/games/mame/`, named as the MRA
 names them. Nothing here contains ROM data.
 
+## Not just a MAME port
+
+MAME has been the main reference for this core: every part is checked against
+it, often instruction for instruction. But the core is the arcade board rebuilt
+as hardware in the FPGA (the NEC V60 main CPU, the Fujitsu MB86233 geometry
+processor, the 3D renderer, the 2D tile video, the sound board and Star Wars'
+music board, and the I/O board's Z80), and where the real chips behave
+differently from MAME, fixes have been added to get as close to the real
+hardware as possible:
+
+- **The V60 follows NEC's own manual** (the uPD70616 Programmer's Reference
+  Manual, 1986), where MAME doesn't. A multiply sets the overflow flag only
+  when the result really doesn't fit (MAME flags it for any negative result
+  such as 1 × −1). An extended divide that overflows leaves its destination
+  unchanged, as the manual says, where MAME writes a cut-off result. A divide
+  by zero takes the CPU's Zero Divide exception, which MAME skips. And the
+  floating point is IEEE 754, as the manual says: very small numbers are kept
+  rather than rounded to zero. (`Model1_20261112`.)
+
 ## ROMs
 
 All sets are MAME's.
@@ -55,13 +74,10 @@ uses only its first 64 MB.
 
 - **Star Wars Arcade's opening crawl stays on screen.** The yellow text no
   longer flickers, vanishes and comes back far in the distance.
-- **The V60 CPU follows NEC's own manual** (the uPD70616 Programmer's
-  Reference Manual, 1986) in the few places where it followed MAME instead:
-  NOT leaves the carry flag alone, MUL sets overflow only when the result
-  doesn't fit, DIVX leaves its destination unchanged on overflow, a divide by
-  zero takes the CPU's Zero Divide exception, and the floating point keeps very
-  small numbers as IEEE 754 says instead of rounding them to zero. Every game
-  plays as before; the Star Wars crawl is the one visible change.
+- **The V60 CPU follows NEC's own manual** where it followed MAME or the
+  original core instead (see *Not just a MAME port* above), and NOT now leaves
+  the carry flag alone, as both the manual and MAME say. Every game plays as
+  before; the Star Wars crawl is the one visible change.
 
 ## New in `Model1_20261106`
 
